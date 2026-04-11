@@ -85,8 +85,6 @@ const (
 
 	// ModelID is a fixed constant used as the Anki note type ID.
 	ModelID int64 = 1700000000000
-	// DeckID is the default Anki deck ID.
-	DeckID int64 = 1
 )
 
 // initSchema creates all required Anki SQLite tables in db.
@@ -106,13 +104,15 @@ func initSchema(db *sql.DB) error {
 }
 
 // colJSON builds the five JSON blob columns for the col table.
-func colJSON(title string) (conf, models, decks, dconf, tags string, err error) {
+// deckID must be a non-zero epoch-millisecond value so Anki does not treat it
+// as the built-in "Default" deck (which has the reserved ID 1).
+func colJSON(title string, deckID int64) (conf, models, decks, dconf, tags string, err error) {
 	now := time.Now().Unix()
 
 	// conf
 	confMap := map[string]any{
-		"activeDecks":    []int64{DeckID},
-		"curDeck":        DeckID,
+		"activeDecks":    []int64{deckID},
+		"curDeck":        deckID,
 		"newSpread":      0,
 		"collapseTime":   1200,
 		"timeLim":        0,
@@ -141,7 +141,7 @@ func colJSON(title string) (conf, models, decks, dconf, tags string, err error) 
 			"mod":  now,
 			"usn":  -1,
 			"sortf": 0,
-			"did":  DeckID,
+			"did":  deckID,
 			"tmpls": []map[string]any{
 				{
 					"name":  "Card 1",
@@ -173,10 +173,10 @@ func colJSON(title string) (conf, models, decks, dconf, tags string, err error) 
 
 	// decks
 	decksMap := map[string]any{
-		fmt.Sprintf("%d", DeckID): map[string]any{
-			"id":         DeckID,
+		fmt.Sprintf("%d", deckID): map[string]any{
+			"id":         deckID,
 			"name":       title,
-			"conf":       DeckID,
+			"conf":       deckID,
 			"extendNew":  0,
 			"extendRev":  50,
 			"collapsed":  false,
@@ -198,8 +198,8 @@ func colJSON(title string) (conf, models, decks, dconf, tags string, err error) 
 
 	// dconf
 	dconfMap := map[string]any{
-		fmt.Sprintf("%d", DeckID): map[string]any{
-			"id":      DeckID,
+		fmt.Sprintf("%d", deckID): map[string]any{
+			"id":      deckID,
 			"name":    "Default",
 			"replayq": true,
 			"lapse": map[string]any{

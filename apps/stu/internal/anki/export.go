@@ -143,15 +143,16 @@ func exportAPKG(sessionPath string, s *types.Session, opts ExportOptions) error 
 		return err
 	}
 
-	confJSON, modelsJSON, decksJSON, dconfJSON, tagsJSON, err := colJSON(s.Title)
+	now := time.Now()
+	nowSec := now.Unix()
+	nowMs := now.UnixMilli()
+	deckID := nowMs
+
+	confJSON, modelsJSON, decksJSON, dconfJSON, tagsJSON, err := colJSON(s.Title, deckID)
 	if err != nil {
 		db.Close()
 		return fmt.Errorf("export apkg: build col JSON: %w", err)
 	}
-
-	now := time.Now()
-	nowSec := now.Unix()
-	nowMs := now.UnixMilli()
 
 	_, err = db.Exec(
 		`INSERT INTO col VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`,
@@ -192,7 +193,7 @@ func exportAPKG(sessionPath string, s *types.Session, opts ExportOptions) error 
 
 		_, err = db.Exec(
 			`INSERT INTO cards VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`,
-			cardID, noteID, DeckID, 0, nowSec, -1, 0, 0, i+1, 0, 0, 0, 0, 0, 0, 0, 0, "",
+			cardID, noteID, deckID, 0, nowSec, -1, 0, 0, i+1, 0, 0, 0, 0, 0, 0, 0, 0, "",
 		)
 		if err != nil {
 			db.Close()
