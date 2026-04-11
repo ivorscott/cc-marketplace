@@ -14,6 +14,8 @@ import (
 	"github.com/ivorscott/stu/internal/types"
 )
 
+var version = "dev" // overridden at build time: -ldflags="-X main.version=v0.1.0"
+
 const usage = `stu — terminal study tool
 
 Usage:
@@ -51,6 +53,8 @@ func main() {
 		runExport(os.Args[2:])
 	case "import":
 		runImport(os.Args[2:])
+	case "-v", "--version", "version":
+		fmt.Printf("stu %s\n", version)
 	case "-h", "--help", "help":
 		fmt.Print(usage)
 	default:
