@@ -11,12 +11,13 @@ Add two-way conversion between stu flashcard sessions (`.stu/*.json`) and Anki d
 ### Export: stu flashcard → Anki deck
 
 - A new CLI subcommand `stu export <file.json>` converts a stu flashcard session to an Anki-importable format.
-- The default output format is `.apkg` (Anki's native SQLite-based package). A `--format txt` flag writes a tab-delimited `.txt` file instead (one card per line: `front\tback\n`), useful for manual inspection or older Anki versions.
+- The default output format is `.apkg` (Anki's native SQLite-based package), built using `github.com/mattn/go-sqlite3`. A `--format txt` flag writes a tab-delimited `.txt` file instead (one card per line: `front\tback\n`), useful for manual inspection or older Anki versions.
 - The output file is written to the current directory, named after the session title (slugified), e.g. `go-basics.apkg` or `go-basics.txt`.
 - If the `--output` flag is provided, write to that path instead.
 - Only sessions with `"type": "flashcards"` are valid for export; quiz sessions produce a clear error.
 - Card front maps to `Card.front`, card back maps to `Card.back`. The optional `Card.explanation` is appended to the back field, separated by `<br>`, so it appears as a note in Anki.
-- If `--html-strip` is passed, HTML tags are stripped from all card fields before writing. This is useful when card content was authored with Markdown/HTML that would appear as raw markup in Anki.
+- When producing `.apkg`, media files referenced in card HTML (`<img src="...">`, `[sound:...]`) are scanned from the card fields, resolved relative to the session file's directory, and embedded in the `.apkg` zip alongside the `media` manifest JSON.
+- If `--html-strip` is passed, HTML tags are stripped from all card fields before writing (media embedding is skipped when `--html-strip` is active).
 
 ### Import: Anki deck → stu flashcard session
 
@@ -33,13 +34,15 @@ Add two-way conversion between stu flashcard sessions (`.stu/*.json`) and Anki d
 ## Possible Edge Cases
 
 - Cards with tabs in their content may cause mis-parsing in `.txt` mode; the importer should handle quoted fields or warn on lines with unexpected tab counts.
-- `.apkg` files embed a SQLite database (`collection.anki2`) inside a zip archive; the importer must handle zip extraction and SQLite reads, and fail cleanly if the file is corrupt or not a valid `.apkg`.
+- `.apkg` files embed a SQLite database (`collection.anki2`) inside a zip archive; the importer must handle zip extraction and SQLite reads via `github.com/mattn/go-sqlite3`, and fail cleanly if the file is corrupt or not a valid `.apkg`.
 - Anki note types vary; the `.apkg` importer should map the first two fields of the first note type to front/back, and warn if a note has fewer than two fields.
 - Anki HTML entities (`&nbsp;`, `<br>`, etc.) in imported card text are preserved unless `--html-strip` is passed.
 - Empty front or back fields should be skipped with a warning, not cause a panic.
 - The `.stu/` directory may not exist; the importer should create it if absent.
 - A session with zero cards after filtering should produce an error rather than an empty session file.
 - File path collisions on export (output file already exists) should prompt or error unless `--force` is passed.
+- A media file referenced in card HTML that cannot be found on disk should log a warning and be skipped, not abort the export.
+- Media embedding is silently skipped when `--html-strip` is active (no warning needed).
 
 ## Acceptance Criteria
 
@@ -54,14 +57,14 @@ Add two-way conversion between stu flashcard sessions (`.stu/*.json`) and Anki d
 
 ## Open Questions
 
-- Which SQLite driver should be used for `.apkg` support? Options include `mattn/go-sqlite3` (CGo) and `modernc.org/sqlite` (pure Go, no CGo). The pure-Go driver avoids build complexity but may have performance trade-offs for large decks.
-- Should `stu export --format apkg` embed media files referenced in card HTML, or only export text fields?
+None — all questions resolved.
 
 ## Testing Guidelines
 
 Create test files in `./internal/anki/` (or alongside the command in `./cmd/stu/`) covering:
 
-- Export to `.apkg` produces a zip containing a valid SQLite `collection.anki2` with the expected note rows.
+- Export to `.apkg` produces a zip containing a valid SQLite `collection.anki2` with the expected note rows, a `media` JSON manifest, and any referenced media files.
+- Export to `.apkg` with a missing media file logs a warning but still produces a valid `.apkg`.
 - Export to `.txt` (`--format txt`) produces correct tab-delimited output for a known flashcard session fixture.
 - Export correctly appends `Card.explanation` to the back field when present.
 - `--html-strip` removes tags from front and back on export.
