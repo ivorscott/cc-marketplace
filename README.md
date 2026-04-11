@@ -80,6 +80,29 @@ the output to `.stu/<slug>-<type>-<YYYYMMDD>.json`.
 stu .stu/<file>.json
 ```
 
+#### Anki Integration
+
+Flashcard sessions can be exported to Anki or imported from Anki:
+
+```
+# Export a flashcard session to an Anki deck (.apkg)
+stu export .stu/<file>.json
+
+# Export as tab-delimited text (importable by Anki)
+stu export .stu/<file>.json --format txt
+
+# Strip HTML tags from card fields on export
+stu export .stu/<file>.json --html-strip
+
+# Import an Anki deck or tab-delimited text into .stu/
+stu import <file.apkg>
+stu import <file.txt> --title "My Deck" --difficulty hard
+```
+
+Only `flashcards` sessions can be exported. The `.apkg` format embeds any
+media files (`<img>`, `[sound:]`) referenced in card HTML that are found
+in the same directory as the session file.
+
 ---
 
 ### `/analogy` — Analogy Generator

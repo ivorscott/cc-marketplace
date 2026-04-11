@@ -1,0 +1,120 @@
+name: Release stu
+
+on:
+  push:
+    tags:
+      - "stu/v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build ${{ matrix.goos }}/${{ matrix.goarch }}
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      matrix:
+        include:
+          - goos: darwin
+            goarch: arm64
+            runner: macos-latest
+            archive: tar.gz
+          - goos: darwin
+            goarch: amd64
+            runner: macos-latest
+            archive: tar.gz
+          - goos: linux
+            goarch: amd64
+            runner: ubuntu-latest
+            archive: tar.gz
+          - goos: linux
+            goarch: arm64
+            runner: ubuntu-latest
+            archive: tar.gz
+          - goos: windows
+            goarch: amd64
+            runner: windows-latest
+            archive: zip
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: apps/stu/go.mod
+
+      - name: Extract version
+        id: ver
+        shell: bash
+        run: echo "version=${GITHUB_REF_NAME#stu/}" >> "$GITHUB_OUTPUT"
+
+      - name: Build
+        working-directory: apps/stu
+        shell: bash
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 1
+        run: |
+          BIN=stu
+          if [ "${{ matrix.goos }}" = "windows" ]; then BIN=stu.exe; fi
+          go build -ldflags="-X main.version=${{ steps.ver.outputs.version }}" -o "$BIN" ./cmd/stu
+
+      - name: Package (tar.gz)
+        if: matrix.archive == 'tar.gz'
+        working-directory: apps/stu
+        shell: bash
+        run: |
+          NAME="stu_${{ matrix.goos }}_${{ matrix.goarch }}"
+          mkdir "$NAME"
+          cp stu "$NAME/"
+          tar -czf "${NAME}.tar.gz" "$NAME"
+          echo "ASSET=${NAME}.tar.gz" >> "$GITHUB_ENV"
+
+      - name: Package (zip)
+        if: matrix.archive == 'zip'
+        working-directory: apps/stu
+        shell: pwsh
+        run: |
+          $name = "stu_windows_amd64"
+          New-Item -ItemType Directory -Name $name | Out-Null
+          Copy-Item stu.exe "$name/"
+          Compress-Archive -Path "$name" -DestinationPath "$name.zip"
+          "ASSET=$name.zip" | Out-File -Append -FilePath $env:GITHUB_ENV
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: stu_${{ matrix.goos }}_${{ matrix.goarch }}
+          path: apps/stu/${{ env.ASSET }}
+          if-no-files-found: error
+
+  release:
+    name: Create GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Generate checksums
+        working-directory: dist
+        run: sha256sum * > checksums.txt
+
+      - name: Extract version
+        id: ver
+        run: echo "version=${GITHUB_REF_NAME#stu/}" >> "$GITHUB_OUTPUT"
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "stu ${{ steps.ver.outputs.version }}"
+          tag_name: ${{ github.ref_name }}
+          files: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/checksums.txt
