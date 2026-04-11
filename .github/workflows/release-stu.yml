@@ -31,6 +31,7 @@ jobs:
             goarch: arm64
             runner: ubuntu-latest
             archive: tar.gz
+            cc: aarch64-linux-gnu-gcc
           - goos: windows
             goarch: amd64
             runner: windows-latest
@@ -38,6 +39,10 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+
+      - name: Install cross-compiler (Linux arm64)
+        if: matrix.cc != ''
+        run: sudo apt-get install -y gcc-aarch64-linux-gnu
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -56,6 +61,7 @@ jobs:
           GOOS: ${{ matrix.goos }}
           GOARCH: ${{ matrix.goarch }}
           CGO_ENABLED: 1
+          CC: ${{ matrix.cc }}
         run: |
           BIN=stu
           if [ "${{ matrix.goos }}" = "windows" ]; then BIN=stu.exe; fi
