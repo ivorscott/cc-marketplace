@@ -20,7 +20,7 @@ The user selects text in a markdown file and asks for an analogy (e.g., "make an
 4. Insert the analogy as a blockquote directly below the selected text using this exact format:
 
 ```
-> ### 🪞 Analogy
+> 🪞 **Analogy**
 >
 > {analogy text}
 ```
