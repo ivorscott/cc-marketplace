@@ -4,6 +4,10 @@ Terminal flashcards and quizzes. Built with Go and [Charmbracelet](https://githu
 
 ## Install
 
+Pre-built binaries for macOS, Linux, and Windows are available on the [releases page](https://github.com/ivorscott/cc-marketplace/releases).
+
+Or build from source:
+
 ```bash
 CGO_ENABLED=1 go build -o stu ./cmd/stu  # build binary in current directory
 CGO_ENABLED=1 go install ./cmd/...        # install to $GOPATH/bin
