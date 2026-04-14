@@ -3,7 +3,7 @@ name: Release stu
 on:
   push:
     tags:
-      - "stu/v*"
+      - "apps/stu/v*"
 
 permissions:
   contents: write
@@ -52,7 +52,7 @@ jobs:
       - name: Extract version
         id: ver
         shell: bash
-        run: echo "version=${GITHUB_REF_NAME#stu/}" >> "$GITHUB_OUTPUT"
+        run: echo "version=${GITHUB_REF_NAME#apps/stu/}" >> "$GITHUB_OUTPUT"
 
       - name: Build
         working-directory: apps/stu
@@ -113,7 +113,7 @@ jobs:
 
       - name: Extract version
         id: ver
-        run: echo "version=${GITHUB_REF_NAME#stu/}" >> "$GITHUB_OUTPUT"
+        run: echo "version=${GITHUB_REF_NAME#apps/stu/}" >> "$GITHUB_OUTPUT"
 
       - name: Publish release
         uses: softprops/action-gh-release@v2

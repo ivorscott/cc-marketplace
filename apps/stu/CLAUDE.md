@@ -87,12 +87,12 @@ Sessions are generated via the `/study` skill in Claude Code and placed in `.stu
 
 ## Releasing
 
-`stu` uses `stu/v<MAJOR>.<MINOR>.<PATCH>` git tags within the monorepo. Pushing a tag triggers `.github/workflows/release-stu.yml`, which builds native binaries for macOS (arm64/amd64), Linux (amd64/arm64), and Windows (amd64), then publishes a GitHub Release with archives and a `checksums.txt`.
+`stu` uses `apps/stu/v<MAJOR>.<MINOR>.<PATCH>` git tags within the monorepo. The tag prefix must match the Go module's subdirectory (`apps/stu`) so that `go install @latest` can resolve the version. Pushing a tag triggers `.github/workflows/release-stu.yml`, which builds native binaries for macOS (arm64/amd64), Linux (amd64/arm64), and Windows (amd64), then publishes a GitHub Release with archives and a `checksums.txt`.
 
 ```bash
 # Tag and push — CI does the rest
-git tag stu/v0.2.0
-git push origin stu/v0.2.0
+git tag apps/stu/v0.2.0
+git push origin apps/stu/v0.2.0
 ```
 
 The version is injected at build time via `-ldflags="-X main.version=<tag>"`. Local builds without ldflags report `stu dev`.
