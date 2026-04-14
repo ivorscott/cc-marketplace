@@ -5,7 +5,8 @@ Terminal flashcards and quizzes. Built with Go and [Charmbracelet](https://githu
 ## Install
 
 ```bash
-CGO_ENABLED=1 go build -o stu ./cmd/stu
+CGO_ENABLED=1 go build -o stu ./cmd/stu  # build binary in current directory
+CGO_ENABLED=1 go install ./cmd/...        # install to $GOPATH/bin
 ```
 
 > CGO is required for Anki import/export (SQLite). On macOS and Linux the C toolchain is available by default.
