@@ -41,7 +41,7 @@ re-run — every step is idempotent.
 - [obsidian-claude-selection](https://github.com/ivorscott/obsidian-claude-selection) — via BRAT (downloaded by Obsidian on next startup)
 - [obsidian-terminal](https://github.com/polyipseity/obsidian-terminal) — integrated terminal
 
-**Also configures:** `CMD+J` hotkey for the integrated terminal.
+**Also configures:** `CMD+J` hotkey for the integrated terminal, and the Claude Code `UserPromptSubmit` hook that injects your Obsidian selection into every prompt.
 
 **Usage:**
 

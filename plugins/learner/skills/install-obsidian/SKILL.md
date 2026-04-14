@@ -18,6 +18,8 @@ Automates the full Obsidian + Claude Code plugin setup. Safe to run multiple tim
 **Configures:**
 - Enables all three plugins in Community Plugins
 - Adds `CMD+J` hotkey to open the integrated terminal
+- Creates `.claude/hooks/inject-selection.py` in the vault
+- Creates `.claude/settings.json` with the `UserPromptSubmit` hook
 
 ---
 
@@ -146,7 +148,74 @@ Never modify or remove existing hotkey bindings. Write back only if changed.
 
 ---
 
-## Step 7 — Print summary
+## Step 7 — Set up Claude Code hook
+
+These two files wire up the Obsidian selection to Claude Code.
+
+### `$VAULT/.claude/hooks/inject-selection.py`
+
+**Idempotency:** Skip if the file already exists.
+
+Otherwise create it with this exact content:
+
+```python
+#!/usr/bin/env python3
+import sys, os
+
+selection_file = os.path.join(os.getcwd(), '.claude-selection')
+
+if not os.path.isfile(selection_file):
+    sys.exit(0)
+
+try:
+    with open(selection_file, 'r', encoding='utf-8') as f:
+        content = f.read().strip()
+except Exception as e:
+    print(f'claude-selection hook error: {e}', file=sys.stderr)
+    sys.exit(0)
+
+if not content:
+    sys.exit(0)
+
+parts = content.split('---\n', 1)
+selected_text = parts[1].strip() if len(parts) > 1 else content
+line_count = len(selected_text.splitlines())
+sys.stderr.write(f'> {line_count} line{"s" if line_count != 1 else ""} of Obsidian context\n')
+
+print(f'The user has selected the following text from their Obsidian notes:\n\n{content}')
+```
+
+Use `mkdir -p $VAULT/.claude/hooks` before writing.
+
+### `$VAULT/.claude/settings.json`
+
+**Idempotency:** Read the file if it exists. Skip writing if a `UserPromptSubmit` hook is already present.
+
+Otherwise write:
+
+```json
+{
+  "hooks": {
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash -c '[ -f .claude/hooks/inject-selection.py ] && python3 .claude/hooks/inject-selection.py || true'"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+If `settings.json` already exists but has no `UserPromptSubmit` key, merge the hook in rather than overwriting the file.
+
+---
+
+## Step 8 — Print summary
 
 Print a table showing what was installed vs. skipped, for example:
 
@@ -158,6 +227,8 @@ Obsidian setup complete for: /path/to/vault
   obsidian-terminal          already installed (skipped)
   community-plugins.json     updated
   hotkeys.json               already configured (skipped)
+  inject-selection.py        created
+  .claude/settings.json      already configured (skipped)
 
 Restart Obsidian. BRAT will automatically download and enable
 obsidian-claude-selection on startup.
