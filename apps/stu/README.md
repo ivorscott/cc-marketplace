@@ -4,8 +4,6 @@ Terminal flashcards and quizzes. Built with Go and [Charmbracelet](https://githu
 
 ## Install
 
-**Download a binary** — macOS, Linux, and Windows builds are on the [releases page](https://github.com/ivorscott/cc-marketplace/releases).
-
 **Install with Go:**
 
 ```bash
