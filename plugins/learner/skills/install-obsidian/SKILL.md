@@ -202,7 +202,7 @@ Otherwise write:
         "hooks": [
           {
             "type": "command",
-            "command": "bash -c '[ -f .claude/hooks/inject-selection.py ] && python3 .claude/hooks/inject-selection.py || true'"
+            "command": "python3 .claude/hooks/inject-selection.py"
           }
         ]
       }
