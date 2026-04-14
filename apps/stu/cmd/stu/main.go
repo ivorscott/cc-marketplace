@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/ivorscott/cc-marketplace/apps/stu/internal/anki"
@@ -14,7 +15,17 @@ import (
 	"github.com/ivorscott/cc-marketplace/apps/stu/internal/types"
 )
 
-var version = "dev" // overridden at build time: -ldflags="-X main.version=v0.1.0"
+var version = "" // overridden at build time: -ldflags="-X main.version=v0.1.0"
+
+func resolvedVersion() string {
+	if version != "" {
+		return version
+	}
+	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
+		return info.Main.Version
+	}
+	return "dev"
+}
 
 const usage = `stu — terminal study tool
 
@@ -23,6 +34,7 @@ Usage:
   stu list                     List sessions in .stu/
   stu export <file.json>       Export flashcards to an Anki deck
   stu import <file>            Import an Anki deck (.apkg or .txt) into .stu/
+  stu version                  Print version
 
 Export flags:
   --format apkg|txt            Output format (default: apkg)
@@ -54,7 +66,7 @@ func main() {
 	case "import":
 		runImport(os.Args[2:])
 	case "-v", "--version", "version":
-		fmt.Printf("stu %s\n", version)
+		fmt.Printf("stu %s\n", resolvedVersion())
 	case "-h", "--help", "help":
 		fmt.Print(usage)
 	default:
