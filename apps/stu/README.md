@@ -4,22 +4,27 @@ Terminal flashcards and quizzes. Built with Go and [Charmbracelet](https://githu
 
 ## Install
 
-Pre-built binaries for macOS, Linux, and Windows are available on the [releases page](https://github.com/ivorscott/cc-marketplace/releases).
+**Download a binary** — macOS, Linux, and Windows builds are on the [releases page](https://github.com/ivorscott/cc-marketplace/releases).
 
-Or build from source:
+**Install with Go:**
 
 ```bash
-go build -o stu ./cmd/stu  # build binary in current directory
 go install github.com/ivorscott/cc-marketplace/apps/stu/cmd/stu@latest
 ```
 
-After `go install`, make sure `$GOPATH/bin` is on your PATH:
+Make sure `$HOME/go/bin` is on your PATH:
 
 ```bash
 echo 'export PATH="$PATH:$HOME/go/bin"' >> ~/.zshrc && source ~/.zshrc
 ```
 
-> CGO is required for Anki import/export (SQLite). On macOS and Linux the C toolchain is available by default.
+**Build from source:**
+
+```bash
+go build -o stu ./cmd/stu
+```
+
+> Anki import/export requires CGO (SQLite). The C toolchain ships by default on macOS and Linux.
 
 ## Usage
 
