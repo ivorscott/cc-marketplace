@@ -5,8 +5,10 @@ Terminal flashcards and quizzes. Built with Go and [Charmbracelet](https://githu
 ## Install
 
 ```bash
-go build -o stu ./cmd/stu
+CGO_ENABLED=1 go build -o stu ./cmd/stu
 ```
+
+> CGO is required for Anki import/export (SQLite). On macOS and Linux the C toolchain is available by default.
 
 ## Usage
 
@@ -46,6 +48,34 @@ Sessions are JSON files in `.stu/` relative to your working directory. Generate 
 | `f` | Finish |
 | `r` | Retake |
 | `q` | Quit |
+
+## Anki
+
+[Anki](https://apps.ankiweb.net/) is a free, open-source flashcard app that uses spaced repetition to help you remember things long-term. `stu` can export flashcard sessions to Anki's `.apkg` format and import existing Anki decks back into `.stu/`.
+
+Only `"flashcards"` sessions can be exported. The output file is written next to the source JSON by default.
+
+### Export
+
+```bash
+stu export <file.json>                  # export to <file>.apkg
+stu export <file.json> --format txt     # export as tab-delimited text
+stu export <file.json> --html-strip     # strip HTML from card fields
+stu export <file.json> --force          # overwrite existing output file
+```
+
+Images and audio referenced in card HTML (`<img src>`) or audio tags (`[sound:clip.mp3]`) are embedded into the `.apkg` automatically. Missing files are warned and skipped.
+
+### Import
+
+```bash
+stu import <file.apkg>                          # import deck → .stu/<slug>.json
+stu import <file.txt> --title "My Deck"         # import tab-delimited text
+stu import <file.txt> --title "My Deck" --difficulty hard
+stu import <file.apkg> --force                  # overwrite existing session
+```
+
+The session filename is derived from the deck title: `Slugify(title)` → `.stu/<slug>.json`.
 
 ## Session format
 
