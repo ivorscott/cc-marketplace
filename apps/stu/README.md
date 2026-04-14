@@ -1,6 +1,45 @@
 # stu
 
 Terminal flashcards and quizzes. Built with Go and [Charmbracelet](https://github.com/charmbracelet).
+```
+CKA Core Concepts Flashcards  ·  medium
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+◈  1 / 10
+
+┌────────────────────────────────────────────────────┐
+│                                                    │
+│                                                    │
+│   Which control plane component is the ONLY one    │
+│   that directly interacts with etcd?               │
+│                                                    │
+│   ↵  reveal                                        │
+│                                                    │
+│                                                    │
+└────────────────────────────────────────────────────┘
+
+←   ✗ 0   0 ✓   →
+
+────────────────────────────────────────────────────────────────────────
+←/→  navigate   space  reveal   f  finish   q  quit
+```
+```
+CKA Core Concepts Quiz  ·  medium  ·  1 source
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+█░░░░░░░░░░░░░░░░░░░  1/20
+
+Which Kubernetes control plane component is the ONLY one that directly interacts with etcd?
+
+  A.  kube-scheduler
+  B.  kube-controller-manager
+  C.  kube-apiserver
+  D.  kubelet
+
+────────────────────────────────────────────────────────────────────────
+↑↓ · abcd  select   enter  submit   h  hint   q  quit
+```
+---
 
 ## Install
 
