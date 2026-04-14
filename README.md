@@ -85,7 +85,7 @@ Turns markdown notes in the current directory into a quiz or flashcard session,
 saved as JSON and run with [`stu`](apps/stu/README.md).
 
 **Requires:** [`stu`](apps/stu/README.md) — automatically installed via
-`go install` from `apps/stu` if not found.
+`go install` if not found.
 
 **Usage:**
 ```
