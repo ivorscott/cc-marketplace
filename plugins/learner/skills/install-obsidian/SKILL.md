@@ -123,7 +123,8 @@ File: `$VAULT/.obsidian/community-plugins.json`
 **Idempotency:** Read the existing array (or start with `[]`). Add only the IDs that are not already present:
 - `"obsidian42-brat"`
 - `"terminal"`
-- `"claude-selection"`
+
+Do **not** add `"claude-selection"` here — BRAT's `enableAfterInstall: true` (set in Step 3) will enable it automatically after downloading. Adding it before the plugin files exist causes Obsidian to silently drop it from the enabled list.
 
 Write back only if the array changed.
 
@@ -230,6 +231,7 @@ Obsidian setup complete for: /path/to/vault
   inject-selection.py        created
   .claude/settings.json      already configured (skipped)
 
-Restart Obsidian. BRAT will automatically download and enable
-obsidian-claude-selection on startup.
+Restart Obsidian. BRAT will download obsidian-claude-selection and enable
+it automatically (via enableAfterInstall). You may need to restart Obsidian
+a second time after BRAT finishes the download.
 ```
