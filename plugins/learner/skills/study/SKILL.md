@@ -20,17 +20,17 @@ allowed-tools: Read, Write, Glob, Bash(which:*), Bash(go install:*), Bash(go bui
 
 **Step 0: Ensure `stu` is installed**
 
-Run `which stu` to check if the `stu` command is available.
+Run `which stu` to check if the `stu` command is available. If found, continue to Step 1.
 
 If it is NOT found:
 
-1. Locate the `stu` source by walking up from the current working directory, checking each ancestor for `apps/stu/cmd/stu/main.go` using the Glob tool. Stop at the filesystem root.
-2. If found at `<marketplace>/apps/stu`:
-   - Run `cd <marketplace>/apps/stu && go install ./cmd/stu` to install `stu` into `$GOPATH/bin` (typically `~/go/bin`).
-3. If NOT found in any parent directory:
-   - Warn the user: "`stu` is not installed and the source could not be located. Run `cd apps/stu && go install ./cmd/stu` from the marketplace root, then retry."
-   - Abort.
-4. Verify installation by running `which stu` again. If it still fails, warn the user that `~/go/bin` may not be in their `$PATH`, then abort.
+1. Run `go install github.com/ivorscott/cc-marketplace/apps/stu/cmd/stu@latest` to install the latest published version into `$GOPATH/bin` (typically `~/go/bin`).
+2. If `go install` fails (e.g., no network or no Go toolchain), surface the error to the user and abort.
+3. Run `which stu` again. If it still fails, warn the user:
+   > `stu` was installed but is not on `$PATH`. Add `$HOME/go/bin` to your PATH:
+   > `echo 'export PATH="$PATH:$HOME/go/bin"' >> ~/.zshrc && source ~/.zshrc`
+
+   Then abort.
 
 **Step 1: Parse arguments**
 
