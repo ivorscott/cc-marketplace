@@ -12,7 +12,7 @@ Automates the full Obsidian + Claude Code plugin setup. Safe to run multiple tim
 
 **Installs:**
 - [BRAT](https://github.com/TfTHacker/obsidian42-brat) — beta plugin manager
-- [obsidian-claude-selection](https://github.com/ivorscott/obsidian-claude-selection) — via BRAT
+- [obsidian-claude-selection](https://github.com/ivorscott/obsidian-claude-selection) — directly from GitHub releases (BRAT handles auto-updates)
 - [obsidian-terminal](https://github.com/polyipseity/obsidian-terminal) — integrated terminal
 
 **Configures:**
@@ -99,6 +99,25 @@ Write the merged result back with the Write tool.
 
 ---
 
+## Step 3.5 — Install obsidian-claude-selection directly
+
+Plugin directory: `$VAULT/.obsidian/plugins/claude-selection/`
+
+**Idempotency check:** If `$VAULT/.obsidian/plugins/claude-selection/main.js` already exists, skip and report "obsidian-claude-selection already installed."
+
+Otherwise:
+1. Fetch the latest release metadata:
+   ```
+   curl -s https://api.github.com/repos/ivorscott/obsidian-claude-selection/releases/latest
+   ```
+2. Extract `browser_download_url` for `main.js` and `manifest.json` from the `assets` array.
+3. `mkdir -p $VAULT/.obsidian/plugins/claude-selection`
+4. Download each asset with `curl -sL <url> -o <destination>`.
+
+> **Why direct install instead of relying on BRAT?** BRAT's `enableAfterInstall` flag only fires during the interactive modal flow (`addPlugin()`). When BRAT auto-downloads from `pluginList` on Obsidian startup, it uses a different code path that does not call `plugins.enablePlugin()`. Direct install avoids the ~1 min wait and the extra restart.
+
+---
+
 ## Step 4 — Install obsidian-terminal
 
 Plugin directory: `$VAULT/.obsidian/plugins/terminal/`
@@ -123,8 +142,7 @@ File: `$VAULT/.obsidian/community-plugins.json`
 **Idempotency:** Read the existing array (or start with `[]`). Add only the IDs that are not already present:
 - `"obsidian42-brat"`
 - `"terminal"`
-
-Do **not** add `"claude-selection"` here — BRAT's `enableAfterInstall: true` (set in Step 3) will enable it automatically after downloading. Adding it before the plugin files exist causes Obsidian to silently drop it from the enabled list.
+- `"claude-selection"`
 
 Write back only if the array changed.
 
@@ -224,14 +242,13 @@ Print a table showing what was installed vs. skipped, for example:
 Obsidian setup complete for: /path/to/vault
 
   BRAT                       installed
-  obsidian-claude-selection  configured via BRAT
+  obsidian-claude-selection  installed
   obsidian-terminal          already installed (skipped)
   community-plugins.json     updated
   hotkeys.json               already configured (skipped)
   inject-selection.py        created
   .claude/settings.json      already configured (skipped)
 
-Restart Obsidian. BRAT will download obsidian-claude-selection and enable
-it automatically (via enableAfterInstall). You may need to restart Obsidian
-a second time after BRAT finishes the download.
+Restart Obsidian once. All three plugins will be active immediately.
+BRAT will keep obsidian-claude-selection up to date automatically.
 ```
