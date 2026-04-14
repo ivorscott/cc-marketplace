@@ -14,7 +14,7 @@ import (
 
 	_ "github.com/mattn/go-sqlite3"
 
-	"github.com/ivorscott/stu/internal/types"
+	"github.com/ivorscott/cc-marketplace/apps/stu/internal/types"
 )
 
 // ImportOptions controls the behaviour of ImportFile.

@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/ivorscott/stu/internal/types"
+	"github.com/ivorscott/cc-marketplace/apps/stu/internal/types"
 )
 
 // Load reads and parses a study session JSON file.

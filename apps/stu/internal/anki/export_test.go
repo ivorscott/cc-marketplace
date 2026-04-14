@@ -12,7 +12,7 @@ import (
 
 	_ "github.com/mattn/go-sqlite3"
 
-	"github.com/ivorscott/stu/internal/types"
+	"github.com/ivorscott/cc-marketplace/apps/stu/internal/types"
 )
 
 // makeSession creates a minimal flashcard session JSON file in dir and returns its path.

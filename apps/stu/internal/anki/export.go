@@ -12,8 +12,8 @@ import (
 
 	_ "github.com/mattn/go-sqlite3"
 
-	"github.com/ivorscott/stu/internal/loader"
-	"github.com/ivorscott/stu/internal/types"
+	"github.com/ivorscott/cc-marketplace/apps/stu/internal/loader"
+	"github.com/ivorscott/cc-marketplace/apps/stu/internal/types"
 )
 
 // ExportOptions controls the behaviour of Export.

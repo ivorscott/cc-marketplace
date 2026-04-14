@@ -7,11 +7,11 @@ import (
 	"path/filepath"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/ivorscott/stu/internal/anki"
-	"github.com/ivorscott/stu/internal/flashcard"
-	"github.com/ivorscott/stu/internal/loader"
-	"github.com/ivorscott/stu/internal/quiz"
-	"github.com/ivorscott/stu/internal/types"
+	"github.com/ivorscott/cc-marketplace/apps/stu/internal/anki"
+	"github.com/ivorscott/cc-marketplace/apps/stu/internal/flashcard"
+	"github.com/ivorscott/cc-marketplace/apps/stu/internal/loader"
+	"github.com/ivorscott/cc-marketplace/apps/stu/internal/quiz"
+	"github.com/ivorscott/cc-marketplace/apps/stu/internal/types"
 )
 
 var version = "dev" // overridden at build time: -ldflags="-X main.version=v0.1.0"

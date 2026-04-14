@@ -6,8 +6,8 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/ivorscott/stu/internal/render"
-	"github.com/ivorscott/stu/internal/types"
+	"github.com/ivorscott/cc-marketplace/apps/stu/internal/render"
+	"github.com/ivorscott/cc-marketplace/apps/stu/internal/types"
 )
 
 type state int

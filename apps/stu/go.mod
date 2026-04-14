@@ -1,4 +1,4 @@
-module github.com/ivorscott/stu
+module github.com/ivorscott/cc-marketplace/apps/stu
 
 go 1.25.7
 
