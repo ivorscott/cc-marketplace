@@ -5,6 +5,7 @@ A curated collection of Claude Code plugins for learners and developers.
 ## Table of Contents
 
 - [learner — Skills](#learner--skills)
+  - [`/install-obsidian` — Obsidian Setup](#install-obsidian--obsidian-setup)
   - [`/book` — Book Chapter Summarizer](#book--book-chapter-summarizer)
   - [`/study` — Study Session Generator](#study--study-session-generator)
   - [`/analogy` — Analogy Generator](#analogy--analogy-generator)
@@ -29,6 +30,31 @@ Add the marketplace, then install whichever plugins you need:
 ---
 
 ## `learner` — Skills
+
+### `/install-obsidian` — Obsidian Setup
+
+Automates the full Obsidian + Claude Code plugin setup in one command. Safe to
+re-run — every step is idempotent.
+
+**Installs and enables:**
+- [BRAT](https://github.com/TfTHacker/obsidian42-brat) — beta plugin manager
+- [obsidian-claude-selection](https://github.com/ivorscott/obsidian-claude-selection) — via BRAT (downloaded by Obsidian on next startup)
+- [obsidian-terminal](https://github.com/polyipseity/obsidian-terminal) — integrated terminal
+
+**Also configures:** `CMD+J` hotkey for the integrated terminal.
+
+**Usage:**
+
+```
+/install-obsidian
+/install-obsidian path/to/vault
+```
+
+Run from inside your vault directory (auto-detected) or pass the vault path
+explicitly. After the command completes, **restart Obsidian** — BRAT will
+automatically download and enable `obsidian-claude-selection`.
+
+---
 
 ### `/book` — Book Chapter Summarizer
 
