@@ -9,8 +9,8 @@ Pre-built binaries for macOS, Linux, and Windows are available on the [releases 
 Or build from source:
 
 ```bash
-CGO_ENABLED=1 go build -o stu ./cmd/stu  # build binary in current directory
-CGO_ENABLED=1 go install ./cmd/...        # install to $GOPATH/bin
+go build -o stu ./cmd/stu  # build binary in current directory
+go install github.com/ivorscott/cc-marketplace/apps/stu/cmd/stu@latest
 ```
 
 > CGO is required for Anki import/export (SQLite). On macOS and Linux the C toolchain is available by default.
