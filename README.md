@@ -37,8 +37,8 @@ Automates the full Obsidian + Claude Code plugin setup in one command. Safe to
 re-run — every step is idempotent.
 
 **Installs and enables:**
-- [BRAT](https://github.com/TfTHacker/obsidian42-brat) — beta plugin manager
-- [obsidian-claude-selection](https://github.com/ivorscott/obsidian-claude-selection) — via BRAT (downloaded by Obsidian on next startup)
+- [BRAT](https://github.com/TfTHacker/obsidian42-brat) — beta plugin manager (handles auto-updates)
+- [obsidian-claude-selection](https://github.com/ivorscott/obsidian-claude-selection) — installed directly from GitHub releases
 - [obsidian-terminal](https://github.com/polyipseity/obsidian-terminal) — integrated terminal
 
 **Also configures:** `CMD+J` hotkey for the integrated terminal, and the Claude Code `UserPromptSubmit` hook that injects your Obsidian selection into every prompt.
@@ -51,8 +51,9 @@ re-run — every step is idempotent.
 ```
 
 Run from inside your vault directory (auto-detected) or pass the vault path
-explicitly. After the command completes, **restart Obsidian** — BRAT will
-automatically download and enable `obsidian-claude-selection`.
+explicitly. After the command completes, **restart Obsidian** — all three
+plugins will be active immediately. BRAT will keep `obsidian-claude-selection`
+up to date automatically.
 
 ---
 
