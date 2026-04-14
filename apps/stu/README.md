@@ -13,6 +13,12 @@ go build -o stu ./cmd/stu  # build binary in current directory
 go install github.com/ivorscott/cc-marketplace/apps/stu/cmd/stu@latest
 ```
 
+After `go install`, make sure `$GOPATH/bin` is on your PATH:
+
+```bash
+echo 'export PATH="$PATH:$HOME/go/bin"' >> ~/.zshrc && source ~/.zshrc
+```
+
 > CGO is required for Anki import/export (SQLite). On macOS and Linux the C toolchain is available by default.
 
 ## Usage
