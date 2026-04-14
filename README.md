@@ -109,7 +109,7 @@ stu .stu/<file>.json
 
 #### Anki Integration
 
-Flashcard sessions can be exported to Anki or imported from Anki:
+Flashcard sessions can be exported to [Anki](https://apps.ankiweb.net/) or imported from Anki:
 
 ```
 # Export a flashcard session to an Anki deck (.apkg)
