@@ -6,11 +6,11 @@ A curated collection of Claude Code plugins for learners and developers.
 
 - [learner — Skills](#learner--skills)
   - [`/install-obsidian` — Obsidian Setup](#install-obsidian--obsidian-setup)
+  - [`/install-wiki` — LLM Wiki Setup](#install-wiki--llm-wiki-setup)
   - [`/book` — Book Chapter Summarizer](#book--book-chapter-summarizer)
   - [`/study` — Study Session Generator](#study--study-session-generator)
   - [`/analogy` — Analogy Generator](#analogy--analogy-generator)
   - [`/ascii` — ASCII Diagram Renderer](#ascii--ascii-diagram-renderer)
-  - [`/socrates` — Socratic Questioner](#socrates--socratic-questioner)
 - [developer — Skills](#developer--skills)
   - [`/spec` — Feature Spec Generator](#spec--feature-spec-generator)
   - [`/spec-archaeology` — Spec Archaeology](#spec-archaeology--spec-archaeology)
@@ -55,6 +55,38 @@ Run from inside your vault directory (auto-detected) or pass the vault path
 explicitly. After the command completes, **restart Obsidian** — all three
 plugins will be active immediately. BRAT will keep `obsidian-claude-selection`
 up to date automatically.
+
+---
+
+### `/install-wiki` — LLM Wiki Setup
+
+Bootstraps a new personal knowledge base following [Andrej Karpathy's LLM Wiki pattern](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) in an empty directory. **Aborts immediately if the target directory is not empty.**
+
+**Creates:**
+- `CLAUDE.md` — schema file with ingest / query / lint workflows
+- `index.md` + `log.md` — content catalog and activity timeline
+- `raw/` + `raw/assets/` — immutable sources and image attachments
+- `wiki/` — `sources/`, `entities/`, `concepts/`, `queries/` subdirectories
+- `templates/` — `source.md`, `entity.md`, `concept.md`, `query.md`
+
+**Usage:**
+
+```
+/install-wiki
+/install-wiki path/to/empty-folder
+```
+
+Run from inside an empty directory (auto-detected) or pass the target path explicitly. After setup, open the folder in Obsidian and drop your first source into `raw/` — then say `ingest this`.
+
+> **Tip: Configure the Obsidian Web Clipper**
+>
+> This is how you'll get sources into your wiki fast.
+>
+> 1. Open the [Obsidian Web Clipper](https://obsidian.md/clipper) extension settings
+> 2. Go to **Default template** settings
+> 3. Set the note location to `raw` and specify the exact vault name (added in general settings)
+>
+> Now when you're reading an article you want to save, click the clipper icon and it drops a clean markdown copy into your `raw/` folder. Then run `ingest` to compile it into the wiki.
 
 ---
 
@@ -195,32 +227,6 @@ Result rendered below:
   └────────────────────────┘
          (each partition owned by exactly one consumer)
 ```
-
----
-
-### `/socrates` — Socratic Questioner
-
-Reads selected text from a markdown note and responds in the voice of Socrates —
-posing 3–5 questions that expose contradictions, gaps, and unexamined assumptions.
-Inserts the response as a blockquote directly below the selection.
-
-**Usage:**
-
-Highlight text in a markdown file, then prompt:
-
-```
-/socrates
-```
-
-**Example output inserted below selection:**
-
-> **⚗️ Socrates**
->
-> *"I confess I may be entirely mistaken, friend, but a few things puzzle me."*
->
-> 1. You say X is always true — but earlier you wrote Y. How do these sit together?
-> 2. When you use the word "better," what exactly are you measuring?
-> 3. What would it look like if this assumption were false?
 
 ---
 
