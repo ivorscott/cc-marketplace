@@ -60,7 +60,7 @@ up to date automatically.
 
 ### `/install-wiki` — LLM Wiki Setup
 
-Bootstraps a new personal knowledge base following [Andrej Karpathy's LLM Wiki pattern](https://gist.github.com/karpathy) in an empty directory. **Aborts immediately if the target directory is not empty.**
+Bootstraps a new personal knowledge base following [Andrej Karpathy's LLM Wiki pattern](https://gist.github.com/karpathy/442a6bf555914893e9891c11519de94f) in an empty directory. **Aborts immediately if the target directory is not empty.**
 
 **Creates:**
 - `CLAUDE.md` — schema file with ingest / query / lint workflows
