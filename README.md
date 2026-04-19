@@ -10,6 +10,7 @@ A curated collection of Claude Code plugins for learners and developers.
   - [`/study` — Study Session Generator](#study--study-session-generator)
   - [`/analogy` — Analogy Generator](#analogy--analogy-generator)
   - [`/ascii` — ASCII Diagram Renderer](#ascii--ascii-diagram-renderer)
+  - [`/socrates` — Socratic Questioner](#socrates--socratic-questioner)
 - [developer — Skills](#developer--skills)
   - [`/spec` — Feature Spec Generator](#spec--feature-spec-generator)
   - [`/spec-archaeology` — Spec Archaeology](#spec-archaeology--spec-archaeology)
@@ -142,8 +143,17 @@ as a blockquote directly below the selection in the active markdown file.
 Highlight text in a markdown file, then prompt:
 
 ```
-analogy
+/analogy
 ```
+
+**Example output inserted below selection:**
+
+> 🪞 **Analogy**
+>
+> Think of an AI Engineer like a 👨‍🍳 _chef_ who doesn't raise the cattle or grow the vegetables — that's the ML 
+> researcher's job. Instead, the chef takes high-quality 🥩 _ingredients_ (pre-trained models) from specialty 
+> 🏪 _suppliers_ (OpenAI, Anthropic, Google) and combines them into a finished 🍽️ _dish_ (a product) that 
+> customers actually want to eat.
 
 ---
 
@@ -163,7 +173,7 @@ and `/render`.
 Or highlight text in a markdown file, then prompt:
 
 ```
-render
+/ascii
 ```
 
 **Example:**
@@ -185,6 +195,32 @@ Result rendered below:
   └────────────────────────┘
          (each partition owned by exactly one consumer)
 ```
+
+---
+
+### `/socrates` — Socratic Questioner
+
+Reads selected text from a markdown note and responds in the voice of Socrates —
+posing 3–5 questions that expose contradictions, gaps, and unexamined assumptions.
+Inserts the response as a blockquote directly below the selection.
+
+**Usage:**
+
+Highlight text in a markdown file, then prompt:
+
+```
+/socrates
+```
+
+**Example output inserted below selection:**
+
+> **⚗️ Socrates**
+>
+> *"I confess I may be entirely mistaken, friend, but a few things puzzle me."*
+>
+> 1. You say X is always true — but earlier you wrote Y. How do these sit together?
+> 2. When you use the word "better," what exactly are you measuring?
+> 3. What would it look like if this assumption were false?
 
 ---
 
