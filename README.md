@@ -143,8 +143,17 @@ as a blockquote directly below the selection in the active markdown file.
 Highlight text in a markdown file, then prompt:
 
 ```
-analogy
+/analogy
 ```
+
+**Example output inserted below selection:**
+
+> 🪞 **Analogy**
+>
+> Think of an AI Engineer like a 👨‍🍳 _chef_ who doesn't raise the cattle or grow the vegetables — that's the ML 
+> researcher's job. Instead, the chef takes high-quality 🥩 _ingredients_ (pre-trained models) from specialty 
+> 🏪 _suppliers_ (OpenAI, Anthropic, Google) and combines them into a finished 🍽️ _dish_ (a product) that 
+> customers actually want to eat.
 
 ---
 
@@ -164,7 +173,7 @@ and `/render`.
 Or highlight text in a markdown file, then prompt:
 
 ```
-render
+/ascii
 ```
 
 **Example:**
@@ -205,7 +214,6 @@ Highlight text in a markdown file, then prompt:
 
 **Example output inserted below selection:**
 
-```
 > **⚗️ Socrates**
 >
 > *"I confess I may be entirely mistaken, friend, but a few things puzzle me."*
@@ -213,7 +221,6 @@ Highlight text in a markdown file, then prompt:
 > 1. You say X is always true — but earlier you wrote Y. How do these sit together?
 > 2. When you use the word "better," what exactly are you measuring?
 > 3. What would it look like if this assumption were false?
-```
 
 ---
 
