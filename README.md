@@ -83,8 +83,8 @@ Run from inside an empty directory (auto-detected) or pass the target path expli
 > This is how you'll get sources into your wiki fast.
 >
 > 1. Open the [Obsidian Web Clipper](https://obsidian.md/clipper) extension settings
-> 2. Set the default vault to the one you just created
-> 3. Set the default folder to `raw/` — this is where clipped articles will land
+> 2. Go to **Default template** settings
+> 3. Set the note location to `raw/` and specify the exact vault name
 >
 > Now when you're reading an article you want to save, click the clipper icon and it drops a clean markdown copy into your `raw/` folder. Then run `ingest` to compile it into the wiki.
 
