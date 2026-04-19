@@ -5,7 +5,7 @@
   },
   "metadata": {
     "description": "Curated Claude Code plugins built for engineers who want to move faster without thinking less.",
-    "version": "1.1.2",
+    "version": "1.2.0",
     "pluginRoot": "./plugins"
   },
   "plugins": [
@@ -23,11 +23,11 @@
       "name": "learner",
       "source": "./plugins/learner",
       "description": "Go further with what you read. Skills for extracting insight from books, building mental models, and retaining what matters.",
-      "version": "1.3.2",
+      "version": "1.4.0",
       "author": {
         "name": "Ivor Scott Cummings"
       },
-      "keywords": ["books", "ascii", "diagram", "render", "study", "flashcard", "quiz", "obsidian"]
+      "keywords": ["books", "ascii", "diagram", "render", "study", "flashcard", "quiz", "obsidian", "socrates"]
     }
   ]
 }
