@@ -78,6 +78,16 @@ Bootstraps a new personal knowledge base following [Andrej Karpathy's LLM Wiki p
 
 Run from inside an empty directory (auto-detected) or pass the target path explicitly. After setup, open the folder in Obsidian and drop your first source into `raw/` — then say `ingest this`.
 
+> **Tip: Configure the Obsidian Web Clipper**
+>
+> This is how you'll get sources into your wiki fast.
+>
+> 1. Open the [Obsidian Web Clipper](https://obsidian.md/clipper) extension settings
+> 2. Set the default vault to the one you just created
+> 3. Set the default folder to `raw/` — this is where clipped articles will land
+>
+> Now when you're reading an article you want to save, click the clipper icon and it drops a clean markdown copy into your `raw/` folder. Then run `ingest` to compile it into the wiki.
+
 ---
 
 ### `/book` — Book Chapter Summarizer
