@@ -34,15 +34,17 @@ Add the marketplace, then install whichever plugins you need:
 
 ### `/install-obsidian` — Obsidian Setup
 
-Automates the full Obsidian + Claude Code plugin setup in one command. Safe to
-re-run — every step is idempotent.
+Configures an Obsidian workflow to send markdown text selection to Claude Code's context window. 
 
 **Installs and enables:**
 - [BRAT](https://github.com/TfTHacker/obsidian42-brat) — beta plugin manager (handles auto-updates)
 - [obsidian-claude-selection](https://github.com/ivorscott/obsidian-claude-selection) — installed directly from GitHub releases
 - [obsidian-terminal](https://github.com/polyipseity/obsidian-terminal) — integrated terminal
 
-**Also configures:** `CMD+J` hotkey for the integrated terminal, and the Claude Code `UserPromptSubmit` hook that injects your Obsidian selection into every prompt.
+**Also configures:** `CMD+J` hotkey for the integrated terminal, and the 
+Claude Code `UserPromptSubmit` hook that injects your Obsidian selection into every prompt.
+
+>NOTE: You can change hotkeys in Obisidan settings. 
 
 **Usage:**
 
@@ -51,11 +53,15 @@ re-run — every step is idempotent.
 /install-obsidian path/to/vault
 ```
 
-Run from inside your vault directory (auto-detected) or pass the vault path
-explicitly. After the command completes, **restart Obsidian** — all three
-plugins will be active immediately. BRAT will keep `obsidian-claude-selection`
-up to date automatically.
+Run from inside your vault directory. After the command completes, **restart Obsidian** if it was running. 
+BRAT will keep `obsidian-claude-selection` up to date automatically.
 
+**Worflow:**
+
+1. Open the integrated terminal (CMD + J) and run Claude code.
+2. Select any markdown text in Obsidian. 
+3. Click on the terminal and a popup should confirm the context window updated.
+4. Now ask a question about the text or run a selection based skill against it (e.g., /analogy, or /ascii). 
 ---
 
 ### `/install-wiki` — LLM Wiki Setup
