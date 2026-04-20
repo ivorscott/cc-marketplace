@@ -61,7 +61,7 @@ BRAT will keep `obsidian-claude-selection` up to date automatically.
 1. Open the integrated terminal (`CMD + J`) and run Claude Code.
 2. Select any markdown text in Obsidian. 
 3. Then click on the terminal. A popup should confirm the context window updated.
-4. Now ask a question about the text or run a selection based skill against it (e.g., /analogy, or /ascii). 
+4. Now ask a question about the text or run a selection based skill against it (e.g., `/analogy`, or `/ascii`). 
 ---
 
 ### `/install-wiki` — LLM Wiki Setup
