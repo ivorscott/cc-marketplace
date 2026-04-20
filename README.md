@@ -41,7 +41,7 @@ Configures an Obsidian workflow to send markdown text selection to Claude Code's
 - [obsidian-claude-selection](https://github.com/ivorscott/obsidian-claude-selection) — installed directly from GitHub releases
 - [obsidian-terminal](https://github.com/polyipseity/obsidian-terminal) — integrated terminal
 
-**Also configures:** `CMD+J` to hotkey to open the integrated terminal and the 
+**Also configures:** `CMD+J` hotkey to open the integrated terminal and the 
 Claude Code `UserPromptSubmit` hook that injects your Obsidian selection into every prompt.
 
 >NOTE: You can change hotkeys in Obisidan settings. 
