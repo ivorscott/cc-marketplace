@@ -1,6 +1,6 @@
 ---
 name: install-wiki
-description: Set up Karpathy's LLM Wiki pattern in an empty folder — creates the full directory structure, CLAUDE.md schema, index, log, and four page templates ready for use with Obsidian.
+description: Set up Karpathy's LLM Wiki pattern in a folder — creates the full directory structure, CLAUDE.md schema, index, log, and four page templates ready for use with Obsidian.
 argument-hint: "[path/to/folder]"
 user_invocable: true
 allowed-tools: Read, Write, Glob, Bash(mkdir:*), Bash(ls:*)
@@ -8,7 +8,7 @@ allowed-tools: Read, Write, Glob, Bash(mkdir:*), Bash(ls:*)
 
 # Install LLM Wiki
 
-Bootstraps a new personal knowledge base following [Andrej Karpathy's LLM Wiki pattern](https://gist.github.com/karpathy) in an empty directory. Safe to run once — **aborts immediately if the target directory is not empty.**
+Bootstraps a new personal knowledge base following [Andrej Karpathy's LLM Wiki pattern](https://gist.github.com/karpathy) in a target directory.
 
 **Creates:**
 - `CLAUDE.md` — schema file: directory conventions, ingest / query / lint workflows
@@ -23,19 +23,6 @@ Bootstraps a new personal knowledge base following [Andrej Karpathy's LLM Wiki p
 ## Step 1 — Resolve the target directory
 
 If `$ARGUMENTS` is provided, treat it as the target path. Otherwise use the current working directory.
-
-Run `ls -A <target>` to list the directory contents (including hidden files, excluding `.` and `..`).
-
-**If the directory is not empty → abort immediately** with:
-
-```
-install-wiki: directory is not empty.
-This skill only runs in an empty directory to avoid overwriting existing files.
-
-To use a fresh directory:
-  mkdir my-wiki && cd my-wiki
-  /install-wiki
-```
 
 Set `DIR` to the resolved absolute path for all subsequent steps.
 
