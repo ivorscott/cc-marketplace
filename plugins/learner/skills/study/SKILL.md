@@ -1,17 +1,18 @@
 ---
 description: Generate a quiz or flashcard study session from markdown notes 
   in the current directory.
-argument-hint: "[ch<N>|ch<N>-<N>] [flashcard|quiz] [easy|medium|hard] [count]"
+argument-hint: "[@file.md] [ch<N>|ch<N>-<N>] [flashcard|quiz] [easy|medium|hard] [count]"
 allowed-tools: Read, Write, Glob, Bash(which:*), Bash(go install:*), Bash(go build:*)
 ---
 
 ## Usage
 
 ```
-/study [chapter] [type] [difficulty] [count]
+/study [@file] [chapter] [type] [difficulty] [count]
 ```
 
-- **chapter**: (optional) chapter filter — `ch2`, `ch2-4` (default: all chapters)
+- **file**: (optional) restrict to a single markdown file — `@notes.md` (default: all `.md` files in the current directory). When present, any chapter filter is ignored.
+- **chapter**: (optional) chapter filter — `ch2`, `ch2-4` (default: all chapters). Ignored if a file filter is given.
 - **type**: `flashcard` or `quiz` (default: `flashcard`)
 - **difficulty**: `easy`, `medium`, or `hard` (default: `medium`)
 - **count**: number of items to generate (default: `10`)
@@ -34,17 +35,24 @@ If it is NOT found:
 
 **Step 1: Parse arguments**
 
-Parse `$ARGUMENTS` (space-separated). Defaults: chapter=all, type=flashcard, difficulty=medium, count=10.
+Parse `$ARGUMENTS` (space-separated). Defaults: file=none, chapter=all, type=flashcard, difficulty=medium, count=10.
 
-Check the first token against the pattern `^ch(\d+)(-(\d+))?$` (case-insensitive):
-- If it matches, consume it as the **chapter filter** and parse the rest for type/difficulty/count.
-  - `ch2` → single chapter N=2
-  - `ch2-4` → chapter range start=2, end=4
-- If it does not match, leave it in place and proceed with parsing type/difficulty/count as usual. chapter filter = none (all chapters).
+Check the first token against the pattern `^@(.+)$`:
+- If it matches, consume it as the **file filter** (the path after `@`) and parse the rest for type/difficulty/count. Do NOT check for a chapter filter — chapter filter = none, even if a `chN`-looking token appears later in the arguments.
+- If it does not match, leave it in place and check it against the pattern `^ch(\d+)(-(\d+))?$` (case-insensitive) instead:
+  - If it matches, consume it as the **chapter filter** and parse the rest for type/difficulty/count.
+    - `ch2` → single chapter N=2
+    - `ch2-4` → chapter range start=2, end=4
+  - If it does not match, leave it in place and proceed with parsing type/difficulty/count as usual. chapter filter = none (all chapters).
 
-**Step 2: Read all markdown files**
+**Step 2: Read markdown file(s)**
 
-Use the Glob tool to find all `*.md` files recursively in the current working directory. Read each file's content. Skip any files inside `.stu/`.
+If a file filter was parsed in Step 1:
+- Read that file directly. If it doesn't exist or isn't a `.md` file, abort and tell the user: "File not found: `<path>`".
+- Use the whole file's content — no chapter-section extraction (chapter filtering is skipped whenever a file filter is used).
+- Skip the rest of this step (the Glob-based discovery and chapter extraction below) and proceed to Step 3.
+
+Otherwise, use the Glob tool to find all `*.md` files recursively in the current working directory. Read each file's content. Skip any files inside `.stu/`.
 
 If a chapter filter was parsed in Step 1, extract only the matching chapter sections from each file before using the content:
 

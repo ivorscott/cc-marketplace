@@ -131,15 +131,18 @@ saved as JSON and run with [`stu`](apps/stu/README.md).
 /study ch2
 /study quiz hard 20
 /study flashcard easy 5
+/study @notes.md
 ```
 
-- **chapter**: chapter filter — `ch2`, `ch2-4` (default: all chapters)
+- **file**: (optional) restrict to a single markdown file — `@notes.md` (default: all `.md` files in the current directory). When present, any chapter filter is ignored.
+- **chapter**: chapter filter — `ch2`, `ch2-4` (default: all chapters). Ignored if a file filter is given.
 - **type**: `flashcard` or `quiz` (default: `flashcard`)
 - **difficulty**: `easy`, `medium`, or `hard` (default: `medium`)
 - **count**: number of items to generate (default: `10`)
 
-Scans all `*.md` files in the current directory (skipping `.stu/`) and saves
-the output to `.stu/<slug>-<type>-<YYYYMMDD>.json`.
+Scans all `*.md` files in the current directory (skipping `.stu/`), unless a
+single file is targeted with `@file`, and saves the output to
+`.stu/<slug>-<type>-<YYYYMMDD>.json`.
 
 **To start studying**, run the printed command in a fresh terminal:
 ```
