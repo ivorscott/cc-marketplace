@@ -6,6 +6,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/ivorscott/cc-marketplace/apps/stu/internal/confirm"
 	"github.com/ivorscott/cc-marketplace/apps/stu/internal/render"
 	"github.com/ivorscott/cc-marketplace/apps/stu/internal/types"
 )
@@ -16,6 +17,7 @@ const (
 	stateQuestion state = iota
 	stateAnswered
 	stateResults
+	stateConfirmRetake
 )
 
 // Model is the bubbletea model for quiz sessions.
@@ -56,6 +58,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateAnswered(msg)
 		case stateResults:
 			return m.updateResults(msg)
+		case stateConfirmRetake:
+			return m.updateConfirmRetake(msg)
 		}
 	}
 	return m, nil
@@ -119,11 +123,21 @@ func (m Model) updateResults(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "ctrl+c", "q":
 		return m, tea.Quit
 	case "r":
+		m.state = stateConfirmRetake
+	}
+	return m, nil
+}
+
+func (m Model) updateConfirmRetake(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch {
+	case confirm.IsConfirm(msg.String()):
 		m.current = 0
 		m.selected = -1
 		m.state = stateQuestion
 		m.results = nil
 		m.startTime = time.Now()
+	case confirm.IsCancel(msg.String()):
+		m.state = stateResults
 	}
 	return m, nil
 }
@@ -136,6 +150,8 @@ func (m Model) View() string {
 		return m.viewAnswered()
 	case stateResults:
 		return m.viewResults()
+	case stateConfirmRetake:
+		return m.viewConfirmRetake()
 	}
 	return ""
 }
@@ -326,4 +342,8 @@ func (m Model) viewResults() string {
 	b.WriteString("\n")
 
 	return b.String()
+}
+
+func (m Model) viewConfirmRetake() string {
+	return m.viewResults() + "\n" + confirm.Prompt("Retake this session? Current progress will be reset.")
 }

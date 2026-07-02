@@ -86,7 +86,8 @@ Sessions are JSON files in `.stu/` relative to your working directory. Generate 
 | `enter` | Submit |
 | `h` | Toggle hint |
 | `enter`/`→`/`l`/`n` | Next question |
-| `r` | Retake |
+| `r` | Retake (asks for confirmation) |
+| `y` / `n`/`esc` | Confirm / cancel retake |
 | `q` | Quit |
 
 ### Flashcard keys
@@ -99,8 +100,17 @@ Sessions are JSON files in `.stu/` relative to your working directory. Generate 
 | `e` | Toggle explanation |
 | `←`/`→` | Navigate |
 | `f` | Finish |
-| `r` | Retake |
+| `tab` | Toggle missed-cards report (on results screen) |
+| `r` | Retake (asks for confirmation) |
+| `y` / `n`/`esc` | Confirm / cancel retake |
 | `q` | Quit |
+
+On retake, the deck is reshuffled and cards missed in the previous attempt
+are weighted to reappear (roughly 1 in 3 draws), never twice in a row.
+
+Progress is saved automatically as you go (in `.stu/.state/`, next to the
+session file). Quitting partway through and reopening the same session
+resumes with the remaining unseen cards and your combined right/wrong count.
 
 ## Anki
 
