@@ -20,7 +20,7 @@ func TestLoadMissingFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load() error = %v, want nil", err)
 	}
-	if len(st.SeenIDs) != 0 || st.Right != 0 || st.Wrong != 0 {
+	if len(st.Right) != 0 || len(st.Wrong) != 0 {
 		t.Errorf("Load() = %+v, want zero-value State", st)
 	}
 }
@@ -44,7 +44,7 @@ func TestLoadCorruptFile(t *testing.T) {
 func TestSaveLoadRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	sessionPath := filepath.Join(dir, "session.json")
-	want := State{SeenIDs: []int{1, 3, 5}, Right: 2, Wrong: 1}
+	want := State{Right: []int{1, 3}, Wrong: []int{5}}
 
 	if err := Save(sessionPath, want); err != nil {
 		t.Fatalf("Save() error = %v", err)
@@ -54,7 +54,7 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	if got.Right != want.Right || got.Wrong != want.Wrong || len(got.SeenIDs) != len(want.SeenIDs) {
+	if len(got.Right) != len(want.Right) || len(got.Wrong) != len(want.Wrong) {
 		t.Errorf("Load() = %+v, want %+v", got, want)
 	}
 }

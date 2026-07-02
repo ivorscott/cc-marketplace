@@ -44,7 +44,7 @@ go vet ./...
 5. `internal/quiz/` and `internal/flashcard/` — each package contains a bubbletea `Model` + lipgloss `styles.go`. They implement the full MVU cycle (`Init / Update / View`).
 6. `internal/anki/` — Anki import/export. Uses `github.com/mattn/go-sqlite3` (CGo) for `.apkg` SQLite read/write and `golang.org/x/net/html` for HTML stripping. Requires `CGO_ENABLED=1`. Only `"flashcards"` sessions can be exported. On export, `media.go` scans card HTML for `<img src>` and `[sound:]` references and embeds found files into the `.apkg` zip; missing files are warned and skipped. On import, the session filename is derived via `Slugify(title)` → `.stu/<slug>.json`.
 7. `internal/confirm/confirm.go` — shared yes/no modal (`Prompt`, `IsConfirm`, `IsCancel`) used by both `quiz` and `flashcard` to gate the retake reset behind a confirmation prompt.
-8. `internal/progress/progress.go` — reads/writes per-session-file resume state (`State{SeenIDs, Right, Wrong}`) under `.stu/.state/<session-filename>.state.json`. Only `internal/flashcard` uses this; quiz sessions don't persist progress.
+8. `internal/progress/progress.go` — reads/writes per-session-file resume state (`State{Right, Wrong []int}`, the card IDs answered correctly/incorrectly across all runs so far) under `.stu/.state/<session-filename>.state.json`. Only `internal/flashcard` uses this; quiz sessions don't persist progress.
 
 ### Session types
 
@@ -69,7 +69,7 @@ Both `quiz.Model` and `flashcard.Model` follow the same pattern:
 
 On retake, `startRetake()` shuffles a fresh deck and calls the pure, unit-tested `buildWeightedDeck(base, missed, rng)` to re-inject previously-missed cards at roughly a 1-in-3 rate, with no immediate repeats.
 
-On launch, `flashcard.New` loads any existing `progress.State` for the session file and excludes already-seen card IDs from the deck, restoring prior right/wrong counts for display. `saveProgress()` writes the current run's seen IDs (merged with any prior ones) on every quit and on reaching results, so closing and reopening a session resumes where it left off. Retake always starts a full fresh deck and clears prior progress — it never consults `.stu/.state/`.
+On launch, `flashcard.New` loads any existing `progress.State` for the session file and restores each card's specific right/wrong verdict into `m.answers`, so the deck always spans the full session (numbering/total never shrink) and `m.current` starts at the first not-yet-answered card. `saveProgress()` writes each card's verdict (merged across all runs) on every quit and on reaching results, so closing and reopening a session resumes exactly where it left off, with prior right/wrong badges intact on backward navigation. Retake always starts a full fresh deck and clears prior progress — it never consults `.stu/.state/`.
 
 ### JSON format
 

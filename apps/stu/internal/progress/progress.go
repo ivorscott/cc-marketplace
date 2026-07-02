@@ -9,12 +9,12 @@ import (
 )
 
 // State is the on-disk resume record for one flashcard session file.
-// SeenIDs records card IDs the user has already answered (right or wrong)
-// in a prior run.
+// Right and Wrong record the card IDs answered correctly/incorrectly across
+// all runs so far, so a resumed session can restore each card's specific
+// verdict (not just aggregate counts).
 type State struct {
-	SeenIDs []int `json:"seen_ids"`
-	Right   int   `json:"right"`
-	Wrong   int   `json:"wrong"`
+	Right []int `json:"right,omitempty"`
+	Wrong []int `json:"wrong,omitempty"`
 }
 
 // pathFor returns the sibling state file path for a session file, e.g.

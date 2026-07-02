@@ -21,6 +21,10 @@ var (
 		Foreground(lipgloss.Color("79")).
 		Bold(true)
 
+	missedItStyle = lipgloss.NewStyle().
+		Foreground(lipgloss.Color("203")).
+		Bold(true)
+
 	// Question-side card: dim border, no background
 	questionCardStyle = lipgloss.NewStyle().
 		Border(lipgloss.NormalBorder()).

@@ -301,23 +301,74 @@ func TestUpdate_ResultsPageToggle(t *testing.T) {
 	}
 }
 
-func TestTruncate52(t *testing.T) {
-	exact := strings.Repeat("a", 52)
-	if got := truncate52(exact); got != exact {
-		t.Errorf("truncate52(52-char) = %q, want unchanged", got)
+func TestUpdate_PeekMissedFromQuestion(t *testing.T) {
+	m := New(session(3), "")
+	m = update(m, "space")
+	m = update(m, "x") // card 0 wrong, advance to card 1
+	m = update(m, "tab")
+	if m.state != statePeekMissed {
+		t.Fatalf("state = %v, want statePeekMissed after tab", m.state)
 	}
-
-	over := strings.Repeat("a", 53)
-	want := strings.Repeat("a", 52) + " [...]"
-	if got := truncate52(over); got != want {
-		t.Errorf("truncate52(53-char) = %q, want %q", got, want)
+	if m.peekReturn != stateQuestion {
+		t.Errorf("peekReturn = %v, want stateQuestion", m.peekReturn)
 	}
+	view := m.View()
+	if !strings.Contains(view, "Cards to review") {
+		t.Errorf("peek view missing expected heading: %q", view)
+	}
+	if strings.Contains(view, "r  retake") {
+		t.Errorf("peek view should not offer retake mid-session: %q", view)
+	}
+	m = update(m, "tab")
+	if m.state != stateQuestion {
+		t.Errorf("state = %v, want stateQuestion after leaving peek", m.state)
+	}
+	if m.current != 1 {
+		t.Errorf("current = %d, want 1 (unchanged by peek)", m.current)
+	}
+}
 
-	unicodeStr := strings.Repeat("é", 53)
-	gotUnicode := truncate52(unicodeStr)
-	wantUnicode := strings.Repeat("é", 52) + " [...]"
-	if gotUnicode != wantUnicode {
-		t.Errorf("truncate52(unicode) = %q, want %q", gotUnicode, wantUnicode)
+func TestUpdate_PeekMissedFromRevealed(t *testing.T) {
+	m := New(session(2), "")
+	m = update(m, "space") // reveal card 0
+	m = update(m, "tab")
+	if m.state != statePeekMissed {
+		t.Fatalf("state = %v, want statePeekMissed after tab", m.state)
+	}
+	if m.peekReturn != stateRevealed {
+		t.Errorf("peekReturn = %v, want stateRevealed", m.peekReturn)
+	}
+	m = update(m, "esc")
+	if m.state != stateRevealed {
+		t.Errorf("state = %v, want stateRevealed after esc", m.state)
+	}
+}
+
+func TestViewMissedCards_ReflectsResumedWrongs(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.json")
+
+	m := New(session(3), path)
+	m = update(m, "space")
+	m = update(m, "x") // card 1 wrong
+	m = update(m, "q") // quit -> saves progress
+
+	m2 := New(session(3), path)
+	m2 = update(m2, "tab") // peek missed before finishing
+	view := m2.View()
+	if !strings.Contains(view, "Front") {
+		t.Errorf("resumed peek should still show the previously-missed card: %q", view)
+	}
+}
+
+func TestViewQuestion_ShowsMissedItBadgeOnBackNavigation(t *testing.T) {
+	m := New(session(2), "")
+	m = update(m, "space")
+	m = update(m, "x") // card 0 wrong, advances to card 1
+	m = update(m, "left")
+	view := m.View()
+	if !strings.Contains(view, "Missed it") {
+		t.Errorf("view missing Missed it badge on revisited wrong card: %q", view)
 	}
 }
 
@@ -394,11 +445,17 @@ func TestProgressResume(t *testing.T) {
 	m = update(m, "q") // quit -> saves progress
 
 	m2 := New(session(4), path)
-	if len(m2.deck) != 2 {
-		t.Fatalf("resumed deck length = %d, want 2 (2 of 4 cards already seen)", len(m2.deck))
+	if len(m2.deck) != 4 {
+		t.Fatalf("resumed deck length = %d, want 4 (deck always spans the full session)", len(m2.deck))
 	}
-	if m2.priorRight != 1 || m2.priorWrong != 1 {
-		t.Errorf("priorRight=%d priorWrong=%d, want 1 1", m2.priorRight, m2.priorWrong)
+	if m2.current != 2 {
+		t.Errorf("current = %d, want 2 (first unanswered card, 0-indexed)", m2.current)
+	}
+	if m2.right != 1 || m2.wrong != 1 {
+		t.Errorf("right=%d wrong=%d, want 1 1", m2.right, m2.wrong)
+	}
+	if m2.answers[1] != answerRight || m2.answers[2] != answerWrong {
+		t.Errorf("answers = %+v, want card 1 right and card 2 wrong restored", m2.answers)
 	}
 
 	// Finish the resumed deck and confirm combined stats show in results.
@@ -429,8 +486,11 @@ func TestProgressResumeAllSeenFallsBackToFreshPass(t *testing.T) {
 	if len(m2.deck) != 2 {
 		t.Errorf("deck length = %d, want 2 (fresh full pass, not empty)", len(m2.deck))
 	}
-	if m2.priorRight != 0 || m2.priorWrong != 0 {
-		t.Errorf("priorRight=%d priorWrong=%d, want 0 0 for a fresh fallback pass", m2.priorRight, m2.priorWrong)
+	if m2.right != 0 || m2.wrong != 0 {
+		t.Errorf("right=%d wrong=%d, want 0 0 for a fresh fallback pass", m2.right, m2.wrong)
+	}
+	if m2.current != 0 {
+		t.Errorf("current = %d, want 0 for a fresh fallback pass", m2.current)
 	}
 }
 
