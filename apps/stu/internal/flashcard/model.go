@@ -20,6 +20,7 @@ const (
 	stateRevealed
 	stateResults
 	stateConfirmRetake
+	statePeekMissed
 )
 
 type answer int
@@ -39,65 +40,83 @@ const (
 
 // Model is the bubbletea model for flashcard sessions.
 type Model struct {
-	session      *types.Session
-	sessionPath  string
-	byID         map[int]types.Card // card.ID -> Card
-	deck         []int              // ordered card IDs for this attempt
-	current      int                // index into deck
-	state        state
-	resultsPage  resultsPage
-	showExplain  bool
-	answers      map[int]answer // keyed by card.ID, this run only
-	wrong        int            // this run only
-	right        int            // this run only
-	priorSeenIDs []int          // cards already seen before this run (from a resumed prior run)
-	priorRight   int            // right count carried over from a resumed prior run
-	priorWrong   int            // wrong count carried over from a resumed prior run
-	startTime    time.Time
-	width        int
-	height       int
+	session     *types.Session
+	sessionPath string
+	byID        map[int]types.Card // card.ID -> Card
+	deck        []int              // ordered card IDs, always the full session card set
+	current     int                // index into deck
+	state       state
+	peekReturn  state // state to restore when leaving statePeekMissed
+	resultsPage resultsPage
+	showExplain bool
+	answers     map[int]answer // keyed by card.ID, all-time (this run + resumed prior runs)
+	wrong       int            // all-time count
+	right       int            // all-time count
+	startTime   time.Time
+	width       int
+	height      int
 }
 
 // New builds a flashcard Model for the given session, loaded from path (used
 // to locate/write this session's per-file progress state under .stu/.state/).
-// If prior progress exists for path, already-seen cards are skipped and their
-// stats are carried over so results reflect the combined attempt. m.right and
-// m.wrong always track only this run's grading, so the existing
-// right+wrong==len(deck) termination check stays correct regardless of resume.
+// The deck always spans the full session card set, in original order, so
+// resuming never shrinks the visible total or the position numbering. If
+// prior progress exists for path, each card's specific right/wrong verdict
+// is restored into m.answers (not just an aggregate count), and m.current is
+// set to the first not-yet-answered card so resuming picks up right after
+// where the prior run left off.
 func New(s *types.Session, path string) Model {
 	byID := make(map[int]types.Card, len(s.Cards))
 	st, _ := progress.Load(path) // ignore error: missing/corrupt state = start fresh
-	seen := make(map[int]bool, len(st.SeenIDs))
-	for _, id := range st.SeenIDs {
-		seen[id] = true
+
+	answers := make(map[int]answer, len(st.Right)+len(st.Wrong))
+	for _, id := range st.Right {
+		answers[id] = answerRight
+	}
+	for _, id := range st.Wrong {
+		answers[id] = answerWrong
 	}
 
-	deck := make([]int, 0, len(s.Cards))
-	for _, c := range s.Cards {
+	deck := make([]int, len(s.Cards))
+	for i, c := range s.Cards {
 		byID[c.ID] = c
-		if !seen[c.ID] {
-			deck = append(deck, c.ID)
+		deck[i] = c.ID
+	}
+
+	if len(answers) >= len(deck) {
+		// Every card already answered in a prior run: treat as a full fresh
+		// pass rather than presenting an already-finished session.
+		answers = make(map[int]answer)
+	}
+
+	current := 0
+	for i, id := range deck {
+		if answers[id] == answerNone {
+			current = i
+			break
 		}
 	}
-	if len(deck) == 0 {
-		// Every card already seen in a prior run: treat as a full fresh pass
-		// rather than presenting an empty/immediately-finished session.
-		for _, c := range s.Cards {
-			deck = append(deck, c.ID)
+
+	right, wrong := 0, 0
+	for _, a := range answers {
+		switch a {
+		case answerRight:
+			right++
+		case answerWrong:
+			wrong++
 		}
-		st = progress.State{}
 	}
 
 	return Model{
-		session:      s,
-		sessionPath:  path,
-		byID:         byID,
-		deck:         deck,
-		answers:      make(map[int]answer),
-		priorSeenIDs: st.SeenIDs,
-		priorRight:   st.Right,
-		priorWrong:   st.Wrong,
-		startTime:    time.Now(),
+		session:     s,
+		sessionPath: path,
+		byID:        byID,
+		deck:        deck,
+		current:     current,
+		answers:     answers,
+		right:       right,
+		wrong:       wrong,
+		startTime:   time.Now(),
 	}
 }
 
@@ -136,9 +155,6 @@ func (m *Model) startRetake() {
 	m.answers = make(map[int]answer)
 	m.wrong = 0
 	m.right = 0
-	m.priorSeenIDs = nil
-	m.priorRight = 0
-	m.priorWrong = 0
 	m.startTime = time.Now()
 	m.showExplain = false
 }
@@ -178,29 +194,23 @@ func buildWeightedDeck(base []int, missed []int, rng *rand.Rand) []int {
 	return deck
 }
 
-// saveProgress persists which cards have been seen across this run and any
-// prior resumed run, so a later launch of the same session file can skip
-// them and display combined stats.
+// saveProgress persists each card's right/wrong verdict across this run and
+// any prior resumed run, so a later launch of the same session file can
+// restore exactly which cards were missed, not just an aggregate count.
 func (m Model) saveProgress() {
 	if m.sessionPath == "" {
 		return
 	}
-	seenSet := make(map[int]bool, len(m.priorSeenIDs)+len(m.answers))
-	for _, id := range m.priorSeenIDs {
-		seenSet[id] = true
+	var right, wrong []int
+	for id, a := range m.answers {
+		switch a {
+		case answerRight:
+			right = append(right, id)
+		case answerWrong:
+			wrong = append(wrong, id)
+		}
 	}
-	for id := range m.answers {
-		seenSet[id] = true
-	}
-	seen := make([]int, 0, len(seenSet))
-	for id := range seenSet {
-		seen = append(seen, id)
-	}
-	_ = progress.Save(m.sessionPath, progress.State{
-		SeenIDs: seen,
-		Right:   m.priorRight + m.right,
-		Wrong:   m.priorWrong + m.wrong,
-	})
+	_ = progress.Save(m.sessionPath, progress.State{Right: right, Wrong: wrong})
 }
 
 func (m Model) Init() tea.Cmd {
@@ -222,6 +232,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.updateResults(msg)
 		case stateConfirmRetake:
 			return m.updateConfirmRetake(msg)
+		case statePeekMissed:
+			return m.updatePeekMissed(msg)
 		}
 	}
 	return m, nil
@@ -242,6 +254,9 @@ func (m Model) updateQuestion(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "f":
 		m.state = stateResults
 		m.saveProgress()
+	case "tab":
+		m.peekReturn = stateQuestion
+		m.state = statePeekMissed
 	}
 	return m, nil
 }
@@ -292,6 +307,9 @@ func (m Model) updateRevealed(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "f":
 		m.state = stateResults
 		m.saveProgress()
+	case "tab":
+		m.peekReturn = stateRevealed
+		m.state = statePeekMissed
 	}
 	return m, nil
 }
@@ -319,6 +337,17 @@ func (m Model) updateConfirmRetake(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.startRetake()
 	case confirm.IsCancel(msg.String()):
 		m.state = stateResults
+	}
+	return m, nil
+}
+
+func (m Model) updatePeekMissed(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "ctrl+c", "q":
+		m.saveProgress()
+		return m, tea.Quit
+	case "tab", "esc":
+		m.state = m.peekReturn
 	}
 	return m, nil
 }
@@ -353,6 +382,8 @@ func (m Model) View() string {
 		return m.viewResults()
 	case stateConfirmRetake:
 		return m.viewConfirmRetake()
+	case statePeekMissed:
+		return m.viewMissedCards()
 	}
 	return ""
 }
@@ -374,8 +405,11 @@ func (m Model) viewQuestion() string {
 
 	progress := progressDiamondStyle.Render("◈") + "  " +
 		progressCountStyle.Render(fmt.Sprintf("%d / %d", m.current+1, total))
-	if m.answers[card.ID] == answerRight {
+	switch m.answers[card.ID] {
+	case answerRight:
 		progress += "    " + gotItStyle.Render("Got it")
+	case answerWrong:
+		progress += "    " + missedItStyle.Render("Missed it")
 	}
 	b.WriteString(progress)
 	b.WriteString("\n\n")
@@ -389,7 +423,7 @@ func (m Model) viewQuestion() string {
 
 	b.WriteString(sepStyle.Render(strings.Repeat("─", m.sepW())))
 	b.WriteString("\n")
-	b.WriteString(statusStyle.Render("←/→  navigate   space  reveal   f  finish   q  quit"))
+	b.WriteString(statusStyle.Render("←/→  navigate   space  reveal   tab  missed   f  finish   q  quit"))
 	b.WriteString("\n")
 
 	return b.String()
@@ -406,8 +440,15 @@ func (m Model) viewRevealed() string {
 	b.WriteString(sepStyle.Render(strings.Repeat("━", m.sepW())))
 	b.WriteString("\n\n")
 
-	b.WriteString(progressDiamondStyle.Render("◈") + "  " +
-		progressCountStyle.Render(fmt.Sprintf("%d / %d", m.current+1, total)))
+	progress := progressDiamondStyle.Render("◈") + "  " +
+		progressCountStyle.Render(fmt.Sprintf("%d / %d", m.current+1, total))
+	switch m.answers[card.ID] {
+	case answerRight:
+		progress += "    " + gotItStyle.Render("Got it")
+	case answerWrong:
+		progress += "    " + missedItStyle.Render("Missed it")
+	}
+	b.WriteString(progress)
 	b.WriteString("\n\n")
 
 	back := backTextStyle.Render(card.Back)
@@ -425,7 +466,7 @@ func (m Model) viewRevealed() string {
 
 	b.WriteString(sepStyle.Render(strings.Repeat("─", m.sepW())))
 	b.WriteString("\n")
-	b.WriteString(statusStyle.Render("x  wrong   c/↵  correct   e  explain   ←/→  navigate   q  quit"))
+	b.WriteString(statusStyle.Render("x  wrong   c/↵  correct   e  explain   tab  missed   ←/→  navigate   q  quit"))
 	b.WriteString("\n")
 
 	return b.String()
@@ -437,8 +478,8 @@ func (m Model) viewResults() string {
 	}
 
 	total := len(m.session.Cards)
-	right := m.priorRight + m.right
-	wrong := m.priorWrong + m.wrong
+	right := m.right
+	wrong := m.wrong
 	skipped := total - right - wrong
 	pct := 0
 	if total > 0 {
@@ -517,7 +558,7 @@ func (m Model) viewMissedCards() string {
 	for _, card := range m.session.Cards {
 		if m.answers[card.ID] == answerWrong {
 			n++
-			line := fmt.Sprintf("%d. \"%s -> %s\"", n, truncate52(card.Front), truncate52(card.Back))
+			line := fmt.Sprintf("%d. \"%s\"\n\t-> \"%s\"", n, card.Front, card.Back)
 			b.WriteString(topicItemStyle.Render(line))
 			b.WriteString("\n")
 		}
@@ -530,19 +571,14 @@ func (m Model) viewMissedCards() string {
 
 	b.WriteString(sepStyle.Render(strings.Repeat("─", m.sepW())))
 	b.WriteString("\n")
-	b.WriteString(statusStyle.Render("tab  back to stats   r  retake   q  quit"))
+	footer := "tab  back to stats   r  retake   q  quit"
+	if m.state == statePeekMissed {
+		footer = "tab  back to session   q  quit"
+	}
+	b.WriteString(statusStyle.Render(footer))
 	b.WriteString("\n")
 
 	return b.String()
-}
-
-// truncate52 truncates s to 52 visible runes, appending " [...]" if truncated.
-func truncate52(s string) string {
-	r := []rune(s)
-	if len(r) <= 52 {
-		return s
-	}
-	return string(r[:52]) + " [...]"
 }
 
 func (m Model) viewConfirmRetake() string {
