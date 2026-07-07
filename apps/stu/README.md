@@ -101,6 +101,7 @@ Sessions are JSON files in `.stu/` relative to your working directory. Generate 
 | `←`/`→` | Navigate |
 | `f` | Finish |
 | `tab` | Toggle missed-cards report (on results screen) |
+| `↑`/`↓`, `pgup`/`pgdn` | Scroll missed-cards report |
 | `r` | Retake (asks for confirmation) |
 | `y` / `n`/`esc` | Confirm / cancel retake |
 | `q` | Quit |
