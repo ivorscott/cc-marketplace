@@ -6,11 +6,27 @@ import (
 	"strings"
 	"time"
 
+	vpkey "github.com/charmbracelet/bubbles/key"
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/ivorscott/cc-marketplace/apps/stu/internal/confirm"
 	"github.com/ivorscott/cc-marketplace/apps/stu/internal/progress"
 	"github.com/ivorscott/cc-marketplace/apps/stu/internal/render"
 	"github.com/ivorscott/cc-marketplace/apps/stu/internal/types"
+)
+
+const (
+	// defaultMissedWidth/Height size the missed-cards viewport before the
+	// first WindowSizeMsg arrives (tests, or a program that never resizes).
+	defaultMissedWidth  = 56
+	defaultMissedHeight = 12
+
+	// missedViewportChrome is the number of non-content lines viewMissedCards
+	// wraps around the viewport (title+badge, separator, blank, blank,
+	// separator, footer), subtracted from terminal height to size the
+	// viewport so the whole view fits without the terminal itself scrolling.
+	missedViewportChrome = 7
 )
 
 type state int
@@ -55,6 +71,7 @@ type Model struct {
 	startTime   time.Time
 	width       int
 	height      int
+	missedVP    viewport.Model // scrollable "cards to review" list
 }
 
 // New builds a flashcard Model for the given session, loaded from path (used
@@ -107,6 +124,14 @@ func New(s *types.Session, path string) Model {
 		}
 	}
 
+	vp := viewport.New(defaultMissedWidth, defaultMissedHeight)
+	vp.KeyMap = viewport.KeyMap{
+		Up:       vpkey.NewBinding(vpkey.WithKeys("up")),
+		Down:     vpkey.NewBinding(vpkey.WithKeys("down")),
+		PageUp:   vpkey.NewBinding(vpkey.WithKeys("pgup")),
+		PageDown: vpkey.NewBinding(vpkey.WithKeys("pgdown")),
+	}
+
 	return Model{
 		session:     s,
 		sessionPath: path,
@@ -117,6 +142,7 @@ func New(s *types.Session, path string) Model {
 		right:       right,
 		wrong:       wrong,
 		startTime:   time.Now(),
+		missedVP:    vp,
 	}
 }
 
@@ -222,6 +248,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		m.missedVP.Width = m.sepW()
+		h := m.height - missedViewportChrome
+		if h < 3 {
+			h = 3
+		}
+		m.missedVP.Height = h
 	case tea.KeyMsg:
 		switch m.state {
 		case stateQuestion:
@@ -257,6 +289,7 @@ func (m Model) updateQuestion(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "tab":
 		m.peekReturn = stateQuestion
 		m.state = statePeekMissed
+		m.refreshMissedViewport()
 	}
 	return m, nil
 }
@@ -310,6 +343,7 @@ func (m Model) updateRevealed(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "tab":
 		m.peekReturn = stateRevealed
 		m.state = statePeekMissed
+		m.refreshMissedViewport()
 	}
 	return m, nil
 }
@@ -321,12 +355,20 @@ func (m Model) updateResults(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	case "r":
 		m.state = stateConfirmRetake
+		return m, nil
 	case "tab":
 		if m.resultsPage == resultsPageStats {
 			m.resultsPage = resultsPageMissed
+			m.refreshMissedViewport()
 		} else {
 			m.resultsPage = resultsPageStats
 		}
+		return m, nil
+	}
+	if m.resultsPage == resultsPageMissed {
+		var cmd tea.Cmd
+		m.missedVP, cmd = m.missedVP.Update(msg)
+		return m, cmd
 	}
 	return m, nil
 }
@@ -348,8 +390,39 @@ func (m Model) updatePeekMissed(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	case "tab", "esc":
 		m.state = m.peekReturn
+		return m, nil
 	}
-	return m, nil
+	var cmd tea.Cmd
+	m.missedVP, cmd = m.missedVP.Update(msg)
+	return m, cmd
+}
+
+// refreshMissedViewport rebuilds the missed-cards viewport content from the
+// current answers and scrolls back to the top. Call this whenever a view
+// showing the missed-cards list is entered, since answers may have changed
+// since the viewport content was last set.
+func (m *Model) refreshMissedViewport() {
+	width := m.missedVP.Width
+	if width <= 0 {
+		width = m.sepW()
+	}
+	wrap := lipgloss.NewStyle().Width(width)
+
+	var b strings.Builder
+	n := 0
+	for _, card := range m.session.Cards {
+		if m.answers[card.ID] == answerWrong {
+			n++
+			line := fmt.Sprintf("%d. \"%s\"\n\t-> \"%s\"", n, card.Front, card.Back)
+			b.WriteString(topicItemStyle.Render(wrap.Render(line)))
+			b.WriteString("\n")
+		}
+	}
+	if n == 0 {
+		b.WriteString(statusStyle.Render("No missed cards — nice work!"))
+	}
+	m.missedVP.SetContent(strings.TrimRight(b.String(), "\n"))
+	m.missedVP.GotoTop()
 }
 
 func (m *Model) advance() {
@@ -554,26 +627,14 @@ func (m Model) viewMissedCards() string {
 	b.WriteString(sepStyle.Render(strings.Repeat("━", m.sepW())))
 	b.WriteString("\n\n")
 
-	n := 0
-	for _, card := range m.session.Cards {
-		if m.answers[card.ID] == answerWrong {
-			n++
-			line := fmt.Sprintf("%d. \"%s\"\n\t-> \"%s\"", n, card.Front, card.Back)
-			b.WriteString(topicItemStyle.Render(line))
-			b.WriteString("\n")
-		}
-	}
-	if n == 0 {
-		b.WriteString(statusStyle.Render("No missed cards — nice work!"))
-		b.WriteString("\n")
-	}
-	b.WriteString("\n")
+	b.WriteString(m.missedVP.View())
+	b.WriteString("\n\n")
 
 	b.WriteString(sepStyle.Render(strings.Repeat("─", m.sepW())))
 	b.WriteString("\n")
-	footer := "tab  back to stats   r  retake   q  quit"
+	footer := "↑/↓ pgup/pgdn  scroll   tab  back to stats   r  retake   q  quit"
 	if m.state == statePeekMissed {
-		footer = "tab  back to session   q  quit"
+		footer = "↑/↓ pgup/pgdn  scroll   tab  back to session   q  quit"
 	}
 	b.WriteString(statusStyle.Render(footer))
 	b.WriteString("\n")
