@@ -34,6 +34,14 @@ func key(k string) tea.KeyMsg {
 		return tea.KeyMsg{Type: tea.KeyLeft}
 	case "right":
 		return tea.KeyMsg{Type: tea.KeyRight}
+	case "down":
+		return tea.KeyMsg{Type: tea.KeyDown}
+	case "up":
+		return tea.KeyMsg{Type: tea.KeyUp}
+	case "pgdown":
+		return tea.KeyMsg{Type: tea.KeyPgDown}
+	case "pgup":
+		return tea.KeyMsg{Type: tea.KeyPgUp}
 	default:
 		return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(k)}
 	}
@@ -514,6 +522,87 @@ func TestNavBar_DoesNotPanic(t *testing.T) {
 	got := m.navBar()
 	if !strings.Contains(got, "←") || !strings.Contains(got, "→") {
 		t.Errorf("navBar missing arrows: %q", got)
+	}
+}
+
+func TestUpdate_WindowSizeResizesMissedViewport(t *testing.T) {
+	m := New(session(1), "")
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 30})
+	m = next.(Model)
+	if want := m.sepW(); m.missedVP.Width != want {
+		t.Errorf("missedVP.Width = %d, want %d", m.missedVP.Width, want)
+	}
+	if want := 30 - missedViewportChrome; m.missedVP.Height != want {
+		t.Errorf("missedVP.Height = %d, want %d", m.missedVP.Height, want)
+	}
+}
+
+func TestUpdate_WindowSizeClampsMissedViewportHeight(t *testing.T) {
+	m := New(session(1), "")
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 5}) // smaller than chrome
+	m = next.(Model)
+	if m.missedVP.Height < 3 {
+		t.Errorf("missedVP.Height = %d, want clamped to >= 3", m.missedVP.Height)
+	}
+}
+
+func TestMissedViewport_ScrollsWithManyMissedCards(t *testing.T) {
+	const n = 50
+	m := New(session(n), "")
+	next, _ := m.Update(tea.WindowSizeMsg{Width: 80, Height: 10}) // small viewport
+	m = next.(Model)
+
+	for i := 0; i < n; i++ {
+		m = update(m, "space")
+		m = update(m, "x") // mark every card wrong
+	}
+	if m.state != stateResults {
+		t.Fatalf("state = %v, want stateResults after answering all cards", m.state)
+	}
+
+	m = update(m, "tab") // switch to missed-cards page
+	if m.resultsPage != resultsPageMissed {
+		t.Fatalf("resultsPage = %v, want resultsPageMissed", m.resultsPage)
+	}
+	if !m.missedVP.AtTop() {
+		t.Fatalf("viewport should start scrolled to top")
+	}
+	if m.missedVP.AtBottom() {
+		t.Fatalf("viewport should not already be at bottom for a %d-card missed list in a short viewport", n)
+	}
+
+	before := m.missedVP.YOffset
+	m = update(m, "down")
+	if m.missedVP.YOffset <= before {
+		t.Errorf("YOffset = %d, want > %d after pressing down", m.missedVP.YOffset, before)
+	}
+
+	afterDown := m.missedVP.YOffset
+	m = update(m, "pgdown")
+	if m.missedVP.YOffset <= afterDown {
+		t.Errorf("YOffset = %d, want further increase after pgdown", m.missedVP.YOffset)
+	}
+}
+
+func TestMissedViewport_RefreshesOnEachEntry(t *testing.T) {
+	m := New(session(2), "")
+	m = update(m, "space")
+	m = update(m, "x") // card 0 wrong, advances to card 1
+	m = update(m, "tab")
+	view := m.View()
+	if !strings.Contains(view, "Front") {
+		t.Fatalf("expected missed card content in view: %q", view)
+	}
+	m = update(m, "tab") // back to question
+	m = update(m, "space")
+	m = update(m, "c") // card 1 correct -> results (only card 0 stays missed)
+	if m.state != stateResults {
+		t.Fatalf("state = %v, want stateResults", m.state)
+	}
+	m = update(m, "tab") // stats -> missed page, should refresh from current answers
+	view = m.View()
+	if strings.Count(view, "1. \"Front\"") != 1 {
+		t.Errorf("expected exactly one missed card entry, got view: %q", view)
 	}
 }
 
