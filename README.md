@@ -132,17 +132,20 @@ saved as JSON and run with [`stu`](apps/stu/README.md).
 /study quiz hard 20
 /study flashcard easy 5
 /study @notes.md
+/study @some-dir/
 ```
 
-- **file**: (optional) restrict to a single markdown file — `@notes.md` (default: all `.md` files in the current directory). When present, any chapter filter is ignored.
+- **file**: (optional) restrict to a single markdown file or a directory — `@notes.md` or `@some-dir/` (default: all `.md` files in the current directory). When present, any chapter filter is ignored. The generated study file is saved under this path's basedir instead of the current directory.
 - **chapter**: chapter filter — `ch2`, `ch2-4` (default: all chapters). Ignored if a file filter is given.
 - **type**: `flashcard` or `quiz` (default: `flashcard`)
 - **difficulty**: `easy`, `medium`, or `hard` (default: `medium`)
 - **count**: number of items to generate (default: `10`)
 
 Scans all `*.md` files in the current directory (skipping `.stu/`), unless a
-single file is targeted with `@file`, and saves the output to
-`.stu/<slug>-<type>-<YYYYMMDD>.json`.
+single file or directory is targeted with `@file`/`@dir/`, and saves the
+output to `<basedir>/.stu/<slug>-<type>-<YYYYMMDD>.json`, where `<basedir>`
+is the directory of the `@file`/`@dir` argument (or the current directory if
+no path filter was given).
 
 **To start studying**, run the printed command in a fresh terminal:
 ```
