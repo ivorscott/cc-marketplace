@@ -11,8 +11,8 @@ allowed-tools: Read, Write, Glob, Bash(which:*), Bash(go install:*), Bash(go bui
 /study [@file] [chapter] [type] [difficulty] [count]
 ```
 
-- **file**: (optional) restrict to a single markdown file or a directory — `@notes.md` or `@some-dir/` (default: all `.md` files in the current directory). When present, any chapter filter is ignored. The generated study file is saved under the basedir of this path rather than the current directory (see Step 4).
-- **chapter**: (optional) chapter filter — `ch2`, `ch2-4` (default: all chapters). Ignored if a file filter is given.
+- **file**: (optional) restrict to a single markdown file or a directory — `@notes.md` or `@some-dir/` (default: all `.md` files in the current directory). Can be combined with a chapter filter — e.g. `@some-dir/ ch2` extracts chapter 2 from every file under that directory. The generated study file is saved under the basedir of this path rather than the current directory (see Step 4).
+- **chapter**: (optional) chapter filter — `ch2`, `ch2-4` (default: all chapters). Applies to whichever file(s) are selected — a single file, a directory's files, or all files in the current directory.
 - **type**: `flashcard` or `quiz` (default: `flashcard`)
 - **difficulty**: `easy`, `medium`, or `hard` (default: `medium`)
 - **count**: number of items to generate (default: `10`)
@@ -38,14 +38,18 @@ If it is NOT found:
 Parse `$ARGUMENTS` (space-separated). Defaults: file=none, dir=none, chapter=all, type=flashcard, difficulty=medium, count=10. Track a **basedir** for Step 4 — defaults to the current working directory.
 
 Check the first token against the pattern `^@(.+)$`:
-- If it matches, take the path after `@` and parse the rest for type/difficulty/count. Do NOT check for a chapter filter — chapter filter = none, even if a `chN`-looking token appears later in the arguments. Then decide which kind of path filter it is:
+- If it matches, take the path after `@` and decide which kind of path filter it is:
   - If the path ends in `/`, or it exists on disk as a directory: consume it as the **directory filter**. Set basedir = that directory (trailing slash stripped).
   - Otherwise: consume it as the **file filter**. Set basedir = the directory containing that file (its dirname; `.` if the path has no directory component).
-- If it does not match, leave it in place and check it against the pattern `^ch(\d+)(-(\d+))?$` (case-insensitive) instead:
-  - If it matches, consume it as the **chapter filter** and parse the rest for type/difficulty/count.
-    - `ch2` → single chapter N=2
-    - `ch2-4` → chapter range start=2, end=4
-  - If it does not match, leave it in place and proceed with parsing type/difficulty/count as usual. chapter filter = none (all chapters).
+- If it does not match, leave it in place; there is no path filter (basedir stays the current working directory).
+
+After resolving the path filter (or confirming there is none), check the **next unconsumed token** against the pattern `^ch(\d+)(-(\d+))?$` (case-insensitive), regardless of whether a path filter was found:
+- If it matches, consume it as the **chapter filter**.
+  - `ch2` → single chapter N=2
+  - `ch2-4` → chapter range start=2, end=4
+- If it does not match, leave it in place. Chapter filter = none (all chapters).
+
+Parse whatever tokens remain for type/difficulty/count as usual.
 
 **Step 2: Read markdown file(s)**
 
@@ -53,23 +57,21 @@ If a directory filter was parsed in Step 1:
 - If the directory doesn't exist, abort and tell the user: "Directory not found: `<path>`".
 - Use the Glob tool to find all `*.md` files recursively under that directory. Read each file's content. Skip any files inside `.stu/`.
 - If no `.md` files are found, abort and tell the user: "No markdown files found in: `<path>`".
-- Use the whole content of each file — no chapter-section extraction (chapter filtering is skipped whenever a directory filter is used).
-- Skip the rest of this step (the chapter extraction below) and proceed to Step 3.
 
-If a file filter was parsed in Step 1:
+Else if a file filter was parsed in Step 1:
 - Read that file directly. If it doesn't exist or isn't a `.md` file, abort and tell the user: "File not found: `<path>`".
-- Use the whole file's content — no chapter-section extraction (chapter filtering is skipped whenever a file filter is used).
-- Skip the rest of this step (the Glob-based discovery and chapter extraction below) and proceed to Step 3.
 
-Otherwise, use the Glob tool to find all `*.md` files recursively in the current working directory. Read each file's content. Skip any files inside `.stu/`.
+Otherwise (no path filter): use the Glob tool to find all `*.md` files recursively in the current working directory. Read each file's content. Skip any files inside `.stu/`.
 
-If a chapter filter was parsed in Step 1, extract only the matching chapter sections from each file before using the content:
+In every case above, if a chapter filter was parsed in Step 1, extract only the matching chapter sections from each file that was read (single file, a directory's files, or the current directory's files) before using the content:
 
 - A chapter section starts at a heading that matches `^#{1,3}\s+(Chapter\s+N\b.*)` (case-insensitive) where N is within the requested range.
 - A chapter section ends at the next heading of the same or higher level (i.e., equal or fewer `#` characters), or at end-of-file.
 - Discard all content that falls outside the selected chapter range.
 - If no chapter headings are found in a file after filtering, skip that file entirely.
 - If no content remains across all files after filtering, abort and tell the user: "No content found for the requested chapter(s)."
+
+If no chapter filter was parsed, use the whole content of each file read above — no chapter-section extraction.
 
 **Step 3: Generate study content**
 
