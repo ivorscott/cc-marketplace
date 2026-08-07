@@ -176,26 +176,31 @@ func (m Model) viewQuestion() string {
 	b.WriteString(progressCountStyle.Render(fmt.Sprintf("%d/%d", m.current+1, total)))
 	b.WriteString("\n\n")
 
-	b.WriteString(questionStyle.Render(q.Question))
+	b.WriteString(questionStyle.Render(render.Wrap(q.Question, m.sepW())))
 	b.WriteString("\n\n")
 
+	const optIndent = "      " // aligns with "▶ A.  " / "  A.  " (6 cols)
+	optW := m.sepW() - len(optIndent)
 	labels := []string{"A", "B", "C", "D"}
 	for i, opt := range q.Options {
 		label := ""
 		if i < len(labels) {
 			label = labels[i] + ".  "
 		}
+		text := render.WrapIndent(opt, optW, optIndent)
 		if i == m.selected {
-			b.WriteString(cursorStyle.Render("▶") + " " + selectedOptStyle.Render(label+opt))
+			b.WriteString(cursorStyle.Render("▶") + " " + selectedOptStyle.Render(label+text))
 		} else {
-			b.WriteString("  " + optLabelStyle.Render(label) + optTextStyle.Render(opt))
+			b.WriteString("  " + optLabelStyle.Render(label) + optTextStyle.Render(text))
 		}
 		b.WriteString("\n")
 	}
 	b.WriteString("\n")
 
 	if m.showHint && q.Hint != "" {
-		b.WriteString(hintStyle.Render("◆  " + q.Hint))
+		const hintIndent = "   " // aligns with "◆  " (3 cols)
+		hint := render.WrapIndent(q.Hint, m.sepW()-len(hintIndent), hintIndent)
+		b.WriteString(hintStyle.Render("◆  " + hint))
 		b.WriteString("\n\n")
 	}
 
@@ -223,17 +228,22 @@ func (m Model) viewAnswered() string {
 	b.WriteString(progressCountStyle.Render(fmt.Sprintf("%d/%d", m.current+1, total)))
 	b.WriteString("\n\n")
 
-	b.WriteString(questionStyle.Render(q.Question))
+	b.WriteString(questionStyle.Render(render.Wrap(q.Question, m.sepW())))
 	b.WriteString("\n\n")
 
+	const optIndent = "      " // aligns with "✓ A.  " / "✗ A.  " / "  A.  " (6 cols)
+	const explIndent = "     " // aligns with "  ↳  " (5 cols)
+	optW := m.sepW() - len(optIndent)
+	explW := m.sepW() - len(explIndent)
 	labels := []string{"A", "B", "C", "D"}
 	for i, opt := range q.Options {
 		label := ""
 		if i < len(labels) {
 			label = labels[i] + ".  "
 		}
+		optText := render.WrapIndent(opt, optW, optIndent)
 		if i == q.Correct {
-			b.WriteString(correctOptStyle.Render("✓ " + label + opt))
+			b.WriteString(correctOptStyle.Render("✓ " + label + optText))
 			b.WriteString("\n")
 			if i < len(q.Explanations) {
 				prefix := ""
@@ -241,21 +251,24 @@ func (m Model) viewAnswered() string {
 					prefixes := []string{"Correct!", "That's right!", "You got it!"}
 					prefix = prefixes[m.current%len(prefixes)] + " "
 				}
-				b.WriteString("  " + correctExplStyle.Render("↳  "+prefix+q.Explanations[i]))
+				expl := render.WrapIndent(prefix+q.Explanations[i], explW, explIndent)
+				b.WriteString("  " + correctExplStyle.Render("↳  "+expl))
 				b.WriteString("\n")
 			}
 		} else if i == m.selected {
-			b.WriteString(wrongOptStyle.Render("✗ " + label + opt))
+			b.WriteString(wrongOptStyle.Render("✗ " + label + optText))
 			b.WriteString("\n")
 			if i < len(q.Explanations) {
-				b.WriteString("  " + wrongExplStyle.Render("↳  "+q.Explanations[i]))
+				expl := render.WrapIndent(q.Explanations[i], explW, explIndent)
+				b.WriteString("  " + wrongExplStyle.Render("↳  "+expl))
 				b.WriteString("\n")
 			}
 		} else {
-			b.WriteString("  " + optLabelStyle.Render(label) + optTextStyle.Render(opt))
+			b.WriteString("  " + optLabelStyle.Render(label) + optTextStyle.Render(optText))
 			b.WriteString("\n")
 			if i < len(q.Explanations) {
-				b.WriteString("  " + explanationStyle.Render("↳  "+q.Explanations[i]))
+				expl := render.WrapIndent(q.Explanations[i], explW, explIndent)
+				b.WriteString("  " + explanationStyle.Render("↳  "+expl))
 				b.WriteString("\n")
 			}
 		}
