@@ -12,7 +12,7 @@ A curated collection of Claude Code plugins for learners and developers.
   - [`/analogy` — Analogy Generator](#analogy--analogy-generator)
   - [`/ascii` — ASCII Diagram Renderer](#ascii--ascii-diagram-renderer)
 - [developer — Skills](#developer--skills)
-  - [`/spec` — Feature Spec Generator](#spec--feature-spec-generator)
+  - [`/spec` — RFC Workflow](#spec--rfc-workflow)
   - [`/spec-archaeology` — Spec Archaeology](#spec-archaeology--spec-archaeology)
 - [Installation](#installation)
 
@@ -244,9 +244,15 @@ Result rendered below:
 
 ## `developer` — Skills
 
-### `/spec` — Feature Spec Generator
+### `/spec` — RFC Workflow
 
-Drafts a markdown feature specification and initializes a Git branch.
+Takes a feature from idea to shipped code through a design-first RFC: write the spec,
+plan it against the real codebase, open a draft PR for review, and keep the plan current
+as the work lands.
+
+The RFC PR holds **no code**, only the spec and the plan. The code ships in small technical
+PRs that link back to it. Reviewers settle the design once, in the RFC, so each code PR
+only has to answer "does this match the plan?"
 
 **Usage:**
 
@@ -255,48 +261,49 @@ Drafts a markdown feature specification and initializes a Git branch.
 /spec @.brief/briefing.md Short feature description
 ```
 
-**Output:** Writes `.spec/<feature-slug>.md`, commits and pushes a
-`claude/feature/<slug>` branch.
+Start with `/spec`. Every later stage is a plain-language request on the same branch:
+
+| Say | You get |
+|---|---|
+| `/spec <feature>` | `.spec/<slug>.md` with requirements, edge cases, acceptance criteria and open questions, committed on a new `claude/feature/<slug>` branch |
+| `create technical plan` (or `plan`) | `.plan/<slug>.md` with steps, files to change, verification commands, risks and a table of technical PRs, checked against the current code |
+| `create draft PR` (or `pr`) | A draft PR titled `RFC: <name> — spec and technical plan`, with motivation, pros and cons, and a status block |
+| `revise the plan` | A dated revision entry, stale file and symbol references fixed, and the PR's status block updated |
+
+Nothing runs on its own: each stage waits until you ask for it. Asking for a plan when one
+already exists revises it instead of overwriting it.
+
+```
+ /spec ──► plan ──► draft RFC PR ──────────────────────► closed, never merged
+                        │                                  (the decision record)
+                        ├─► technical PR #1 ─┐
+                        ├─► technical PR #2 ─┼─► "revise the plan" after each lands
+                        └─► technical PR #N ─┘
+```
+
+**Small change?** Skip the plan: run `/spec`, then `create draft PR`. You get a branch, a
+requirements doc and a PR to discuss, with nothing to maintain.
+
+**Closing an RFC:** GitHub shows every closed PR the same way, so say how it ended in the
+title: `RFC (shipped): <name>` or `RFC (declined): <name>`.
+
+**Finding past RFCs:** specs and plans never reach `main`, so search PR titles:
+
+```
+gh pr list --search "RFC: in:title" --state all
+```
+
+> **NOTE:** Start from a clean working tree. `/spec` creates a branch and commits to it.
 
 #### Briefings (optional)
 
-A briefing is an external document that supplies additional context for the
-spec. Store briefings in `.brief/` at the project root and reference them
-with `@.brief/`.
+A briefing is an external document, such as a ticket, meeting notes or a design doc, that
+gives `/spec` more context. Store briefings in `.brief/` at the project root and reference
+them with `@.brief/`.
 
-- Briefing contents **inform** the spec but are **not added** to the codebase.
-- If a briefing contains proposals, `/spec` will challenge them rather than accepting them outright.
-- Without a briefing, the spec is generated from the feature description alone using the built-in template.
-- On first use, `/spec` automatically adds `/.brief/` to `.gitignore` so the folder never blocks subsequent runs.
-
-```
-  ┌───────────────────────┐      ┌──────────────────────────┐
-  │  @.brief/file.md      │      │  Feature description     │
-  │  (optional briefing)  │      │  (required)              │
-  └────────┬──────────────┘      └──────────┬───────────────┘
-           │                                │
-           │   Briefing informs spec but    │
-           │   proposals are challenged     │
-           ▼                                ▼
-  ┌─────────────────────────────────────────────────────────┐
-  │                    /spec                                │
-  │                                                         │
-  │  1. Generate spec from description + built-in template  │
-  │     (briefing contents refine but don't override)       │
-  │  2. Write spec to .spec/<feature-slug>.md               │
-  └──────────────────────────┬──────────────────────────────┘
-                             │
-                 ┌───────────┴───────────┐
-                 ▼                       ▼
-        ┌────────────────┐      ┌───────────────┐
-        │ .spec/         │      │ Git branch    │
-        │ <slug>.md      │      │ claude/       │
-        │ (spec file)    │      │ feature/      │
-        │                │      │ <slug>        │
-        │                │      │ (committed &  │
-        │                │      │  pushed)      │
-        └────────────────┘      └───────────────┘
-```
+- Briefings **inform** the spec and plan but are never committed or cited in them.
+- If a briefing contains proposals, `/spec` challenges them instead of accepting them outright.
+- On first use, `/spec` adds `/.brief/` to `.gitignore`.
 
 ---
 
