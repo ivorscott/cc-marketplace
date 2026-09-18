@@ -12,7 +12,7 @@ A curated collection of Claude Code plugins for learners and developers.
   - [`/analogy` — Analogy Generator](#analogy--analogy-generator)
   - [`/ascii` — ASCII Diagram Renderer](#ascii--ascii-diagram-renderer)
 - [developer — Skills](#developer--skills)
-  - [`/spec` — Feature Spec Generator](#spec--feature-spec-generator)
+  - [`/spec` — RFC Workflow](#spec--rfc-workflow)
   - [`/spec-archaeology` — Spec Archaeology](#spec-archaeology--spec-archaeology)
 - [Installation](#installation)
 
@@ -244,12 +244,15 @@ Result rendered below:
 
 ## `developer` — Skills
 
-### `/spec` — Feature Spec Generator
+### `/spec` — RFC Workflow
 
-Runs the RFC workflow: draft a feature spec, turn it into a technical plan, open a draft RFC pull
-request, and keep the plan honest while the work ships. **The RFC PR is a PR of PRs** — it holds no
-code, only the spec and the plan. Code lands as separate, small technical PRs underneath it that link
-back to the RFC, so each is easy to review because the argument already happened there.
+Takes a feature from idea to shipped code through a design-first RFC: write the spec,
+plan it against the real codebase, open a draft PR for review, and keep the plan current
+as the work lands.
+
+The RFC PR holds **no code**, only the spec and the plan. The code ships in small technical
+PRs that link back to it. Reviewers settle the design once, in the RFC, so each code PR
+only has to answer "does this match the plan?"
 
 **Usage:**
 
@@ -258,48 +261,49 @@ back to the RFC, so each is easy to review because the argument already happened
 /spec @.brief/briefing.md Short feature description
 ```
 
-Every later stage is a plain-language request — no slash command needed. Once you're on the
-`claude/feature/*` branch, the short forms `plan` and `pr` work too.
+Start with `/spec`. Every later stage is a plain-language request on the same branch:
 
-```
- 1. /spec <feature description>   → .spec/<slug>.md    committed + pushed on claude/feature/<slug>
- 2. "create technical plan"       → .plan/<slug>.md    committed + pushed
- 3. "create draft PR"             → draft RFC PR "RFC: <name> — spec and technical plan"
-        │ orchestrates (no code here)
-        ▼
-    Technical PR #1..N (code only, each links back to the RFC PR)
-        │ as each lands:
- 4. "revise the plan"             → dated revision entry + body brought current
-                                    + RFC-STATUS block in the PR re-synced
-        │ once the work ships
-        ▼
-    RFC PR closed, never merged — the archived record of the decision
-```
-
-| Stage | Output |
+| Say | You get |
 |---|---|
-| **Spec** | Summary, Functional Requirements, Edge Cases, Acceptance Criteria, Open Questions (requirement-level), Testing Guidelines. No implementation detail. |
-| **Plan** | Grounded in a recorded `repo@sha`: overview + out-of-scope, steps, files, Technical PRs table, verification with real commands, numbered open questions (`O-1`…), a Decided list, risks. |
-| **Draft PR** | Design-only notice, a Ticket + `RFC-STATUS` block, Motivation / Pros / Cons, Summary, Open Questions. The PR URL is written back into the plan header. |
-| **Revision** | Plan citations re-checked against the default branch and fixed; an append-only revision entry; PR status block re-synced. |
+| `/spec <feature>` | `.spec/<slug>.md` with requirements, edge cases, acceptance criteria and open questions, committed on a new `claude/feature/<slug>` branch |
+| `create technical plan` (or `plan`) | `.plan/<slug>.md` with steps, files to change, verification commands, risks and a table of technical PRs, checked against the current code |
+| `create draft PR` (or `pr`) | A draft PR titled `RFC: <name> — spec and technical plan`, with motivation, pros and cons, and a status block |
+| `revise the plan` | A dated revision entry, stale file and symbol references fixed, and the PR's status block updated |
 
-**Lightweight mode:** the full flow is too much for a small change. Run `/spec`, then "create draft
-PR" and skip the plan — you get a branch, a requirements doc, and a PR to discuss, with nothing to
-maintain.
+Nothing runs on its own: each stage waits until you ask for it. Asking for a plan when one
+already exists revises it instead of overwriting it.
 
-**Finding past RFCs:** specs and plans never reach `main`, so search PR titles instead:
-`gh pr list --search "RFC: in:title" --state all`
+```
+ /spec ──► plan ──► draft RFC PR ──────────────────────► closed, never merged
+                        │                                  (the decision record)
+                        ├─► technical PR #1 ─┐
+                        ├─► technical PR #2 ─┼─► "revise the plan" after each lands
+                        └─► technical PR #N ─┘
+```
+
+**Small change?** Skip the plan: run `/spec`, then `create draft PR`. You get a branch, a
+requirements doc and a PR to discuss, with nothing to maintain.
+
+**Closing an RFC:** GitHub shows every closed PR the same way, so say how it ended in the
+title: `RFC (shipped): <name>` or `RFC (declined): <name>`.
+
+**Finding past RFCs:** specs and plans never reach `main`, so search PR titles:
+
+```
+gh pr list --search "RFC: in:title" --state all
+```
+
+> **NOTE:** Start from a clean working tree. `/spec` creates a branch and commits to it.
 
 #### Briefings (optional)
 
-A briefing is an external document that supplies additional context for the
-spec. Store briefings in `.brief/` at the project root and reference them
-with `@.brief/`.
+A briefing is an external document, such as a ticket, meeting notes or a design doc, that
+gives `/spec` more context. Store briefings in `.brief/` at the project root and reference
+them with `@.brief/`.
 
-- Briefing contents **inform** the spec but are **not added** to the codebase.
-- If a briefing contains proposals, `/spec` will challenge them rather than accepting them outright.
-- Without a briefing, the spec is generated from the feature description alone using the built-in template.
-- On first use, `/spec` automatically adds `/.brief/` to `.gitignore` so the folder never blocks subsequent runs.
+- Briefings **inform** the spec and plan but are never committed or cited in them.
+- If a briefing contains proposals, `/spec` challenges them instead of accepting them outright.
+- On first use, `/spec` adds `/.brief/` to `.gitignore`.
 
 ---
 
