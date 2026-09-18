@@ -246,7 +246,10 @@ Result rendered below:
 
 ### `/spec` — Feature Spec Generator
 
-Drafts a markdown feature specification and initializes a Git branch.
+Runs the RFC workflow: draft a feature spec, turn it into a technical plan, open a draft RFC pull
+request, and keep the plan honest while the work ships. **The RFC PR is a PR of PRs** — it holds no
+code, only the spec and the plan. Code lands as separate, small technical PRs underneath it that link
+back to the RFC, so each is easy to review because the argument already happened there.
 
 **Usage:**
 
@@ -255,8 +258,37 @@ Drafts a markdown feature specification and initializes a Git branch.
 /spec @.brief/briefing.md Short feature description
 ```
 
-**Output:** Writes `.spec/<feature-slug>.md`, commits and pushes a
-`claude/feature/<slug>` branch.
+Every later stage is a plain-language request — no slash command needed. Once you're on the
+`claude/feature/*` branch, the short forms `plan` and `pr` work too.
+
+```
+ 1. /spec <feature description>   → .spec/<slug>.md    committed + pushed on claude/feature/<slug>
+ 2. "create technical plan"       → .plan/<slug>.md    committed + pushed
+ 3. "create draft PR"             → draft RFC PR "RFC: <name> — spec and technical plan"
+        │ orchestrates (no code here)
+        ▼
+    Technical PR #1..N (code only, each links back to the RFC PR)
+        │ as each lands:
+ 4. "revise the plan"             → dated revision entry + body brought current
+                                    + RFC-STATUS block in the PR re-synced
+        │ once the work ships
+        ▼
+    RFC PR closed, never merged — the archived record of the decision
+```
+
+| Stage | Output |
+|---|---|
+| **Spec** | Summary, Functional Requirements, Edge Cases, Acceptance Criteria, Open Questions (requirement-level), Testing Guidelines. No implementation detail. |
+| **Plan** | Grounded in a recorded `repo@sha`: overview + out-of-scope, steps, files, Technical PRs table, verification with real commands, numbered open questions (`O-1`…), a Decided list, risks. |
+| **Draft PR** | Design-only notice, a Ticket + `RFC-STATUS` block, Motivation / Pros / Cons, Summary, Open Questions. The PR URL is written back into the plan header. |
+| **Revision** | Plan citations re-checked against the default branch and fixed; an append-only revision entry; PR status block re-synced. |
+
+**Lightweight mode:** the full flow is too much for a small change. Run `/spec`, then "create draft
+PR" and skip the plan — you get a branch, a requirements doc, and a PR to discuss, with nothing to
+maintain.
+
+**Finding past RFCs:** specs and plans never reach `main`, so search PR titles instead:
+`gh pr list --search "RFC: in:title" --state all`
 
 #### Briefings (optional)
 
@@ -268,35 +300,6 @@ with `@.brief/`.
 - If a briefing contains proposals, `/spec` will challenge them rather than accepting them outright.
 - Without a briefing, the spec is generated from the feature description alone using the built-in template.
 - On first use, `/spec` automatically adds `/.brief/` to `.gitignore` so the folder never blocks subsequent runs.
-
-```
-  ┌───────────────────────┐      ┌──────────────────────────┐
-  │  @.brief/file.md      │      │  Feature description     │
-  │  (optional briefing)  │      │  (required)              │
-  └────────┬──────────────┘      └──────────┬───────────────┘
-           │                                │
-           │   Briefing informs spec but    │
-           │   proposals are challenged     │
-           ▼                                ▼
-  ┌─────────────────────────────────────────────────────────┐
-  │                    /spec                                │
-  │                                                         │
-  │  1. Generate spec from description + built-in template  │
-  │     (briefing contents refine but don't override)       │
-  │  2. Write spec to .spec/<feature-slug>.md               │
-  └──────────────────────────┬──────────────────────────────┘
-                             │
-                 ┌───────────┴───────────┐
-                 ▼                       ▼
-        ┌────────────────┐      ┌───────────────┐
-        │ .spec/         │      │ Git branch    │
-        │ <slug>.md      │      │ claude/       │
-        │ (spec file)    │      │ feature/      │
-        │                │      │ <slug>        │
-        │                │      │ (committed &  │
-        │                │      │  pushed)      │
-        └────────────────┘      └───────────────┘
-```
 
 ---
 
