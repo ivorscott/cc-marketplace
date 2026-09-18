@@ -1,109 +1,204 @@
 ---
-description: Draft a feature specification and initialize a Git branch.
-argument-hint: "Short feature description"
-allowed-tools: Read, Write, Glob, Bash(git status:*), Bash(git switch:*), Bash(git add:*), Bash(git commit:*), Bash(git push:*), Bash(git remote:*), Bash(git rev-parse:*)
+name: spec
+description: Run the RFC workflow — draft a feature spec on a new claude/feature/* branch, then "create technical plan" ("write the plan"), "create draft PR" ("open the RFC PR"), and "revise the plan" ("update the plan", "the plan is out of date") as the work ships.
+argument-hint: "Feature description, or 'create technical plan', 'create draft PR', 'revise the plan'"
+allowed-tools: Read, Write, Edit, Glob, Grep, Bash(git status:*), Bash(git switch:*), Bash(git branch:*), Bash(git add:*), Bash(git commit:*), Bash(git push:*), Bash(git fetch:*), Bash(git remote:*), Bash(git rev-parse:*), Bash(git symbolic-ref:*), Bash(git cat-file:*), Bash(git grep:*), Bash(git diff:*), Bash(gh pr view:*), Bash(gh pr list:*), Bash(gh pr create:*), Bash(gh pr edit:*)
 ---
 
-You are helping to spin up a new feature spec for this application.
-Always adhere to any rules or requirements set out in any CLAUDE.md files when responding.
+You run the RFC workflow: **spec → technical plan → draft RFC PR → plan revisions** while the work ships.
+
+## Ground rules
+
+- **The RFC PR is a PR of PRs.** It holds only `.spec/` and `.plan/`, never code. It opens as a draft, stays
+  open as the live record while separate technical PRs implement the work, and is closed unmerged as the
+  archived decision.
+- **Spec and plan live only on the RFC branch.** Never copy them onto technical PR branches. Link both ways
+  instead: technical PRs link to the RFC PR; the plan lists them in its **Technical PRs** table and links the
+  RFC PR in its header.
+- **Briefing files are invisible input.** Files handed in (e.g. `.brief/`) inform the spec and plan but are
+  never committed, cited, quoted or referenced by path from them — readers won't have them.
+- **Ground everything, invent nothing.** Every claim comes from the user's input, the spec, or the codebase.
+  Drop optional fields rather than filling them with made-up values. Input too thin → ask.
+- **Integrations never abort.** If a push or `gh` call fails, print a warning, put "skipped — see warning
+  above" in that output field, and carry on.
+- **Chat output is the summary block only.** Don't paste the spec or plan unless asked.
+- Follow any CLAUDE.md rules.
 
 User input: $ARGUMENTS
 
-## High level behavior
+## Step 0 — Route the request
 
-Your job will be to turn the user input above into:
+Match on intent, not exact wording:
 
-- A human friendly feature title in kebab-case (e.g. new-app-form)
-- A safe git branch name not already taken (e.g. claude/feature/new-app-form)
-- A detailed markdown spec file under the .spec/ directory
+| Request | Route |
+|---|---|
+| A feature description | **A. Draft the spec** |
+| "create / write / update / revise the plan", "record a revision", "the plan is out of date" | **B. Create** if no `.plan/*.md` exists on the branch, otherwise **D. Revise** |
+| "create draft PR", "open the PR", "create the RFC PR" | **C. Draft PR** |
 
-Then save the spec file to disk, push the branch, and print a short summary of what you did.
+Plan-shaped requests are routed by whether a plan exists, never by wording, so an existing plan is never
+overwritten by a fresh draft.
 
->**IMPORTANT:** Consider any files in $ARGUMENTS to be a **task briefing**. Postpone adding them to the code
-until a new feature branch is created (see below). Use file briefings to understand the feature requirements.
-If the input is insufficient to create a spec, ask the user for clarification. If you find any proposals in the briefing,
-suggest alternatives. Do not make assumptions about the feature beyond what is provided in the input.
+Short forms **"plan"** and **"pr"** count only when already in this workflow on a `claude/feature/*` branch
+(they're kept out of the description on purpose, so they never trigger the skill elsewhere). "plan" with no
+spec on the branch → ask. "pr" → C, which stops on its own without a spec.
 
-## Step 1. Check the working tree
+## Shared: locating documents (B, C, D)
 
-Run `git status --porcelain` and partition the output into two sets:
-- **brief-paths**: lines whose path starts with `.brief/`
-- **other-paths**: everything else
+- `branch_name` = `git branch --show-current`.
+- **Spec:** `Glob` `.spec/*.md`. None → tell the user to describe the feature first, and stop. Derive
+  `feature_slug` / `feature_title` from it.
+- **Plan:** `Glob` `.plan/*.md` — **never rebuild the name from the spec's slug**; plans are often named for a
+  narrower slice (spec `cps-txl-cert-architecture-split`, plan `cps-txl-split-deployment-pr`). Several matches
+  → ask which. Call it `plan_path`.
+- **Open RFC PR:** `gh pr list --head <branch_name> --json url,number`.
 
-If **brief-paths** is non-empty and `/.brief/` is not already in `.gitignore`:
-1. Read `.gitignore` at the repo root (create it if absent).
-2. Append `/.brief/` on a new line.
-3. `git add .gitignore`
-4. `git commit -m "chore: ignore .brief/"`
+## Shared: the RFC-STATUS block (B, C, D)
 
-If **other-paths** is non-empty after the above, abort and tell the user to
-commit or stash the remaining changes before proceeding. DO NOT GO ANY FURTHER.
+A few live numbers high in the PR body, so a reviewer who reads only the PR still sees current state. It is a
+pointer, not a copy of the plan — don't grow it. Omit it entirely while there is no plan.
 
-## Step 2. Parse the arguments
+Computed from the plan:
 
-From `$ARGUMENTS`, derive:
+- **Ticket line** — `**Ticket:** [<ID>](<url>)`, only if the plan header has a Ticket row.
+- **Status line** — `**Status:** <revision> · <k> open question(s) · Technical PRs: <o> open, <m> merged` (add
+  `, <d> dropped` if any). `<revision>` is "No revisions yet" or "Revision N (YYYY-MM-DD) — <summary>"; `<k>`
+  counts un-struck `**O-n**` bullets; the tally comes from the table's State column.
 
-1. `feature_title`
-    - A short, human readable title in Title Case.
-    - Example: "Card Component for Dashboard Stats".
+Both lines sit between `<!-- RFC-STATUS:START -->` and `<!-- RFC-STATUS:END -->`, right after the opening
+paragraph and before `## Motivation`.
 
-2. `feature_slug`
-    - A git safe slug.
-    - Rules:
-        - Lowercase
-        - Kebab-case
-        - Only `a-z`, `0-9` and `-`
-        - Replace spaces and punctuation with `-`
-        - Collapse multiple `-` into one
-        - Trim `-` from start and end
-        - Maximum length 40 characters
-    - Example: `card-component` or `card-component-dashboard`.
+**Syncing an existing PR:** `gh pr view <url> --json body -q .body` → replace only the text between the
+markers (insert the markers at that position if absent) → write to a temp file →
+`gh pr edit <url> --body-file <tmp>`. Nothing outside the markers is ever touched.
 
-3. `branch_name`
-    - Format: `claude/feature/<feature_slug>`
-    - Example: `claude/feature/card-component`.
+---
 
-If you cannot infer a sensible `feature_title` and `feature_slug`, ask the user to clarify instead of guessing.
+## A. Draft the spec
 
-## Step 3. Switch to a new Git branch
+1. **Clean tree.** `git status --porcelain`. If any path is under `.brief/` and `/.brief/` isn't in
+   `.gitignore`, append it (create the file if needed) and commit `chore: ignore .brief/`. If anything else is
+   dirty, tell the user to commit or stash, and stop.
+2. **Names.** Derive from the input (ask if you can't infer sensible ones):
+   - `feature_title` — short, Title Case. *"Card Component for Dashboard Stats"*
+   - `feature_slug` — lowercase kebab-case, `a-z 0-9 -` only, punctuation → `-`, collapse and trim dashes,
+     ≤ 40 chars. *`card-component`*
+   - `branch_name` — `claude/feature/<feature_slug>`; if taken, append `-01`, `-02`, …
+3. **Branch** with `git switch -c <branch_name>` before writing anything.
+4. **Write** `.spec/<feature_slug>.md` using exactly the structure in @template.md. Requirements only — no
+   implementation detail or code; that's the plan's job. If the briefing contains proposals, suggest
+   alternatives rather than adopting them silently.
+5. **Commit and push:** `git add .spec/<feature_slug>.md`, `git commit -m "spec: add <feature_slug>"`,
+   `git push -u origin <branch_name>`. Build `spec_url` from `git remote get-url origin` (normalise SSH or
+   HTTPS to `https://github.com/<org>/<repo>`) + `/blob/<branch_name>/.spec/<feature_slug>.md`; if the push
+   failed, use the local path.
+6. **Report:**
+   ```
+   Branch: <branch_name>
+   Spec file: .spec/<feature_slug>.md
+   Title: <feature_title>
+   GitHub: <spec_url>
+   ```
+   Next: "create technical plan", then "create draft PR" — or go straight to the PR for a small change.
 
-Before making any content, switch to a new Git branch using the `branch_name` derived from the `$ARGUMENTS`. If the branch name is already taken, append a version number to it: e.g. `claude/feature/card-component-01`.
+## B. Create the technical plan
 
-## Step 4. Draft the spec content
+1. Locate the spec. If a plan already exists, this is **D** — go there.
+2. Read the spec and enough of the codebase to ground the plan in what actually exists. Write
+   `.plan/<plan_slug>.md` using exactly @plan_template.md. `plan_slug` defaults to `feature_slug`, but name it
+   for what the plan really covers if that's a narrower slice.
 
-Create a markdown spec document that Plan mode can use directly and save it in the .spec folder using the
-`feature_slug`. Use the exact structure as defined in the spec template file here: @template.md.
+   These rules are what make the plan checkable later:
+   - **Grounding line** — the real `git rev-parse --short HEAD` and today's date. D checks against it.
+   - **Out of scope** — what a reader would expect here but won't find, and why. Keeps technical PRs from
+     growing past the plan.
+   - **Header rows** — Ticket / Primary repo / Also touched only when real. Leave **RFC PR** as the placeholder;
+     C fills it.
+   - **Technical PRs** — create the table even with zero rows. One format for one PR or ten.
+   - **Verification** — real commands with expected output, each tied to the step it covers. Never "confirm it
+     works".
+   - **Open questions** — implementation-level only (requirement questions stay in the spec), numbered `O-1`,
+     `O-2`, … so revisions can close them by name.
+   - **Decided** — only genuinely settled calls, with reasoning. Nothing settled → one line saying so.
+   - **`[assumed]`** — tag only claims you could not verify by reading a file. Never tag the verified majority.
+3. `git add <plan_path>`, `git commit -m "plan: add <plan_slug>"`, `git push`.
+4. If an RFC PR is already open (spec-only PR opened first), sync its RFC-STATUS block.
+5. **Report:**
+   ```
+   Branch: <branch_name>
+   Plan file: .plan/<plan_slug>.md
+   Title: <feature_title>
+   ```
+   Next: "create draft PR".
 
-Do not add technical implementation details such as code examples.
+## C. Create the draft PR
 
-## Step 5. Commit and push the branch
+1. Locate spec, plan (optional — a spec-only PR is fine) and any open PR. If `plan_path` is untracked or
+   modified, commit it (`plan: add <plan_slug>`) and push.
+2. If a PR is already open, use its URL as `pr_url` and skip to step 5.
+3. Build the PR from @pr_template.md:
+   - Title: `RFC: <feature_title> — spec and technical plan`.
+   - Opening paragraph verbatim, with real paths (drop the plan path if there's no plan yet).
+   - RFC-STATUS block (omitted without a plan).
+   - **Motivation / Pros / Cons** — real analysis of the spec (and plan); nothing ungrounded. **Summary** and
+     **Open Questions** from the spec. Leave **Test plan** as-is unless the spec defines one.
+4. Write the body to a temp file, then
+   `gh pr create --draft --head <branch_name> --title "<title>" --body-file <tmp>`. Capture `pr_url`.
+5. **Back-link:** if the plan's **RFC PR** row is still the placeholder, fill in `pr_url`, commit
+   `plan: link RFC PR`, push. The plan and PR now point at each other.
+6. **Report:**
+   ```
+   Branch: <branch_name>
+   Spec file: .spec/<feature_slug>.md
+   Plan file: <plan_path> (or "none yet")
+   Title: <feature_title>
+   PR: <pr_url>
+   ```
 
-With the spec file saved, commit and push the branch so the spec is immediately available on GitHub.
+## D. Revise the plan
 
-1. Run `git rev-parse --show-toplevel` to get the repo root, then derive the path of the spec file relative to the
-   repo root (e.g. `.spec/<feature_slug>.md`).
-2. Stage the spec file: `git add .spec/<feature_slug>.md`
-3. Commit: `git commit -m "spec: add <feature_slug>"`
-4. Push: `git push -u origin <branch_name>`
-5. Get the remote URL: `git remote get-url origin`
-6. Construct the GitHub blob URL for the spec file:
-    - Convert SSH remote (`git@github.com:org/repo.git`) → `https://github.com/org/repo`
-    - Convert HTTPS remote (`https://github.com/org/repo.git`) → `https://github.com/org/repo`
-    - Append `/blob/<branch_name>/<relative.spec_path>` to get `github.spec_url`.
+The RFC stays open while the work ships; revisions are how the plan absorbs what the technical PRs actually
+found.
 
-If the push fails, print a warning and set `github.spec_url` to the local path. Do not abort.
+1. Locate the plan (none → say so and do **B** instead). Read it in full.
+2. **Check its citations — silently — and fix what rotted.** `git fetch origin`; resolve the default branch
+   with `git symbolic-ref --short refs/remotes/origin/HEAD` (usually `origin/main`). Check against *that*, not
+   the working tree — the RFC branch carries only documents and its code is stale. Check this repo only; other
+   repos are tracked through the Technical PRs table.
 
-## Step 6. Final output to the user
+   | Citation | Check | What it establishes |
+   |---|---|---|
+   | file path | `git cat-file -e <default>:<path>` | exists or not |
+   | symbol, flag, env var, config key | `git grep -n <term> <default>` | still present somewhere — not that it still means the same |
+   | `file:line` | `git diff --stat <sha> <default> -- <file>` | file changed → treat the line as suspect, never as verified |
 
-Respond with a short summary in this exact format:
-
-```
-Branch: <branch_name>
-Spec file: .spec/<feature_slug>.md
-Title: <feature_title>
-GitHub: <github.spec_url>
-```
-
-Use "skipped — see warning above" for any field where the integration failed.
-
-Do not repeat the full spec in the chat output unless the user explicitly asks to see it.
+   Correct the plan in place. Don't report the check — a more accurate plan is the deliverable. No grounding
+   line yet → add one at the current default-branch sha.
+3. **Add a revision entry** newest-first, below the grounding line and above `## Overview`:
+   ```
+   > **Revision N (YYYY-MM-DD) — <one-line summary>.**
+   > <what shipped, what was found, what it means for the plan>
+   ```
+   - **Append-only.** Never edit or delete an earlier entry; a wrong one is corrected by a newer entry that says
+     so.
+   - **Only for something substantive** — a PR merged, a decision reversed, a claim found false, verification
+     run for real. Not typos. Three meaningful entries beat fifteen ceremonial ones.
+   - **Record false findings,** with what made them believable. That's the most reusable part of the log and
+     the first thing lost when it's written as a list of wins.
+4. **Bring the body current — the half that gets skipped.** A current log over a stale body is worse than
+   either alone.
+   - Open questions: strike answered ones and mark ✅ with the answer. Keep the number forever; never renumber.
+   - Risks: close settled ones, citing where the answer came from.
+   - Technical PRs: add rows, update states (add the table if an older plan lacks it).
+   - Decided: strike superseded calls with a dated correction beneath; add new ones.
+   - Paths and symbols fixed in step 2; move the grounding sha/date if the baseline moved.
+5. `git add <plan_path>`, `git commit -m "docs(plan): revision <N> — <summary>"`, `git push`. The PR updates in
+   place — never open a new one.
+6. If the plan's **RFC PR** row holds a real URL, sync the RFC-STATUS block.
+7. **Report** — this and nothing else (no staleness summary, no list of what was checked):
+   ```
+   Plan file: <plan_path>
+   Revision: <N> — <summary>
+   Updated sections: <list, or "none — log entry only">
+   RFC PR: <pr_url> (status synced) / (no PR yet)
+   ```
