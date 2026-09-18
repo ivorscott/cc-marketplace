@@ -192,8 +192,12 @@ func TestUpdate_Retake(t *testing.T) {
 		t.Fatalf("expected stateResults, got %v", m.state)
 	}
 	m = update(m, "r")
+	if m.state != stateConfirmRetake {
+		t.Fatalf("state = %v, want stateConfirmRetake after pressing r", m.state)
+	}
+	m = update(m, "y") // confirm
 	if m.state != stateQuestion {
-		t.Errorf("state = %v, want stateQuestion after retake", m.state)
+		t.Errorf("state = %v, want stateQuestion after confirmed retake", m.state)
 	}
 	if m.current != 0 {
 		t.Errorf("current = %d, want 0 after retake", m.current)
@@ -203,6 +207,20 @@ func TestUpdate_Retake(t *testing.T) {
 	}
 	if len(m.results) != 0 {
 		t.Errorf("results not cleared after retake")
+	}
+}
+
+func TestUpdate_RetakeCancel(t *testing.T) {
+	m := New(session(1))
+	m = update(m, "a")
+	m = update(m, "enter")
+	m = update(m, "enter") // → results
+	m = update(m, "r")     // retake -> confirmation prompt
+	for _, k := range []string{"n", "esc"} {
+		next := update(m, k)
+		if next.state != stateResults {
+			t.Errorf("key %q: state = %v, want stateResults after cancel", k, next.state)
+		}
 	}
 }
 

@@ -1,17 +1,18 @@
 ---
 description: Generate a quiz or flashcard study session from markdown notes 
   in the current directory.
-argument-hint: "[ch<N>|ch<N>-<N>] [flashcard|quiz] [easy|medium|hard] [count]"
+argument-hint: "[@file.md] [ch<N>|ch<N>-<N>] [flashcard|quiz] [easy|medium|hard] [count]"
 allowed-tools: Read, Write, Glob, Bash(which:*), Bash(go install:*), Bash(go build:*)
 ---
 
 ## Usage
 
 ```
-/study [chapter] [type] [difficulty] [count]
+/study [@file] [chapter] [type] [difficulty] [count]
 ```
 
-- **chapter**: (optional) chapter filter — `ch2`, `ch2-4` (default: all chapters)
+- **file**: (optional) restrict to a single markdown file or a directory — `@notes.md` or `@some-dir/` (default: all `.md` files in the current directory). Can be combined with a chapter filter — e.g. `@some-dir/ ch2` extracts chapter 2 from every file under that directory. The generated study file is saved under the basedir of this path rather than the current directory (see Step 4).
+- **chapter**: (optional) chapter filter — `ch2`, `ch2-4` (default: all chapters). Applies to whichever file(s) are selected — a single file, a directory's files, or all files in the current directory.
 - **type**: `flashcard` or `quiz` (default: `flashcard`)
 - **difficulty**: `easy`, `medium`, or `hard` (default: `medium`)
 - **count**: number of items to generate (default: `10`)
@@ -34,25 +35,43 @@ If it is NOT found:
 
 **Step 1: Parse arguments**
 
-Parse `$ARGUMENTS` (space-separated). Defaults: chapter=all, type=flashcard, difficulty=medium, count=10.
+Parse `$ARGUMENTS` (space-separated). Defaults: file=none, dir=none, chapter=all, type=flashcard, difficulty=medium, count=10. Track a **basedir** for Step 4 — defaults to the current working directory.
 
-Check the first token against the pattern `^ch(\d+)(-(\d+))?$` (case-insensitive):
-- If it matches, consume it as the **chapter filter** and parse the rest for type/difficulty/count.
+Check the first token against the pattern `^@(.+)$`:
+- If it matches, take the path after `@` and decide which kind of path filter it is:
+  - If the path ends in `/`, or it exists on disk as a directory: consume it as the **directory filter**. Set basedir = that directory (trailing slash stripped).
+  - Otherwise: consume it as the **file filter**. Set basedir = the directory containing that file (its dirname; `.` if the path has no directory component).
+- If it does not match, leave it in place; there is no path filter (basedir stays the current working directory).
+
+After resolving the path filter (or confirming there is none), check the **next unconsumed token** against the pattern `^ch(\d+)(-(\d+))?$` (case-insensitive), regardless of whether a path filter was found:
+- If it matches, consume it as the **chapter filter**.
   - `ch2` → single chapter N=2
   - `ch2-4` → chapter range start=2, end=4
-- If it does not match, leave it in place and proceed with parsing type/difficulty/count as usual. chapter filter = none (all chapters).
+- If it does not match, leave it in place. Chapter filter = none (all chapters).
 
-**Step 2: Read all markdown files**
+Parse whatever tokens remain for type/difficulty/count as usual.
 
-Use the Glob tool to find all `*.md` files recursively in the current working directory. Read each file's content. Skip any files inside `.stu/`.
+**Step 2: Read markdown file(s)**
 
-If a chapter filter was parsed in Step 1, extract only the matching chapter sections from each file before using the content:
+If a directory filter was parsed in Step 1:
+- If the directory doesn't exist, abort and tell the user: "Directory not found: `<path>`".
+- Use the Glob tool to find all `*.md` files recursively under that directory. Read each file's content. Skip any files inside `.stu/`.
+- If no `.md` files are found, abort and tell the user: "No markdown files found in: `<path>`".
+
+Else if a file filter was parsed in Step 1:
+- Read that file directly. If it doesn't exist or isn't a `.md` file, abort and tell the user: "File not found: `<path>`".
+
+Otherwise (no path filter): use the Glob tool to find all `*.md` files recursively in the current working directory. Read each file's content. Skip any files inside `.stu/`.
+
+In every case above, if a chapter filter was parsed in Step 1, extract only the matching chapter sections from each file that was read (single file, a directory's files, or the current directory's files) before using the content:
 
 - A chapter section starts at a heading that matches `^#{1,3}\s+(Chapter\s+N\b.*)` (case-insensitive) where N is within the requested range.
 - A chapter section ends at the next heading of the same or higher level (i.e., equal or fewer `#` characters), or at end-of-file.
 - Discard all content that falls outside the selected chapter range.
 - If no chapter headings are found in a file after filtering, skip that file entirely.
 - If no content remains across all files after filtering, abort and tell the user: "No content found for the requested chapter(s)."
+
+If no chapter filter was parsed, use the whole content of each file read above — no chapter-section extraction.
 
 **Step 3: Generate study content**
 
@@ -132,19 +151,19 @@ Rules:
 **Step 4: Save the file**
 
 1. Derive a slug from the topic (e.g., `kafka`, `ccna`, `grpc`) based on the directory or file names
-2. Create the `.stu/` directory if it doesn't exist
-3. Save the JSON to `.stu/<slug>-<type>-<YYYYMMDD>.json`
+2. Create the `<basedir>/.stu/` directory if it doesn't exist, where `basedir` is the one determined in Step 1 (the directory of the `@file`/`@dir` argument, or the current working directory if no path filter was given)
+3. Save the JSON to `<basedir>/.stu/<slug>-<type>-<YYYYMMDD>.json`
     - If a file with that name already exists, append `-2`, `-3`, etc.
 
 Use the Write tool to save the file.
 
 **Step 5: Print the run command**
 
-Print the following to the user (do NOT run it):
+Print the following to the user (do NOT run it), using the `<basedir>/.stu/<filename>.json` path from Step 4:
 
 ```
-Study session saved to .stu/<filename>.json
+Study session saved to <basedir>/.stu/<filename>.json
 
 To start studying, run:
-  stu .stu/<filename>.json
+  stu <basedir>/.stu/<filename>.json
 ```

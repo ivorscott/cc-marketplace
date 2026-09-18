@@ -86,3 +86,27 @@ func SepW(width int) int {
 	}
 	return width
 }
+
+// Wrap word-wraps s to width columns (ANSI-aware, via lipgloss). Returns s
+// unchanged if width is non-positive.
+func Wrap(s string, width int) string {
+	if width <= 0 {
+		return s
+	}
+	return lipgloss.NewStyle().Width(width).Render(s)
+}
+
+// WrapIndent word-wraps s to width columns and prepends indent to every line
+// after the first, so wrapped text lines up under a bullet, arrow, or option
+// label prefix instead of falling back to column 0.
+func WrapIndent(s string, width int, indent string) string {
+	if width <= 0 {
+		return s
+	}
+	wrapped := Wrap(s, width)
+	lines := strings.Split(wrapped, "\n")
+	for i := 1; i < len(lines); i++ {
+		lines[i] = indent + lines[i]
+	}
+	return strings.Join(lines, "\n")
+}

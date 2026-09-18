@@ -197,7 +197,7 @@ func runSession(path string) {
 			fmt.Fprintln(os.Stderr, "error: flashcard set has no cards")
 			os.Exit(1)
 		}
-		m = flashcard.New(s)
+		m = flashcard.New(s, path)
 	}
 
 	p := tea.NewProgram(m, tea.WithAltScreen())
