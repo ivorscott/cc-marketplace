@@ -5,22 +5,15 @@ All notable changes to the spec skill will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [1.0.0] - 2026-04-20
-
-### Added
-- Initial release of spec skill
-- Feature spec document generation with standardized template
-- Git branch initialization and management (claude/feature/* naming convention)
-- Automatic git-safe branch name generation from feature descriptions
-- Specification sections: Summary, Functional Requirements, Edge Cases, Acceptance Criteria, Open Questions, Testing Guidelines
-- Git workflow automation: branch creation, spec commit, and push to remote
-- GitHub blob URL generation for sharing specs
-- .brief/ directory support for task briefing files with automatic .gitignore management
-- Working tree validation to ensure clean state before spec creation
-- Branch name collision detection and automatic versioning
-- Comprehensive README with usage examples and workflow guidance
-
 ## [Unreleased]
+
+### Planned
+- Template customization support per project
+- Collaborative review workflow with comments
+- Spec versioning and change tracking
+- Export to alternative formats (HTML, PDF)
+
+## [2.1.0] - 2026-09-19
 
 ### Changed
 - Simplified SKILL.md (about half the length) with no behaviour dropped: shared "locating documents" and "RFC-STATUS
@@ -40,8 +33,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Spec template pointed to a "Risks & Open Questions" section in the plan, which doesn't exist (they're
   separate sections)
 - Contradiction removed: briefing files were to be "added to the code after branching" and also never committed
+- Changelog comparison links pointed to the wrong repository; they now point to `ivorscott/cc-marketplace`
 
-### Added (pre-simplification)
+### Added
 - Natural-language triggers for two new stages, matched on intent rather than a fixed slash-command form:
   "create technical plan" (and phrasing like "write the plan") and "create draft PR" (and phrasing like "open
   the PR"). Neither is automatic on spec/plan presence alone — each only runs when asked for
@@ -120,11 +114,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   every revision). Only the text between the markers is ever touched, so Motivation/Pros/Cons and reviewer
   comments elsewhere in the body are never disturbed
 
-### Planned
-- Template customization support per project
-- Collaborative review workflow with comments
-- Spec versioning and change tracking
-- Export to alternative formats (HTML, PDF)
+## [1.0.0] - 2026-04-20
 
-[Unreleased]: https://github.com/ivorscott/cc-marketplace/compare/v1.0.0...HEAD
+### Added
+- Initial release of spec skill
+- Feature spec document generation with standardized template
+- Git branch initialization and management (claude/feature/* naming convention)
+- Automatic git-safe branch name generation from feature descriptions
+- Specification sections: Summary, Functional Requirements, Edge Cases, Acceptance Criteria, Open Questions, Testing Guidelines
+- Git workflow automation: branch creation, spec commit, and push to remote
+- GitHub blob URL generation for sharing specs
+- .brief/ directory support for task briefing files with automatic .gitignore management
+- Working tree validation to ensure clean state before spec creation
+- Branch name collision detection and automatic versioning
+- Comprehensive README with usage examples and workflow guidance
+
+[Unreleased]: https://github.com/ivorscott/cc-marketplace/compare/v2.1.0...HEAD
+[2.1.0]: https://github.com/ivorscott/cc-marketplace/compare/v1.0.0...v2.1.0
 [1.0.0]: https://github.com/ivorscott/cc-marketplace/releases/tag/v1.0.0
