@@ -1,7 +1,7 @@
 {
   "name": "developer",
-  "version": "2.1.0",
-  "description": "Cut through ambiguity faster. Skills for writing specs, breaking down features, and tracking work without losing momentum.",
+  "version": "2.2.0",
+  "description": "Cut through ambiguity faster. Skills for writing specs, breaking down features, tracking work without losing momentum, and orchestrating fleets of coding agents.",
   "author": {
     "name": "Ivor Scott Cummings"
   }

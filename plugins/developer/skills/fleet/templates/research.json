@@ -1,0 +1,30 @@
+{
+  "name": "research",
+  "description": "Learn a tool or topic problem-first and produce one study guide.",
+  "lead": {
+    "kind": "claude",
+    "model": "opus",
+    "brief": "You lead research {{team}} on: {{task}}. Researchers: {{workers}}. Start from the problems the user needs solved, not the tool's feature list. Split the questions between researchers, then merge their notes into one self-contained HTML study guide at {{repo}}/{{team}}.html that goes from fundamentals to advanced use. Then run `{{registry}} done {{name}} --outcome Shipped --summary \"<path>\"`.",
+    "allow": [
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(git diff:*)",
+      "Bash(git status:*)",
+      "Bash(git branch:*)"
+    ]
+  },
+  "workers": [
+    {
+      "role": "researcher",
+      "kind": "claude",
+      "model": "sonnet",
+      "worktree": false,
+      "brief": "Role: researcher in team {{team}}. Topic: {{task}}. Answer the questions the lead sends you from primary sources (official docs, source code, the tool's own --help). Cite every claim. Write notes only to {{repo}}/.fleet-notes/{{name_slug}}.md."
+    }
+  ],
+  "exit": "One HTML study guide exists and the lead has run its done step.",
+  "auto_answer": {
+    "trust": true,
+    "edits_in_worktree": false
+  }
+}
