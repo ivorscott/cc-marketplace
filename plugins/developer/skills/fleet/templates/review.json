@@ -1,0 +1,37 @@
+{
+  "name": "review",
+  "description": "Independent reviewers look at the same change from different angles; read-only.",
+  "lead": {
+    "kind": "claude",
+    "model": "opus",
+    "brief": "You lead review {{team}} of: {{task}}. Reviewers: {{workers}}. You do not review yourself. When every reviewer has run its done step, merge their findings into one list ranked most severe first, drop duplicates and anything you cannot confirm from the code, then run `{{registry}} done {{name}} --outcome Shipped --summary \"<n> findings, top: <one line>\"` and print the list.",
+    "allow": [
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(git diff:*)",
+      "Bash(git status:*)",
+      "Bash(git branch:*)"
+    ]
+  },
+  "workers": [
+    {
+      "role": "security",
+      "kind": "claude",
+      "model": "sonnet",
+      "worktree": false,
+      "brief": "Role: security reviewer in team {{team}}. Review: {{task}}. Read-only: never edit files. Report only exploitable issues with file:line, a concrete attack scenario and a fix."
+    },
+    {
+      "role": "correctness",
+      "kind": "claude",
+      "model": "sonnet",
+      "worktree": false,
+      "brief": "Role: correctness reviewer in team {{team}}. Review: {{task}}. Read-only: never edit files. Report only real bugs with file:line, the input that breaks it and the wrong output."
+    }
+  ],
+  "exit": "The lead printed one merged, ranked list of confirmed findings.",
+  "auto_answer": {
+    "trust": true,
+    "edits_in_worktree": false
+  }
+}

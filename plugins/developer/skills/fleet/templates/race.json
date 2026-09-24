@@ -1,0 +1,71 @@
+{
+  "name": "race",
+  "description": "Several agents attack the same problem in parallel; the first verified answer wins and the rest are retired.",
+  "lead": {
+    "kind": "claude",
+    "model": "opus",
+    "brief": "You judge race {{team}} on: {{task}}. Racers: {{workers}}. They already have their briefs; do not solve it yourself and do not re-prompt a racer whose registry row is Done. Poll with `{{registry}} list --team {{team}}`. For the first racer marked Done, verify it: read its commit from your own directory with `git show fleet/{{team}}/<role>`, then ask that racer (`herdr agent prompt <racer> ... --wait`) to re-run the failing check and paste the output. If the fix is right and the check passes, it wins: run `{{registry}} set {{team}}/<role> outcome=\"Won race\"`, then run `{{registry}} done {{name}} --outcome Shipped --summary \"<role>: <one line>\"`. If it fails, try the next racer. If none can be verified, escalate P0. Never install packages to verify.",
+    "allow": [
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(git diff:*)",
+      "Bash(git status:*)",
+      "Bash(git branch:*)"
+    ]
+  },
+  "workers": [
+    {
+      "role": "racer-1",
+      "kind": "claude",
+      "model": "sonnet",
+      "worktree": true,
+      "brief": "RACE. Team {{team}}. Problem: {{task}}. Work only inside your worktree {{worktree}}. Find the root cause and the smallest fix. Prove it: show the failing check before and the passing check after. Speed matters, but an unverified answer loses.",
+      "allow": [
+        "Bash(git status:*)",
+        "Bash(git diff:*)",
+        "Bash(git log:*)",
+        "Bash(git show:*)",
+        "Bash(git add:*)",
+        "Bash(git commit:*)",
+        "Bash(git push:*)"
+      ]
+    },
+    {
+      "role": "racer-2",
+      "kind": "codex",
+      "model": "",
+      "worktree": true,
+      "brief": "RACE. Team {{team}}. Problem: {{task}}. Work only inside your worktree {{worktree}}. Find the root cause and the smallest fix. Prove it: show the failing check before and the passing check after. Speed matters, but an unverified answer loses.",
+      "allow": [
+        "Bash(git status:*)",
+        "Bash(git diff:*)",
+        "Bash(git log:*)",
+        "Bash(git show:*)",
+        "Bash(git add:*)",
+        "Bash(git commit:*)",
+        "Bash(git push:*)"
+      ]
+    },
+    {
+      "role": "racer-3",
+      "kind": "claude",
+      "model": "opus",
+      "worktree": true,
+      "brief": "RACE. Team {{team}}. Problem: {{task}}. Work only inside your worktree {{worktree}}. Find the root cause and the smallest fix. Prove it: show the failing check before and the passing check after. Speed matters, but an unverified answer loses.",
+      "allow": [
+        "Bash(git status:*)",
+        "Bash(git diff:*)",
+        "Bash(git log:*)",
+        "Bash(git show:*)",
+        "Bash(git add:*)",
+        "Bash(git commit:*)",
+        "Bash(git push:*)"
+      ]
+    }
+  ],
+  "exit": "One racer verified and marked 'Won race'; all others retired.",
+  "auto_answer": {
+    "trust": true,
+    "edits_in_worktree": true
+  }
+}

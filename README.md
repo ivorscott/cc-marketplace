@@ -14,6 +14,7 @@ A curated collection of Claude Code plugins for learners and developers.
 - [developer — Skills](#developer--skills)
   - [`/spec` — RFC Workflow](#spec--rfc-workflow)
   - [`/spec-archaeology` — Spec Archaeology](#spec-archaeology--spec-archaeology)
+  - [`/fleet` — Agent Fleet Orchestrator](#fleet--agent-fleet-orchestrator)
 - [Installation](#installation)
 
 ---
@@ -325,3 +326,48 @@ The last form uses the file currently open in the IDE.
 
 **Output:** Writes `{original-filename}-archaeology.md` in the same
 directory as the input file.
+
+---
+
+### `/fleet` — Agent Fleet Orchestrator
+
+Turns the session you're in into an **Orchestrator** that commands teams of coding agents
+running in [herdr](https://herdr.dev). One command boots a whole team: a lead plus
+workers in split panes, with a git worktree per writer. Every agent stays visible, and a
+registry tracks who is doing what. Stalled or dead agents get flagged, and each finished
+team turns into lessons for the next one.
+
+herdr does the terminal mechanics. `/fleet` adds what an orchestrator needs on top: tiers,
+team templates, a registry, health beyond `idle`, escalation, a concurrency cap and debriefs.
+
+**Usage:**
+
+```
+/fleet boot review auth ~/code/api "review the auth refactor on this branch"
+/fleet status
+/fleet tell review-auth "focus on token expiry"
+/fleet watch
+/fleet retire review-auth
+/fleet debrief
+```
+
+| Say | You get |
+|---|---|
+| `/fleet boot <template> <focus> <dir> [task]` | herdr workspace `<template>-<focus>` with a lead and workers, briefs sent, rows in the registry. Templates: `build`, `race`, `review`, `research` |
+| `/fleet status` (or `--problems`) | Every agent as Working, Idle, Needs input, **Stalled** (idle without finishing) or **Zombie** (process gone) |
+| `/fleet tell <team> <msg>` | The message sent to the team's lead, then read back to confirm |
+| `/fleet watch` | A monitor pane that notifies you when an agent stalls, dies, needs input or finishes |
+| `/fleet escalate P0\|P1\|P2 <msg>` | A severity-routed question: P2 answered by the Orchestrator, P1/P0 brought to you |
+| `/fleet retire <team>` | WIP pushed, the fleet's own workspace closed, clean worktrees removed |
+| `/fleet debrief` | Lessons per agent, plus proposed diffs to `.claude/experts/<role>.md` |
+
+**Race** is the incident template: several agents (mixed CLIs if you have them) attack the same
+bug in separate worktrees, the lead verifies the first fix, and the rest are retired.
+
+**Private integrations stay private:** an optional `~/.config/fleet/sink.md`, outside any repo,
+tells the Orchestrator where to mirror the registry, such as a tracker or wiki.
+
+> **NOTE:** Requires herdr 0.9+, `jq` and `git`. Run Claude Code inside a herdr pane, and
+> start the herdr server from your own terminal. The plugin also ships `developer:lead`
+> and `developer:orchestrator` agents and two hooks, which do nothing outside fleet panes.
+

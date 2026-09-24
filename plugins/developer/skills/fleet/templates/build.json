@@ -1,0 +1,63 @@
+{
+  "name": "build",
+  "description": "Plan, build and test one shaped piece of work in one repository.",
+  "lead": {
+    "kind": "claude",
+    "model": "opus",
+    "brief": "You lead team {{team}} on: {{task}}. Your workers are herdr agents: {{workers}}. You never edit code. Coordinate them with `herdr agent prompt/read/wait`. Order: the planner writes the plan, then the builder implements it on its branch, then the tester verifies against the plan. Resolve disagreements; escalate decisions you cannot make with `{{registry}} escalate {{name}} P1 \"<question>\"`. When every worker has run its done step, write a three-line team summary and run `{{registry}} done {{name}} --outcome <Shipped|Partial|Failed> --summary \"<one line>\"`.",
+    "allow": [
+      "Bash(git log:*)",
+      "Bash(git show:*)",
+      "Bash(git diff:*)",
+      "Bash(git status:*)",
+      "Bash(git branch:*)"
+    ]
+  },
+  "workers": [
+    {
+      "role": "planner",
+      "kind": "claude",
+      "model": "sonnet",
+      "worktree": false,
+      "brief": "Role: planner in team {{team}}. Task: {{task}}. Read the code and write a short numbered implementation plan with the files to change and how to verify, then stop and wait for the lead. Do not edit files."
+    },
+    {
+      "role": "builder",
+      "kind": "claude",
+      "model": "sonnet",
+      "worktree": true,
+      "brief": "Role: builder in team {{team}}. Task: {{task}}. Work only inside your worktree {{worktree}} on its branch. Wait for the lead to send you the plan, then implement it.",
+      "allow": [
+        "Bash(git status:*)",
+        "Bash(git diff:*)",
+        "Bash(git log:*)",
+        "Bash(git show:*)",
+        "Bash(git add:*)",
+        "Bash(git commit:*)",
+        "Bash(git push:*)"
+      ]
+    },
+    {
+      "role": "tester",
+      "kind": "claude",
+      "model": "sonnet",
+      "worktree": true,
+      "brief": "Role: tester in team {{team}}. Task: {{task}}. Work only inside your worktree {{worktree}}. When the lead tells you the builder is done, merge its branch into yours (`git merge fleet/{{team}}/builder`), run the project's tests and verify the result against the plan. Report failures to the lead with exact output.",
+      "allow": [
+        "Bash(git status:*)",
+        "Bash(git diff:*)",
+        "Bash(git log:*)",
+        "Bash(git show:*)",
+        "Bash(git add:*)",
+        "Bash(git commit:*)",
+        "Bash(git push:*)",
+        "Bash(git merge:*)"
+      ]
+    }
+  ],
+  "exit": "The builder's branch passes the tester's verification and the lead has written the team summary.",
+  "auto_answer": {
+    "trust": true,
+    "edits_in_worktree": true
+  }
+}
