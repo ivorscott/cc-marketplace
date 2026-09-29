@@ -1,6 +1,6 @@
-# Spec for <Feature Title>
+# Spec for <feature-name>
 
-branch: claude/feature/<feature-slug>
+branch: claude/feature/<feature-name>
 
 ## Summary
 ...
@@ -12,12 +12,15 @@ branch: claude/feature/<feature-slug>
 - ...
 
 ## Acceptance Criteria
-- ...
+- ... 
 
 ## Open Questions
-<!-- Requirement-level only: *what* to build, answerable by a stakeholder. *How* questions go in the plan. -->
 - ...
 
 ## Testing Guidelines
-<!-- Test files to add under ./tests and the cases they cover — meaningful, not exhaustive. -->
-- ...
+Create a test file(s) in the ./tests folder for the new feature, and create meaningful tests or the following cases, 
+without going too heavy:
+- ... 
+
+
+

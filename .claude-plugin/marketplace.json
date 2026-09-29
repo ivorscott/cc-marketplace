@@ -5,7 +5,7 @@
   },
   "metadata": {
     "description": "Curated Claude Code plugins built for engineers who want to move faster without thinking less.",
-    "version": "1.4.0",
+    "version": "1.5.0",
     "pluginRoot": "./plugins"
   },
   "plugins": [
@@ -13,7 +13,7 @@
       "name": "developer",
       "source": "./plugins/developer",
       "description": "Cut through ambiguity faster. Skills for writing specs, breaking down features, tracking work without losing momentum, and orchestrating fleets of coding agents.",
-      "version": "2.2.1",
+      "version": "3.0.0",
       "author": {
         "name": "Ivor Scott Cummings"
       },
