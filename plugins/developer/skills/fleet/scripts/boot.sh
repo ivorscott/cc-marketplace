@@ -90,12 +90,19 @@ alive() { # the pane runs something other than its shell (gotcha: idle can mean 
 }
 
 start_agent() { # start_agent <agent> <kind> <pane> <model> <tier> <worktree> <allow-json> → prints status
-  local agent="$1" kind="$2" pane="$3" args=() out code
+  local agent="$1" kind="$2" pane="$3" args=() out code tries=0
   if [ "$kind" = "claude" ]; then
     while IFS= read -r -d '' a; do args+=("$a"); done < <(claude_args "$4" "$5" "$6" "${7:-[]}")
   fi
-  out="$(hd agent start "$agent" --kind "$kind" --pane "$pane" --timeout 60000 -- "${args[@]}" 2>&1 || true)"
-  code="$(printf '%s' "$out" | jq -r '.error.code // empty' 2>/dev/null || true)"
+  # A fresh pane isn't "an available shell" until its shell has finished starting up
+  # (rc files, prompt hooks), which can take several seconds in a git worktree. Retry
+  # agent_pane_busy for up to 30s instead of failing the agent as a Zombie.
+  while :; do
+    out="$(hd agent start "$agent" --kind "$kind" --pane "$pane" --timeout 60000 -- "${args[@]}" 2>&1 || true)"
+    code="$(printf '%s' "$out" | jq -r '.error.code // empty' 2>/dev/null || true)"
+    [ "$code" = "agent_pane_busy" ] && [ $((tries += 1)) -le 30 ] || break
+    sleep 1
+  done
   if [ "$code" = "agent_not_ready" ]; then
     answer_trust "$agent" || true
   elif [ -n "$code" ]; then
