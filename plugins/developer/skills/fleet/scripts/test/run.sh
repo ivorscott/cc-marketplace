@@ -152,6 +152,14 @@ eq "boot: no unsubstituted {{scripts}}" "$(grep -c '{{scripts}}' "$HERDR_LOG")" 
 eq "boot without file: no KUBECONFIG arg (3.0.1 behaviour)" "$(grep -c -- '--env KUBECONFIG' "$HERDR_LOG")" 0
 check "boot without file: no env dir" test ! -e "$FLEET_STATE_DIR/env/build-plainbt"
 
+# No env anywhere: status header and retire JSON are the 3.0.1 ones
+: >"$HERDR_LOG"; "$SCRIPTS/boot.sh" build plainst "$T/plain" task >/dev/null 2>&1
+saved="$(cat "$FLEET_REGISTRY")"; jq 'del(.envs)' <<<"$saved" >"$FLEET_REGISTRY"
+eq "no envs: status header is the 3.0.1 one" "$("$SCRIPTS/status.sh" --team build-plainst 2>/dev/null | head -1 | tr -s ' ')" "AGENT TIER STATUS ESC HERDR ASSIGNMENT"
+"$SCRIPTS/retire.sh" build-plainst >"$T/r0.json" 2>/dev/null
+eq "no envs: retire JSON keys are the 3.0.1 ones" "$(jq -c 'keys' "$T/r0.json")" '["kept_worktrees","retired"]'
+printf '%s' "$saved" >"$FLEET_REGISTRY"
+
 # status column, then retire cleans the env up
 "$ENV" up build-envt >/dev/null 2>&1
 eq "status shows slot and state" "$("$SCRIPTS/status.sh" --team build-envt 2>/dev/null | awk 'NR==2 {print $5}')" slot-0-Up
@@ -159,7 +167,7 @@ eq "status shows slot and state" "$("$SCRIPTS/status.sh" --team build-envt 2>/de
 eq "retire runs the stub down" "$(calls down)" 1
 eq "retire frees the slot" "$("$REG" env-get build-envt | jq -r .state)" Down
 check "retire removes the env directory" test ! -e "$FLEET_STATE_DIR/env/build-envt"
-eq "retire reports no kept envs" "$(jq -c .kept_envs "$T/retire.json")" "[]"
+eq "retire omits kept_envs when none were kept" "$(jq -c 'has("kept_envs")' "$T/retire.json")" false
 : >"$STUB_LOG"; "$SCRIPTS/retire.sh" build-plainbt >/dev/null 2>&1; eq "retire without env runs no down" "$(calls down)" 0
 
 # Isolation

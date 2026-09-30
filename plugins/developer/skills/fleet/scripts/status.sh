@@ -68,9 +68,13 @@ done
 filter='.'; $problems && filter='[.[] | select(.status == "Stalled" or .status == "Zombie" or .status == "Needs input" or (.escalation // "") != "")]'
 out="$("$registry" list "${list_args[@]}" | jq "$filter")"
 if $json; then printf '%s\n' "$out"; exit 0; fi
+# The ENV column appears only once the registry has a team environment; before that the
+# output is exactly the 3.0.1 table.
 printf '%s' "$out" | jq -r --argjson envs "$("$registry" list --envs)" '
-  (["AGENT", "TIER", "STATUS", "ESC", "ENV", "HERDR", "ASSIGNMENT"] | @tsv),
-  (sort_by(.team, .tier)[] | [.name, .tier, .status, (if (.escalation // "") == "" then "-" else .escalation end),
-    (($envs[.team] // null) as $e | if $e == null or $e.state == "Down" then "-" elif $e.slot != null then "slot-\($e.slot)-\($e.state)" else $e.state end),
-    .herdr_ref, ((.assignment // "")[0:50])] | @tsv)' |
+  ($envs | length > 0) as $showenv |
+  def envcell: ($envs[.team] // null) as $e
+    | if $e == null or $e.state == "Down" then "-" elif $e.slot != null then "slot-\($e.slot)-\($e.state)" else $e.state end;
+  (["AGENT", "TIER", "STATUS", "ESC"] + (if $showenv then ["ENV"] else [] end) + ["HERDR", "ASSIGNMENT"] | @tsv),
+  (sort_by(.team, .tier)[] | [.name, .tier, .status, (if (.escalation // "") == "" then "-" else .escalation end)]
+    + (if $showenv then [envcell] else [] end) + [.herdr_ref, ((.assignment // "")[0:50])] | @tsv)' |
   column -t -s $'\t'

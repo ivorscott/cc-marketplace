@@ -46,4 +46,4 @@ while IFS=$'\t' read -r wt repo; do
 done < <(printf '%s' "$rows" | jq -r '.[] | select((.worktree // "") != "") | [.worktree, .repo] | @tsv')
 
 if [ -n "$outcome" ]; then "$registry" retire "$target" --outcome "$outcome"; else "$registry" retire "$target"; fi
-printf '%s' "$rows" | jq --argjson kept "$kept" --argjson ke "$kept_envs" '{retired: [.[].name], kept_worktrees: $kept, kept_envs: $ke}'
+printf '%s' "$rows" | jq --argjson kept "$kept" --argjson ke "$kept_envs" '{retired: [.[].name], kept_worktrees: $kept} + (if ($ke | length) > 0 then {kept_envs: $ke} else {} end)'
