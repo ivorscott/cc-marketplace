@@ -72,6 +72,7 @@ Fleet rules for $name.$x Stay on this one task. If you notice unrelated work, ru
 claude_args() { # claude_args <model> <tier> <worktree> <allow-json>
   local settings extra="${4:-[]}"
   extra="${extra//\{\{scripts\}\}/$FLEET_SCRIPTS}"
+  extra="${extra//\{\{team\}\}/$team}"; extra="${extra//\{\{worktree\}\}/$3}"
   settings="$(jq -cn --arg r "$registry" --argjson extra "$extra" \
     '{permissions: {allow: (["Bash(\($r):*)", "Bash(herdr:*)"] + $extra)}}')"
   printf '%s\0' --settings "$settings"

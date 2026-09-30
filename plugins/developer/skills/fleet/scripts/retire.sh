@@ -5,7 +5,8 @@
 #   retire.sh <team | team/role> [--outcome O]
 #
 # Never closes panes or workspaces the registry doesn't record as fleet-created. A
-# worktree with uncommitted changes is kept and reported, never force-removed. Retiring a
+# worktree with uncommitted changes is kept and reported (untracked files by name, also
+# under `kept_untracked` in the JSON), never force-removed. Retiring a
 # whole team also runs `env.sh down <team>` for its test cluster (only one the registry
 # created); if that fails the env is kept and reported.
 set -euo pipefail
@@ -19,7 +20,7 @@ outcome=""; [ "${1:-}" = "--outcome" ] && outcome="${2:-}"
 rows="$("$registry" list | jq --arg x "$target" '[.[] | select((.name == $x or .team == $x) and .status != "Retired")]')"
 [ "$(printf '%s' "$rows" | jq length)" != "0" ] || die "nothing live matches '$target'"
 
-kept="[]"; kept_envs="[]"
+kept="[]"; kept_envs="[]"; kept_untracked="{}"
 whole_team=false; printf '%s' "$rows" | jq -e --arg x "$target" 'all(.team == $x)' >/dev/null && [ "${target%%/*}" = "$target" ] && whole_team=true
 
 if $whole_team; then
@@ -41,10 +42,16 @@ while IFS=$'\t' read -r wt repo; do
   dirty="$(git -C "$wt" status --porcelain 2>/dev/null | head -3 | tr '\n' ' ')"
   if [ -n "$dirty" ]; then
     warn "kept $wt: uncommitted changes ($dirty)"; kept="$(printf '%s' "$kept" | jq -c --arg w "$wt" '. + [$w]')"
+    # Name every untracked file: they are what a retired agent's report or notes are made of.
+    untracked="$(git -C "$wt" status --porcelain --untracked-files=all 2>/dev/null | sed -n 's/^?? //p')"
+    if [ -n "$untracked" ]; then
+      while IFS= read -r f; do warn "  untracked in $wt: ?? $f"; done <<<"$untracked"
+      kept_untracked="$(printf '%s' "$kept_untracked" | jq -c --arg w "$wt" --arg u "$untracked" '. + {($w): ($u | split("\n"))}')"
+    fi
   else
     git -C "$repo" worktree remove "$wt" 2>/dev/null || { warn "kept $wt: git worktree remove failed"; kept="$(printf '%s' "$kept" | jq -c --arg w "$wt" '. + [$w]')"; }
   fi
 done < <(printf '%s' "$rows" | jq -r '.[] | select((.worktree // "") != "") | [.worktree, .repo] | @tsv')
 
 if [ -n "$outcome" ]; then "$registry" retire "$target" --outcome "$outcome"; else "$registry" retire "$target"; fi
-printf '%s' "$rows" | jq --argjson kept "$kept" --argjson ke "$kept_envs" '{retired: [.[].name], kept_worktrees: $kept} + (if ($ke | length) > 0 then {kept_envs: $ke} else {} end)'
+printf '%s' "$rows" | jq --argjson kept "$kept" --argjson ke "$kept_envs" --argjson ku "$kept_untracked" '{retired: [.[].name], kept_worktrees: $kept} + (if ($ke | length) > 0 then {kept_envs: $ke} else {} end) + (if ($ku | length) > 0 then {kept_untracked: $ku} else {} end)'

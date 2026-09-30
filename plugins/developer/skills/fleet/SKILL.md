@@ -127,7 +127,7 @@ see an escalation:
    (`agent prompt … --wait`). Skip Zombies.
 2. `$F/retire.sh <team | team/role> [--outcome Shipped|Won race|Partial|Abandoned|Failed]`. It
    closes only the fleet's own workspace or panes, removes clean worktrees, keeps dirty ones
-   (and says so), and marks the rows Retired. Retiring a whole team also runs
+   (naming their untracked files, also under `kept_untracked`), and marks the rows Retired. Retiring a whole team also runs
    `env.sh down <team>`, which removes the team's cluster only if the registry created it; a
    failed down is reported under `kept_envs` and the rows are still retired.
 3. **Race:** once the lead marks a winner, retire every other racer with `--outcome Abandoned`,
@@ -146,7 +146,11 @@ nothing changes. With it:
   kubeconfig holding only that cluster at `$FLEET_STATE/env/<team>/kubeconfig`. It exits 75
   and creates nothing when `max_envs` (config.toml, default 3) clusters already exist.
 - `env.sh down <team>` and `retire.sh` run the repo's `down` and free the slot. `down` acts
-  only on a `fleet-<team>` env the registry recorded.
+  only on a `fleet-<team>` env the registry recorded. Both refuse, before claiming a slot, when an ambient `$CLUSTER` or a `CLUSTER=` in the
+  repo's command templates names anything but `fleet-<team>` (a foreign cluster), and run the
+  templates with `CLUSTER` pinned to `fleet-<team>`.
+- The tester checks out the builder's pushed commit (`git checkout --detach <sha>`), never merges
+  its branch, and signs off on that exact SHA; the lead checks it equals the PR head before `done`.
 - **Isolation limit:** the preset `KUBECONFIG` covers `kubectl` and `helm`. `docker`, `kind
   get clusters` and `kind delete cluster --name …` ignore it, so the tester brief limits them
   to `--name fleet-<team>`.
