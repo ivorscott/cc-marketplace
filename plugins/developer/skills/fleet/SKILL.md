@@ -148,12 +148,14 @@ nothing changes. With it:
 - `env.sh down <team>` and `retire.sh` run the repo's `down` and free the slot. `down` acts
   only on a `fleet-<team>` env the registry recorded. Both refuse, before claiming a slot, when an ambient `$CLUSTER` or a `CLUSTER=` in the
   repo's command templates names anything but `fleet-<team>` (a foreign cluster), and run the
-  templates with `CLUSTER` pinned to `fleet-<team>`.
+  templates with `CLUSTER` pinned to `fleet-<team>`. `up` also dies naming any tool the templates
+  need that is missing.
 - The tester checks out the builder's pushed commit (`git checkout --detach <sha>`), never merges
   its branch, and signs off on that exact SHA; the lead checks it equals the PR head before `done`.
-- **Isolation limit:** the preset `KUBECONFIG` covers `kubectl` and `helm`. `docker`, `kind
-  get clusters` and `kind delete cluster --name …` ignore it, so the tester brief limits them
-  to `--name fleet-<team>`.
+- **Isolation limit:** the preset `KUBECONFIG` covers `kubectl` and `helm`. Other tools (a
+  cluster manager such as kind is one example) may ignore it, so the tester brief limits them to
+  the tools the repo's `fleet-env.json` names and tells them to pass the cluster name
+  `fleet-<team>` explicitly. The team kubeconfig's single context is renamed `fleet-<team>`.
 
 ## G. Prime
 

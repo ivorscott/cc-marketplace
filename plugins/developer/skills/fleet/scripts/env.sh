@@ -13,7 +13,9 @@
 # PR's own Makefile and bootstrap files are what builds the cluster; the checkout is
 # removed afterwards. Only when neither ref exists do they run in the repo directory.
 # `down` runs in the repo directory. The kubeconfig template writes the file itself;
-# env.sh then sets mode 600 and checks that it holds exactly one context. Without the
+# env.sh then sets mode 600, checks that it holds exactly one context and renames that context
+# to fleet-<team>, whatever tool created it. `up` dies naming any tool the templates need that
+# is missing (first command word of each template, and kubectl). Without the
 # file, `up` does nothing (exit 0).
 #
 # A team's cluster is always fleet-<team>; anything else is a foreign cluster. up and down refuse
@@ -25,6 +27,7 @@
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
 registry="$FLEET_SCRIPTS/registry.sh"
+kubectl="${FLEET_KUBECTL:-kubectl}" # overridable so tests run offline
 
 sub="${1:-}"; shift || true
 
@@ -41,7 +44,7 @@ kube_contexts() { # count contexts in a kubeconfig file
 }
 
 refuse_foreign() { # refuse_foreign <what> <value> <cluster>: a team only ever touches fleet-<team>
-  case "$2" in "" | "$3" | "kind-$3") return 0 ;; esac
+  case "$2" in "" | "$3") return 0 ;; esac
   die "refusing: $1 names a foreign cluster; a team environment is always fleet-<team>"
 }
 
@@ -52,6 +55,14 @@ refuse_foreign_tpl() { # refuse_foreign_tpl <what> <template> <cluster>: every C
     [ "$v" != "{{cluster}}" ] || continue
     refuse_foreign "$1" "$v" "$3"
   done < <(printf '%s' "$2" | grep -oE '(^|[^A-Za-z0-9_])CLUSTER=[^[:space:];&|]*' | sed 's/^[^C]*//')
+}
+
+need_tool() { # need_tool <key> <template>: the first command word (after VAR=value) must exist
+  local w words
+  read -ra words <<<"$2"
+  for w in "${words[@]}"; do case "$w" in [A-Za-z_]*=*) continue ;; esac; break; done
+  [ -n "${w:-}" ] || return 0
+  command -v "$w" >/dev/null 2>&1 || die "missing tool: $w (needed by fleet-env.json $1)"
 }
 
 run_tpl() { # run_tpl <repo> <kubeconfig> <template> <cluster>; CLUSTER is pinned to the team's cluster
@@ -98,6 +109,8 @@ case "$sub" in
     refuse_foreign "the ambient CLUSTER" "${CLUSTER:-}" "$cluster"
     refuse_foreign_tpl "the up command" "$up_t" "$cluster"; refuse_foreign_tpl "the down command" "$down_t" "$cluster"
     refuse_foreign_tpl "the kubeconfig command" "$kc_t" "$cluster"
+    command -v "$kubectl" >/dev/null 2>&1 || die "missing tool: $kubectl (needed to name the team context)"
+    need_tool up "$up_t"; need_tool down "$down_t"; [ -z "$kc_t" ] || need_tool kubeconfig "$kc_t"
     cur="$("$registry" env-get "$team" 2>/dev/null || echo '{}')"
     if [ "$(printf '%s' "$cur" | jq -r '.state // ""')" = "Up" ]; then
       echo "fleet: $team environment already up ($(printf '%s' "$cur" | jq -r '.cluster'))"; exit 0
@@ -137,6 +150,11 @@ case "$sub" in
     [ -f "$kc" ] || fail "no kubeconfig at $kc after up"
     chmod 600 "$kc"
     [ "$(kube_contexts "$kc")" = "1" ] || fail "$kc must contain exactly one context"
+    # Whatever tool made the cluster, its one context is named fleet-<team> from here on.
+    ctx="$("$kubectl" config get-contexts -o name --kubeconfig "$kc" 2>/dev/null | head -1)"
+    [ -n "$ctx" ] || fail "cannot read the context name from $kc"
+    [ "$ctx" = "$cluster" ] || "$kubectl" config rename-context "$ctx" "$cluster" --kubeconfig "$kc" >/dev/null ||
+      fail "cannot rename context $ctx to $cluster in $kc"
     "$registry" env-set "$team" state=Up >/dev/null
     echo "fleet: $cluster up; KUBECONFIG=$kc"
     ;;
@@ -171,5 +189,5 @@ case "$sub" in
       (to_entries[] | [.key, .value.cluster, .value.state, (.value.slot // "-"), (.value.http_port // "-"), (.value.https_port // "-")] | map(tostring) | @tsv)' |
       column -t -s $'\t'
     ;;
-  *) sed -n '2,20p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+  *) sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

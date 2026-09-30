@@ -124,9 +124,38 @@ The Orchestrator and agents call these directly (from `scripts/`). You can call 
 
 ## Requirements
 
+**Required**
+
 - herdr 0.9 or later, with the Orchestrator running inside a herdr pane
 - `jq` and `git`
 - Claude Code; other agent CLIs herdr supports are optional workers
+- `gh`, for teams that open pull requests
+
+**Optional**
+
+- `nc` or `lsof`, for the host port checks when allocating a test environment
+- For the team test environment: `kubectl`, plus whatever your `fleet-env.json` commands use (for example `kind` and Docker)
+
+## Team test environment
+
+A repo opts in by adding `.claude/fleet-env.json` with `up`, `down` and `kubeconfig` command
+templates. Placeholders: `{{cluster}}` `{{http_port}}` `{{https_port}}` `{{branch}}` `{{kubeconfig}}` `{{team}}`.
+Example using kind:
+
+```json
+{
+  "up": "kind create cluster --name {{cluster}} && kind export kubeconfig --name {{cluster}} --kubeconfig {{kubeconfig}}",
+  "down": "kind delete cluster --name {{cluster}}",
+  "kubeconfig": "true"
+}
+```
+
+- The team's cluster is always named `fleet-<team>`, and its kubeconfig's single context is
+  renamed to `fleet-<team>`, whatever tool created it.
+- `env.sh up` reports a missing tool by name (`missing tool: <name> (needed by fleet-env.json <key>)`)
+  before it claims a slot.
+- Foreign clusters are refused: an ambient `$CLUSTER`, or a `CLUSTER=` in a template, that is not
+  `fleet-<team>` stops `up` and `down`. Templates run with `CLUSTER` pinned to `fleet-<team>`.
 
 ## Files
 
