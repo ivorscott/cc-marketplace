@@ -89,7 +89,7 @@ eq "queued env has no ports" "$("$REG" env-get build-c | jq -r '.http_port')" nu
 # Registry guard and slot reuse on down
 : >"$STUB_LOG"
 "$ENV" down build-plain >/dev/null 2>&1; eq "down with no registry env runs no stub down" "$(calls down)" 0
-"$REG" env-set build-plain cluster=app-studio state=Up >/dev/null
+"$REG" env-set build-plain cluster=foreign-cluster state=Up >/dev/null
 "$ENV" down build-plain >/dev/null 2>&1; rc=$?
 eq "down with a foreign cluster name runs no stub down" "$(calls down)" 0
 check "down with a foreign cluster name refuses" test "$rc" -ne 0
