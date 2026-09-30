@@ -53,7 +53,15 @@
         "Bash(git push:*)",
         "Bash(git merge:*)",
         "Bash({{scripts}}/env.sh up:*)",
-        "Bash({{scripts}}/env.sh status:*)"
+        "Bash({{scripts}}/env.sh status:*)",
+        "Bash({{scripts}}/registry.sh:*)",
+        "Bash(git fetch:*)",
+        "Bash(git ls-remote:*)",
+        "Bash(git branch:*)",
+        "Bash(git rev-parse:*)",
+        "Bash(unset CLUSTER:*)",
+        "mcp__claude_ai_Linear__get_issue",
+        "mcp__claude_ai_Linear__list_comments"
       ]
     }
   ],

@@ -54,8 +54,11 @@ A slot is held by `Creating`, `Up` and `Failed` envs. `max_envs` in
 }
 ```
 
-Command templates run with `bash -c` in the repo directory with `KUBECONFIG` set to the team
-path. Placeholders: `{{team}}`, `{{cluster}}`, `{{http_port}}`, `{{https_port}}`, `{{branch}}`
+Command templates run with `bash -c` and `KUBECONFIG` set to the team path. `up` and
+`kubeconfig` run in a temporary detached checkout of the branch under test (origin's copy
+when pushed, else the local branch), removed afterwards, so a PR's own Makefile and
+bootstrap files build the cluster; only if neither ref exists do they run in the repo
+directory. `down` runs in the repo directory. Placeholders: `{{team}}`, `{{cluster}}`, `{{http_port}}`, `{{https_port}}`, `{{branch}}`
 (the branch of `FLEET_WORKTREE`, else `$PWD`; `--branch` overrides) and `{{kubeconfig}}`.
 Values are shell-quoted. The `kubeconfig` template must write the file itself; `env.sh` then
 sets mode 600 and requires exactly one context. `kubeconfig` is optional if `up` already
