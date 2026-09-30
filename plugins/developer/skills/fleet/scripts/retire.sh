@@ -23,7 +23,8 @@ kept="[]"; kept_envs="[]"
 whole_team=false; printf '%s' "$rows" | jq -e --arg x "$target" 'all(.team == $x)' >/dev/null && [ "${target%%/*}" = "$target" ] && whole_team=true
 
 if $whole_team; then
-  if [ "$("$registry" env-get "$target" 2>/dev/null | jq -r '.state // "Down"')" != "Down" ]; then
+  env_state="$("$registry" env-get "$target" 2>/dev/null | jq -r '.state // "Down"' || true)"
+  if [ -n "$env_state" ] && [ "$env_state" != "Down" ]; then
     "$FLEET_SCRIPTS/env.sh" down "$target" >&2 ||
       { warn "kept environment of $target: env.sh down failed"; kept_envs="$(jq -cn --arg t "$target" '[$t]')"; }
   fi

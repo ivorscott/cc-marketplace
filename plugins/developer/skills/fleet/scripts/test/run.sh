@@ -48,6 +48,7 @@ mkrepo() { # mkrepo <dir> <with-env>
   fi
 }
 mkrepo "$T/repo" yes; mkrepo "$T/plain" no
+cd "$T/repo" # env.sh up falls back to $PWD for {{branch}}; never depend on the caller's cwd
 addteam() { "$REG" add "$(jq -cn --arg n "$1/builder" --arg t "$1" --arg r "$2" '{name: $n, team: $t, repo: $r, tier: "Worker", status: "Working", herdr_ref: "x", pane: "p"}')"; }
 for t in a b c; do addteam "build-$t" "$T/repo"; done
 addteam build-plain "$T/plain"; addteam build-plain2 "$T/plain"
@@ -156,7 +157,8 @@ check "boot without file: no env dir" test ! -e "$FLEET_STATE_DIR/env/build-plai
 : >"$HERDR_LOG"; "$SCRIPTS/boot.sh" build plainst "$T/plain" task >/dev/null 2>&1
 saved="$(cat "$FLEET_REGISTRY")"; jq 'del(.envs)' <<<"$saved" >"$FLEET_REGISTRY"
 eq "no envs: status header is the 3.0.1 one" "$("$SCRIPTS/status.sh" --team build-plainst 2>/dev/null | head -1 | tr -s ' ')" "AGENT TIER STATUS ESC HERDR ASSIGNMENT"
-"$SCRIPTS/retire.sh" build-plainst >"$T/r0.json" 2>/dev/null
+"$SCRIPTS/retire.sh" build-plainst >"$T/r0.json" 2>"$T/r0.err"
+eq "no envs: retire prints no env line" "$(cat "$T/r0.err" "$T/r0.json" | grep -ci 'environment\|env\.sh\|nothing to do')" 0
 eq "no envs: retire JSON keys are the 3.0.1 ones" "$(jq -c 'keys' "$T/r0.json")" '["kept_worktrees","retired"]'
 printf '%s' "$saved" >"$FLEET_REGISTRY"
 
