@@ -13,6 +13,10 @@
 #   registry.sh retire <name|team> [--outcome O]
 #   registry.sh unsynced                                   rows changed since the sink last mirrored them
 #   registry.sh synced <name> [name ...]                   mark rows as mirrored
+#   registry.sh env-claim <team> <max> <cluster> [busy-slots]  atomically take the lowest free port slot
+#   registry.sh env-set <team> key=value ...               update a team environment
+#   registry.sh env-get <team>
+#   registry.sh env-release <team>                         mark the environment Down, freeing its slot
 #   registry.sh path
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
@@ -76,6 +80,7 @@ case "$cmd" in
     ;;
   list)
     team=""; filter="true"
+    if [ "${1:-}" = "--envs" ]; then jq '.envs // {}' "$FLEET_REGISTRY"; exit 0; fi
     while [ $# -gt 0 ]; do
       case "$1" in
         --team) team="$2"; shift 2 ;;
@@ -137,6 +142,43 @@ case "$cmd" in
     names="$(printf '%s\n' "$@" | jq -R . | jq -s .)"
     update --argjson ns "$names" '.agents |= with_entries(if (.key | IN($ns[])) then .value.synced_at = .value.updated_at else . end)'
     ;;
+  env-claim)
+    # A slot is held by an env in Creating, Up or Failed (Failed keeps it until `down`).
+    # Ports: HTTP 8080+10n, HTTPS 8443+10n. Over the cap, or with every slot busy on the
+    # host, the env is recorded Queued and nothing is allocated. Prints the env as JSON.
+    team="${1:?usage: env-claim <team> <max> <cluster> [busy-slots]}"; max="${2:?}"; cluster="${3:?}"; busy="${4:-}"
+    lock
+    tmp="$(mktemp "$FLEET_REGISTRY.XXXXXX")"
+    jq --arg t "$team" --argjson max "$max" --arg c "$cluster" --arg busy "$busy" --arg now "$(now)" '
+      .envs //= {} |
+      ([.envs | to_entries[] | select(.key != $t and (.value.state | IN("Creating", "Up", "Failed"))) | .value.slot]) as $used |
+      ($busy | split(",") | map(select(. != "") | tonumber)) as $hostbusy |
+      (.envs[$t] // {}) as $cur |
+      (if ($cur.state | IN("Creating", "Up", "Failed")) then $cur.slot
+       else ([range(0; $max)] | map(select(. as $n | ($used | index($n)) == null and ($hostbusy | index($n)) == null)) | first) end) as $slot |
+      .envs[$t] = ($cur + {cluster: $c, updated_at: $now} +
+        (if $slot == null then {state: "Queued", slot: null, http_port: null, https_port: null}
+         else {state: "Creating", slot: $slot, http_port: (8080 + 10 * $slot), https_port: (8443 + 10 * $slot)} end))
+    ' "$FLEET_REGISTRY" >"$tmp" && mv "$tmp" "$FLEET_REGISTRY" || { rm -f "$tmp"; die "env-claim failed"; }
+    jq -c --arg t "$team" '.envs[$t]' "$FLEET_REGISTRY"
+    ;;
+  env-set)
+    team="${1:?usage: env-set <team> key=value ...}"; shift
+    args=(--arg t "$team" --arg now "$(now)"); prog='.envs //= {} | .envs[$t] //= {}'
+    i=0
+    for kv in "$@"; do
+      args+=(--arg "k$i" "${kv%%=*}" --arg "v$i" "${kv#*=}"); prog="$prog | .envs[\$t][\$k$i] = \$v$i"; i=$((i + 1))
+    done
+    update "${args[@]}" "$prog | .envs[\$t].updated_at = \$now"
+    ;;
+  env-get)
+    jq -e --arg t "${1:?usage: env-get <team>}" '.envs[$t] // error("no such env")' "$FLEET_REGISTRY"
+    ;;
+  env-release)
+    team="${1:?usage: env-release <team>}"
+    update --arg t "$team" --arg now "$(now)" \
+      'if .envs[$t] then .envs[$t] |= (.state = "Down" | .slot = null | .http_port = null | .https_port = null | .updated_at = $now) else . end'
+    ;;
   path) printf '%s\n' "$FLEET_REGISTRY" ;;
-  *) sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+  *) sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

@@ -351,11 +351,16 @@ team templates, a registry, health beyond `idle`, escalation, a concurrency cap 
 | `/fleet tell <team> <msg>` | The message sent to the team's lead, then read back to confirm |
 | `/fleet watch` | A monitor pane that notifies you when an agent stalls, dies, needs input or finishes |
 | `/fleet escalate P0\|P1\|P2 <msg>` | A severity-routed question: P2 answered by the Orchestrator, P1/P0 brought to you |
-| `/fleet retire <team>` | WIP pushed, the fleet's own workspace closed, clean worktrees removed |
+| `/fleet retire <team>` | WIP pushed, the fleet's own workspace closed, clean worktrees removed, the team's test cluster removed |
 | `/fleet debrief` | Lessons per agent, plus proposed diffs to `.claude/experts/<role>.md` |
 
 **Race** is the incident template: several agents (mixed CLIs if you have them) attack the same
 bug in separate worktrees, the lead verifies the first fix, and the rest are retired.
+
+**Team environments:** a repo that declares `.claude/fleet-env.json` gives each team its own
+disposable test cluster, created on demand by `env.sh up <team>` and removed by `retire`. Every
+agent starts with `KUBECONFIG` pointing at that team's file, so none reaches your own clusters.
+`max_envs` in `~/.config/fleet/config.toml` (default 3) caps how many run at once.
 
 **Private integrations stay private:** an optional `~/.config/fleet/sink.md`, outside any repo,
 tells the Orchestrator where to mirror the registry, such as a tracker or wiki.

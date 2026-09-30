@@ -70,7 +70,9 @@ This skill builds the rest on top of it.
 | `scripts/boot.sh` | one-command team boot |
 | `scripts/status.sh` | health computation |
 | `scripts/watch.sh` | live monitor |
-| `scripts/retire.sh` | safe teardown |
+| `scripts/retire.sh` | safe teardown (also removes the team's test cluster) |
+| `scripts/env.sh` | per-team disposable test cluster, declared by the repo's `.claude/fleet-env.json` |
+| `scripts/test/run.sh` | offline tests for the team environment (stub `up`/`down`, no kind) |
 | `scripts/registry.sh` | registry CLI used by every agent |
 | `references/` | herdr pitfalls, registry format, expertise files |
 | `../../agents/lead.md`, `orchestrator.md` | delegate-only agent definitions |
