@@ -8,9 +8,13 @@
 # The repo opts in with <repo>/.claude/fleet-env.json:
 #   {"up": "...", "down": "...", "kubeconfig": "..."}   command templates; placeholders:
 #   {{cluster}} {{http_port}} {{https_port}} {{branch}} {{kubeconfig}} {{team}}
-# `up` and `kubeconfig` run in the repo directory with KUBECONFIG=<team kubeconfig>. The
-# kubeconfig template writes the file itself; env.sh then sets mode 600 and checks that
-# it holds exactly one context. Without the file, `up` does nothing (exit 0).
+# `up` and `kubeconfig` run with KUBECONFIG=<team kubeconfig> in a temporary checkout of
+# the branch under test (origin's copy when it is pushed, else the local branch), so a
+# PR's own Makefile and bootstrap files are what builds the cluster; the checkout is
+# removed afterwards. Only when neither ref exists do they run in the repo directory.
+# `down` runs in the repo directory. The kubeconfig template writes the file itself;
+# env.sh then sets mode 600 and checks that it holds exactly one context. Without the
+# file, `up` does nothing (exit 0).
 #
 # Exit codes: 0 ok, 1 error, 75 queued (max_envs reached; retry `up` once an env is down).
 # Env: FLEET_WORKTREE (default source of {{branch}}), max_envs in config.toml (default 3).
@@ -36,7 +40,28 @@ run_tpl() { # run_tpl <repo> <kubeconfig> <template>
   (cd "$1" && KUBECONFIG="$2" bash -c "$3")
 }
 
-fail() { "$registry" env-set "$team" state=Failed >/dev/null; die "$*"; }
+src_checkout() { # src_checkout <repo> <branch> <dir>: prints the dir to run `up` in
+  # A detached worktree at the branch under test; the repo itself only as a last resort.
+  local ref=""
+  if git -C "$1" fetch -q origin "refs/heads/$2" 2>/dev/null; then ref="$(git -C "$1" rev-parse FETCH_HEAD)"
+  elif git -C "$1" rev-parse -q --verify "refs/heads/$2^{commit}" >/dev/null; then ref="refs/heads/$2"
+  fi
+  if [ -z "$ref" ]; then
+    warn "no ref for branch '$2'; running up in $1 as it is checked out"
+    printf '%s\n' "$1"; return
+  fi
+  git -C "$1" worktree remove --force "$3" >/dev/null 2>&1 || rm -rf "$3"
+  git -C "$1" worktree add -q --detach "$3" "$ref" >&2 || die "cannot check out '$2' for up"
+  printf '%s\n' "$3"
+}
+
+drop_src() { # drop_src <repo> <dir>: remove the temporary checkout, if there is one
+  [ "$2" != "$1" ] || return 0
+  git -C "$1" worktree remove --force "$2" >/dev/null 2>&1 || rm -rf "$2"
+  git -C "$1" worktree prune >/dev/null 2>&1 || true
+}
+
+fail() { [ -z "${src:-}" ] || drop_src "$repo" "$src"; "$registry" env-set "$team" state=Failed >/dev/null; die "$*"; }
 
 case "$sub" in
   up)
@@ -80,12 +105,14 @@ case "$sub" in
     "$registry" env-set "$team" repo="$repo" branch="$branch" kubeconfig="$kc" >/dev/null
 
     echo "fleet: creating $cluster (http $http, https $https, branch $branch)"
-    run_tpl "$repo" "$kc" "$(render_env "$up_t" "$team" "$cluster" "$http" "$https" "$branch" "$kc")" >&2 ||
+    src="$(src_checkout "$repo" "$branch" "$dir/src")" || { src=""; fail "cannot check out '$branch' for $cluster"; }
+    run_tpl "$src" "$kc" "$(render_env "$up_t" "$team" "$cluster" "$http" "$https" "$branch" "$kc")" >&2 ||
       fail "up failed for $cluster; the slot is kept until 'env.sh down $team'"
     if [ -n "$kc_t" ]; then
-      run_tpl "$repo" "$kc" "$(render_env "$kc_t" "$team" "$cluster" "$http" "$https" "$branch" "$kc")" >&2 ||
+      run_tpl "$src" "$kc" "$(render_env "$kc_t" "$team" "$cluster" "$http" "$https" "$branch" "$kc")" >&2 ||
         fail "kubeconfig step failed for $cluster"
     fi
+    drop_src "$repo" "$src"; src=""
     [ -f "$kc" ] || fail "no kubeconfig at $kc after up"
     chmod 600 "$kc"
     [ "$(kube_contexts "$kc")" = "1" ] || fail "$kc must contain exactly one context"

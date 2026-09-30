@@ -141,7 +141,8 @@ A repo can give each team its own disposable test cluster by declaring
 nothing changes. With it:
 
 - `$F/env.sh up [--branch B] <team>` takes the lowest free port slot (HTTP `8080 + 10n`,
-  HTTPS `8443 + 10n`), names the cluster `fleet-<team>`, runs the repo's `up`, and leaves a
+  HTTPS `8443 + 10n`), names the cluster `fleet-<team>`, runs the repo's `up` in a temporary checkout of the
+  branch under test (so the branch's own Makefile builds it), and leaves a
   kubeconfig holding only that cluster at `$FLEET_STATE/env/<team>/kubeconfig`. It exits 75
   and creates nothing when `max_envs` (config.toml, default 3) clusters already exist.
 - `env.sh down <team>` and `retire.sh` run the repo's `down` and free the slot. `down` acts

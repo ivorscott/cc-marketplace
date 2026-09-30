@@ -23,6 +23,7 @@ REG="$SCRIPTS/registry.sh"; ENV="$SCRIPTS/env.sh"
 cat >"$T/up.sh" <<'S'
 #!/usr/bin/env bash
 echo "up $*" >>"$STUB_LOG"; [ -z "${STUB_FAIL:-}" ] || exit 1
+[ ! -f BRANCH_MARKER ] || echo "src $(cat BRANCH_MARKER)" >>"$STUB_LOG"
 printf 'contexts:\n- context:\n    cluster: c\n  name: %s\n' "$1" >"$2"
 S
 cat >"$T/down.sh" <<'S'
@@ -116,6 +117,22 @@ check "warns when branch is not on origin" grep -q "not on origin" "$T/err"
 (cd "$T/wt" && "$ENV" up build-a >/dev/null 2>&1); eq "branch from \$PWD without FLEET_WORKTREE" "$("$REG" env-get build-a | jq -r .branch)" feature/x
 "$ENV" down build-a >/dev/null 2>&1
 FLEET_WORKTREE="$T/wt" "$ENV" up --branch other/y build-a >/dev/null 2>&1; eq "--branch overrides" "$("$REG" env-get build-a | jq -r .branch)" other/y
+"$ENV" down build-a >/dev/null 2>&1
+
+# up runs in a checkout of the branch under test, not the repo's own checkout
+echo feature-x >"$T/wt/BRANCH_MARKER"
+git -C "$T/wt" add BRANCH_MARKER; git -C "$T/wt" -c user.email=t@t -c user.name=t commit -q -m marker
+: >"$STUB_LOG"
+"$ENV" up --branch feature/x build-a >/dev/null 2>&1
+check "up sees the branch's files" grep -q "^src feature-x$" "$STUB_LOG"
+check "repo checkout untouched (still on main, no marker)" test "$(git -C "$T/repo" rev-parse --abbrev-ref HEAD)" = main -a ! -e "$T/repo/BRANCH_MARKER"
+check "temporary checkout removed after up" test ! -e "$FLEET_STATE_DIR/env/build-a/src"
+eq "no leftover worktree" "$(git -C "$T/repo" worktree list | grep -c "/env/build-a/src" || true)" 0
+"$ENV" down build-a >/dev/null 2>&1
+export STUB_FAIL=1
+"$ENV" up --branch feature/x build-a >/dev/null 2>&1
+check "temporary checkout removed after a failed up" test ! -e "$FLEET_STATE_DIR/env/build-a/src"
+unset STUB_FAIL
 "$ENV" down build-a >/dev/null 2>&1
 
 # No fleet-env.json
