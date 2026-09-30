@@ -65,7 +65,11 @@ After any route that changed the registry, run **Sink** (end of file).
 2. Run `$F/boot.sh <template> <focus> <dir> <task text>`. It creates the workspace, gives
    writers their own `git worktree` on branch `fleet/<team>/<role>`, starts every agent,
    answers folder-trust only for the repo and those worktrees, sends each brief with the
-   done contract appended, and writes the registry rows.
+   done contract appended, and writes the registry rows. If the repo has
+   `.claude/fleet-env.json` (a **team environment**), every agent, lead included, also
+   starts with `KUBECONFIG=$FLEET_STATE/env/<team>/kubeconfig` so it can't reach your own
+   clusters. Boot creates no cluster; the tester runs `$F/env.sh up <team>` on demand (see
+   **Team environment** below).
 3. It prints the team as JSON. Anything not `Working` needs you now: go to **B** for that
    agent. Report the team name, the agents and where to look (herdr workspace `<team>`).
 
@@ -82,6 +86,10 @@ and writes it back:
 | Stalled | idle without the done step or a declared wait | ask it for its done step or what is missing |
 | Zombie | the agent is gone and the pane is back at the shell | retire it (F) or re-boot the team |
 | Done | ran the done contract | when the whole team is done, retire (F) |
+
+The ENV column shows a team's test cluster (`-` for none, `slot-<n>-Up`, `Creating`, `Queued`,
+`Failed`); `$F/env.sh status` lists every env. `Queued` means `max_envs` is reached: the
+tester waits and retries `env.sh up`, or you retire a team that is done.
 
 Answer with the table (or just the problems) and one line per action you took.
 
@@ -119,10 +127,28 @@ see an escalation:
    (`agent prompt … --wait`). Skip Zombies.
 2. `$F/retire.sh <team | team/role> [--outcome Shipped|Won race|Partial|Abandoned|Failed]`. It
    closes only the fleet's own workspace or panes, removes clean worktrees, keeps dirty ones
-   (and says so), and marks the rows Retired.
+   (and says so), and marks the rows Retired. Retiring a whole team also runs
+   `env.sh down <team>`, which removes the team's cluster only if the registry created it; a
+   failed down is reported under `kept_envs` and the rows are still retired.
 3. **Race:** once the lead marks a winner, retire every other racer with `--outcome Abandoned`,
    then the lead.
 4. Offer a debrief (H).
+
+## Team environment
+
+A repo can give each team its own disposable test cluster by declaring
+`<repo>/.claude/fleet-env.json` (contract in `references/registry.md`). Without the file
+nothing changes. With it:
+
+- `$F/env.sh up [--branch B] <team>` takes the lowest free port slot (HTTP `8080 + 10n`,
+  HTTPS `8443 + 10n`), names the cluster `fleet-<team>`, runs the repo's `up`, and leaves a
+  kubeconfig holding only that cluster at `$FLEET_STATE/env/<team>/kubeconfig`. It exits 75
+  and creates nothing when `max_envs` (config.toml, default 3) clusters already exist.
+- `env.sh down <team>` and `retire.sh` run the repo's `down` and free the slot. `down` acts
+  only on a `fleet-<team>` env the registry recorded.
+- **Isolation limit:** the preset `KUBECONFIG` covers `kubectl` and `helm`. `docker`, `kind
+  get clusters` and `kind delete cluster --name …` ignore it, so the tester brief limits them
+  to `--name fleet-<team>`.
 
 ## G. Prime
 

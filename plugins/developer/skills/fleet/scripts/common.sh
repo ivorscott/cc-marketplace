@@ -43,3 +43,28 @@ agent_name() {
   case "$n" in [a-z]*) ;; *) n="f-$n" ;; esac
   printf '%s\n' "${n:0:32}"
 }
+
+# max_envs from config.toml (key = value), default 3.
+max_envs() {
+  local v=""
+  [ -f "$FLEET_CONFIG_DIR/config.toml" ] &&
+    v="$(sed -n 's/^[[:space:]]*max_envs[[:space:]]*=[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$FLEET_CONFIG_DIR/config.toml" | head -1)"
+  printf '%s\n' "${v:-3}"
+}
+
+# Team environment: a repo opts in with <repo>/.claude/fleet-env.json.
+env_config() { [ -f "$1/.claude/fleet-env.json" ] && printf '%s\n' "$1/.claude/fleet-env.json" || true; }
+env_dir() { printf '%s\n' "$FLEET_STATE_DIR/env/$1"; }
+
+# render_env <template> <team> <cluster> <http> <https> <branch> <kubeconfig>
+# Values are shell-quoted: templates run through `bash -c`, and branch names are free text.
+render_env() {
+  local s="$1" v
+  v="$(printf '%q' "$2")"; s="${s//\{\{team\}\}/$v}"
+  v="$(printf '%q' "$3")"; s="${s//\{\{cluster\}\}/$v}"
+  v="$(printf '%q' "$4")"; s="${s//\{\{http_port\}\}/$v}"
+  v="$(printf '%q' "$5")"; s="${s//\{\{https_port\}\}/$v}"
+  v="$(printf '%q' "$6")"; s="${s//\{\{branch\}\}/$v}"
+  v="$(printf '%q' "$7")"; s="${s//\{\{kubeconfig\}\}/$v}"
+  printf '%s' "$s"
+}

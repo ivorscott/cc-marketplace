@@ -68,7 +68,9 @@ done
 filter='.'; $problems && filter='[.[] | select(.status == "Stalled" or .status == "Zombie" or .status == "Needs input" or (.escalation // "") != "")]'
 out="$("$registry" list "${list_args[@]}" | jq "$filter")"
 if $json; then printf '%s\n' "$out"; exit 0; fi
-printf '%s' "$out" | jq -r '
-  (["AGENT", "TIER", "STATUS", "ESC", "HERDR", "ASSIGNMENT"] | @tsv),
-  (sort_by(.team, .tier)[] | [.name, .tier, .status, (if (.escalation // "") == "" then "-" else .escalation end), .herdr_ref, ((.assignment // "")[0:50])] | @tsv)' |
+printf '%s' "$out" | jq -r --argjson envs "$("$registry" list --envs)" '
+  (["AGENT", "TIER", "STATUS", "ESC", "ENV", "HERDR", "ASSIGNMENT"] | @tsv),
+  (sort_by(.team, .tier)[] | [.name, .tier, .status, (if (.escalation // "") == "" then "-" else .escalation end),
+    (($envs[.team] // null) as $e | if $e == null or $e.state == "Down" then "-" elif $e.slot != null then "slot-\($e.slot)-\($e.state)" else $e.state end),
+    .herdr_ref, ((.assignment // "")[0:50])] | @tsv)' |
   column -t -s $'\t'

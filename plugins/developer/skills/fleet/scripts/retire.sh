@@ -5,7 +5,9 @@
 #   retire.sh <team | team/role> [--outcome O]
 #
 # Never closes panes or workspaces the registry doesn't record as fleet-created. A
-# worktree with uncommitted changes is kept and reported, never force-removed.
+# worktree with uncommitted changes is kept and reported, never force-removed. Retiring a
+# whole team also runs `env.sh down <team>` for its test cluster (only one the registry
+# created); if that fails the env is kept and reported.
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
 require_herdr
@@ -17,10 +19,14 @@ outcome=""; [ "${1:-}" = "--outcome" ] && outcome="${2:-}"
 rows="$("$registry" list | jq --arg x "$target" '[.[] | select((.name == $x or .team == $x) and .status != "Retired")]')"
 [ "$(printf '%s' "$rows" | jq length)" != "0" ] || die "nothing live matches '$target'"
 
-kept="[]"
+kept="[]"; kept_envs="[]"
 whole_team=false; printf '%s' "$rows" | jq -e --arg x "$target" 'all(.team == $x)' >/dev/null && [ "${target%%/*}" = "$target" ] && whole_team=true
 
 if $whole_team; then
+  if [ "$("$registry" env-get "$target" 2>/dev/null | jq -r '.state // "Down"')" != "Down" ]; then
+    "$FLEET_SCRIPTS/env.sh" down "$target" >&2 ||
+      { warn "kept environment of $target: env.sh down failed"; kept_envs="$(jq -cn --arg t "$target" '[$t]')"; }
+  fi
   ws="$(printf '%s' "$rows" | jq -r '[.[].workspace | select(. != null and . != "")] | first // ""')"
   [ -n "$ws" ] && { hd workspace close "$ws" >/dev/null 2>&1 || warn "could not close workspace $ws"; }
 else
@@ -40,4 +46,4 @@ while IFS=$'\t' read -r wt repo; do
 done < <(printf '%s' "$rows" | jq -r '.[] | select((.worktree // "") != "") | [.worktree, .repo] | @tsv')
 
 if [ -n "$outcome" ]; then "$registry" retire "$target" --outcome "$outcome"; else "$registry" retire "$target"; fi
-printf '%s' "$rows" | jq --argjson kept "$kept" '{retired: [.[].name], kept_worktrees: $kept}'
+printf '%s' "$rows" | jq --argjson kept "$kept" --argjson ke "$kept_envs" '{retired: [.[].name], kept_worktrees: $kept, kept_envs: $ke}'

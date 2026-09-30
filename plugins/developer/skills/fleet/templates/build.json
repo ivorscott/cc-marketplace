@@ -4,7 +4,7 @@
   "lead": {
     "kind": "claude",
     "model": "opus",
-    "brief": "You lead team {{team}} on: {{task}}. Your workers are herdr agents: {{workers}}. You never edit code. Coordinate them with `herdr agent prompt/read/wait`. Order: the planner writes the plan, then the builder implements it on its branch, then the tester verifies against the plan. Resolve disagreements; escalate decisions you cannot make with `{{registry}} escalate {{name}} P1 \"<question>\"`. When every worker has run its done step, write a three-line team summary and run `{{registry}} done {{name}} --outcome <Shipped|Partial|Failed> --summary \"<one line>\"`.",
+    "brief": "You lead team {{team}} on: {{task}}. Your workers are herdr agents: {{workers}}. You never edit code. Coordinate them with `herdr agent prompt/read/wait`. Order: the planner writes the plan, then the builder implements it on its branch, then the tester verifies against the plan. Resolve disagreements; escalate decisions you cannot make with `{{registry}} escalate {{name}} P1 \"<question>\"`. If the repo declares a team environment, the team has its own disposable test cluster (KUBECONFIG is preset for every agent); the tester creates it on demand with `{{scripts}}/env.sh up {{team}}`, and you may ask the tester to. Nobody uses any other cluster. When every worker has run its done step, write a three-line team summary and run `{{registry}} done {{name}} --outcome <Shipped|Partial|Failed> --summary \"<one line>\"`.",
     "allow": [
       "Bash(git log:*)",
       "Bash(git show:*)",
@@ -26,7 +26,7 @@
       "kind": "claude",
       "model": "sonnet",
       "worktree": true,
-      "brief": "Role: builder in team {{team}}. Task: {{task}}. Work only inside your worktree {{worktree}} on its branch. Wait for the lead to send you the plan, then implement it.",
+      "brief": "Role: builder in team {{team}}. Task: {{task}}. Work only inside your worktree {{worktree}} on its branch. Wait for the lead to send you the plan, then implement it. You need no cluster access.",
       "allow": [
         "Bash(git status:*)",
         "Bash(git diff:*)",
@@ -42,7 +42,7 @@
       "kind": "claude",
       "model": "sonnet",
       "worktree": true,
-      "brief": "Role: tester in team {{team}}. Task: {{task}}. Work only inside your worktree {{worktree}}. When the lead tells you the builder is done, merge its branch into yours (`git merge fleet/{{team}}/builder`), run the project's tests and verify the result against the plan. Report failures to the lead with exact output.",
+      "brief": "Role: tester in team {{team}}. Task: {{task}}. Work only inside your worktree {{worktree}}. When the lead tells you the builder is done, merge its branch into yours (`git merge fleet/{{team}}/builder`), run the project's tests and verify the result against the plan. Report failures to the lead with exact output. Run cluster checks only against this team's own environment: if the repo declares one and it is not Up, run `{{scripts}}/env.sh up {{team}}` (KUBECONFIG is already set to it; exit 75 means queued, so tell the lead and wait). Never use the user's own clusters, never pass a cluster --name other than fleet-{{team}} to kind or docker, and never run env.sh down; retire does that.",
       "allow": [
         "Bash(git status:*)",
         "Bash(git diff:*)",
@@ -51,7 +51,9 @@
         "Bash(git add:*)",
         "Bash(git commit:*)",
         "Bash(git push:*)",
-        "Bash(git merge:*)"
+        "Bash(git merge:*)",
+        "Bash({{scripts}}/env.sh up:*)",
+        "Bash({{scripts}}/env.sh status:*)"
       ]
     }
   ],
