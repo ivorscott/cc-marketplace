@@ -344,18 +344,49 @@ team templates, a registry, health beyond `idle`, escalation, a concurrency cap 
 /fleet debrief
 ```
 
-| Say | You get |
-|---|---|
-| `/fleet boot <template> <focus> <dir> [task]` | herdr workspace `<template>-<focus>` with a lead and workers, briefs sent, rows in the registry. Templates: `build`, `race`, `review`, `research` |
-| `/fleet status` (or `--problems`) | Every agent as Working, Idle, Needs input, **Stalled** (idle without finishing) or **Zombie** (process gone) |
-| `/fleet tell <team> <msg>` | The message sent to the team's lead, then read back to confirm |
-| `/fleet watch` | A monitor pane that notifies you when an agent stalls, dies, needs input or finishes |
-| `/fleet escalate P0\|P1\|P2 <msg>` | A severity-routed question: P2 answered by the Orchestrator, P1/P0 brought to you |
-| `/fleet retire <team>` | WIP pushed, the fleet's own workspace closed, clean worktrees removed |
-| `/fleet debrief` | Lessons per agent, plus proposed diffs to `.claude/experts/<role>.md` |
+**Commands:**
 
-**Race** is the incident template: several agents (mixed CLIs if you have them) attack the same
-bug in separate worktrees, the lead verifies the first fix, and the rest are retired.
+| Command | What it does |
+|---|---|
+| `/fleet boot <template> <focus> <dir> [task]` | Creates the herdr workspace `<template>-<focus>` (the team name), starts a lead and its workers in split panes, gives every writer its own git worktree on branch `fleet/<team>/<role>`, sends each agent its brief and registers it. `<template>` is `build`, `race`, `review`, `research` or a path to your own template JSON |
+| `/fleet status [--problems] [--team T] [--json]` | Shows each live agent's health (see below) and its team's test cluster. `--problems` lists only agents that need you, `--team` limits it to one team, `--json` gives machine-readable output |
+| `/fleet tell <team\|agent> <msg>` | Sends a message to the team's lead, or to one agent if you name it, then quotes a line of its reply so you know it arrived |
+| `/fleet watch [--team T]` | Opens a monitor pane beside yours that raises a herdr notification whenever an agent stalls, dies, needs input or finishes |
+| `/fleet escalate <P0\|P1\|P2> <msg>` | Raises a question by severity. The Orchestrator answers P2 itself, brings P1 to you with a recommendation, and stops for P0 and brings it to you immediately (a P0 in a race pauses the race) |
+| `/fleet retire <team\|team/role> [--outcome O]` | Shuts down a whole team or a single agent. Live agents are asked to push their work first, then only the fleet's own panes are closed, clean worktrees are removed (dirty ones are kept and reported), and the team's test cluster is deleted. `O` is `Shipped`, `Won race`, `Partial`, `Abandoned` or `Failed` |
+| `/fleet prime` | Rebuilds the Orchestrator's picture of the fleet from the registry (which teams exist, who is doing what, what needs attention). Use it after a context compaction or in a new session |
+| `/fleet debrief` | For each retired team: records one or two lessons per agent and *proposes* (never applies) diffs to `.claude/experts/<role>.md` and to the template, plus a list of discovered follow-up work |
+
+**Templates:**
+
+| Template | Team | Use it for | Example |
+|---|---|---|---|
+| `build` | lead + planner, builder, tester | Planning, building and testing one piece of work | `/fleet boot build export ~/code/api "add CSV invoice export"` |
+| `race` | lead (judge) + 3 racers, each in its own worktree | Incidents: several agents attack the same bug at once, and the first verified fix wins | `/fleet boot race login ~/code/api "login test fails on CI"` |
+| `review` | lead + security and correctness reviewers (read-only) | Independent reviews of one change from different angles | `/fleet boot review auth ~/code/api "review the auth refactor"` |
+| `research` | lead + researcher | Learning a tool or topic problem-first, ending in one study guide | `/fleet boot research herdr ~/notes "how herdr restores sessions"` |
+
+**Health states** shown by `status` and `watch`: **Working**, **Idle** (waiting on purpose),
+**Needs input** (blocked on a dialog or escalated), **Stalled** (idle without finishing),
+**Zombie** (the agent process is gone) and **Done** (ran its done step).
+
+**Running a race:** each racer works in its own worktree. The lead verifies the first racer
+that reports Done by re-running the failing check. If it passes, that racer is marked
+`Won race`. Otherwise the lead tries the next one, and escalates P0 if none can be verified.
+Then retire the losers and the lead:
+
+```
+/fleet boot race login ~/code/api "login test fails on CI"
+/fleet watch --team race-login
+/fleet retire race-login/racer-2 --outcome Abandoned
+/fleet retire race-login/racer-3 --outcome Abandoned
+/fleet retire race-login --outcome Shipped
+```
+
+**Team environments:** a repo that declares `.claude/fleet-env.json` gives each team its own
+disposable test cluster, created on demand by `env.sh up <team>` and removed by `retire`. Every
+agent starts with `KUBECONFIG` pointing at that team's file, so none reaches your own clusters.
+`max_envs` in `~/.config/fleet/config.toml` (default 3) caps how many run at once.
 
 **Private integrations stay private:** an optional `~/.config/fleet/sink.md`, outside any repo,
 tells the Orchestrator where to mirror the registry, such as a tracker or wiki.

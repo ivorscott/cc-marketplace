@@ -7,6 +7,10 @@
 # template JSON file. <focus> becomes the team name <template>-<focus>. The task text
 # defaults to <focus>. Prints the booted team as JSON on stdout.
 #
+# If the repo declares a team environment (.claude/fleet-env.json), every agent in the
+# team, lead included, starts with KUBECONFIG pointing at the team's own kubeconfig, even
+# before its cluster exists (see env.sh). Boot itself never creates a cluster.
+#
 # Env: FLEET_SESSION (named herdr session, for isolated runs), FLEET_FORCE=1 (ignore
 # max_agents), FLEET_MACHINE (label stored in the registry, default "local").
 set -euo pipefail
@@ -40,13 +44,20 @@ if [ "${FLEET_FORCE:-}" != "1" ] && [ $((live + 1 + nworkers)) -gt "$cap" ]; the
   die "booting $team needs $((1 + nworkers)) agents; $live live, max_agents=$cap (set FLEET_FORCE=1 or raise max_agents in $FLEET_CONFIG_DIR/config.toml)"
 fi
 
+# Team environment: preset KUBECONFIG on every pane so agents can't reach the user's own clusters.
+env_args=()
+if [ -n "$(env_config "$repo")" ]; then
+  mkdir -p "$(env_dir "$team")"
+  env_args=(--env "KUBECONFIG=$(env_dir "$team")/kubeconfig")
+fi
+
 is_git=false; git -C "$repo" rev-parse --git-dir >/dev/null 2>&1 && is_git=true
 
 render() { # render <text> <name> <worktree> <workers>
   local s="$1"
   s="${s//\{\{team\}\}/$team}"; s="${s//\{\{task\}\}/$task}"; s="${s//\{\{repo\}\}/$repo}"
   s="${s//\{\{name\}\}/$2}"; s="${s//\{\{name_slug\}\}/${2//\//-}}"; s="${s//\{\{worktree\}\}/$3}"
-  s="${s//\{\{workers\}\}/$4}"; s="${s//\{\{registry\}\}/$registry}"
+  s="${s//\{\{workers\}\}/$4}"; s="${s//\{\{registry\}\}/$registry}"; s="${s//\{\{scripts\}\}/$FLEET_SCRIPTS}"
   printf '%s' "$s"
 }
 
@@ -59,8 +70,9 @@ Fleet rules for $name.$x Stay on this one task. If you notice unrelated work, ru
 }
 
 claude_args() { # claude_args <model> <tier> <worktree> <allow-json>
-  local settings
-  settings="$(jq -cn --arg r "$registry" --argjson extra "${4:-[]}" \
+  local settings extra="${4:-[]}"
+  extra="${extra//\{\{scripts\}\}/$FLEET_SCRIPTS}"
+  settings="$(jq -cn --arg r "$registry" --argjson extra "$extra" \
     '{permissions: {allow: (["Bash(\($r):*)", "Bash(herdr:*)"] + $extra)}}')"
   printf '%s\0' --settings "$settings"
   [ -n "$1" ] && printf '%s\0' --model "$1"
@@ -120,7 +132,7 @@ start_agent() { # start_agent <agent> <kind> <pane> <model> <tier> <worktree> <a
 lead_agent="$(agent_name "$team-lead")"
 lead_name="$team/lead"
 ws_json="$(hd workspace create --cwd "$repo" --label "$team" --no-focus \
-  --env FLEET_ROLE=lead --env "FLEET_NAME=$lead_name" --env "FLEET_TEAM=$team" --env "FLEET_REGISTRY=$FLEET_REGISTRY")"
+  --env FLEET_ROLE=lead --env "FLEET_NAME=$lead_name" --env "FLEET_TEAM=$team" --env "FLEET_REGISTRY=$FLEET_REGISTRY" ${env_args[@]+"${env_args[@]}"})"
 workspace="$(printf '%s' "$ws_json" | jq -r .result.workspace.workspace_id)"
 lead_pane="$(printf '%s' "$ws_json" | jq -r .result.root_pane.pane_id)"
 [ -n "$workspace" ] && [ "$workspace" != "null" ] || die "workspace create failed: $ws_json"
@@ -141,7 +153,8 @@ for i in $(seq 0 $((nworkers - 1))); do
   if [ -z "$prev" ]; then split=(--pane "$lead_pane" --direction right); else split=(--pane "$prev" --direction down); fi
   pane="$(hd pane split "${split[@]}" --cwd "$cwd" --no-focus \
     --env FLEET_ROLE=worker --env "FLEET_NAME=$name" --env "FLEET_TEAM=$team" \
-    --env "FLEET_WORKTREE=$worktree" --env "FLEET_REGISTRY=$FLEET_REGISTRY" | jq -r .result.pane.pane_id)"
+    --env "FLEET_WORKTREE=$worktree" --env "FLEET_REGISTRY=$FLEET_REGISTRY" \
+    ${env_args[@]+"${env_args[@]}"} | jq -r .result.pane.pane_id)"
   prev="$pane"
   workers_json="$(printf '%s' "$workers_json" | jq -c --argjson w "$w" --arg n "$name" --arg a "$agent" \
     --arg p "$pane" --arg c "$cwd" --arg wt "$worktree" --arg b "$branch" \

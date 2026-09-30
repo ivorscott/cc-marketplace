@@ -27,6 +27,40 @@ restarted, compacted or replaced agent picks up from the row, not from memory.
 | `outcome`, `summary`, `lessons` | how it ended, its one-line summary, and debrief lessons |
 | `updated_at`, `synced_at` | change tracking for the sink |
 
+## Team environments
+
+`envs.<team>` sits next to `agents` in the same file, written by `scripts/env.sh` through
+`registry.sh env-claim|env-set|env-get|env-release` (one locked update, so two teams can't
+take the same slot; `list --envs` prints them).
+
+| Field | Meaning |
+|---|---|
+| `cluster` | `fleet-<team>`; `env.sh down` refuses anything else |
+| `slot`, `http_port`, `https_port` | port slot n, `8080 + 10n`, `8443 + 10n`; null when Queued or Down |
+| `kubeconfig` | `$FLEET_STATE/env/<team>/kubeconfig` (mode 600, one context) |
+| `state` | `Queued` (over `max_envs`, nothing created), `Creating`, `Up`, `Failed` (keeps its slot until `down`), `Down` |
+| `branch`, `repo` | what `{{branch}}` was, and the repo whose `fleet-env.json` was used |
+
+A slot is held by `Creating`, `Up` and `Failed` envs. `max_envs` in
+`~/.config/fleet/config.toml` (default 3) caps them.
+
+### `<repo>/.claude/fleet-env.json`
+
+```json
+{
+  "up": "make cluster-up CLUSTER={{cluster}} HTTP_PORT={{http_port}} HTTPS_PORT={{https_port}} REVISION={{branch}}",
+  "down": "make cluster-down CLUSTER={{cluster}}",
+  "kubeconfig": "kind export kubeconfig --name {{cluster}} --kubeconfig {{kubeconfig}}"
+}
+```
+
+Command templates run with `bash -c` in the repo directory with `KUBECONFIG` set to the team
+path. Placeholders: `{{team}}`, `{{cluster}}`, `{{http_port}}`, `{{https_port}}`, `{{branch}}`
+(the branch of `FLEET_WORKTREE`, else `$PWD`; `--branch` overrides) and `{{kubeconfig}}`.
+Values are shell-quoted. The `kubeconfig` template must write the file itself; `env.sh` then
+sets mode 600 and requires exactly one context. `kubeconfig` is optional if `up` already
+writes it.
+
 ## The done contract
 
 A worker is finished only when it says so:
