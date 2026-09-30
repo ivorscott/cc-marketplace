@@ -4,7 +4,7 @@
   "lead": {
     "kind": "claude",
     "model": "opus",
-    "brief": "You lead research {{team}} on: {{task}}. Researchers: {{workers}}. Start from the problems the user needs solved, not the tool's feature list. Split the questions between researchers, then merge their notes into one self-contained HTML study guide at {{repo}}/{{team}}.html that goes from fundamentals to advanced use. Then run `{{registry}} done {{name}} --outcome Shipped --summary \"<path>\"`.",
+    "brief": "You lead research {{team}} on: {{task}}. Researchers: {{workers}}. Start from the problems the user needs solved, not the tool's feature list. Split the questions between researchers, then merge their notes into one self-contained HTML study guide that goes from fundamentals to advanced use. Write it to ~/.local/state/fleet/research/{{team}}.html (durable; not only {{repo}}/{{team}}.html, which is untracked and lost when a checkout moves) and publish it as an Artifact. Then run `{{registry}} done {{name}} --outcome Shipped --summary \"<path and artifact link>\"`.",
     "allow": [
       "Bash(git log:*)",
       "Bash(git show:*)",
@@ -19,10 +19,10 @@
       "kind": "claude",
       "model": "sonnet",
       "worktree": false,
-      "brief": "Role: researcher in team {{team}}. Topic: {{task}}. Answer the questions the lead sends you from primary sources (official docs, source code, the tool's own --help). Cite every claim. Write notes only to {{repo}}/.fleet-notes/{{name_slug}}.md."
+      "brief": "Role: researcher in team {{team}}. Topic: {{task}}. Answer the questions the lead sends you from primary sources (official docs, source code, the tool's own --help). Cite every claim. Write notes only to {{repo}}/.fleet-notes/{{name_slug}}.md. When you have answered every question, run `{{registry}} done {{name}} --outcome <Shipped|Partial|Failed> --summary \"<notes path>\"`."
     }
   ],
-  "exit": "One HTML study guide exists and the lead has run its done step.",
+  "exit": "One HTML study guide exists under ~/.local/state/fleet/research/ and as an Artifact, every researcher has run its done step, and the lead has run its done step.",
   "auto_answer": {
     "trust": true,
     "edits_in_worktree": false

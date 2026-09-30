@@ -13,14 +13,21 @@
 # PR's own Makefile and bootstrap files are what builds the cluster; the checkout is
 # removed afterwards. Only when neither ref exists do they run in the repo directory.
 # `down` runs in the repo directory. The kubeconfig template writes the file itself;
-# env.sh then sets mode 600 and checks that it holds exactly one context. Without the
+# env.sh then sets mode 600, checks that it holds exactly one context and renames that context
+# to fleet-<team>, whatever tool created it. `up` dies naming any tool the templates need that
+# is missing (first command word of each template, and kubectl). Without the
 # file, `up` does nothing (exit 0).
+#
+# A team's cluster is always fleet-<team>; anything else is a foreign cluster. up and down refuse
+# (exit 1, before a slot is claimed) when an ambient $CLUSTER, or a CLUSTER= in a command
+# template, is anything but {{cluster}} or fleet-<team>. Templates run with CLUSTER pinned to it.
 #
 # Exit codes: 0 ok, 1 error, 75 queued (max_envs reached; retry `up` once an env is down).
 # Env: FLEET_WORKTREE (default source of {{branch}}), max_envs in config.toml (default 3).
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
 registry="$FLEET_SCRIPTS/registry.sh"
+kubectl="${FLEET_KUBECTL:-kubectl}" # overridable so tests run offline
 
 sub="${1:-}"; shift || true
 
@@ -36,8 +43,30 @@ kube_contexts() { # count contexts in a kubeconfig file
   awk '/^contexts:/ {on = 1; next} /^[^ -]/ {on = 0} on && /^- / {n++} END {print n + 0}' "$1"
 }
 
-run_tpl() { # run_tpl <repo> <kubeconfig> <template>
-  (cd "$1" && KUBECONFIG="$2" bash -c "$3")
+refuse_foreign() { # refuse_foreign <what> <value> <cluster>: a team only ever touches fleet-<team>
+  case "$2" in "" | "$3") return 0 ;; esac
+  die "refusing: $1 names a foreign cluster; a team environment is always fleet-<team>"
+}
+
+refuse_foreign_tpl() { # refuse_foreign_tpl <what> <template> <cluster>: every CLUSTER= must be {{cluster}} or the team's
+  local v
+  while IFS= read -r v; do
+    v="${v#CLUSTER=}"; v="${v//[\"\']/}"
+    [ "$v" != "{{cluster}}" ] || continue
+    refuse_foreign "$1" "$v" "$3"
+  done < <(printf '%s' "$2" | grep -oE '(^|[^A-Za-z0-9_])CLUSTER=[^[:space:];&|]*' | sed 's/^[^C]*//')
+}
+
+need_tool() { # need_tool <key> <template>: the first command word (after VAR=value) must exist
+  local w words
+  read -ra words <<<"$2"
+  for w in "${words[@]}"; do case "$w" in [A-Za-z_]*=*) continue ;; esac; break; done
+  [ -n "${w:-}" ] || return 0
+  command -v "$w" >/dev/null 2>&1 || die "missing tool: $w (needed by fleet-env.json $1)"
+}
+
+run_tpl() { # run_tpl <repo> <kubeconfig> <template> <cluster>; CLUSTER is pinned to the team's cluster
+  (cd "$1" && env CLUSTER="$4" KUBECONFIG="$2" bash -c "$3")
 }
 
 src_checkout() { # src_checkout <repo> <branch> <dir>: prints the dir to run `up` in
@@ -77,6 +106,11 @@ case "$sub" in
     [ -n "$up_t" ] && [ -n "$down_t" ] || die "$cfg must declare \"up\" and \"down\""
 
     cluster="$(agent_name "fleet-$team")"
+    refuse_foreign "the ambient CLUSTER" "${CLUSTER:-}" "$cluster"
+    refuse_foreign_tpl "the up command" "$up_t" "$cluster"; refuse_foreign_tpl "the down command" "$down_t" "$cluster"
+    refuse_foreign_tpl "the kubeconfig command" "$kc_t" "$cluster"
+    command -v "$kubectl" >/dev/null 2>&1 || die "missing tool: $kubectl (needed to name the team context)"
+    need_tool up "$up_t"; need_tool down "$down_t"; [ -z "$kc_t" ] || need_tool kubeconfig "$kc_t"
     cur="$("$registry" env-get "$team" 2>/dev/null || echo '{}')"
     if [ "$(printf '%s' "$cur" | jq -r '.state // ""')" = "Up" ]; then
       echo "fleet: $team environment already up ($(printf '%s' "$cur" | jq -r '.cluster'))"; exit 0
@@ -106,16 +140,21 @@ case "$sub" in
 
     echo "fleet: creating $cluster (http $http, https $https, branch $branch)"
     src="$(src_checkout "$repo" "$branch" "$dir/src")" || { src=""; fail "cannot check out '$branch' for $cluster"; }
-    run_tpl "$src" "$kc" "$(render_env "$up_t" "$team" "$cluster" "$http" "$https" "$branch" "$kc")" >&2 ||
+    run_tpl "$src" "$kc" "$(render_env "$up_t" "$team" "$cluster" "$http" "$https" "$branch" "$kc")" "$cluster" >&2 ||
       fail "up failed for $cluster; the slot is kept until 'env.sh down $team'"
     if [ -n "$kc_t" ]; then
-      run_tpl "$src" "$kc" "$(render_env "$kc_t" "$team" "$cluster" "$http" "$https" "$branch" "$kc")" >&2 ||
+      run_tpl "$src" "$kc" "$(render_env "$kc_t" "$team" "$cluster" "$http" "$https" "$branch" "$kc")" "$cluster" >&2 ||
         fail "kubeconfig step failed for $cluster"
     fi
     drop_src "$repo" "$src"; src=""
     [ -f "$kc" ] || fail "no kubeconfig at $kc after up"
     chmod 600 "$kc"
     [ "$(kube_contexts "$kc")" = "1" ] || fail "$kc must contain exactly one context"
+    # Whatever tool made the cluster, its one context is named fleet-<team> from here on.
+    ctx="$("$kubectl" config get-contexts -o name --kubeconfig "$kc" 2>/dev/null | head -1)"
+    [ -n "$ctx" ] || fail "cannot read the context name from $kc"
+    [ "$ctx" = "$cluster" ] || "$kubectl" config rename-context "$ctx" "$cluster" --kubeconfig "$kc" >/dev/null ||
+      fail "cannot rename context $ctx to $cluster in $kc"
     "$registry" env-set "$team" state=Up >/dev/null
     echo "fleet: $cluster up; KUBECONFIG=$kc"
     ;;
@@ -124,6 +163,7 @@ case "$sub" in
     cur="$("$registry" env-get "$team" 2>/dev/null || true)"
     [ -n "$cur" ] || { echo "fleet: $team has no environment; nothing to do"; exit 0; }
     cluster="$(agent_name "fleet-$team")"
+    refuse_foreign "the ambient CLUSTER" "${CLUSTER:-}" "$cluster"
     # Only ever act on a cluster this registry created under the fleet-<team> name.
     [ "$(printf '%s' "$cur" | jq -r '.cluster // ""')" = "$cluster" ] || die "registry cluster for $team is not $cluster; refusing to run down"
     state="$(printf '%s' "$cur" | jq -r '.state // ""')"
@@ -131,10 +171,11 @@ case "$sub" in
     if [ "$state" != "Queued" ]; then
       repo="$(printf '%s' "$cur" | jq -r '.repo // ""')"; cfg="$(env_config "$repo")"
       [ -n "$cfg" ] || die "cannot run down for $team: $repo/.claude/fleet-env.json is gone"
+      refuse_foreign_tpl "the down command" "$(jq -r '.down' "$cfg")" "$cluster"
       kc="$(printf '%s' "$cur" | jq -r '.kubeconfig')"
       http="$(printf '%s' "$cur" | jq -r '.http_port // ""')"; https="$(printf '%s' "$cur" | jq -r '.https_port // ""')"
       br="$(printf '%s' "$cur" | jq -r '.branch // ""')"
-      run_tpl "$repo" "$kc" "$(render_env "$(jq -r '.down' "$cfg")" "$team" "$cluster" "$http" "$https" "$br" "$kc")" >&2 ||
+      run_tpl "$repo" "$kc" "$(render_env "$(jq -r '.down' "$cfg")" "$team" "$cluster" "$http" "$https" "$br" "$kc")" "$cluster" >&2 ||
         { "$registry" env-set "$team" state=Failed >/dev/null; die "down failed for $cluster; slot kept"; }
     fi
     rm -rf "$(env_dir "$team")"
@@ -148,5 +189,5 @@ case "$sub" in
       (to_entries[] | [.key, .value.cluster, .value.state, (.value.slot // "-"), (.value.http_port // "-"), (.value.https_port // "-")] | map(tostring) | @tsv)' |
       column -t -s $'\t'
     ;;
-  *) sed -n '2,17p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+  *) sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

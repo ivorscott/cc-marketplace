@@ -19,6 +19,15 @@ export FLEET_SESSION=test HOME="$T/home"; mkdir -p "$HOME" "$FLEET_CONFIG_DIR" "
 unset FLEET_WORKTREE KUBECONFIG
 REG="$SCRIPTS/registry.sh"; ENV="$SCRIPTS/env.sh"
 
+# Stub kubectl (env.sh's FLEET_KUBECTL): lists and renames the one context of the fake kubeconfig.
+cat >"$T/kubectl" <<'S'
+#!/usr/bin/env bash
+kc="${!#}"; [ "$1 $2" = "config get-contexts" ] && { sed -n 's/^  name: //p' "$kc"; exit 0; }
+if [ "$1 $2" = "config rename-context" ]; then sed "s/^  name: $3\$/  name: $4/" "$kc" >"$kc.tmp" && mv "$kc.tmp" "$kc"; exit 0; fi
+exit 1
+S
+chmod +x "$T/kubectl"; export FLEET_KUBECTL="$T/kubectl"
+
 # Stub up/down: log arguments, write a fake one-context kubeconfig.
 cat >"$T/up.sh" <<'S'
 #!/usr/bin/env bash
@@ -165,6 +174,8 @@ check "boot: env dir exists but no kubeconfig file yet" test -d "$FLEET_STATE_DI
 eq "boot: no cluster created" "$(calls up)" 0
 check "boot: tester allow has env.sh up with the scripts path" grep -q "env.sh up" <(grep '^agent start build-envt-tester' "$HERDR_LOG")
 eq "boot: no unsubstituted {{scripts}}" "$(grep -c '{{scripts}}' "$HERDR_LOG")" 0
+check "boot: tester allow has the team-scoped kubectl context" grep -q -- "kubectl --context fleet-build-envt get" <(grep '^agent start build-envt-tester' "$HERDR_LOG")
+eq "boot: no unsubstituted {{team}} or {{worktree}} in an allow list" "$(grep '^agent start' "$HERDR_LOG" | grep -c '{{team}}\|{{worktree}}')" 0
 
 : >"$HERDR_LOG"; "$SCRIPTS/boot.sh" build plainbt "$T/plain" task >/dev/null 2>&1
 eq "boot without file: no KUBECONFIG arg (3.0.1 behaviour)" "$(grep -c -- '--env KUBECONFIG' "$HERDR_LOG")" 0
@@ -188,6 +199,53 @@ eq "retire frees the slot" "$("$REG" env-get build-envt | jq -r .state)" Down
 check "retire removes the env directory" test ! -e "$FLEET_STATE_DIR/env/build-envt"
 eq "retire omits kept_envs when none were kept" "$(jq -c 'has("kept_envs")' "$T/retire.json")" false
 : >"$STUB_LOG"; "$SCRIPTS/retire.sh" build-plainbt >/dev/null 2>&1; eq "retire without env runs no down" "$(calls down)" 0
+
+# env.sh refuses a foreign cluster before anything runs
+mkrepo "$T/bad" yes
+jq --arg u "$T/up.sh" '.up = "CLUSTER=foreign-cluster \($u) {{cluster}} {{kubeconfig}}"' "$T/bad/.claude/fleet-env.json" >"$T/bad.json" && mv "$T/bad.json" "$T/bad/.claude/fleet-env.json"
+addteam build-bad "$T/bad"
+: >"$STUB_LOG"; "$ENV" up build-bad >/dev/null 2>&1; rc=$?
+check "template CLUSTER=foreign-cluster: refused (non-zero)" test "$rc" != 0
+eq "template CLUSTER=foreign-cluster: stub up never ran" "$(calls up)" 0
+eq "template CLUSTER=foreign-cluster: no env claimed" "$("$REG" list --envs | jq 'has("build-bad")')" false
+: >"$STUB_LOG"; CLUSTER=foreign-cluster "$ENV" up build-a >/dev/null 2>&1; rc=$?
+check "ambient CLUSTER=foreign-cluster: refused (non-zero)" test "$rc" != 0
+eq "ambient CLUSTER=foreign-cluster: stub up never ran" "$(calls up)" 0
+: >"$STUB_LOG"; CLUSTER=kind-fleet-build-a "$ENV" up build-a >/dev/null 2>&1; rc=$?
+check "ambient CLUSTER=kind-fleet-<team>: up refused" test "$rc" != 0
+eq "ambient CLUSTER=kind-fleet-<team>: stub up never ran" "$(calls up)" 0
+: >"$STUB_LOG"; CLUSTER=kind-fleet-build-a "$ENV" down build-a >/dev/null 2>&1; rc=$?
+check "ambient CLUSTER=kind-fleet-<team>: down refused" test "$rc" != 0
+: >"$STUB_LOG"; CLUSTER=other "$ENV" up build-a >/dev/null 2>&1; rc=$?
+check "ambient CLUSTER=other (not fleet-<team>): refused" test "$rc" != 0
+eq "ambient CLUSTER=other: stub up never ran" "$(calls up)" 0
+jq --arg u "$T/up.sh" '.up = "CLUSTER={{cluster}} \($u) {{cluster}} {{kubeconfig}}"' "$T/repo/.claude/fleet-env.json" >"$T/ok.json" && mv "$T/ok.json" "$T/repo/.claude/fleet-env.json"
+: >"$STUB_LOG"; CLUSTER=fleet-build-a "$ENV" up build-a >/dev/null 2>&1; rc=$?
+eq "CLUSTER=fleet-<team> (ambient and template {{cluster}}) is accepted" "$rc" 0
+eq "stub up ran once for the accepted cluster" "$(calls up)" 1
+check "context is renamed to fleet-<team>" grep -q '^  name: fleet-build-a$' "$FLEET_STATE_DIR/env/build-a/kubeconfig"
+eq "exactly one context after the rename" "$(grep -c '^  name: ' "$FLEET_STATE_DIR/env/build-a/kubeconfig")" 1
+"$ENV" down build-a >/dev/null 2>&1
+
+# a missing tool is named, and no slot is claimed
+mkrepo "$T/notool" yes
+jq '.up = "FOO=1 no-such-tool-xyz {{cluster}}"' "$T/notool/.claude/fleet-env.json" >"$T/nt.json" && mv "$T/nt.json" "$T/notool/.claude/fleet-env.json"
+addteam build-notool "$T/notool"
+"$ENV" up build-notool >"$T/nt.out" 2>&1; rc=$?
+check "missing tool: up fails" test "$rc" != 0
+check "missing tool: message names the tool and the key" grep -q 'missing tool: no-such-tool-xyz (needed by fleet-env.json up)' "$T/nt.out"
+eq "missing tool: no slot claimed" "$("$REG" list --envs | jq 'has("build-notool")')" false
+FLEET_KUBECTL=no-such-kubectl-xyz "$ENV" up build-a >"$T/nk.out" 2>&1; rc=$?
+check "missing kubectl: up fails naming it" grep -q 'missing tool: no-such-kubectl-xyz' "$T/nk.out"
+
+# retire names untracked files in a kept worktree
+git -C "$T/repo" worktree add -q -b keep-br "$T/wt-keep" >/dev/null 2>&1
+echo note >"$T/wt-keep/notes.md"; mkdir -p "$T/wt-keep/reports"; echo r >"$T/wt-keep/reports/r.md"
+"$REG" add "$(jq -cn --arg t build-keep --arg r "$T/repo" --arg w "$T/wt-keep" '{name: "build-keep/tester", team: $t, repo: $r, tier: "Worker", status: "Working", herdr_ref: "x", pane: "p", worktree: $w}')"
+"$SCRIPTS/retire.sh" build-keep >"$T/keep.json" 2>"$T/keep.err"
+eq "retire keeps a worktree with untracked files" "$(jq -c '.kept_worktrees' "$T/keep.json")" "[\"$T/wt-keep\"]"
+eq "retire lists untracked files in kept_untracked" "$(jq -c --arg w "$T/wt-keep" '.kept_untracked[$w] | sort' "$T/keep.json")" '["notes.md","reports/r.md"]'
+check "retire warns with the untracked file name" grep -q '?? reports/r.md' "$T/keep.err"
 
 # Isolation
 if command -v kubectl >/dev/null 2>&1; then

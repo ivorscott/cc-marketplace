@@ -65,7 +65,7 @@ This skill builds the rest on top of it.
 | `/fleet tell <team\|agent> <msg>` | Sends a message to the team's lead, or to one agent if you name it, then quotes a line of its reply so you know it arrived |
 | `/fleet watch [--team T]` | Opens a monitor pane beside yours that raises a herdr notification whenever an agent stalls, dies, needs input or finishes |
 | `/fleet escalate <P0\|P1\|P2> <msg>` | Raises a question by severity. The Orchestrator answers P2 itself, brings P1 to you with a recommendation, and stops for P0 and brings it to you immediately (a P0 in a race pauses the race) |
-| `/fleet retire <team\|team/role> [--outcome O]` | Shuts down a whole team or a single agent. Live agents are asked to push their work first, then only the fleet's own panes are closed, clean worktrees are removed (dirty ones are kept and reported), and the team's test cluster is deleted. `O` is `Shipped`, `Won race`, `Partial`, `Abandoned` or `Failed` |
+| `/fleet retire <team\|team/role> [--outcome O]` | Shuts down a whole team or a single agent. Live agents are asked to push their work first, then only the fleet's own panes are closed, clean worktrees are removed (dirty ones are kept and reported, with their untracked files listed by name), and the team's test cluster is deleted. `O` is `Shipped`, `Won race`, `Partial`, `Abandoned` or `Failed` |
 | `/fleet prime` | Rebuilds the Orchestrator's picture of the fleet from the registry (which teams exist, who is doing what, what needs attention). Use it after a context compaction or in a new session |
 | `/fleet debrief` | For each retired team: records one or two lessons per agent and *proposes* (never applies) diffs to `.claude/experts/<role>.md` and to the template, plus a list of discovered follow-up work |
 
@@ -75,7 +75,7 @@ Plain language works too: "how is the fleet", "ask the build team to …", "stop
 
 | Template | Team | Use it for | Example |
 |---|---|---|---|
-| `build` | lead + planner, builder, tester | Planning, building and testing one piece of work | `/fleet boot build export ~/code/api "add CSV invoice export"` |
+| `build` | lead + planner, builder, tester | Planning, building and testing one piece of work. The planner only plans; the tester checks out the builder's exact pushed SHA (no merge) and signs off on it | `/fleet boot build export ~/code/api "add CSV invoice export"` |
 | `race` | lead (judge) + 3 racers, each in its own worktree | Incidents: several agents attack the same bug at once, and the first verified fix wins | `/fleet boot race login ~/code/api "login test fails on CI"` |
 | `review` | lead + security and correctness reviewers (read-only) | Independent reviews of one change from different angles | `/fleet boot review auth ~/code/api "review the auth refactor"` |
 | `research` | lead + researcher | Learning a tool or topic problem-first, ending in one study guide | `/fleet boot research herdr ~/notes "how herdr restores sessions"` |
@@ -124,9 +124,38 @@ The Orchestrator and agents call these directly (from `scripts/`). You can call 
 
 ## Requirements
 
+**Required**
+
 - herdr 0.9 or later, with the Orchestrator running inside a herdr pane
 - `jq` and `git`
 - Claude Code; other agent CLIs herdr supports are optional workers
+- `gh`, for teams that open pull requests
+
+**Optional**
+
+- `nc` or `lsof`, for the host port checks when allocating a test environment
+- For the team test environment: `kubectl`, plus whatever your `fleet-env.json` commands use (for example `kind` and Docker)
+
+## Team test environment
+
+A repo opts in by adding `.claude/fleet-env.json` with `up`, `down` and `kubeconfig` command
+templates. Placeholders: `{{cluster}}` `{{http_port}}` `{{https_port}}` `{{branch}}` `{{kubeconfig}}` `{{team}}`.
+Example using kind:
+
+```json
+{
+  "up": "kind create cluster --name {{cluster}} && kind export kubeconfig --name {{cluster}} --kubeconfig {{kubeconfig}}",
+  "down": "kind delete cluster --name {{cluster}}",
+  "kubeconfig": "true"
+}
+```
+
+- The team's cluster is always named `fleet-<team>`, and its kubeconfig's single context is
+  renamed to `fleet-<team>`, whatever tool created it.
+- `env.sh up` reports a missing tool by name (`missing tool: <name> (needed by fleet-env.json <key>)`)
+  before it claims a slot.
+- Foreign clusters are refused: an ambient `$CLUSTER`, or a `CLUSTER=` in a template, that is not
+  `fleet-<team>` stops `up` and `down`. Templates run with `CLUSTER` pinned to `fleet-<team>`.
 
 ## Files
 

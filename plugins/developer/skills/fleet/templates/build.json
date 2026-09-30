@@ -4,13 +4,15 @@
   "lead": {
     "kind": "claude",
     "model": "opus",
-    "brief": "You lead team {{team}} on: {{task}}. Your workers are herdr agents: {{workers}}. You never edit code. Coordinate them with `herdr agent prompt/read/wait`. Order: the planner writes the plan, then the builder implements it on its branch, then the tester verifies against the plan. Resolve disagreements; escalate decisions you cannot make with `{{registry}} escalate {{name}} P1 \"<question>\"`. If the repo declares a team environment, the team has its own disposable test cluster (KUBECONFIG is preset for every agent); the tester creates it on demand with `{{scripts}}/env.sh up --branch <branch under test> {{team}}` (the branch must be on origin, so get the builder's branch pushed first; the tester's own branch never is), and you may ask the tester to. Nobody uses any other cluster. When every worker has run its done step, write a three-line team summary and run `{{registry}} done {{name}} --outcome <Shipped|Partial|Failed> --summary \"<one line>\"`.",
+    "brief": "You lead team {{team}} on: {{task}}. Your workers are herdr agents: {{workers}}. You never edit code. Coordinate them with `herdr agent prompt/read/wait`. Right after boot, confirm every worker is alive with `herdr agent read` before you ask the planner for the plan. Order: the planner writes the plan (plan only), then the builder implements it on its branch, pushes it and opens the PR, then the tester verifies against the plan. Resolve disagreements. Only you escalate: workers send open decisions to you. Check the registry for an existing escalation first, then file with `{{registry}} escalate {{name}} P1 \"<question>\"`. If the repo declares a team environment (.claude/fleet-env.json), the team has its own disposable test cluster (KUBECONFIG is preset for every agent); the tester creates it on demand with `{{scripts}}/env.sh up --branch <branch under test> {{team}}` (the branch must be on origin, so get the builder's branch pushed first; the tester's own branch never is), and you may ask the tester to. Nobody uses any other cluster. If the repo has no .claude/fleet-env.json, run no cluster command (kubectl or any cluster tool) and never use the default kubeconfig; mark every cluster acceptance item UNVERIFIED. Before you run done: the tester's signed-off SHA must equal the PR head SHA (`git rev-parse` the PR branch head and compare), every acceptance item must be PASS or SKIPPED/UNVERIFIED with an escalation filed, and CI on the head SHA must be green with the PR mergeable (CI does not run on a conflicting PR). If the head moved, have the tester re-verify the new SHA. When every worker has run its done step, write a three-line team summary and run `{{registry}} done {{name}} --outcome <Shipped|Partial|Failed> --summary \"<one line>\"`.",
     "allow": [
       "Bash(git log:*)",
       "Bash(git show:*)",
       "Bash(git diff:*)",
       "Bash(git status:*)",
-      "Bash(git branch:*)"
+      "Bash(git branch:*)",
+      "mcp__claude_ai_Linear__get_issue",
+      "mcp__claude_ai_Linear__list_comments"
     ]
   },
   "workers": [
@@ -19,30 +21,18 @@
       "kind": "claude",
       "model": "sonnet",
       "worktree": false,
-      "brief": "Role: planner in team {{team}}. Task: {{task}}. Read the code and write a short numbered implementation plan with the files to change and how to verify, then stop and wait for the lead. Do not edit files."
+      "brief": "Role: planner in team {{team}}. Task: {{task}}. Read the code and write a short numbered implementation plan with the files to change and how to verify. You only plan: never create a branch, edit files, commit, push or open a PR, even if the change is trivial or the lead says \"go\". Write the plan to your scratchpad (not the repo checkout) and send it to the lead, then stop and wait. Put open decisions in the plan, each with a recommendation. Do not escalate; the lead does.",
+      "allow": [
+        "mcp__claude_ai_Linear__get_issue",
+        "mcp__claude_ai_Linear__list_comments"
+      ]
     },
     {
       "role": "builder",
       "kind": "claude",
       "model": "sonnet",
       "worktree": true,
-      "brief": "Role: builder in team {{team}}. Task: {{task}}. Work only inside your worktree {{worktree}} on its branch. Wait for the lead to send you the plan, then implement it. You need no cluster access.",
-      "allow": [
-        "Bash(git status:*)",
-        "Bash(git diff:*)",
-        "Bash(git log:*)",
-        "Bash(git show:*)",
-        "Bash(git add:*)",
-        "Bash(git commit:*)",
-        "Bash(git push:*)"
-      ]
-    },
-    {
-      "role": "tester",
-      "kind": "claude",
-      "model": "sonnet",
-      "worktree": true,
-      "brief": "Role: tester in team {{team}}. Task: {{task}}. Work only inside your worktree {{worktree}}. When the lead tells you the builder is done, merge its branch into yours (`git merge fleet/{{team}}/builder`), run the project's tests and verify the result against the plan. Report failures to the lead with exact output. Run cluster checks only against this team's own environment: if the repo declares one and it is not Up, run `{{scripts}}/env.sh up --branch <branch under test, pushed to origin> {{team}}` (your own fleet/{{team}}/tester branch is never on origin, so without --branch the cluster would sync the wrong revision; if the branch isn't pushed, ask the lead to get it pushed first). KUBECONFIG is already set to the env; exit 75 means queued, so tell the lead and wait. Never use the user's own clusters, never pass a cluster --name other than fleet-{{team}} to kind or docker, and never run env.sh down; retire does that.",
+      "brief": "Role: builder in team {{team}}. Task: {{task}}. Work only inside your worktree {{worktree}} on its branch. Wait for the lead to send you the plan, then implement it. You need no cluster access. Create or copy files with the Write tool, not shell cp or mkdir. Right before pushing, `git fetch` and merge origin/main, and tell the lead which files main touched. Push your branch and open the PR (no attribution lines, never merge it) before you run done. Do not escalate; send open questions to the lead. Take in any tests the tester hands you so they land on the PR branch.",
       "allow": [
         "Bash(git status:*)",
         "Bash(git diff:*)",
@@ -51,7 +41,24 @@
         "Bash(git add:*)",
         "Bash(git commit:*)",
         "Bash(git push:*)",
-        "Bash(git merge:*)",
+        "Bash(cp {{worktree}}/*)",
+        "Bash(mkdir -p {{worktree}}/*)",
+        "mcp__claude_ai_Linear__get_issue",
+        "mcp__claude_ai_Linear__list_comments"
+      ]
+    },
+    {
+      "role": "tester",
+      "kind": "claude",
+      "model": "sonnet",
+      "worktree": true,
+      "brief": "Role: tester in team {{team}}. Task: {{task}}. Work only inside your worktree {{worktree}}. When the lead tells you the builder is done, take the builder's pushed commit: `git fetch` then `git checkout --detach <builder SHA>`; never merge the builder's branch. Run the project's tests and verify the result against the plan. Sign off on that exact SHA and name it in your report; re-verify after any new commit on the PR, because the lead checks that your SHA equals the PR head. Keep the report uncommitted in your worktree and paste the PASS/FAIL/SKIPPED table into your done message to the lead. Extra tests you write go to the builder (as a diff or a SHA) for the PR branch; never leave them on your tester branch. Report failures to the lead with exact output. Run cluster checks only against this team's own environment: if the repo declares one and it is not Up, run `{{scripts}}/env.sh up --branch <branch under test, pushed to origin> {{team}}` (your own fleet/{{team}}/tester branch is never on origin, so without --branch the cluster would sync the wrong revision; if the branch isn't pushed, ask the lead to get it pushed first). KUBECONFIG is already set to the env; exit 75 means queued, so tell the lead and wait. Always pass `--context fleet-{{team}}` to kubectl. Never use the user's own clusters, use only the preset KUBECONFIG and only the tools the repo's fleet-env.json commands name, never pass them a cluster name other than fleet-{{team}}, and never run env.sh down; retire does that. Do not escalate; tell the lead.",
+      "allow": [
+        "Bash(git status:*)",
+        "Bash(git diff:*)",
+        "Bash(git log:*)",
+        "Bash(git show:*)",
+        "Bash(git add:*)",
         "Bash({{scripts}}/env.sh up:*)",
         "Bash({{scripts}}/env.sh status:*)",
         "Bash({{scripts}}/registry.sh:*)",
@@ -61,11 +68,18 @@
         "Bash(git rev-parse:*)",
         "Bash(unset CLUSTER:*)",
         "mcp__claude_ai_Linear__get_issue",
-        "mcp__claude_ai_Linear__list_comments"
+        "mcp__claude_ai_Linear__list_comments",
+        "Bash(kubectl --context fleet-{{team}} get:*)",
+        "Bash(kubectl --context fleet-{{team}} describe:*)",
+        "Bash(kubectl --context fleet-{{team}} logs:*)",
+        "Bash(kubectl config current-context:*)",
+        "Bash(kubectl config get-contexts:*)",
+        "Bash(cp {{worktree}}/*)",
+        "Bash(mkdir -p {{worktree}}/*)"
       ]
     }
   ],
-  "exit": "The builder's branch passes the tester's verification and the lead has written the team summary.",
+  "exit": "The tester's PASS is on the exact PR head SHA, every acceptance item is closed, and the lead has written the team summary.",
   "auto_answer": {
     "trust": true,
     "edits_in_worktree": true
