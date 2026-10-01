@@ -2,12 +2,13 @@
 # A team's own disposable test environment, declared by the repo and created on demand.
 #
 #   env.sh up [--branch B] <team>   allocate a port slot, run the repo's `up`, write the team kubeconfig
-#   env.sh down <team>              run the repo's `down`, remove the kubeconfig, free the slot
+#   env.sh down <team>              run the repo's `down`, remove the team's images and builder, the kubeconfig, free the slot
 #   env.sh status [<team>]          one env as JSON, or every env as a table
 #
 # The repo opts in with <repo>/.claude/fleet-env.json:
 #   {"up": "...", "down": "...", "kubeconfig": "..."}   command templates; placeholders:
 #   {{cluster}} {{http_port}} {{https_port}} {{branch}} {{kubeconfig}} {{team}}
+#   {{image_tag}} {{image_label}} {{builder}}   (also exported as FLEET_IMAGE_TAG, FLEET_IMAGE_LABEL, FLEET_BUILDER)
 # `up` and `kubeconfig` run with KUBECONFIG=<team kubeconfig> in a temporary checkout of
 # the branch under test (origin's copy when it is pushed, else the local branch), so a
 # PR's own Makefile and bootstrap files are what builds the cluster; the checkout is
@@ -22,12 +23,20 @@
 # (exit 1, before a slot is claimed) when an ambient $CLUSTER, or a CLUSTER= in a command
 # template, is anything but {{cluster}} or fleet-<team>. Templates run with CLUSTER pinned to it.
 #
+# Images: `up` tells the repo how to mark what it builds or loads: tag it :fleet-<team> (FLEET_IMAGE_TAG),
+# label it fleet.team=<team> (FLEET_IMAGE_LABEL), and build with the buildx builder fleet-<team>
+# (FLEET_BUILDER). After the repo's `down` succeeds, `down` removes exactly those images (docker rmi,
+# never forced, never a prune) and that builder with its cache, and nothing else: foreign images,
+# clusters and the default builder's cache are never touched. A repo that doesn't mark its
+# images gets no image cleanup. Docker trouble only warns; `down` still frees the slot.
+#
 # Exit codes: 0 ok, 1 error, 75 queued (max_envs reached; retry `up` once an env is down).
-# Env: FLEET_WORKTREE (default source of {{branch}}), max_envs in config.toml (default 3).
+# Env: FLEET_WORKTREE (default source of {{branch}}), FLEET_DOCKER (docker binary, for tests), max_envs in config.toml (default 3).
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
 registry="$FLEET_SCRIPTS/registry.sh"
 kubectl="${FLEET_KUBECTL:-kubectl}" # overridable so tests run offline
+docker="${FLEET_DOCKER:-docker}"
 
 sub="${1:-}"; shift || true
 
@@ -66,7 +75,30 @@ need_tool() { # need_tool <key> <template>: the first command word (after VAR=va
 }
 
 run_tpl() { # run_tpl <repo> <kubeconfig> <template> <cluster>; CLUSTER is pinned to the team's cluster
-  (cd "$1" && env CLUSTER="$4" KUBECONFIG="$2" bash -c "$3")
+  (cd "$1" && env CLUSTER="$4" KUBECONFIG="$2" FLEET_IMAGE_TAG="$4" FLEET_IMAGE_LABEL="fleet.team=$team" FLEET_BUILDER="$4" bash -c "$3")
+}
+
+docker_cleanup() { # docker_cleanup <team> <cluster> <tag> <label> <builder>: only what this team's up marked
+  local t="$1" tag="$3" label="$4" builder="$5" n=0 img ref b removed="none"
+  if [ "$tag" != "$2" ] || [ "$label" != "fleet.team=$t" ] || [ "$builder" != "$2" ]; then
+    echo "fleet: $t has no image marks recorded; no images or builder removed"; return 0
+  fi
+  if ! command -v "$docker" >/dev/null 2>&1 || ! "$docker" info >/dev/null 2>&1; then
+    warn "docker unavailable; images and build cache for $t left in place"; return 0
+  fi
+  while IFS= read -r ref; do
+    case "$ref" in *":$tag") ;; *) continue ;; esac
+    if "$docker" rmi "$ref" >/dev/null 2>&1; then n=$((n + 1)); else warn "could not remove image $ref"; fi
+  done < <("$docker" image ls --filter "reference=*:$tag" --format '{{.Repository}}:{{.Tag}}' 2>/dev/null || true)
+  while IFS= read -r img; do
+    [ -n "$img" ] || continue
+    if "$docker" rmi "$img" >/dev/null 2>&1; then n=$((n + 1)); else warn "could not remove image $img (in use or tagged elsewhere)"; fi
+  done < <("$docker" image ls --filter "label=$label" --format '{{.ID}}' 2>/dev/null || true)
+  while IFS= read -r b; do
+    [ "${b%\*}" = "$builder" ] || continue
+    if "$docker" buildx rm --force "$builder" >/dev/null 2>&1; then removed="$builder"; else warn "could not remove builder $builder"; fi
+  done < <("$docker" buildx ls --format '{{.Name}}' 2>/dev/null || true)
+  echo "fleet: removed $n images, builder $removed"
 }
 
 src_checkout() { # src_checkout <repo> <branch> <dir>: prints the dir to run `up` in
@@ -136,14 +168,15 @@ case "$sub" in
     http="$(printf '%s' "$claim" | jq -r .http_port)"; https="$(printf '%s' "$claim" | jq -r .https_port)"
     dir="$(env_dir "$team")"; kc="$dir/kubeconfig"
     mkdir -p "$dir"; chmod 700 "$dir"
-    "$registry" env-set "$team" repo="$repo" branch="$branch" kubeconfig="$kc" >/dev/null
+    "$registry" env-set "$team" repo="$repo" branch="$branch" kubeconfig="$kc" \
+      image_tag="$cluster" image_label="fleet.team=$team" builder="$cluster" >/dev/null
 
     echo "fleet: creating $cluster (http $http, https $https, branch $branch)"
     src="$(src_checkout "$repo" "$branch" "$dir/src")" || { src=""; fail "cannot check out '$branch' for $cluster"; }
-    run_tpl "$src" "$kc" "$(render_env "$up_t" "$team" "$cluster" "$http" "$https" "$branch" "$kc")" "$cluster" >&2 ||
+    run_tpl "$src" "$kc" "$(render_env "$up_t" "$team" "$cluster" "$http" "$https" "$branch" "$kc" "$cluster" "fleet.team=$team" "$cluster")" "$cluster" >&2 ||
       fail "up failed for $cluster; the slot is kept until 'env.sh down $team'"
     if [ -n "$kc_t" ]; then
-      run_tpl "$src" "$kc" "$(render_env "$kc_t" "$team" "$cluster" "$http" "$https" "$branch" "$kc")" "$cluster" >&2 ||
+      run_tpl "$src" "$kc" "$(render_env "$kc_t" "$team" "$cluster" "$http" "$https" "$branch" "$kc" "$cluster" "fleet.team=$team" "$cluster")" "$cluster" >&2 ||
         fail "kubeconfig step failed for $cluster"
     fi
     drop_src "$repo" "$src"; src=""
@@ -175,8 +208,10 @@ case "$sub" in
       kc="$(printf '%s' "$cur" | jq -r '.kubeconfig')"
       http="$(printf '%s' "$cur" | jq -r '.http_port // ""')"; https="$(printf '%s' "$cur" | jq -r '.https_port // ""')"
       br="$(printf '%s' "$cur" | jq -r '.branch // ""')"
-      run_tpl "$repo" "$kc" "$(render_env "$(jq -r '.down' "$cfg")" "$team" "$cluster" "$http" "$https" "$br" "$kc")" "$cluster" >&2 ||
+      run_tpl "$repo" "$kc" "$(render_env "$(jq -r '.down' "$cfg")" "$team" "$cluster" "$http" "$https" "$br" "$kc" "$cluster" "fleet.team=$team" "$cluster")" "$cluster" >&2 ||
         { "$registry" env-set "$team" state=Failed >/dev/null; die "down failed for $cluster; slot kept"; }
+      docker_cleanup "$team" "$cluster" "$(printf '%s' "$cur" | jq -r '.image_tag // ""')" \
+        "$(printf '%s' "$cur" | jq -r '.image_label // ""')" "$(printf '%s' "$cur" | jq -r '.builder // ""')" >&2
     fi
     rm -rf "$(env_dir "$team")"
     "$registry" env-release "$team"
@@ -189,5 +224,5 @@ case "$sub" in
       (to_entries[] | [.key, .value.cluster, .value.state, (.value.slot // "-"), (.value.http_port // "-"), (.value.https_port // "-")] | map(tostring) | @tsv)' |
       column -t -s $'\t'
     ;;
-  *) sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+  *) sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

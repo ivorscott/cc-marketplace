@@ -40,6 +40,7 @@ take the same slot; `list --envs` prints them).
 | `kubeconfig` | `$FLEET_STATE/env/<team>/kubeconfig` (mode 600, one context) |
 | `state` | `Queued` (over `max_envs`, nothing created), `Creating`, `Up`, `Failed` (keeps its slot until `down`), `Down` |
 | `branch`, `repo` | what `{{branch}}` was, and the repo whose `fleet-env.json` was used |
+| `image_tag`, `image_label`, `builder` | the marks `up` handed the repo (`fleet-<team>`, `fleet.team=<team>`, `fleet-<team>`); `down` removes only images and a builder carrying them |
 
 A slot is held by `Creating`, `Up` and `Failed` envs. `max_envs` in
 `~/.config/fleet/config.toml` (default 3) caps them.
@@ -59,7 +60,9 @@ Command templates run with `bash -c` and `KUBECONFIG` set to the team path. `up`
 when pushed, else the local branch), removed afterwards, so a PR's own Makefile and
 bootstrap files build the cluster; only if neither ref exists do they run in the repo
 directory. `down` runs in the repo directory. Placeholders: `{{team}}`, `{{cluster}}`, `{{http_port}}`, `{{https_port}}`, `{{branch}}`
-(the branch of `FLEET_WORKTREE`, else `$PWD`; `--branch` overrides) and `{{kubeconfig}}`.
+(the branch of `FLEET_WORKTREE`, else `$PWD`; `--branch` overrides), `{{kubeconfig}}`, and
+`{{image_tag}}`, `{{image_label}}`, `{{builder}}` (also exported as `FLEET_IMAGE_TAG`,
+`FLEET_IMAGE_LABEL`, `FLEET_BUILDER`).
 Values are shell-quoted. The `kubeconfig` template must write the file itself; `env.sh` then
 sets mode 600 and requires exactly one context. `kubeconfig` is optional if `up` already
 writes it.

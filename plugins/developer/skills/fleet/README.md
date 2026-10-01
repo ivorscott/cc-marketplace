@@ -51,7 +51,7 @@ This skill builds the rest on top of it.
 /fleet status              → table of agents with Working / Idle / Stalled / Zombie / Done
 /fleet tell review-auth "focus on token expiry"
 /fleet watch               → a monitor pane that notifies on every stall, death or finish
-/fleet retire review-auth  → push WIP, close the workspace, remove clean worktrees and the test cluster
+/fleet retire review-auth  → push WIP, close the workspace, archive reports and remove worktrees, delete the test cluster and its images
 /fleet prime               → after a compaction: rebuild the picture of the fleet from the registry
 /fleet debrief             → lessons per agent, proposed diffs to .claude/experts/<role>.md
 ```
@@ -61,11 +61,11 @@ This skill builds the rest on top of it.
 | Command | What it does |
 |---|---|
 | `/fleet boot <template> <focus> <dir> [task]` | Creates the herdr workspace `<template>-<focus>` (the team name), starts a lead and its workers in split panes, gives every writer its own git worktree on branch `fleet/<team>/<role>`, sends each agent its brief and registers it. `<template>` is `build`, `race`, `review`, `research` or a path to your own template JSON |
-| `/fleet status [--problems] [--team T] [--json]` | Shows each live agent's health (see below) and its team's test cluster. `--problems` lists only agents that need you, `--team` limits it to one team, `--json` gives machine-readable output |
+| `/fleet status [--problems] [--team T] [--json]` | Shows each live agent's health (see below) and its team's test cluster, under a disk line (free GiB, `LOW` below `warn_free_gb`). `--problems` lists only agents that need you, `--team` limits it to one team, `--json` gives machine-readable output |
 | `/fleet tell <team\|agent> <msg>` | Sends a message to the team's lead, or to one agent if you name it, then quotes a line of its reply so you know it arrived |
-| `/fleet watch [--team T]` | Opens a monitor pane beside yours that raises a herdr notification whenever an agent stalls, dies, needs input or finishes |
+| `/fleet watch [--team T]` | Opens a monitor pane beside yours that raises a herdr notification whenever an agent stalls, dies, needs input or finishes, or free disk drops below `warn_free_gb` |
 | `/fleet escalate <P0\|P1\|P2> <msg>` | Raises a question by severity. The Orchestrator answers P2 itself, brings P1 to you with a recommendation, and stops for P0 and brings it to you immediately (a P0 in a race pauses the race) |
-| `/fleet retire <team\|team/role> [--outcome O]` | Shuts down a whole team or a single agent. Live agents are asked to push their work first, then only the fleet's own panes are closed, clean worktrees are removed (dirty ones are kept and reported, with their untracked files listed by name), and the team's test cluster is deleted. `O` is `Shipped`, `Won race`, `Partial`, `Abandoned` or `Failed` |
+| `/fleet retire <team\|team/role> [--outcome O]` | Shuts down a whole team or a single agent. Live agents are asked to push their work first, then only the fleet's own panes are closed, worktrees are removed (build outputs ignored, untracked reports copied to `reports/fleet-archive/<team>-<role>/`; one with unpushed commits, untracked source or uncommitted edits is kept and the files or commits named), and the team's test cluster and images are deleted. `O` is `Shipped`, `Won race`, `Partial`, `Abandoned` or `Failed` |
 | `/fleet prime` | Rebuilds the Orchestrator's picture of the fleet from the registry (which teams exist, who is doing what, what needs attention). Use it after a context compaction or in a new session |
 | `/fleet debrief` | For each retired team: records one or two lessons per agent and *proposes* (never applies) diffs to `.claude/experts/<role>.md` and to the template, plus a list of discovered follow-up work |
 
@@ -115,11 +115,11 @@ The Orchestrator and agents call these directly (from `scripts/`). You can call 
 
 | Script | Commands |
 |---|---|
-| `boot.sh` | `boot.sh <template> <focus> <dir> [task…]` boots a team (`FLEET_FORCE=1` goes over the `max_agents` cap) |
-| `status.sh` | `status.sh [--problems] [--team T] [--json]` recomputes health and writes it to the registry |
-| `watch.sh` | `watch.sh [--team T] [--every SECONDS]` live monitor, polls every 20s by default |
+| `boot.sh` | `boot.sh <template> <focus> <dir> [task…]` boots a team (`FLEET_FORCE=1` goes over the `max_agents` cap and the `min_free_gb` disk floor) |
+| `status.sh` | `status.sh [--problems] [--team T] [--json]` recomputes health, writes it to the registry and prints free disk first |
+| `watch.sh` | `watch.sh [--team T] [--every SECONDS] [--once]` live monitor, polls every 20s by default; notifies on low disk |
 | `retire.sh` | `retire.sh <team\|team/role> [--outcome O]` safe teardown; `--summary <target...>` read-only pre-retire summary |
-| `env.sh` | `up [--branch B] <team>` creates the team's cluster (exit 75 = queued at `max_envs`) · `down <team>` removes it · `status` lists every env |
+| `env.sh` | `up [--branch B] <team>` creates the team's cluster (exit 75 = queued at `max_envs`) · `down <team>` removes it, with its images and builder · `status` lists every env |
 | `registry.sh` | `add '<json>'` · `set <name> key=value…` · `get <name>` · `list [--team T] [--live] [--problems]` · `list --envs` · `done <name> --outcome O --summary TEXT` · `escalate <name> P0\|P1\|P2 TEXT` · `note <name> discovered TEXT` · `retire <name\|team> [--outcome O]` · `unsynced` · `synced <name…>` · `path` |
 
 ## Requirements
@@ -143,6 +143,8 @@ The Orchestrator and agents call these directly (from `scripts/`). You can call 
 ```toml
 max_agents = 4   # live agents across all teams
 max_envs = 3     # test clusters at once
+min_free_gb = 40   # boot refuses below this much free disk (0 = off; FLEET_FORCE=1 overrides)
+warn_free_gb = 75  # status marks LOW and watch notifies below this
 
 # Permissions added to every Claude agent at boot. Templates never name a tracker or a
 # code host; put yours here. Values are Claude Code permission rules.
@@ -165,6 +167,23 @@ repo-specific rule, use that repo's `.claude/settings.json` instead.
 `MR !12` (GitLab style) and tags each one with the origin remote's `host` and `project`. The
 Orchestrator then checks it with the matching CLI.
 
+## Disk
+
+Fleet runs fill disks: worktrees carry `node_modules` and build output, and every team cluster
+builds and loads images. Four guards keep it from filling:
+
+- **Retire** removes the worktree. Build outputs (`node_modules/`, `*.tsbuildinfo`, `dist/`,
+  `.next/`, `coverage/`) are ignored; untracked reports (`*.md` at the worktree root or under
+  `reports/`) are copied, and verified, to `reports/fleet-archive/<team>-<role>/` in the
+  Orchestrator's working directory (`FLEET_ARCHIVE_DIR` overrides the root). A worktree is
+  kept only for unpushed commits, untracked source files or uncommitted edits to tracked
+  files, and the output names them.
+- **`env.sh down`** removes the team's images and build cache after the repo's `down` (see below).
+- **Boot** refuses below `min_free_gb`, with the same `FLEET_FORCE=1` override as `max_agents`.
+- **Status and watch** show free disk; watch notifies below `warn_free_gb`.
+
+Docker Desktop's own disk limit is yours to set (Settings, Resources).
+
 ## Team test environment
 
 A repo opts in by adding `.claude/fleet-env.json` with `up`, `down` and `kubeconfig` command
@@ -183,6 +202,14 @@ Example using kind:
   renamed to `fleet-<team>`, whatever tool created it.
 - `env.sh up` reports a missing tool by name (`missing tool: <name> (needed by fleet-env.json <key>)`)
   before it claims a slot.
+- Images are cleaned by convention. `up` gives the repo three marks: tag what it builds or loads
+  `:fleet-<team>` (`FLEET_IMAGE_TAG`), label it `fleet.team=<team>` (`FLEET_IMAGE_LABEL`), and build
+  with the buildx builder `fleet-<team>` (`FLEET_BUILDER`); the same values are the placeholders
+  `{{image_tag}}`, `{{image_label}}` and `{{builder}}`. After a successful repo `down`, `env.sh down`
+  removes exactly those images (`docker rmi`, never forced, no prune) and that builder with its
+  cache. Foreign images and clusters are never touched, the default builder's cache is left
+  alone (BuildKit can't prune by label), and a repo that sets none of the marks gets no image
+  cleanup. Docker trouble only warns; the slot is still freed.
 - Foreign clusters are refused: an ambient `$CLUSTER`, or a `CLUSTER=` in a template, that is not
   `fleet-<team>` stops `up` and `down`. Templates run with `CLUSTER` pinned to `fleet-<team>`.
 
@@ -195,9 +222,9 @@ Example using kind:
 | `scripts/boot.sh` | one-command team boot |
 | `scripts/status.sh` | health computation |
 | `scripts/watch.sh` | live monitor |
-| `scripts/retire.sh` | safe teardown (also removes the team's test cluster) |
+| `scripts/retire.sh` | safe teardown: archives reports to `reports/fleet-archive/`, removes worktrees, removes the team's test cluster |
 | `scripts/env.sh` | per-team disposable test cluster, declared by the repo's `.claude/fleet-env.json` |
-| `scripts/test/run.sh` | offline tests for the team environment (stub `up`/`down`, no kind) |
+| `scripts/test/run.sh` | offline tests (stub `up`/`down`, docker, df and herdr; no kind, no live fleet) |
 | `scripts/registry.sh` | registry CLI used by every agent |
 | `references/` | herdr pitfalls, registry format, expertise files |
 | `../../agents/lead.md`, `orchestrator.md` | delegate-only agent definitions |

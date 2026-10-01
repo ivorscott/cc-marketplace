@@ -39,6 +39,9 @@ reinvent it here. This skill adds only what herdr doesn't have:
   or stalled.
 - **Cap:** respect `max_agents` (default 4, in `~/.config/fleet/config.toml`). If a boot
   would exceed it, tell the user and ask before retrying with `FLEET_FORCE=1`.
+- **Disk floor:** boot refuses when free disk is below `min_free_gb` (default 40, same file;
+  0 disables). Tell the user and ask before retrying with `FLEET_FORCE=1`, as for the cap.
+  Free disk is also shown in status and watched (`warn_free_gb`, default 75).
 - **Keep chat short:** tables and a few lines. The detail lives in the registry and the panes.
 
 ## Step 0 — Route the request
@@ -70,6 +73,7 @@ After any route that changed the registry, run **Sink** (end of file).
    starts with `KUBECONFIG=$FLEET_STATE/env/<team>/kubeconfig` so it can't reach your own
    clusters. Boot creates no cluster; the tester runs `$F/env.sh up <team>` on demand (see
    **Team environment** below).
+   It refuses, with the free GiB and `min_free_gb` in the message, when the disk is below the floor.
 3. It prints the team as JSON. Anything not `Working` needs you now: go to **B** for that
    agent. Report the team name, the agents and where to look (herdr workspace `<team>`).
 
@@ -91,6 +95,10 @@ The ENV column shows a team's test cluster (`-` for none, `slot-<n>-Up`, `Creati
 `Failed`); `$F/env.sh status` lists every env. `Queued` means `max_envs` is reached: the
 tester waits and retries `env.sh up`, or you retire a team that is done.
 
+The table starts with a disk line, `disk: <n> GiB free (warn below 75, boot refuses below 40)`,
+with `LOW` appended below `warn_free_gb`. `--json` is the bare agent array, without it. When
+the disk is LOW, say so first and suggest retiring teams that are done (F).
+
 Answer with the table (or just the problems) and one line per action you took.
 
 ## C. Steer
@@ -108,7 +116,8 @@ Answer with the table (or just the problems) and one line per action you took.
 Open a pane next to yours and run the monitor there, so the user can see it:
 `herdr pane split --current --direction down --no-focus`, then
 `herdr pane run <pane> "$F/watch.sh [--team T]"`. It prints each status change and raises a
-herdr notification when an agent stalls, dies, needs input or finishes. Tell the user it is
+herdr notification when an agent stalls, dies, needs input or finishes, and when free disk
+falls below `warn_free_gb` (once per crossing; again below `min_free_gb`). `--once` does one pass. Tell the user it is
 running, and check it with `herdr pane read <pane> --source recent --lines 40` when asked.
 
 ## E. Escalate
@@ -146,7 +155,9 @@ see an escalation:
 
    Escalations        <P1> <issue>  <one line>   (open ones only; "none" if none)
 
-   Worktrees kept     <path>  (untracked: <files>)
+   Worktrees kept     <path>  (unpushed: <shas>; untracked: <files>; edited: <files>)
+
+   Reports archived   <path>  -> reports/fleet-archive/<team>-<role>/
 
    Discovered work    <one line each>
 
@@ -157,13 +168,20 @@ see an escalation:
 1. Ask each live agent in the target to push work in progress and state where it stopped
    (`agent prompt … --wait`). Skip Zombies.
 2. `$F/retire.sh <team | team/role> [--outcome Shipped|Won race|Partial|Abandoned|Failed]`. It
-   closes only the fleet's own workspace or panes, removes clean worktrees, keeps dirty ones
-   (naming their untracked files, also under `kept_untracked`), and marks the rows Retired. Retiring a whole team also runs
+   closes only the fleet's own workspace or panes, frees disk, and marks the rows Retired.
+   Worktrees hold `node_modules` and build output, so it removes them, after looking:
+   build outputs (`node_modules/`, `*.tsbuildinfo`, `dist/`, `.next/`, `coverage/`) don't
+   count; untracked reports (`*.md` at the worktree root or under `reports/`) are copied to
+   `reports/fleet-archive/<team>-<role>/` in your working directory (`FLEET_ARCHIVE_DIR`
+   overrides the root) and the copy is verified before the worktree goes (`archived`). It
+   **keeps** a worktree only for unpushed commits (`kept_unpushed`), untracked source files
+   (`kept_untracked`) or uncommitted edits to tracked files (`kept_modified`), and names
+   them; ask the agent to commit and push, or the user to decide, then retire again. Retiring a whole team also runs
    `env.sh down <team>`, which removes the team's cluster only if the registry created it; a
    failed down is reported under `kept_envs` and the rows are still retired.
 3. **Race:** once the lead marks a winner, retire every other racer with `--outcome Abandoned`,
    then the lead.
-4. Show the summary again with the final state (`kept_worktrees`, `kept_envs`), then offer
+4. Show the summary again with the final state (`kept_worktrees`, `kept_envs`, `archived`), then offer
    a debrief (H).
 
 ## Team environment
@@ -182,6 +200,15 @@ nothing changes. With it:
   repo's command templates names anything but `fleet-<team>` (a foreign cluster), and run the
   templates with `CLUSTER` pinned to `fleet-<team>`. `up` also dies naming any tool the templates
   need that is missing.
+- **Images and build cache.** `up` hands the repo three marks (also placeholders `{{image_tag}}`,
+  `{{image_label}}`, `{{builder}}`): tag what it builds or loads `:fleet-<team>`
+  (`FLEET_IMAGE_TAG`), label it `fleet.team=<team>` (`FLEET_IMAGE_LABEL`), and build with the
+  buildx builder `fleet-<team>` (`FLEET_BUILDER`). After the repo's `down` succeeds, `down`
+  runs `docker rmi` (never forced, never a prune) on exactly the images carrying that tag or
+  label, and removes that builder and its cache. Foreign images and clusters, and the default
+  builder's cache, are never touched; an image that is in use or tagged elsewhere is reported
+  and kept. A repo whose `up` sets none of the marks gets no image cleanup, and docker
+  trouble only warns: the slot is freed regardless.
 - The tester checks out the builder's pushed commit (`git checkout --detach <sha>`), never merges
   its branch, and signs off on that exact SHA; the lead checks it equals the PR head before `done`.
 - **Isolation limit:** the preset `KUBECONFIG` covers `kubectl` and `helm`. Other tools (a

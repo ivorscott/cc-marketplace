@@ -15,8 +15,11 @@
 # team, lead included, starts with KUBECONFIG pointing at the team's own kubeconfig, even
 # before its cluster exists (see env.sh). Boot itself never creates a cluster.
 #
+# Boot refuses when free disk is below min_free_gb in config.toml (default 40; 0 disables),
+# so a full disk never hangs Docker mid-run.
+#
 # Env: FLEET_SESSION (named herdr session, for isolated runs), FLEET_FORCE=1 (ignore
-# max_agents), FLEET_MACHINE (label stored in the registry, default "local").
+# max_agents and min_free_gb), FLEET_MACHINE (label stored in the registry, default "local").
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
 require_herdr
@@ -46,6 +49,17 @@ edits_ok="$(jq -r '.auto_answer.edits_in_worktree // false' "$tpl")"
 live="$("$registry" count-live)"; cap="$(max_agents)"
 if [ "${FLEET_FORCE:-}" != "1" ] && [ $((live + 1 + nworkers)) -gt "$cap" ]; then
   die "booting $team needs $((1 + nworkers)) agents; $live live, max_agents=$cap (set FLEET_FORCE=1 or raise max_agents in $FLEET_CONFIG_DIR/config.toml)"
+fi
+
+# Disk floor.
+floor="$(min_free_gb)"
+if [ "${FLEET_FORCE:-}" != "1" ] && [ "$floor" -gt 0 ]; then
+  if free="$(free_gb)"; then
+    [ "$free" -ge "$floor" ] ||
+      die "booting $team needs disk; $free GiB free, min_free_gb=$floor (set FLEET_FORCE=1 or lower min_free_gb in $FLEET_CONFIG_DIR/config.toml)"
+  else
+    warn "cannot read free disk; skipping the min_free_gb check"
+  fi
 fi
 
 # Team environment: preset KUBECONFIG on every pane so agents can't reach the user's own clusters.
