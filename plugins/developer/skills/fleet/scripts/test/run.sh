@@ -247,6 +247,25 @@ eq "retire keeps a worktree with untracked files" "$(jq -c '.kept_worktrees' "$T
 eq "retire lists untracked files in kept_untracked" "$(jq -c --arg w "$T/wt-keep" '.kept_untracked[$w] | sort' "$T/keep.json")" '["notes.md","reports/r.md"]'
 check "retire warns with the untracked file name" grep -q '?? reports/r.md' "$T/keep.err"
 
+# retire --summary: read-only, needs no herdr, gathers PRs, UNVERIFIED, escalations, worktrees
+git -C "$T/repo" remote add origin git@github.com:acme/widgets.git
+git -C "$T/repo" worktree add -q -b sum-br "$T/wt-sum" >/dev/null 2>&1
+echo r >"$T/wt-sum/report.md"
+"$REG" add "$(jq -cn --arg r "$T/repo" --arg w "$T/wt-sum" '{name: "build-sum/tester", team: "build-sum", repo: $r, tier: "Worker", status: "Done", herdr_ref: "x", pane: "p", worktree: $w, outcome: "Shipped", summary: "PASS on abc (PR #12); live curl UNVERIFIED"}')"
+"$REG" add "$(jq -cn --arg r "$T/repo" '{name: "build-sum/lead", team: "build-sum", repo: $r, tier: "Lead", status: "Done", herdr_ref: "y", pane: "q", outcome: "Shipped", summary: "PR #12 and PR #13 open"}')"
+"$REG" escalate build-sum/lead P1 "decide archived_at" >/dev/null 2>&1
+before="$(cat "$FLEET_REGISTRY")"
+: >"$HERDR_LOG"; HERDR_ENV= FLEET_SESSION= "$SCRIPTS/retire.sh" --summary build-sum >"$T/sum.json" 2>"$T/sum.err"; rc=$?
+eq "summary: runs without herdr" "$rc" 0
+eq "summary: registry unchanged" "$(cat "$FLEET_REGISTRY")" "$before"
+eq "summary: no herdr calls" "$(wc -l <"$HERDR_LOG" | tr -d ' ')" 0
+eq "summary: PRs deduped with the GitHub repo" "$(jq -c '[.prs[] | [.repo, .number]]' "$T/sum.json")" '[["acme/widgets",12],["acme/widgets",13]]'
+eq "summary: UNVERIFIED rows" "$(jq -c '[.unverified[].name]' "$T/sum.json")" '["build-sum/tester"]'
+eq "summary: open escalation" "$(jq -c '[.escalations[] | [.name, .severity, .open]]' "$T/sum.json")" '[["build-sum/lead","P1",true]]'
+eq "summary: worktree would be kept, untracked named" "$(jq -c '[.worktrees[] | [.kept, .untracked]]' "$T/sum.json")" '[[true,["report.md"]]]'
+"$SCRIPTS/retire.sh" --summary build-nope >/dev/null 2>&1; rc=$?
+check "summary: unknown target fails" test "$rc" != 0
+
 # Isolation
 if command -v kubectl >/dev/null 2>&1; then
   eq "absent team kubeconfig shows no contexts" "$(KUBECONFIG="$FLEET_STATE_DIR/env/none/kubeconfig" kubectl config get-contexts -o name 2>/dev/null)" ""

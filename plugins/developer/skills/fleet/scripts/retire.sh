@@ -3,6 +3,13 @@
 # mark the rows Retired. Ask the agents to push WIP and summarise BEFORE running this.
 #
 #   retire.sh <team | team/role> [--outcome O]
+#   retire.sh --summary <team | team/role> [...]
+#
+# --summary changes nothing. It prints, as JSON, what the user needs to see before (and
+# after) a retire: every agent's outcome and summary, the PRs the summaries name, the
+# UNVERIFIED items, escalations (open = the row still carries .escalation), discovered
+# work, and the worktrees a retire would keep. The Orchestrator adds live PR state (gh)
+# and the next issues (tracker), then renders the summary (SKILL.md, route F).
 #
 # Never closes panes or workspaces the registry doesn't record as fleet-created. A
 # worktree with uncommitted changes is kept and reported (untracked files by name, also
@@ -11,8 +18,56 @@
 # created); if that fails the env is kept and reported.
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
-require_herdr
 registry="$FLEET_SCRIPTS/registry.sh"
+
+# untracked_in <worktree>: one untracked path per line.
+untracked_in() { git -C "$1" status --porcelain --untracked-files=all 2>/dev/null | sed -n 's/^?? //p'; }
+
+# gh_repo <repo dir>: owner/name from the origin remote, or the directory name.
+gh_repo() {
+  local url; url="$(git -C "$1" remote get-url origin 2>/dev/null || true)"
+  url="${url%.git}"; url="${url#*github.com[:/]}"
+  case "$url" in */*) printf '%s\n' "$url" ;; *) basename "$1" ;; esac
+}
+
+summary() {
+  [ "$#" -gt 0 ] || die "usage: retire.sh --summary <team | team/role> [...]"
+  local rows="[]" t r wts="[]" repos="{}" wt repo dirty untracked
+  for t in "$@"; do
+    r="$("$registry" list | jq --arg x "$t" '[.[] | select(.name == $x or .team == $x)]')"
+    [ "$(printf '%s' "$r" | jq length)" != "0" ] || die "nothing matches '$t'"
+    rows="$(jq -cn --argjson a "$rows" --argjson b "$r" '$a + $b | unique_by(.name)')"
+  done
+  while IFS= read -r repo; do
+    repos="$(printf '%s' "$repos" | jq -c --arg d "$repo" --arg g "$(gh_repo "$repo")" '. + {($d): $g}')"
+  done < <(printf '%s' "$rows" | jq -r '[.[].repo | select(. != null and . != "")] | unique[]')
+  while IFS=$'\t' read -r wt; do
+    [ -d "$wt" ] || continue
+    dirty="$(git -C "$wt" status --porcelain 2>/dev/null | head -1)"
+    untracked="$(untracked_in "$wt")"
+    wts="$(printf '%s' "$wts" | jq -c --arg w "$wt" --arg b "$(git -C "$wt" branch --show-current 2>/dev/null)" \
+      --argjson d "$([ -n "$dirty" ] && echo true || echo false)" --arg u "$untracked" \
+      '. + [{path: $w, branch: $b, kept: $d, untracked: ($u | split("\n") | map(select(. != "")))}]')"
+  done < <(printf '%s' "$rows" | jq -r '.[] | select((.worktree // "") != "") | .worktree')
+  printf '%s' "$rows" | jq --argjson repos "$repos" --argjson wts "$wts" '
+    def text: (.summary // "");
+    {
+      teams: ([.[].team] | unique),
+      agents: [.[] | {name, tier, status, outcome: (.outcome // null), summary: (.summary // null)}],
+      prs: ([.[] | . as $a | text | [scan("PR #([0-9]+)")[0]]
+              | map({repo: ($repos[$a.repo] // null), number: tonumber, from: $a.name})] | add // []
+            | unique_by([.repo, .number])),
+      unverified: [.[] | select(text | test("unverified"; "i")) | {name, summary}],
+      escalations: [.[] | . as $a | (.escalations // [])[]
+                    | {name: $a.name, severity, message, at, open: (($a.escalation // "") != "")}]
+                    | sort_by(.at) | reverse,
+      discovered: [.[] | . as $a | (.discovered // [])[] | {name: $a.name, message, at}],
+      worktrees: $wts
+    }'
+}
+
+if [ "${1:-}" = "--summary" ]; then shift; summary "$@"; exit 0; fi
+require_herdr
 
 target="${1:?usage: retire.sh <team | team/role> [--outcome O]}"; shift
 outcome=""; [ "${1:-}" = "--outcome" ] && outcome="${2:-}"
@@ -43,7 +98,7 @@ while IFS=$'\t' read -r wt repo; do
   if [ -n "$dirty" ]; then
     warn "kept $wt: uncommitted changes ($dirty)"; kept="$(printf '%s' "$kept" | jq -c --arg w "$wt" '. + [$w]')"
     # Name every untracked file: they are what a retired agent's report or notes are made of.
-    untracked="$(git -C "$wt" status --porcelain --untracked-files=all 2>/dev/null | sed -n 's/^?? //p')"
+    untracked="$(untracked_in "$wt")"
     if [ -n "$untracked" ]; then
       while IFS= read -r f; do warn "  untracked in $wt: ?? $f"; done <<<"$untracked"
       kept_untracked="$(printf '%s' "$kept_untracked" | jq -c --arg w "$wt" --arg u "$untracked" '. + {($w): ($u | split("\n"))}')"

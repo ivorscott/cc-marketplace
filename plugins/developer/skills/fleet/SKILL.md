@@ -123,6 +123,24 @@ see an escalation:
 
 ## F. Retire
 
+0. **Summary first, then wait.** Run `$F/retire.sh --summary <target> [...]` (read-only, no
+   herdr needed). Add the live state of every PR it lists (`gh pr view <n> --repo <repo>
+   --json state,mergeable,statusCheckRollup`) and the next 3 issues from the tracker
+   (unblocked backlog, highest priority first). Show it in this format, write it to
+   `reports/retire-<date>.md` in the Orchestrator's working directory, and **wait for the
+   user's go**. Open P0/P1 escalations and UNVERIFIED items must be seen before anything closes:
+
+   ```
+   Retire summary: <teams>
+
+   PRs                <repo>#<n>  <issue>  <open|merged|closed>, CI <state>, tester PASS on head?
+   Unverified         <issue>  <item>
+   Escalations        <P1> <issue>  <one line>   (open ones only; "none" if none)
+   Worktrees kept     <path>  (untracked: <files>)
+   Discovered work    <one line each>
+   Incidents          anything an agent did outside its brief
+   Next 3 issues      <ID>  <title>  <repo>
+   ```
 1. Ask each live agent in the target to push work in progress and state where it stopped
    (`agent prompt … --wait`). Skip Zombies.
 2. `$F/retire.sh <team | team/role> [--outcome Shipped|Won race|Partial|Abandoned|Failed]`. It
@@ -132,7 +150,8 @@ see an escalation:
    failed down is reported under `kept_envs` and the rows are still retired.
 3. **Race:** once the lead marks a winner, retire every other racer with `--outcome Abandoned`,
    then the lead.
-4. Offer a debrief (H).
+4. Show the summary again with the final state (`kept_worktrees`, `kept_envs`), then offer
+   a debrief (H).
 
 ## Team environment
 
