@@ -8,8 +8,10 @@
 # --summary changes nothing. It prints, as JSON, what the user needs to see before (and
 # after) a retire: every agent's outcome and summary, the PRs the summaries name, the
 # UNVERIFIED items, escalations (open = the row still carries .escalation), discovered
-# work, and the worktrees a retire would keep. The Orchestrator adds live PR state (gh)
-# and the next issues (tracker), then renders the summary (SKILL.md, route F).
+# work, and the worktrees a retire would keep. PRs are found as "PR #n" (GitHub style) or
+# "MR !n" (GitLab style) in summaries; each carries its repo's {host, project}. The
+# Orchestrator adds live PR state with that host's CLI and the next issues from whatever
+# tracker is connected, then renders the summary (SKILL.md, route F).
 #
 # Never closes panes or workspaces the registry doesn't record as fleet-created. A
 # worktree with uncommitted changes is kept and reported (untracked files by name, also
@@ -23,11 +25,19 @@ registry="$FLEET_SCRIPTS/registry.sh"
 # untracked_in <worktree>: one untracked path per line.
 untracked_in() { git -C "$1" status --porcelain --untracked-files=all 2>/dev/null | sed -n 's/^?? //p'; }
 
-# gh_repo <repo dir>: owner/name from the origin remote, or the directory name.
-gh_repo() {
-  local url; url="$(git -C "$1" remote get-url origin 2>/dev/null || true)"
-  url="${url%.git}"; url="${url#*github.com[:/]}"
-  case "$url" in */*) printf '%s\n' "$url" ;; *) basename "$1" ;; esac
+# remote_of <repo dir>: {host, project} from the origin remote, for any forge (GitHub,
+# GitLab, self-hosted, ...). Handles scp-style (git@host:a/b.git) and URL remotes
+# (https://host[:port]/a/b, ssh://git@host/a/b). No remote: host null, project = dir name.
+remote_of() {
+  local url host path
+  url="$(git -C "$1" remote get-url origin 2>/dev/null || true)"; url="${url%.git}"; url="${url%/}"
+  case "$url" in
+    *://*) url="${url#*://}"; url="${url#*@}"; host="${url%%/*}"; host="${host%%:*}"; path="${url#*/}" ;;
+    *@*:*) url="${url#*@}"; host="${url%%:*}"; path="${url#*:}" ;;
+    *) host=""; path="" ;;
+  esac
+  [ -n "$path" ] && [ "$path" != "$url" ] || { host=""; path="$(basename "$1")"; }
+  jq -cn --arg h "$host" --arg p "$path" '{host: (if $h == "" then null else $h end), project: $p}'
 }
 
 summary() {
@@ -39,7 +49,7 @@ summary() {
     rows="$(jq -cn --argjson a "$rows" --argjson b "$r" '$a + $b | unique_by(.name)')"
   done
   while IFS= read -r repo; do
-    repos="$(printf '%s' "$repos" | jq -c --arg d "$repo" --arg g "$(gh_repo "$repo")" '. + {($d): $g}')"
+    repos="$(printf '%s' "$repos" | jq -c --arg d "$repo" --argjson g "$(remote_of "$repo")" '. + {($d): $g}')"
   done < <(printf '%s' "$rows" | jq -r '[.[].repo | select(. != null and . != "")] | unique[]')
   while IFS=$'\t' read -r wt; do
     [ -d "$wt" ] || continue
@@ -54,9 +64,10 @@ summary() {
     {
       teams: ([.[].team] | unique),
       agents: [.[] | {name, tier, status, outcome: (.outcome // null), summary: (.summary // null)}],
-      prs: ([.[] | . as $a | text | [scan("PR #([0-9]+)")[0]]
-              | map({repo: ($repos[$a.repo] // null), number: tonumber, from: $a.name})] | add // []
-            | unique_by([.repo, .number])),
+      prs: ([.[] | . as $a | text | [scan("\\b(?:PR ?#|MR ?!)([0-9]+)")[0]]
+              | map(($repos[$a.repo] // {host: null, project: null}) as $r
+                    | {host: $r.host, repo: $r.project, number: tonumber, from: $a.name})] | add // []
+            | unique_by([.host, .repo, .number])),
       unverified: [.[] | select(text | test("unverified"; "i")) | {name, summary}],
       escalations: [.[] | . as $a | (.escalations // [])[]
                     | {name: $a.name, severity, message, at, open: (($a.escalation // "") != "")}]
