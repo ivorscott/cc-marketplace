@@ -36,6 +36,27 @@ max_agents() {
   printf '%s\n' "${v:-4}"
 }
 
+# cfg_int <key> <default>: an integer from config.toml (key = value).
+cfg_int() {
+  local v=""
+  [ -f "$FLEET_CONFIG_DIR/config.toml" ] &&
+    v="$(sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*\([0-9][0-9]*\).*/\1/p" "$FLEET_CONFIG_DIR/config.toml" | head -1)"
+  printf '%s\n' "${v:-$2}"
+}
+# min_free_gb (boot refuses below it, default 40; 0 disables) and warn_free_gb (watch notifies below it, default 75).
+min_free_gb() { cfg_int min_free_gb 40; }
+warn_free_gb() { cfg_int warn_free_gb 75; }
+
+# free_gb: whole GiB free on the volume holding the fleet worktrees (the nearest existing
+# ancestor of $FLEET_WORKTREES). Prints nothing and returns 1 when df can't tell.
+free_gb() {
+  local d="$FLEET_WORKTREES" kb
+  while [ ! -d "$d" ] && [ "$d" != "/" ]; do d="$(dirname "$d")"; done
+  kb="$(df -Pk "$d" 2>/dev/null | awk 'NR==2 {print $4}')"
+  case "$kb" in "" | *[!0-9]*) return 1 ;; esac
+  printf '%s\n' $((kb / 1024 / 1024))
+}
+
 # config_list <key>: a TOML array of strings from config.toml as a JSON array, default [].
 # The array may span lines (key = [ "a", "b" ]). Used for tracker_allow and forge_allow,
 # which keep tool-specific permissions (Linear/Jira, GitHub/GitLab, ...) out of templates.
@@ -73,7 +94,7 @@ max_envs() {
 env_config() { [ -f "$1/.claude/fleet-env.json" ] && printf '%s\n' "$1/.claude/fleet-env.json" || true; }
 env_dir() { printf '%s\n' "$FLEET_STATE_DIR/env/$1"; }
 
-# render_env <template> <team> <cluster> <http> <https> <branch> <kubeconfig>
+# render_env <template> <team> <cluster> <http> <https> <branch> <kubeconfig> [<image_tag> <image_label> <builder>]
 # Values are shell-quoted: templates run through `bash -c`, and branch names are free text.
 render_env() {
   local s="$1" v
@@ -83,5 +104,8 @@ render_env() {
   v="$(printf '%q' "$5")"; s="${s//\{\{https_port\}\}/$v}"
   v="$(printf '%q' "$6")"; s="${s//\{\{branch\}\}/$v}"
   v="$(printf '%q' "$7")"; s="${s//\{\{kubeconfig\}\}/$v}"
+  v="$(printf '%q' "${8:-}")"; s="${s//\{\{image_tag\}\}/$v}"
+  v="$(printf '%q' "${9:-}")"; s="${s//\{\{image_label\}\}/$v}"
+  v="$(printf '%q' "${10:-}")"; s="${s//\{\{builder\}\}/$v}"
   printf '%s' "$s"
 }

@@ -4,6 +4,9 @@
 #
 #   status.sh [--team T] [--problems] [--json]
 #
+# The table starts with a disk line (free GiB on the worktree volume, LOW below
+# warn_free_gb in config.toml). --json is the bare array of agents, without it.
+#
 # Health rules (herdr's own state is necessary but not sufficient):
 #   Working      herdr says working
 #   Needs input  herdr says blocked, or the agent escalated
@@ -68,6 +71,14 @@ done
 filter='.'; $problems && filter='[.[] | select(.status == "Stalled" or .status == "Zombie" or .status == "Needs input" or (.escalation // "") != "")]'
 out="$("$registry" list "${list_args[@]}" | jq "$filter")"
 if $json; then printf '%s\n' "$out"; exit 0; fi
+disk_line() {
+  local free warn min
+  warn="$(warn_free_gb)"; min="$(min_free_gb)"
+  if free="$(free_gb)"; then
+    printf 'disk: %s GiB free (warn below %s, boot refuses below %s)%s\n' "$free" "$warn" "$min" "$([ "$free" -lt "$warn" ] && echo ' LOW' || true)"
+  else printf 'disk: unknown\n'; fi
+}
+disk_line
 # The ENV column appears only once the registry has a team environment; before that the
 # output is exactly the 3.0.1 table.
 printf '%s' "$out" | jq -r --argjson envs "$("$registry" list --envs)" '
