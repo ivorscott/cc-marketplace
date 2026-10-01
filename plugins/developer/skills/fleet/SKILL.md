@@ -126,22 +126,33 @@ see an escalation:
 0. **Summary first, then wait.** Run `$F/retire.sh --summary <target> [...]` (read-only, no
    herdr needed). Each PR it lists carries its repo's `host` and `project`; add its live
    state (open/merged/closed, mergeable, CI on the head) with that host's CLI or connector,
-   such as `gh pr view` for GitHub or `glab mr view` for GitLab. Add the next 3 issues from
+   such as `gh pr view` for GitHub or `glab mr view` for GitLab. Add the next 10 issues from
    whichever tracker is connected (Linear, Jira, ...): unblocked backlog, highest priority
-   first. No tool for the host or the tracker → mark that part UNVERIFIED; don't guess. Show it in this format, write it to
+   first, so the user can skip the ones that don't fit. No tool for the host or the tracker →
+   mark that part UNVERIFIED; don't guess. Show it in this format, write it to
    `reports/retire-<date>.md` in the Orchestrator's working directory, and **wait for the
-   user's go**. Open P0/P1 escalations and UNVERIFIED items must be seen before anything closes:
+   user's go**. Open P0/P1 escalations and UNVERIFIED items must be seen before anything closes.
+
+   Copy the format exactly, in chat and in the file: one blank line between sections, one
+   item per line, and keep each line under about 100 characters (shorten the text, never
+   wrap it onto a second line) so sections stay readable in a terminal:
 
    ```
    Retire summary: <teams>
 
    PRs                <project> PR #<n> | MR !<n>  <issue>  <open|merged|closed>, CI <state>, tester PASS on head?
+
    Unverified         <issue>  <item>
+
    Escalations        <P1> <issue>  <one line>   (open ones only; "none" if none)
+
    Worktrees kept     <path>  (untracked: <files>)
+
    Discovered work    <one line each>
+
    Incidents          anything an agent did outside its brief
-   Next 3 issues      <ID>  <title>  <repo>
+
+   Next 10 issues     <ID>  <priority>  <title>  <repo>
    ```
 1. Ask each live agent in the target to push work in progress and state where it stopped
    (`agent prompt … --wait`). Skip Zombies.
