@@ -224,5 +224,5 @@ case "$sub" in
       (to_entries[] | [.key, .value.cluster, .value.state, (.value.slot // "-"), (.value.http_port // "-"), (.value.https_port // "-")] | map(tostring) | @tsv)' |
       column -t -s $'\t'
     ;;
-  *) sed -n '2,32p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+  *) sed -n '2,34p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac
