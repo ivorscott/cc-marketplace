@@ -129,12 +129,41 @@ The Orchestrator and agents call these directly (from `scripts/`). You can call 
 - herdr 0.9 or later, with the Orchestrator running inside a herdr pane
 - `jq` and `git`
 - Claude Code; other agent CLIs herdr supports are optional workers
-- `gh`, for teams that open pull requests
+- the CLI or MCP connector for your code host (`gh`, `glab`, ...) and your tracker (Linear, Jira, ...), allowed through `config.toml` (below)
 
 **Optional**
 
 - `nc` or `lsof`, for the host port checks when allocating a test environment
 - For the team test environment: `kubectl`, plus whatever your `fleet-env.json` commands use (for example `kind` and Docker)
+
+## Configuration
+
+`~/.config/fleet/config.toml` holds machine-wide settings. Every key is optional.
+
+```toml
+max_agents = 4   # live agents across all teams
+max_envs = 3     # test clusters at once
+
+# Permissions added to every Claude agent at boot. Templates never name a tracker or a
+# code host; put yours here. Values are Claude Code permission rules.
+tracker_allow = ["mcp__claude_ai_Linear__get_issue", "mcp__claude_ai_Linear__list_comments"]
+forge_allow = ["Bash(gh pr view:*)", "Bash(gh pr checks:*)", "Bash(gh pr create:*)"]
+```
+
+Other setups only change the two lists, for example Jira and GitLab:
+
+```toml
+tracker_allow = ["mcp__atlassian__getJiraIssue"]   # or "Bash(jira issue view:*)"
+forge_allow = ["Bash(glab mr view:*)", "Bash(glab ci status:*)", "Bash(glab mr create:*)"]
+```
+
+Arrays may span lines. Anything that isn't an array of strings is ignored with a warning.
+Without these keys agents still work, they just ask before each tracker or host call. For a
+repo-specific rule, use that repo's `.claude/settings.json` instead.
+
+`retire.sh --summary` finds PRs in agent summaries written as `PR #12` (GitHub style) or
+`MR !12` (GitLab style) and tags each one with the origin remote's `host` and `project`. The
+Orchestrator then checks it with the matching CLI.
 
 ## Team test environment
 

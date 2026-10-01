@@ -124,16 +124,18 @@ see an escalation:
 ## F. Retire
 
 0. **Summary first, then wait.** Run `$F/retire.sh --summary <target> [...]` (read-only, no
-   herdr needed). Add the live state of every PR it lists (`gh pr view <n> --repo <repo>
-   --json state,mergeable,statusCheckRollup`) and the next 3 issues from the tracker
-   (unblocked backlog, highest priority first). Show it in this format, write it to
+   herdr needed). Each PR it lists carries its repo's `host` and `project`; add its live
+   state (open/merged/closed, mergeable, CI on the head) with that host's CLI or connector,
+   such as `gh pr view` for GitHub or `glab mr view` for GitLab. Add the next 3 issues from
+   whichever tracker is connected (Linear, Jira, ...): unblocked backlog, highest priority
+   first. No tool for the host or the tracker → mark that part UNVERIFIED; don't guess. Show it in this format, write it to
    `reports/retire-<date>.md` in the Orchestrator's working directory, and **wait for the
    user's go**. Open P0/P1 escalations and UNVERIFIED items must be seen before anything closes:
 
    ```
    Retire summary: <teams>
 
-   PRs                <repo>#<n>  <issue>  <open|merged|closed>, CI <state>, tester PASS on head?
+   PRs                <project> PR #<n> | MR !<n>  <issue>  <open|merged|closed>, CI <state>, tester PASS on head?
    Unverified         <issue>  <item>
    Escalations        <P1> <issue>  <one line>   (open ones only; "none" if none)
    Worktrees kept     <path>  (untracked: <files>)
@@ -202,7 +204,9 @@ You may answer on your own only:
 - **file edits** inside the worker's own worktree, when its template sets `edits_in_worktree`
 - **read-only git** (`status`, `log`, `diff`, `show`) inside the fleet's repo or worktrees
 
-A role's routine commands belong in its template's `allow` list (passed to Claude Code as
+Tracker and forge tools (reading tickets, viewing or opening PRs/MRs) never go in a
+template: they belong in `tracker_allow` / `forge_allow` in `~/.config/fleet/config.toml`,
+which boot adds to every agent (see the README). A role's other routine commands belong in its template's `allow` list (passed to Claude Code as
 permission rules) or in the repo's `.claude/settings.json`, such as its test command. Then
 they never block at all. Answer a repeated prompt by suggesting that change to the user.
 

@@ -7,6 +7,10 @@
 # template JSON file. <focus> becomes the team name <template>-<focus>. The task text
 # defaults to <focus>. Prints the booted team as JSON on stdout.
 #
+# Every Claude agent also gets the tracker_allow and forge_allow lists from config.toml, so
+# reading tickets (Linear, Jira, ...) and pull/merge requests (gh, glab, ...) never blocks
+# and no template names a particular tool.
+#
 # If the repo declares a team environment (.claude/fleet-env.json), every agent in the
 # team, lead included, starts with KUBECONFIG pointing at the team's own kubeconfig, even
 # before its cluster exists (see env.sh). Boot itself never creates a cluster.
@@ -51,6 +55,8 @@ if [ -n "$(env_config "$repo")" ]; then
   env_args=(--env "KUBECONFIG=$(env_dir "$team")/kubeconfig")
 fi
 
+tool_allow="$(jq -cn --argjson t "$(config_list tracker_allow)" --argjson f "$(config_list forge_allow)" '$t + $f | unique')"
+
 is_git=false; git -C "$repo" rev-parse --git-dir >/dev/null 2>&1 && is_git=true
 
 render() { # render <text> <name> <worktree> <workers>
@@ -73,8 +79,8 @@ claude_args() { # claude_args <model> <tier> <worktree> <allow-json>
   local settings extra="${4:-[]}"
   extra="${extra//\{\{scripts\}\}/$FLEET_SCRIPTS}"
   extra="${extra//\{\{team\}\}/$team}"; extra="${extra//\{\{worktree\}\}/$3}"
-  settings="$(jq -cn --arg r "$registry" --argjson extra "$extra" \
-    '{permissions: {allow: (["Bash(\($r):*)", "Bash(herdr:*)"] + $extra)}}')"
+  settings="$(jq -cn --arg r "$registry" --argjson extra "$extra" --argjson tools "$tool_allow" \
+    '{permissions: {allow: (["Bash(\($r):*)", "Bash(herdr:*)"] + $extra + $tools | unique)}}')"
   printf '%s\0' --settings "$settings"
   [ -n "$1" ] && printf '%s\0' --model "$1"
   [ "$2" = "Lead" ] && printf '%s\0' --agent developer:lead

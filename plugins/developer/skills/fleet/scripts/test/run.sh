@@ -68,6 +68,21 @@ calls() { grep -c "^$1" "$STUB_LOG" || true; }
 echo 'max_envs = 2' >"$FLEET_CONFIG_DIR/config.toml"
 eq "max_envs reads config" "$(bash -c ". $SCRIPTS/common.sh; max_envs")" 2
 
+# config_list: tool permissions live in config, never in templates
+cl() { bash -c ". $SCRIPTS/common.sh; config_list $1" 2>/dev/null; }
+eq "config_list: missing key is []" "$(cl tracker_allow)" '[]'
+cat >>"$FLEET_CONFIG_DIR/config.toml" <<'C'
+tracker_allow = ["mcp__jira__get_issue", "Bash(jira issue view:*)"]  # Jira
+forge_allow = [
+  "Bash(glab mr view:*)",
+  "Bash(glab mr create:*)",
+]
+bad_allow = [1, 2]
+C
+eq "config_list: one-line array" "$(cl tracker_allow)" '["mcp__jira__get_issue","Bash(jira issue view:*)"]'
+eq "config_list: multi-line array, trailing comma" "$(cl forge_allow)" '["Bash(glab mr view:*)","Bash(glab mr create:*)"]'
+eq "config_list: non-strings ignored" "$(cl bad_allow)" '[]'
+
 # Ports
 "$ENV" up build-a >/dev/null 2>&1; eq "first team gets slot 0 (8080/8443)" "$(slot build-a)" "0 8080 8443"
 "$ENV" up build-b >/dev/null 2>&1; eq "second team gets slot 1 (8090/8453)" "$(slot build-b)" "1 8090 8453"
@@ -176,6 +191,9 @@ check "boot: tester allow has env.sh up with the scripts path" grep -q "env.sh u
 eq "boot: no unsubstituted {{scripts}}" "$(grep -c '{{scripts}}' "$HERDR_LOG")" 0
 check "boot: tester allow has the team-scoped kubectl context" grep -q -- "kubectl --context fleet-build-envt get" <(grep '^agent start build-envt-tester' "$HERDR_LOG")
 eq "boot: no unsubstituted {{team}} or {{worktree}} in an allow list" "$(grep '^agent start' "$HERDR_LOG" | grep -c '{{team}}\|{{worktree}}')" 0
+eq "boot: every agent gets tracker_allow" "$(grep '^agent start' "$HERDR_LOG" | grep -c 'jira issue view')" "$(grep -c '^agent start' "$HERDR_LOG")"
+eq "boot: every agent gets forge_allow" "$(grep '^agent start' "$HERDR_LOG" | grep -c 'glab mr create')" "$(grep -c '^agent start' "$HERDR_LOG")"
+eq "templates name no tracker or forge tool" "$(cat "$SCRIPTS"/../templates/*.json | grep -ciE 'linear|jira|gh pr|glab')" 0
 
 : >"$HERDR_LOG"; "$SCRIPTS/boot.sh" build plainbt "$T/plain" task >/dev/null 2>&1
 eq "boot without file: no KUBECONFIG arg (3.0.1 behaviour)" "$(grep -c -- '--env KUBECONFIG' "$HERDR_LOG")" 0
@@ -259,7 +277,11 @@ before="$(cat "$FLEET_REGISTRY")"
 eq "summary: runs without herdr" "$rc" 0
 eq "summary: registry unchanged" "$(cat "$FLEET_REGISTRY")" "$before"
 eq "summary: no herdr calls" "$(wc -l <"$HERDR_LOG" | tr -d ' ')" 0
-eq "summary: PRs deduped with the GitHub repo" "$(jq -c '[.prs[] | [.repo, .number]]' "$T/sum.json")" '[["acme/widgets",12],["acme/widgets",13]]'
+eq "summary: PRs deduped with the GitHub repo" "$(jq -c '[.prs[] | [.host, .repo, .number]]' "$T/sum.json")" '[["github.com","acme/widgets",12],["github.com","acme/widgets",13]]'
+git -C "$T/plain" remote add origin https://gitlab.example.com/grp/sub/app.git
+"$REG" add "$(jq -cn --arg r "$T/plain" '{name: "build-sum/builder", team: "build-sum", repo: $r, tier: "Worker", status: "Done", herdr_ref: "z", pane: "r", outcome: "Shipped", summary: "opened MR !7"}')"
+"$SCRIPTS/retire.sh" --summary build-sum >"$T/sum2.json" 2>/dev/null
+eq "summary: GitLab MR with its host and subgroup project" "$(jq -c '[.prs[] | select(.number == 7) | [.host, .repo]]' "$T/sum2.json")" '[["gitlab.example.com","grp/sub/app"]]'
 eq "summary: UNVERIFIED rows" "$(jq -c '[.unverified[].name]' "$T/sum.json")" '["build-sum/tester"]'
 eq "summary: open escalation" "$(jq -c '[.escalations[] | [.name, .severity, .open]]' "$T/sum.json")" '[["build-sum/lead","P1",true]]'
 eq "summary: worktree would be kept, untracked named" "$(jq -c '[.worktrees[] | [.kept, .untracked]]' "$T/sum.json")" '[[true,["report.md"]]]'
