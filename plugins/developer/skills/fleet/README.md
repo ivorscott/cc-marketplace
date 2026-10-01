@@ -118,7 +118,7 @@ The Orchestrator and agents call these directly (from `scripts/`). You can call 
 | `boot.sh` | `boot.sh <template> <focus> <dir> [task…]` boots a team (`FLEET_FORCE=1` goes over the `max_agents` cap) |
 | `status.sh` | `status.sh [--problems] [--team T] [--json]` recomputes health and writes it to the registry |
 | `watch.sh` | `watch.sh [--team T] [--every SECONDS]` live monitor, polls every 20s by default |
-| `retire.sh` | `retire.sh <team\|team/role> [--outcome O]` safe teardown |
+| `retire.sh` | `retire.sh <team\|team/role> [--outcome O]` safe teardown; `--summary <target...>` read-only pre-retire summary |
 | `env.sh` | `up [--branch B] <team>` creates the team's cluster (exit 75 = queued at `max_envs`) · `down <team>` removes it · `status` lists every env |
 | `registry.sh` | `add '<json>'` · `set <name> key=value…` · `get <name>` · `list [--team T] [--live] [--problems]` · `list --envs` · `done <name> --outcome O --summary TEXT` · `escalate <name> P0\|P1\|P2 TEXT` · `note <name> discovered TEXT` · `retire <name\|team> [--outcome O]` · `unsynced` · `synced <name…>` · `path` |
 
