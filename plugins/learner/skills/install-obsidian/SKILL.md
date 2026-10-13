@@ -181,7 +181,8 @@ Otherwise create it with this exact content:
 #!/usr/bin/env python3
 import sys, os
 
-selection_file = os.path.join(os.getcwd(), '.claude-selection')
+root = os.environ.get('CLAUDE_PROJECT_DIR', os.getcwd())
+selection_file = os.path.join(root, '.claude-selection')
 
 if not os.path.isfile(selection_file):
     sys.exit(0)
@@ -221,7 +222,7 @@ Otherwise write:
         "hooks": [
           {
             "type": "command",
-            "command": "python3 .claude/hooks/inject-selection.py"
+            "command": "python3 \"$CLAUDE_PROJECT_DIR\"/.claude/hooks/inject-selection.py"
           }
         ]
       }
