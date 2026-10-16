@@ -43,6 +43,16 @@ cfg_int() {
     v="$(sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*\([0-9][0-9]*\).*/\1/p" "$FLEET_CONFIG_DIR/config.toml" | head -1)"
   printf '%s\n' "${v:-$2}"
 }
+# permission_mode: the Claude Code --permission-mode every agent starts in. FLEET_PERMISSION_MODE
+# wins, then config.toml (permission_mode = "..."), default auto. A pane that starts in a
+# stricter mode blocks on the first permission prompt and sits idle until someone enables auto.
+permission_mode() {
+  local v="${FLEET_PERMISSION_MODE:-}"
+  [ -z "$v" ] && [ -f "$FLEET_CONFIG_DIR/config.toml" ] &&
+    v="$(sed -n 's/^[[:space:]]*permission_mode[[:space:]]*=[[:space:]]*"\([A-Za-z]*\)".*/\1/p' "$FLEET_CONFIG_DIR/config.toml" | head -1)"
+  printf '%s\n' "${v:-auto}"
+}
+
 # min_free_gb (boot refuses below it, default 40; 0 disables) and warn_free_gb (watch notifies below it, default 75).
 min_free_gb() { cfg_int min_free_gb 40; }
 warn_free_gb() { cfg_int warn_free_gb 75; }
