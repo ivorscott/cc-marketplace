@@ -152,6 +152,11 @@ tracker_allow = ["mcp__claude_ai_Linear__get_issue", "mcp__claude_ai_Linear__lis
 forge_allow = ["Bash(gh pr view:*)", "Bash(gh pr checks:*)", "Bash(gh pr create:*)"]
 ```
 
+Every agent starts in Claude Code's `auto` permission mode, so a fresh pane doesn't stop on its
+first permission prompt and sit idle. Set `permission_mode = "acceptEdits"` (or `manual`) in
+`config.toml`, or `FLEET_PERMISSION_MODE=...` for one boot, to change it. The template allow lists
+and the blocked-prompt policy still apply.
+
 Other setups only change the two lists, for example Jira and GitLab:
 
 ```toml
@@ -166,6 +171,13 @@ repo-specific rule, use that repo's `.claude/settings.json` instead.
 `retire.sh --summary` finds PRs in agent summaries written as `PR #12` (GitHub style) or
 `MR !12` (GitLab style) and tags each one with the origin remote's `host` and `project`. The
 Orchestrator then checks it with the matching CLI.
+
+## Troubleshooting
+
+**An agent shows Zombie and its pane says `laude: command not found`.** The shell was still
+starting when the start command was typed, and an oh-my-zsh update prompt read the first key.
+Boot now retries the start once. To stop it for good, disable the prompt in `~/.zshrc`:
+`zstyle ':omz:update' mode disabled` (or `mode reminder`).
 
 ## Disk
 

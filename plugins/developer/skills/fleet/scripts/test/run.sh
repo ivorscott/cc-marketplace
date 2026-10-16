@@ -252,7 +252,9 @@ echo "$*" >>"$HERDR_LOG"
 case "$1 $2" in
   "workspace create") echo '{"result":{"workspace":{"workspace_id":"w1"},"root_pane":{"pane_id":"p0"}}}' ;;
   "pane split") n=$(( $(grep -c '^pane split' "$HERDR_LOG") )); echo "{\"result\":{\"pane\":{\"pane_id\":\"p$n\"}}}" ;;
-  "pane process-info") echo '{"result":{"process_info":{"foreground_process_group_id":2,"shell_pid":1}}}' ;;
+  "pane process-info")
+    if [ -n "${DEAD_ONCE:-}" ] && [ -e "$DEAD_ONCE" ]; then rm -f "$DEAD_ONCE"; echo '{"result":{"process_info":{"foreground_process_group_id":1,"shell_pid":1}}}'
+    else echo '{"result":{"process_info":{"foreground_process_group_id":2,"shell_pid":1}}}'; fi ;;
   "agent get") echo '{"result":{"agent":{"agent_status":"idle"}}}' ;;
   *) echo '{}' ;;
 esac
@@ -272,6 +274,22 @@ check "boot: tester allow has the team-scoped kubectl context" grep -q -- "kubec
 eq "boot: no unsubstituted {{team}} or {{worktree}} in an allow list" "$(grep '^agent start' "$HERDR_LOG" | grep -c '{{team}}\|{{worktree}}')" 0
 eq "boot: every agent gets tracker_allow" "$(grep '^agent start' "$HERDR_LOG" | grep -c 'jira issue view')" "$(grep -c '^agent start' "$HERDR_LOG")"
 eq "boot: every agent gets forge_allow" "$(grep '^agent start' "$HERDR_LOG" | grep -c 'glab mr create')" "$(grep -c '^agent start' "$HERDR_LOG")"
+# Permission mode: every agent starts in auto unless FLEET_PERMISSION_MODE or config.toml say otherwise
+eq "boot: every agent starts in --permission-mode auto" "$(grep '^agent start' "$HERDR_LOG" | grep -c -- '--permission-mode auto')" "$(grep -c '^agent start' "$HERDR_LOG")"
+eq "boot: nobody starts in acceptEdits by default" "$(grep -c -- '--permission-mode acceptEdits' "$HERDR_LOG")" 0
+: >"$HERDR_LOG"; FLEET_PERMISSION_MODE=acceptEdits "$SCRIPTS/boot.sh" build envm "$T/repo" task >/dev/null 2>&1
+agents_per_boot="$(grep -c '^agent start' "$HERDR_LOG")"
+eq "boot: FLEET_PERMISSION_MODE overrides the default" "$(grep '^agent start' "$HERDR_LOG" | grep -c -- '--permission-mode acceptEdits')" "$(grep -c '^agent start' "$HERDR_LOG")"
+cp "$FLEET_CONFIG_DIR/config.toml" "$T/config.perm.bak"; printf 'permission_mode = "manual"\n' >>"$FLEET_CONFIG_DIR/config.toml"
+: >"$HERDR_LOG"; "$SCRIPTS/boot.sh" build envc "$T/repo" task >/dev/null 2>&1
+eq "boot: config.toml permission_mode is used" "$(grep '^agent start' "$HERDR_LOG" | grep -c -- '--permission-mode manual')" "$(grep -c '^agent start' "$HERDR_LOG")"
+cp "$T/config.perm.bak" "$FLEET_CONFIG_DIR/config.toml"
+# A start eaten by a still-starting shell is retried once, not left a Zombie
+: >"$HERDR_LOG"; export DEAD_ONCE="$T/dead_once"; : >"$DEAD_ONCE"
+"$SCRIPTS/boot.sh" build envr "$T/repo" task >"$T/envr.out" 2>&1
+unset DEAD_ONCE
+eq "boot: a dead pane after start is started again once" "$(grep -c '^agent start' "$HERDR_LOG")" "$((agents_per_boot + 1))"
+eq "boot: the retried agent is not a Zombie" "$(grep -c Zombie "$T/envr.out")" 0
 eq "templates name no tracker or forge tool" "$(cat "$SCRIPTS"/../templates/*.json | grep -ciE 'linear|jira|gh pr|glab')" 0
 
 : >"$HERDR_LOG"; "$SCRIPTS/boot.sh" build plainbt "$T/plain" task >/dev/null 2>&1
@@ -459,8 +477,8 @@ eq "watch: below min_free_gb the notification says boot refuses" "$(grep -c 'fle
 
 # version and docs
 SK="$SCRIPTS/.."; PLUGIN="$SK/../.."
-eq "plugin.json version" "$(jq -r .version "$PLUGIN/.claude-plugin/plugin.json")" 3.3.0
-eq "marketplace.json developer version" "$(jq -r '.plugins[] | select(.name == "developer") | .version' "$PLUGIN/../../.claude-plugin/marketplace.json")" 3.3.0
+eq "plugin.json version" "$(jq -r .version "$PLUGIN/.claude-plugin/plugin.json")" 3.3.1
+eq "marketplace.json developer version" "$(jq -r '.plugins[] | select(.name == "developer") | .version' "$PLUGIN/../../.claude-plugin/marketplace.json")" 3.3.1
 for k in min_free_gb warn_free_gb fleet-archive; do
   check "SKILL.md mentions $k" grep -q "$k" "$SK/SKILL.md"; check "README mentions $k" grep -q "$k" "$SK/README.md"
 done

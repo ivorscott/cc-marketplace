@@ -40,7 +40,6 @@ team="$(agent_name "$template-$focus")"
 registry="$FLEET_SCRIPTS/registry.sh"
 machine="${FLEET_MACHINE:-local}"
 nworkers="$(jq '.workers | length' "$tpl")"
-edits_ok="$(jq -r '.auto_answer.edits_in_worktree // false' "$tpl")"
 
 # One team name, one live team.
 [ "$("$registry" list --team "$team" --live | jq length)" = "0" ] || die "team $team is already live; retire it first"
@@ -98,7 +97,7 @@ claude_args() { # claude_args <model> <tier> <worktree> <allow-json>
   printf '%s\0' --settings "$settings"
   [ -n "$1" ] && printf '%s\0' --model "$1"
   [ "$2" = "Lead" ] && printf '%s\0' --agent developer:lead
-  if [ -n "$3" ] && [ "$edits_ok" = "true" ]; then printf '%s\0' --permission-mode acceptEdits; fi
+  printf '%s\0' --permission-mode "$(permission_mode)"
 }
 
 # Answer Claude's folder-trust dialog, but only for directories this boot owns or was
@@ -122,7 +121,7 @@ alive() { # the pane runs something other than its shell (gotcha: idle can mean 
     jq -e '.result.process_info | .foreground_process_group_id != .shell_pid' >/dev/null
 }
 
-start_agent() { # start_agent <agent> <kind> <pane> <model> <tier> <worktree> <allow-json> → prints status
+start_agent_once() { # start_agent_once <agent> <kind> <pane> <model> <tier> <worktree> <allow-json> → prints status
   local agent="$1" kind="$2" pane="$3" args=() out code tries=0
   if [ "$kind" = "claude" ]; then
     while IFS= read -r -d '' a; do args+=("$a"); done < <(claude_args "$4" "$5" "$6" "${7:-[]}")
@@ -147,6 +146,19 @@ start_agent() { # start_agent <agent> <kind> <pane> <model> <tier> <worktree> <a
     blocked) printf 'Needs input' ;;
     *) printf 'Working' ;;
   esac
+}
+
+# The start command can be eaten by a shell that is still starting up: an oh-my-zsh update
+# prompt reads the first key typed, so `claude` arrives as `laude`. That key is gone once
+# consumed, so a second try into the same pane works. Retry once before calling it a Zombie.
+start_agent() { # same arguments as start_agent_once
+  local status
+  status="$(start_agent_once "$@")"
+  if [ "$status" = "Zombie" ]; then
+    warn "agent $1 did not start; retrying once"
+    status="$(start_agent_once "$@")"
+  fi
+  printf '%s' "$status"
 }
 
 # 1. Workspace with the lead in its root pane.
