@@ -174,7 +174,7 @@ Orchestrator then checks it with the matching CLI.
 
 ## Troubleshooting
 
-**An agent shows Zombie and its pane says `laude: command not found`.** The shell was still
+**An agent shows Zombie and its pane says `zsh: command not found: laude`** (not a typo here: `claude` lost its first letter). The shell was still
 starting when the start command was typed, and an oh-my-zsh update prompt read the first key.
 Boot now retries the start once. To stop it for good, disable the prompt in `~/.zshrc`:
 `zstyle ':omz:update' mode disabled` (or `mode reminder`).
