@@ -172,13 +172,6 @@ repo-specific rule, use that repo's `.claude/settings.json` instead.
 `MR !12` (GitLab style) and tags each one with the origin remote's `host` and `project`. The
 Orchestrator then checks it with the matching CLI.
 
-## Troubleshooting
-
-**An agent shows Zombie and its pane says `zsh: command not found: laude`** (not a typo here: `claude` lost its first letter). The shell was still
-starting when the start command was typed, and an oh-my-zsh update prompt read the first key.
-Boot now retries the start once. To stop it for good, disable the prompt in `~/.zshrc`:
-`zstyle ':omz:update' mode disabled` (or `mode reminder`).
-
 ## Disk
 
 Fleet runs fill disks: worktrees carry `node_modules` and build output, and every team cluster
