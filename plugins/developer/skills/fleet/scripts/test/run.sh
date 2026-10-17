@@ -469,16 +469,17 @@ eq "status: LOW below warn_free_gb" "$(DF_GB=60 "$SCRIPTS/status.sh" --team buil
 eq "status --json stays a bare array" "$(DF_GB=60 "$SCRIPTS/status.sh" --team build-nope --json 2>/dev/null | jq -r type)" array
 : >"$HERDR_LOG"; DF_GB=60 "$SCRIPTS/watch.sh" --once >"$T/w.out" 2>/dev/null
 eq "watch: one disk notification below warn_free_gb" "$(grep -c '^notification show fleet: disk 60 GiB free (warn_free_gb=75)' "$HERDR_LOG")" 1
-check "watch prints free disk" grep -q 'disk 60 GiB free' "$T/w.out"
-: >"$HERDR_LOG"; DF_GB=100 "$SCRIPTS/watch.sh" --once >/dev/null 2>&1
+check "watch prints free disk below warn_free_gb" grep -q 'disk 60 GiB free' "$T/w.out"
+: >"$HERDR_LOG"; DF_GB=100 "$SCRIPTS/watch.sh" --once >"$T/w.out" 2>/dev/null
+eq "watch prints no disk line above warn_free_gb" "$(grep -c "  disk [0-9]* GiB free" "$T/w.out")" 0
 eq "watch: no disk notification above warn_free_gb" "$(grep -c 'fleet: disk' "$HERDR_LOG")" 0
 : >"$HERDR_LOG"; DF_GB=30 "$SCRIPTS/watch.sh" --once >/dev/null 2>&1
 eq "watch: below min_free_gb the notification says boot refuses" "$(grep -c 'fleet: disk 30 GiB free, boot refuses below min_free_gb=40' "$HERDR_LOG")" 1
 
 # version and docs
 SK="$SCRIPTS/.."; PLUGIN="$SK/../.."
-eq "plugin.json version" "$(jq -r .version "$PLUGIN/.claude-plugin/plugin.json")" 3.3.1
-eq "marketplace.json developer version" "$(jq -r '.plugins[] | select(.name == "developer") | .version' "$PLUGIN/../../.claude-plugin/marketplace.json")" 3.3.1
+eq "plugin.json version" "$(jq -r .version "$PLUGIN/.claude-plugin/plugin.json")" 3.3.2
+eq "marketplace.json developer version" "$(jq -r '.plugins[] | select(.name == "developer") | .version' "$PLUGIN/../../.claude-plugin/marketplace.json")" 3.3.2
 for k in min_free_gb warn_free_gb fleet-archive; do
   check "SKILL.md mentions $k" grep -q "$k" "$SK/SKILL.md"; check "README mentions $k" grep -q "$k" "$SK/README.md"
 done
