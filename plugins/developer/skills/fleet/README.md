@@ -185,7 +185,7 @@ builds and loads images. Four guards keep it from filling:
   files, and the output names them.
 - **`env.sh down`** removes the team's images and build cache after the repo's `down` (see below).
 - **Boot** refuses below `min_free_gb`, with the same `FLEET_FORCE=1` override as `max_agents`.
-- **Status and watch** show free disk; watch notifies below `warn_free_gb`.
+- **Status** shows free disk; **watch** prints and notifies only when disk drops below `warn_free_gb` (or `min_free_gb`) or recovers.
 
 Docker Desktop's own disk limit is yours to set (Settings, Resources).
 

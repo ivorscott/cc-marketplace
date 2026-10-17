@@ -5,8 +5,8 @@
 #
 #   watch.sh [--team T] [--every SECONDS] [--once]
 #
-# It also prints free disk each pass and notifies once when it falls below warn_free_gb
-# (and once more below min_free_gb, where boot refuses); it re-arms when disk recovers.
+# It also prints and notifies once when free disk falls below warn_free_gb (and once more
+# below min_free_gb, where boot refuses), and prints once when it recovers.
 # --once does a single pass and exits.
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
@@ -30,8 +30,8 @@ check_disk() {
   state=ok
   [ "$free" -ge "$warn" ] || state=warn
   [ "$min" -le 0 ] || [ "$free" -ge "$min" ] || state=min
-  printf '%s  disk %s GiB free (warn_free_gb=%s)\n' "$(date +%H:%M:%S)" "$free" "$warn"
   if [ "$state" != "$disk_state" ]; then
+    printf '%s  disk %s GiB free (warn_free_gb=%s)\n' "$(date +%H:%M:%S)" "$free" "$warn"
     case "$state" in
       warn) hd notification show "fleet: disk $free GiB free (warn_free_gb=$warn)" --sound request >/dev/null 2>&1 || true ;;
       min) hd notification show "fleet: disk $free GiB free, boot refuses below min_free_gb=$min" --sound request >/dev/null 2>&1 || true ;;
