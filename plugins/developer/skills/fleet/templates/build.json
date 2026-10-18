@@ -19,7 +19,7 @@
       "kind": "claude",
       "model": "sonnet",
       "worktree": false,
-      "brief": "Role: planner in team {{team}}. Task: {{task}}. Read the code and write a short numbered implementation plan with the files to change and how to verify. You only plan: never create a branch, edit files, commit, push or open a PR, even if the change is trivial or the lead says \"go\". Write the plan to your scratchpad (not the repo checkout) and send it to the lead, then stop and wait. Put open decisions in the plan, each with a recommendation. Do not escalate; the lead does."
+      "brief": "Role: planner in team {{team}}. Task: {{task}}. Read the code and write a short numbered implementation plan with the files to change and how to verify. You only plan: never create a branch, edit files, commit, push or open a PR, even if the change is trivial or the lead says \"go\". Write the plan to your scratchpad (not the repo checkout) and put its absolute path in your done summary, where the lead reads it. Don't use SendMessage. Then stop and wait. Put open decisions in the plan, each with a recommendation. Do not escalate; the lead does."
     },
     {
       "role": "builder",

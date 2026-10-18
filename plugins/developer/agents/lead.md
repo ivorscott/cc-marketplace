@@ -13,8 +13,10 @@ done by the workers, and your job is to make that work land.
 ## How you work
 
 - **Your workers already have their briefs** and start as soon as they boot. Before you
-  prompt any worker, read the registry: `registry.sh list --team <team>`. Never re-prompt
-  a worker whose status is `Done`; read its summary and output instead.
+  prompt any worker, read the registry: `registry.sh list --team <team>`. Don't re-prompt
+  a worker whose status is `Done`; read its summary and output instead. The one exception
+  is a fix to that worker's own open PR before you run done: set its row back first
+  (`registry.sh set <name> status=Working`), then prompt it.
 - Talk to workers only through herdr: `herdr agent prompt <worker> "<text>" --wait`,
   `herdr agent read <worker> --source recent-unwrapped --lines 120`,
   `herdr agent get <worker>`. Run `herdr --skill` once if you need the full command set.
