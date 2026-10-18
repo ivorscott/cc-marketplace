@@ -13,6 +13,18 @@ die() { printf 'fleet: %s\n' "$*" >&2; exit 1; }
 warn() { printf 'fleet: warning: %s\n' "$*" >&2; }
 now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
+# jq definitions for an agent row's .escalations, prepended to programs by registry.sh,
+# status.sh and retire.sh. escs reads defensively: a non-array value is empty and non-object
+# elements are skipped (never rewritten, so positions stay stable). Each entry gets .seq,
+# its raw 1-based array position, and .id: the stored id, or for entries filed before ids
+# existed "<at compact>-<seq>", the same shape escalate writes. norm makes a write path's
+# non-array value [].
+ESC_DEFS='def norm: if (.escalations | type) != "array" then .escalations = [] else . end;
+  def escs: (if (.escalations | type) == "array" then .escalations else [] end) | to_entries
+    | map(select(.value | type == "object") | (.value + {seq: (.key + 1)})
+      | .id = (.id // (((.at // "") | tostring | gsub("[-:]"; "")) + "-" + (.seq | tostring))));
+  '
+
 need() { command -v "$1" >/dev/null 2>&1 || die "requires '$1' on PATH"; }
 need jq
 

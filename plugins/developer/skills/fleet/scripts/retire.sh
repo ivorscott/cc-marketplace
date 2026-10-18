@@ -7,7 +7,8 @@
 #
 # --summary changes nothing. It prints, as JSON, what the user needs to see before (and
 # after) a retire: every agent's outcome and summary, the PRs the summaries name, the
-# UNVERIFIED items, escalations (open = not yet resolved with `registry.sh resolve`), discovered
+# UNVERIFIED items, escalations (open = not yet resolved with `registry.sh resolve`; a retire
+# closes the open ones with resolution "closed at retire"), discovered
 # work, and the worktrees a retire would keep. PRs are found as "PR #n" (GitHub style) or
 # "MR !n" (GitLab style) in summaries; each carries its repo's {host, project}. The
 # Orchestrator adds live PR state with that host's CLI and the next issues from whatever
@@ -122,7 +123,7 @@ summary() {
       --argjson p "$(lines_json "$C_UNPUSHED")" --argjson m "$(lines_json "$C_MODIFIED")" \
       '. + [{path: $w, branch: $b, kept: $k, untracked: $u, archive: $a, unpushed: $p, modified: $m}]')"
   done < <(printf '%s' "$rows" | jq -r '.[] | select((.worktree // "") != "") | .worktree')
-  printf '%s' "$rows" | jq --argjson repos "$repos" --argjson wts "$wts" '
+  printf '%s' "$rows" | jq --argjson repos "$repos" --argjson wts "$wts" "$ESC_DEFS"'
     def text: (.summary // "");
     {
       teams: ([.[].team] | unique),
@@ -132,8 +133,8 @@ summary() {
                     | {host: $r.host, repo: $r.project, number: tonumber, from: $a.name})] | add // []
             | unique_by([.host, .repo, .number])),
       unverified: [.[] | select(text | test("unverified"; "i")) | {name, summary}],
-      escalations: [.[] | . as $a | (.escalations // [])[]
-                    | {name: $a.name, severity, message, at, open: (.resolved_at == null)}]
+      escalations: [.[] | . as $a | escs[]
+                    | {name: $a.name, id, severity, message, at, open: (.resolved_at == null), resolution: (.resolution // null)}]
                     | sort_by(.at) | reverse,
       discovered: [.[] | . as $a | (.discovered // [])[] | {name: $a.name, message, at}],
       worktrees: $wts
@@ -198,7 +199,8 @@ done < <(printf '%s' "$rows" | jq -r '.[] | select((.worktree // "") != "") | [.
 
 if [ -n "$outcome" ]; then "$registry" retire "$target" --outcome "$outcome"; else "$registry" retire "$target"; fi
 printf '%s' "$rows" | jq --argjson kept "$kept" --argjson ke "$kept_envs" --argjson ku "$kept_untracked" \
-  --argjson kp "$kept_unpushed" --argjson km "$kept_modified" --argjson ar "$archived" '{retired: [.[].name], kept_worktrees: $kept}
+  --argjson kp "$kept_unpushed" --argjson km "$kept_modified" --argjson ar "$archived" "$ESC_DEFS"'{retired: [.[].name], kept_worktrees: $kept}
   + (if ($ke | length) > 0 then {kept_envs: $ke} else {} end) + (if ($ku | length) > 0 then {kept_untracked: $ku} else {} end)
   + (if ($kp | length) > 0 then {kept_unpushed: $kp} else {} end) + (if ($km | length) > 0 then {kept_modified: $km} else {} end)
-  + (if ($ar | length) > 0 then {archived: $ar} else {} end)'
+  + (if ($ar | length) > 0 then {archived: $ar} else {} end)
+  + ([.[] | . as $a | escs[] | select(.resolved_at == null) | {name: $a.name, id, severity}] | if length > 0 then {closed_escalations: .} else {} end)'
