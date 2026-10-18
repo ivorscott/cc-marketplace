@@ -119,3 +119,17 @@ render_env() {
   v="$(printf '%q' "${10:-}")"; s="${s//\{\{builder\}\}/$v}"
   printf '%s' "$s"
 }
+
+# cfg_str <key> <default>: a double-quoted string from config.toml (key = "value").
+cfg_str() {
+  local v=""
+  [ -f "$FLEET_CONFIG_DIR/config.toml" ] &&
+    v="$(sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$FLEET_CONFIG_DIR/config.toml" | head -1)"
+  printf '%s\n' "${v:-$2}"
+}
+
+# This machine's tracker identity (see machine-id.sh). The claim label is <label_prefix><key>;
+# FLEET_LABEL_PREFIX wins over label_prefix in config.toml, default "fleet:".
+label_prefix() { printf '%s\n' "${FLEET_LABEL_PREFIX:-$(cfg_str label_prefix 'fleet:')}"; }
+machine_key() { "$FLEET_SCRIPTS/machine-id.sh" key; }
+machine_label() { printf '%s%s\n' "$(label_prefix)" "$(machine_key)"; }
