@@ -115,7 +115,8 @@ The Orchestrator and agents call these directly (from `scripts/`). You can call 
 
 | Script | Commands |
 |---|---|
-| `boot.sh` | `boot.sh <template> <focus> <dir> [task…]` boots a team (`FLEET_FORCE=1` goes over the `max_agents` cap and the `min_free_gb` disk floor) |
+| `boot.sh` | `boot.sh [--issue ID --claimed-by KEY --labels a,b --scope 'repo: paths' --peer-claim …] <template> <focus> <dir> [task…]` boots a team (`FLEET_FORCE=1` goes over the `max_agents` cap and the `min_free_gb` disk floor, never over another machine's claim) |
+| `machine-id.sh` | `id\|key\|label\|description\|show`: this machine's tracker identity, e.g. `fleet:3f9a2c1e` |
 | `status.sh` | `status.sh [--problems] [--team T] [--json]` recomputes health, writes it to the registry and prints free disk first |
 | `watch.sh` | `watch.sh [--team T] [--every SECONDS] [--once]` live monitor, polls every 20s by default; notifies on low disk |
 | `retire.sh` | `retire.sh <team\|team/role> [--outcome O]` safe teardown; `--summary <target...>` read-only pre-retire summary |
@@ -146,9 +147,14 @@ max_envs = 3     # test clusters at once
 min_free_gb = 40   # boot refuses below this much free disk (0 = off; FLEET_FORCE=1 overrides)
 warn_free_gb = 75  # status marks LOW and watch notifies below this
 
+# Several machines on one tracker: each claims issues with the label <label_prefix><machine key>.
+label_prefix = "fleet:"
+machine_name = "Mac 1"   # display name, optional
+machine_legacy_label = "fleet:mac1"   # only while migrating an older label
+
 # Permissions added to every Claude agent at boot. Templates never name a tracker or a
 # code host; put yours here. Values are Claude Code permission rules.
-tracker_allow = ["mcp__claude_ai_Linear__get_issue", "mcp__claude_ai_Linear__list_comments"]
+tracker_allow = ["mcp__claude_ai_Linear__get_issue", "mcp__claude_ai_Linear__list_comments", "mcp__claude_ai_Linear__list_issue_labels", "mcp__claude_ai_Linear__save_issue_label"]
 forge_allow = ["Bash(gh pr view:*)", "Bash(gh pr checks:*)", "Bash(gh pr create:*)"]
 ```
 
@@ -225,6 +231,7 @@ Example using kind:
 | `SKILL.md` | routes and rules the Orchestrator follows |
 | `templates/*.json` | team shapes: roles, agent kind, model, worktree, briefs, exit criteria |
 | `scripts/boot.sh` | one-command team boot |
+| `scripts/machine-id.sh` | this machine's id, key and tracker label for claims |
 | `scripts/status.sh` | health computation |
 | `scripts/watch.sh` | live monitor |
 | `scripts/retire.sh` | safe teardown: archives reports to `reports/fleet-archive/`, removes worktrees, removes the team's test cluster |

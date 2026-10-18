@@ -59,13 +59,65 @@ reinvent it here. This skill adds only what herdr doesn't have:
 
 After any route that changed the registry, run **Sink** (end of file).
 
+## A0. Identity
+
+Several machines can run a fleet against one tracker. Each is told apart by its **label**,
+`<label_prefix><key>` (default `fleet:3f9a2c1e`): the prefix from `label_prefix` in `config.toml`
+plus the first 8 hex characters of the machine's own id. No tracker lookup, nothing to number.
+
+- `$F/machine-id.sh label` is this machine's label, `$F/machine-id.sh key` its key, and
+  `$F/machine-id.sh description` the text for the label's description (name or hostname, OS, the
+  full machine id and the date of the first claim). `machine_name = "Mac 1"` in `config.toml` is a
+  display name only: it appears in the status footer and as `name=` in claim comments.
+- **Migration.** When `machine_legacy_label` is set (for example `"fleet:mac1"`), find the open
+  issues that carry it, ensure this machine's label exists (as in **Claim**), and add this machine's
+  label to each. The `fleet` group is single-select, so adding the new label replaces the old one.
+  When no issue carries the legacy label this finds nothing and does nothing, so it is safe every
+  time. Until then boot treats the legacy label as this machine's own.
+
+## A0b. Claim
+
+Before you boot a team for a tracker issue, claim the issue so two machines never work it.
+The tracker is only a lock: use your tracker tools (the `tracker_allow` list); the scripts never
+call it. Boot takes the claim result as input.
+
+1. **Pick work** from the tracker by priority. Skip any issue that carries another machine's
+   `<label_prefix>*` label.
+2. **Ensure this machine's label.** Look it up by exact name. Missing → create it, under the group
+   named by the prefix without its trailing `:` if that group exists (otherwise a plain label),
+   with `$F/machine-id.sh description` as its description. Present with an empty description →
+   fill it in. A non-empty description is left alone.
+3. **Write.** Set the issue In Progress, add the label, and post the claim comment:
+
+   ```
+   fleet-claim: machine=3f9a2c1e name="Mac 1" team=build-dev317 at=2026-10-18T09:00:00Z
+   scope: platform: deploy/local, scripts/local.sh
+   ```
+
+   (`name=` only when `machine_name` is set; `scope:` is the repo and paths the team will touch,
+   no paths means the whole repo.)
+4. **Re-read after about 5 seconds and arbitrate on the earliest claim comment** (`createdAt`,
+   ties broken by key). The label group is single-select and keeps only the last label added, so
+   the label alone cannot decide. The winner re-adds its label if it was replaced. The loser
+   removes its own comment and its own label if still present, leaves In Progress alone, reports
+   the holder, and picks other work.
+5. **Boot** as the winner:
+   `$F/boot.sh --issue DEV-123 --claimed-by <key> --labels <labels from the re-read> --scope '<repo: paths>' [--peer-claim 'KEY/team=repo: paths' …] build <focus> <dir> <task>`.
+   Boot refuses an issue that still carries another machine's label, naming the holder (`FLEET_FORCE=1`
+   does not bypass this). It warns, naming both teams, when the declared scope overlaps a live
+   claim in the same repo. Live claims on other machines come from the claim comments you read:
+   pass each as `--peer-claim`.
+
+**Not yet** (follow-ups): leases and heartbeat takeover, a `#fleet` Slack channel for claims and
+merges, and `status --all` across machines.
+
 ## A. Boot
 
 1. Pick the template: `build` (plan, build, test one piece of work), `race` (N agents on the
    same problem, first verified answer wins), `review` (independent read-only reviewers) or
    `research` (problem-first study guide). A path to a custom template JSON also works.
    Unsure → ask.
-2. Run `$F/boot.sh <template> <focus> <dir> <task text>`. It creates the workspace, gives
+2. Run `$F/boot.sh <template> <focus> <dir> <task text>` (for a tracker issue, after **A0b**, with the claim options). It creates the workspace, gives
    writers their own `git worktree` on branch `fleet/<team>/<role>`, starts every agent,
    answers folder-trust only for the repo and those worktrees, sends each brief with the
    done contract appended, and writes the registry rows. If the repo has
@@ -98,6 +150,9 @@ tester waits and retries `env.sh up`, or you retire a team that is done.
 The table starts with a disk line, `disk: <n> GiB free (warn below 75, boot refuses below 40)`,
 with `LOW` appended below `warn_free_gb`. `--json` is the bare agent array, without it. When
 the disk is LOW, say so first and suggest retiring teams that are done (F).
+
+The table ends with a `machine: fleet:<key>` line (plus `(<machine_name>)` when set), so rows
+from two machines are never confused. A team booted for an issue also shows an ISSUE column.
 
 Answer with the table (or just the problems) and one line per action you took.
 

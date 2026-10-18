@@ -5,7 +5,8 @@
 #   status.sh [--team T] [--problems] [--json]
 #
 # The table starts with a disk line (free GiB on the worktree volume, LOW below
-# warn_free_gb in config.toml). --json is the bare array of agents, without it.
+# warn_free_gb in config.toml) and ends with a machine line (fleet:<key>, plus machine_name
+# when set). --json is the bare array of agents, without either.
 #
 # Health rules (herdr's own state is necessary but not sufficient):
 #   Working      herdr says working
@@ -85,7 +86,12 @@ printf '%s' "$out" | jq -r --argjson envs "$("$registry" list --envs)" '
   ($envs | length > 0) as $showenv |
   def envcell: ($envs[.team] // null) as $e
     | if $e == null or $e.state == "Down" then "-" elif $e.slot != null then "slot-\($e.slot)-\($e.state)" else $e.state end;
-  (["AGENT", "TIER", "STATUS", "ESC"] + (if $showenv then ["ENV"] else [] end) + ["HERDR", "ASSIGNMENT"] | @tsv),
+  (any(.[]; (.issue // "") != "")) as $showissue |
+  (["AGENT", "TIER", "STATUS", "ESC"] + (if $showenv then ["ENV"] else [] end) + (if $showissue then ["ISSUE"] else [] end) + ["HERDR", "ASSIGNMENT"] | @tsv),
   (sort_by(.team, .tier)[] | [.name, .tier, .status, (if (.escalation // "") == "" then "-" else .escalation end)]
-    + (if $showenv then [envcell] else [] end) + [.herdr_ref, ((.assignment // "")[0:50])] | @tsv)' |
+    + (if $showenv then [envcell] else [] end) + (if $showissue then [(.issue // "-")] else [] end)
+    + [.herdr_ref, ((.assignment // "")[0:50])] | @tsv)' |
   column -t -s $'\t'
+# Which machine this is, so rows from two machines are never confused.
+mname="$(cfg_str machine_name '')"
+printf 'machine: %s%s\n' "$(machine_label)" "${mname:+ ($mname)}"

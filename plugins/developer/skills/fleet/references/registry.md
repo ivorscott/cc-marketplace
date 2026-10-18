@@ -18,6 +18,7 @@ restarted, compacted or replaced agent picks up from the row, not from memory.
 | `harness`, `model` | herdr agent kind (`claude`, `codex`, …) and model |
 | `repo`, `cwd`, `worktree`, `branch` | where it works; `worktree` and `branch` are set for writers only |
 | `machine`, `workspace`, `pane`, `herdr_ref` | where it runs; `herdr_ref` is the herdr agent name |
+| `issue`, `claimed_by`, `scope` | the tracker issue, the machine key that claimed it, and the declared file scope `{repo, paths[]}` (empty paths = whole repo); set by `boot.sh --issue/--claimed-by/--scope` |
 | `assignment` | the task it owes (the hook) |
 | `status` | Booting, Working, Needs input, Stalled, Zombie, Idle, Done, Retired |
 | `escalation`, `escalations[]` | latest severity, and the full history |
@@ -94,3 +95,18 @@ A minimal sink:
 After each change, append one line per unsynced row to ~/fleet-log.md:
 `<updated_at> <name> <status> <outcome> <summary>`.
 ```
+
+## Claims across machines
+
+`machine` is the machine key (first 8 hex characters of its id; `FLEET_MACHINE` overrides it).
+The tracker label is `<label_prefix><key>`, e.g. `fleet:3f9a2c1e`, and its description reads
+`<name or hostname> · <OS> · machine id <full id> · first claim <YYYY-MM-DD>`. A claim comment is
+two lines, with room for a later `lease=`:
+
+```
+fleet-claim: machine=3f9a2c1e name="Mac 1" team=build-dev317 at=2026-10-18T09:00:00Z
+scope: platform: deploy/local, scripts/local.sh
+```
+
+The registry is local to one machine, so overlap with another machine's claim comes from
+`boot.sh --peer-claim 'KEY/team=repo: paths'`, filled in from the claim comments the Orchestrator read.

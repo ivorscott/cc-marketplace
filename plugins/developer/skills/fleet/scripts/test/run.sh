@@ -15,7 +15,7 @@ eq() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1 (got '$2', want '$3')"; fi
 
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
 export FLEET_STATE_DIR="$T/state" FLEET_CONFIG_DIR="$T/config" FLEET_REGISTRY="$T/state/fleet.json" FLEET_WORKTREES="$T/state/worktrees"
-export FLEET_SESSION=test HOME="$T/home"; mkdir -p "$HOME" "$FLEET_CONFIG_DIR" "$T/bin"
+export FLEET_SESSION=test FLEET_MACHINE=test HOME="$T/home"; mkdir -p "$HOME" "$FLEET_CONFIG_DIR" "$T/bin"
 unset FLEET_WORKTREE KUBECONFIG
 REG="$SCRIPTS/registry.sh"; ENV="$SCRIPTS/env.sh"
 
@@ -476,10 +476,168 @@ eq "watch: no disk notification above warn_free_gb" "$(grep -c 'fleet: disk' "$H
 : >"$HERDR_LOG"; DF_GB=30 "$SCRIPTS/watch.sh" --once >/dev/null 2>&1
 eq "watch: below min_free_gb the notification says boot refuses" "$(grep -c 'fleet: disk 30 GiB free, boot refuses below min_free_gb=40' "$HERDR_LOG")" 1
 
+# Machine identity (machine-id.sh): run with a PATH of symlinks plus per-case shims, so a
+# missing ioreg/powershell/uuidgen is really missing.
+mkcase() { # mkcase <name> → a case dir with the base tools only
+  local d="$T/mid-$1" t; mkdir -p "$d/bin" "$d/cfg"
+  for t in jq sed head tr cut cat date dirname mkdir od; do ln -s "$(command -v "$t")" "$d/bin/$t"; done
+  printf '%s\n' "$d"
+}
+shim() { printf '#!/bin/sh\n%s\n' "$3" >"$1/bin/$2"; chmod +x "$1/bin/$2"; } # shim <dir> <name> <sh body>
+mid() { # mid <casedir> args... (MID_FM replaces the key like FLEET_MACHINE)
+  local d="$1"; shift
+  env -u FLEET_MACHINE -u OS ${MID_FM:+"FLEET_MACHINE=$MID_FM"} ${MID_OS:+"OS=$MID_OS"} PATH="$d/bin" FLEET_STATE_DIR="$d/state" FLEET_CONFIG_DIR="$d/cfg" \
+    FLEET_MACHINE_ID_FILE="$d/etc-id" FLEET_DBUS_ID_FILE="$d/dbus-id" FLEET_PROC_UUID_FILE="$d/proc-uuid" "$BASH" "$SCRIPTS/machine-id.sh" "$@"
+}
+jf() { printf '%s' "$1" | jq -r ".$2"; }
+
+d="$(mkcase mac)"; shim "$d" uname 'echo Darwin'; shim "$d" hostname 'echo myhost'
+shim "$d" ioreg 'echo "    | \"IOPlatformUUID\" = \"ABCDEF01-2345-6789-ABCD-EF0123456789\""'
+j="$(mid "$d" show)"; rc=$?
+eq "machine-id: macOS reads IOPlatformUUID" "$(jf "$j" id)|$(jf "$j" source)" "ABCDEF01-2345-6789-ABCD-EF0123456789|ioreg"
+eq "machine-id: key is the first 8 hex, lowercased" "$(jf "$j" key)" abcdef01
+eq "machine-id: label is prefix + key" "$(mid "$d" label)" fleet:abcdef01
+eq "machine-id: exits 0" "$rc" 0
+eq "machine-id: FLEET_MACHINE replaces the key" "$(MID_FM=zz mid "$d" key)" zz
+echo 'label_prefix = "ops/"' >"$d/cfg/config.toml"
+eq "machine-id: label_prefix from config" "$(mid "$d" label)" ops/abcdef01
+eq "machine-id: FLEET_LABEL_PREFIX beats config" "$(FLEET_LABEL_PREFIX=x- mid "$d" label)" x-abcdef01
+eq "machine-id: description names host, OS, full id and date" "$(mid "$d" description --date 2026-01-02)" \
+  "myhost · macOS · machine id ABCDEF01-2345-6789-ABCD-EF0123456789 · first claim 2026-01-02"
+eq "machine-id: description defaults the date to today" "$(mid "$d" description | grep -c 'first claim [0-9]\{4\}-[0-9][0-9]-[0-9][0-9]$')" 1
+echo 'machine_name = "Mac 1"' >"$d/cfg/config.toml"
+eq "machine-id: machine_name replaces the hostname in the description" "$(mid "$d" description --date 2026-01-02 | sed 's/ · machine id.*//')" "Mac 1 · macOS"
+eq "machine-id: show carries machine_name" "$(jf "$(mid "$d" show)" name)" "Mac 1"
+echo 'machine_legacy_label = "fleet:mac1"' >"$d/cfg/config.toml"
+eq "machine-id: show carries machine_legacy_label" "$(jf "$(mid "$d" show)" legacy_label)" fleet:mac1
+
+d="$(mkcase linux)"; shim "$d" uname 'echo Linux'
+printf '0123456789ABCDEF0123456789abcdef\n' >"$d/etc-id"
+j="$(mid "$d" show)"; eq "machine-id: Linux /etc/machine-id" "$(jf "$j" key)|$(jf "$j" source)|$(jf "$j" os)" "01234567|/etc/machine-id|Linux"
+rm "$d/etc-id"; printf 'fedcba9876543210fedcba9876543210\n' >"$d/dbus-id"
+j="$(mid "$d" show)"; eq "machine-id: Linux falls back to the dbus id" "$(jf "$j" key)|$(jf "$j" source)" "fedcba98|dbus"
+printf '00000000000000000000000000000000\n' >"$d/etc-id"
+eq "machine-id: a placeholder id falls through to the next source" "$(jf "$(mid "$d" show)" source)" dbus
+printf 'abc\n' >"$d/etc-id"
+eq "machine-id: a too-short id falls through" "$(jf "$(mid "$d" show)" source)" dbus
+: >"$d/etc-id"
+eq "machine-id: an empty id falls through" "$(jf "$(mid "$d" show)" source)" dbus
+printf 'FFFFFFFF-FFFF-FFFF-FFFF-FFFFFFFFFFFF\n' >"$d/etc-id"
+eq "machine-id: an all-F id falls through" "$(jf "$(mid "$d" show)" source)" dbus
+
+d="$(mkcase win)"; shim "$d" uname 'echo MINGW64_NT-10.0'
+shim "$d" powershell 'printf "1B4E28BA-2FA1-11D2-883F-B9A761BDE3FB\r\n"'
+shim "$d" wmic 'printf "UUID  \r\n2B4E28BA-2FA1-11D2-883F-B9A761BDE3FB  \r\n"'
+j="$(mid "$d" show)"; eq "machine-id: Windows via powershell" "$(jf "$j" key)|$(jf "$j" source)|$(jf "$j" os)" "1b4e28ba|powershell|Windows"
+rm "$d/bin/powershell"
+j="$(mid "$d" show)"; eq "machine-id: Windows falls back to wmic" "$(jf "$j" key)|$(jf "$j" source)" "2b4e28ba|wmic"
+d="$(mkcase winenv)"; shim "$d" uname 'echo SomethingElse'; shim "$d" powershell 'echo 3B4E28BA-2FA1-11D2-883F-B9A761BDE3FB'
+eq "machine-id: OS=Windows_NT selects the Windows sources" "$(MID_OS=Windows_NT mid "$d" show | jq -r '.source + "|" + .os')" "powershell|Windows"
+
+# random fallback: every generator, stored once and reused
+d="$(mkcase rnd)"; shim "$d" uname 'echo FreeBSD'
+shim "$d" uuidgen 'echo DEADBEEF-1111-4222-8333-444455556666'
+j="$(mid "$d" show)"; eq "machine-id: random id from uuidgen" "$(jf "$j" key)|$(jf "$j" source)|$(jf "$j" os)" "deadbeef|random|unknown OS"
+check "machine-id: the random id is stored" test -f "$d/state/machine-id"
+rm "$d/bin/uuidgen"; j="$(mid "$d" show)"
+eq "machine-id: the stored id is reused" "$(jf "$j" key)|$(jf "$j" source)" "deadbeef|stored"
+d="$(mkcase rnd2)"; shim "$d" uname 'echo Linux'; echo 'cafef00d-1111-4222-8333-444455556666' >"$d/proc-uuid"
+eq "machine-id: random id from /proc when there is no uuidgen" "$(jf "$(mid "$d" show)" key)" cafef00d
+d="$(mkcase rnd3)"; shim "$d" uname 'echo Linux'
+j="$(mid "$d" show)"
+eq "machine-id: random id from od when nothing else exists" "$(jf "$j" id | grep -c '^[0-9a-f]\{8\}-[0-9a-f]\{4\}-[0-9a-f]\{4\}-[0-9a-f]\{4\}-[0-9a-f]\{12\}$')" 1
+eq "machine-id: that id is stored and reused" "$(mid "$d" id)" "$(jf "$j" id)"
+d="$(mkcase rnd4)"; shim "$d" uname 'echo Linux'; shim "$d" uuidgen 'echo 11111111-2222-4333-8444-555555555555'; touch "$d/state"
+j="$(mid "$d" show 2>"$T/mid.err")"; rc=$?
+check "machine-id: an unwritable state dir falls back to the config dir" test -f "$d/cfg/machine-id"
+eq "machine-id: that fallback still exits 0" "$rc" 0
+d="$(mkcase rnd5)"; shim "$d" uname 'echo Linux'; shim "$d" uuidgen 'echo 11111111-2222-4333-8444-555555555555'; touch "$d/state"; rm -rf "$d/cfg"; touch "$d/cfg"
+j="$(mid "$d" show 2>"$T/mid.err")"; rc=$?
+eq "machine-id: nowhere to store only warns" "$rc|$(grep -c 'cannot store a machine id' "$T/mid.err")|$(jf "$j" key)" "0|1|11111111"
+
+# the description is never empty: hostname, COMPUTERNAME, unknown-host; each OS mapping
+d="$(mkcase desc)"; shim "$d" uname 'echo Linux'; printf '0123456789abcdef0123456789abcdef\n' >"$d/etc-id"
+eq "machine-id: no hostname uses COMPUTERNAME" "$(COMPUTERNAME=WIN1 mid "$d" description | cut -d' ' -f1)" WIN1
+eq "machine-id: no hostname and no COMPUTERNAME is unknown-host" "$(mid "$d" description | cut -d' ' -f1)" unknown-host
+eq "machine-id: Linux maps to Linux" "$(mid "$d" description | cut -d' ' -f3)" Linux
+shim "$d" uname 'echo CYGWIN_NT'; eq "machine-id: CYGWIN maps to Windows" "$(jf "$(mid "$d" show)" os)" Windows
+shim "$d" uname 'echo Plan9'; eq "machine-id: anything else maps to unknown OS" "$(jf "$(mid "$d" show)" os)" "unknown OS"
+
+# status: the machine footer, the conditional ISSUE column
+cp "$FLEET_CONFIG_DIR/config.toml" "$T/config.bak2"
+eq "status: last line is the machine footer" "$(DF_GB=100 "$SCRIPTS/status.sh" --team build-nope 2>/dev/null | tail -1)" "machine: fleet:test"
+echo 'machine_name = "Mac 1"' >>"$FLEET_CONFIG_DIR/config.toml"
+eq "status: the footer shows machine_name" "$(DF_GB=100 "$SCRIPTS/status.sh" --team build-nope 2>/dev/null | tail -1)" "machine: fleet:test (Mac 1)"
+eq "status: the disk line is still first" "$(DF_GB=100 "$SCRIPTS/status.sh" --team build-nope 2>/dev/null | head -1)" 'disk: 100 GiB free (warn below 75, boot refuses below 40)'
+eq "status --json has no machine footer" "$(DF_GB=100 "$SCRIPTS/status.sh" --team build-nope --json 2>/dev/null | grep -c machine:)" 0
+eq "status: no ISSUE column without an issue" "$(DF_GB=100 "$SCRIPTS/status.sh" --team build-plain 2>/dev/null | grep -c ISSUE)" 0
+cp "$T/config.bak2" "$FLEET_CONFIG_DIR/config.toml"
+
+# boot: refusal of an issue another machine holds
+bt() { : >"$HERDR_LOG"; "$SCRIPTS/boot.sh" "$@" >"$T/bt.out" 2>"$T/bt.err"; BTRC=$?; }
+rows_of() { "$REG" list --team "$1" | jq length; }
+bt --issue DEV-1 --labels kind:ops,fleet:9b1d4e07 build ref1 "$T/plain" t
+check "boot: another machine's label refuses" test "$BTRC" -ne 0
+check "boot: the refusal names the issue, the holder and this machine" grep -q 'DEV-1 is claimed by fleet:9b1d4e07; this machine is fleet:test. Not booting' "$T/bt.err"
+eq "boot: a refusal makes no herdr call" "$(wc -l <"$HERDR_LOG" | tr -d ' ')" 0
+eq "boot: a refusal adds no rows" "$(rows_of build-ref1)" 0
+bt --issue DEV-1 --claimed-by 9b1d4e07 build ref2 "$T/plain" t
+check "boot: --claimed-by another machine refuses" grep -q 'DEV-1 is claimed by fleet:9b1d4e07' "$T/bt.err"
+eq "boot: FLEET_FORCE=1 does not bypass the refusal" "$(FLEET_FORCE=1 "$SCRIPTS/boot.sh" --issue DEV-1 --claimed-by 9b1d4e07 build ref3 "$T/plain" t >/dev/null 2>&1; echo $?)" 1
+bt --issue DEV-2 --claimed-by test --labels fleet:test,kind:ops build own1 "$T/plain" t
+eq "boot: this machine's own label boots" "$BTRC" 0
+eq "boot: the row records issue, claimed_by and machine" "$("$REG" get build-own1/builder | jq -r '[.issue, .claimed_by, .machine] | join(",")')" "DEV-2,test,test"
+bt --issue DEV-2 --claimed-by fleet:test build own2 "$T/plain" t; eq "boot: --claimed-by accepts the full label" "$BTRC" 0
+echo 'machine_legacy_label = "fleet:mac1"' >>"$FLEET_CONFIG_DIR/config.toml"
+bt --issue DEV-3 --labels fleet:mac1 build leg1 "$T/plain" t; eq "boot: this machine's legacy label boots" "$BTRC" 0
+bt --issue DEV-3 --claimed-by fleet:mac1 build leg2 "$T/plain" t; eq "boot: --claimed-by the legacy label boots" "$BTRC" 0
+bt --issue DEV-3 --labels fleet:mac2 build leg3 "$T/plain" t
+check "boot: another machine's legacy label refuses" grep -q 'DEV-3 is claimed by fleet:mac2' "$T/bt.err"
+cp "$T/config.bak2" "$FLEET_CONFIG_DIR/config.toml"
+FLEET_LABEL_PREFIX='ops/' bt --issue DEV-4 --labels ops/9b1d4e07 build pre1 "$T/plain" t
+check "boot: a custom label_prefix is honoured" grep -q 'DEV-4 is claimed by ops/9b1d4e07; this machine is ops/test' "$T/bt.err"
+FLEET_LABEL_PREFIX='ops/' bt --issue DEV-4 --labels fleet:9b1d4e07 build pre2 "$T/plain" t
+eq "boot: labels outside the custom prefix are not claims" "$BTRC" 0
+bt build plainboot "$T/plain" t; eq "boot: no --issue boots as before" "$BTRC" 0
+eq "boot: an unknown option is refused" "$("$SCRIPTS/boot.sh" --nope build x "$T/plain" t >/dev/null 2>&1; echo $?)" 1
+
+# boot: declared scope and the overlap warning
+bt --issue DEV-10 --claimed-by test --scope 'platform: deploy/local, scripts/local.sh' build ova "$T/plain" t
+eq "boot: a scoped claim boots" "$BTRC" 0
+eq "boot: the row records the scope" "$("$REG" get build-ova/builder | jq -c .scope)" '{"repo":"platform","paths":["deploy/local","scripts/local.sh"]}'
+bt --issue DEV-11 --claimed-by test --scope 'platform: deploy/local/x' build ovb "$T/plain" t
+eq "boot: an overlap exits 0" "$BTRC" 0
+check "boot: the overlap warning names both teams" grep -q 'warning: build-ovb (fleet:test) overlaps build-ova (fleet:test) in platform: deploy/local/x' "$T/bt.err"
+bt --scope 'PLATFORM: scripts' build ovc "$T/plain" t
+check "boot: repo names compare case-insensitively" grep -q 'build-ovc .* overlaps build-ova' "$T/bt.err"
+bt --scope 'platform: docs' build ove "$T/plain" t; eq "boot: disjoint paths give no warning" "$(grep -c overlaps "$T/bt.err")" 0
+bt --scope 'platform: deploy/localstack' build ovf "$T/plain" t; eq "boot: deploy/local vs deploy/localstack give no warning" "$(grep -c overlaps "$T/bt.err")" 0
+bt --scope 'other: deploy/local' build ovg "$T/plain" t; eq "boot: another repo gives no warning" "$(grep -c overlaps "$T/bt.err")" 0
+bt --scope 'platform' build ovd "$T/plain" t
+check "boot: no paths means the whole repo" grep -q 'build-ovd .* overlaps build-ova .* in platform: whole repo' "$T/bt.err"
+bt --scope 'zeta: deploy/local' --peer-claim '9b1d4e07/build-dev315=zeta:deploy/local,scripts/x' build ovh "$T/plain" t
+check "boot: a peer claim overlap names the other machine" grep -q 'build-ovh (fleet:test) overlaps build-dev315 (fleet:9b1d4e07) in zeta: deploy/local' "$T/bt.err"
+bt --scope 'zeta: docs' --peer-claim '9b1d4e07/build-dev315=zeta:deploy/local' build ovi "$T/plain" t
+eq "boot: a disjoint peer claim gives no warning" "$(grep -c overlaps "$T/bt.err")" 0
+bt build ovj "$T/plain" t; eq "boot: no --scope never warns" "$(grep -c overlaps "$T/bt.err")" 0
+bt --scope ': src' build ovk "$T/plain" t
+eq "boot: the scope repo defaults to the repo-dir name" "$("$REG" get build-ovk/builder | jq -r .scope.repo)" plain
+bt --issue DEV-12 build iss1 "$T/plain" t
+eq "status: the ISSUE column appears once a row has an issue" "$(DF_GB=100 "$SCRIPTS/status.sh" --team build-iss1 2>/dev/null | sed -n 2p | grep -c ISSUE)" 1
+
+# docs
+SKD="$SCRIPTS/.."
+for k in label_prefix machine_name machine_legacy_label claimed-by; do
+  check "SKILL.md mentions $k" grep -q -- "$k" "$SKD/SKILL.md"
+done
+for k in label_prefix machine_name machine_legacy_label; do check "fleet README mentions $k" grep -q "$k" "$SKD/README.md"; done
+for k in leases Slack 'status --all'; do check "SKILL.md lists the follow-up: $k" grep -q "$k" "$SKD/SKILL.md"; done
+check "registry.md documents the claim fields" grep -q 'claimed_by' "$SKD/references/registry.md"
+
 # version and docs
 SK="$SCRIPTS/.."; PLUGIN="$SK/../.."
-eq "plugin.json version" "$(jq -r .version "$PLUGIN/.claude-plugin/plugin.json")" 3.4.1
-eq "marketplace.json developer version" "$(jq -r '.plugins[] | select(.name == "developer") | .version' "$PLUGIN/../../.claude-plugin/marketplace.json")" 3.4.1
+eq "plugin.json version" "$(jq -r .version "$PLUGIN/.claude-plugin/plugin.json")" 3.5.0
+eq "marketplace.json developer version" "$(jq -r '.plugins[] | select(.name == "developer") | .version' "$PLUGIN/../../.claude-plugin/marketplace.json")" 3.5.0
 for k in min_free_gb warn_free_gb fleet-archive; do
   check "SKILL.md mentions $k" grep -q "$k" "$SK/SKILL.md"; check "README mentions $k" grep -q "$k" "$SK/README.md"
 done

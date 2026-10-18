@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Boot one team: workspace → worktrees → panes → agents → briefs → registry rows.
 #
-#   boot.sh <template> <focus> <repo-dir> [task text...]
+#   boot.sh [--issue ID --claimed-by KEY --labels a,b --scope 'repo: p1, p2' --peer-claim ...]
+#           <template> <focus> <repo-dir> [task text...]
 #
 # <template> is a name from ../templates (build, race, review, research) or a path to a
 # template JSON file. <focus> becomes the team name <template>-<focus>. The task text
@@ -18,16 +19,41 @@
 # Boot refuses when free disk is below min_free_gb in config.toml (default 40; 0 disables),
 # so a full disk never hangs Docker mid-run.
 #
+# Claims (see SKILL.md, "Claim"): boot never calls a tracker. The Orchestrator claims the issue
+# first and passes the result in.
+#   --issue ID           the tracker issue this team works on
+#   --claimed-by KEY     the machine key (or label) that holds the claim
+#   --labels a,b,c       the issue's labels, as just re-read; any <label_prefix>* label that
+#                        is not this machine's is another machine's claim
+#   --scope 'repo: p1, p2'  declared file scope (repo defaults to the repo-dir name; no paths = whole repo)
+#   --peer-claim 'KEY/team=repo: p1, p2'   a live claim on another machine (repeatable)
+# Boot refuses an issue claimed by another machine (FLEET_FORCE=1 does not bypass it), and warns
+# when the declared scope overlaps a live claim in the same repo.
+#
 # Env: FLEET_SESSION (named herdr session, for isolated runs), FLEET_FORCE=1 (ignore
-# max_agents and min_free_gb), FLEET_MACHINE (label stored in the registry, default "local").
+# max_agents and min_free_gb), FLEET_MACHINE (replaces this machine's key, see machine-id.sh),
+# FLEET_LABEL_PREFIX (claim label prefix, default "fleet:").
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
 require_herdr
 need git
 
-tpl="${1:?usage: boot.sh <template> <focus> <repo-dir> [task...]}"
-focus="${2:?usage: boot.sh <template> <focus> <repo-dir> [task...]}"
-repo="${3:?usage: boot.sh <template> <focus> <repo-dir> [task...]}"
+issue=""; claimed_by=""; labels=""; scope_arg=""; peers=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --issue) issue="${2:?--issue needs a value}"; shift 2 ;;
+    --claimed-by) claimed_by="${2:?--claimed-by needs a value}"; shift 2 ;;
+    --labels) labels="${2:?--labels needs a value}"; shift 2 ;;
+    --scope) scope_arg="${2:?--scope needs a value}"; shift 2 ;;
+    --peer-claim) peers+=("${2:?--peer-claim needs a value}"); shift 2 ;;
+    -*) die "unknown option: $1" ;;
+    *) break ;;
+  esac
+done
+
+tpl="${1:?usage: boot.sh [options] <template> <focus> <repo-dir> [task...]}"
+focus="${2:?usage: boot.sh [options] <template> <focus> <repo-dir> [task...]}"
+repo="${3:?usage: boot.sh [options] <template> <focus> <repo-dir> [task...]}"
 shift 3
 task="${*:-$focus}"
 
@@ -38,11 +64,57 @@ repo="$(cd "$repo" && pwd -P)" || die "no such directory: $3"
 template="$(jq -r .name "$tpl")"
 team="$(agent_name "$template-$focus")"
 registry="$FLEET_SCRIPTS/registry.sh"
-machine="${FLEET_MACHINE:-local}"
+machine="$(machine_key)"
 nworkers="$(jq '.workers | length' "$tpl")"
 
 # One team name, one live team.
 [ "$("$registry" list --team "$team" --live | jq length)" = "0" ] || die "team $team is already live; retire it first"
+
+# Claim: refuse an issue another machine holds, warn about overlapping scope.
+trim() { local v="$1"; v="${v#"${v%%[![:space:]]*}"}"; printf '%s' "${v%"${v##*[![:space:]]}"}"; }
+parse_scope() { # parse_scope <'repo: p1, p2'> → {repo, paths[]}; the repo defaults to the repo-dir name
+  local s="$1" r p
+  case "$s" in *:*) r="${s%%:*}"; p="${s#*:}" ;; *) r="$s"; p="" ;; esac
+  r="$(trim "$r")"; [ -n "$r" ] || r="$(basename "$repo")"
+  jq -cn --arg r "$r" --arg p "$p" '{repo: $r, paths: ($p | split(",") | map(gsub("^\\s+|\\s+$"; "")) | map(select(length > 0)))}'
+}
+prefix="$(label_prefix)"; my_label="$(machine_label)"; legacy_label="$(cfg_str machine_legacy_label '')"
+is_mine() { [ "$1" = "$my_label" ] || { [ -n "$legacy_label" ] && [ "$1" = "$legacy_label" ]; }; }
+claim_label() { case "$1" in "$prefix"*) printf '%s' "$1" ;; *) printf '%s%s' "$prefix" "$1" ;; esac; }
+if [ -n "$issue" ]; then
+  if [ -n "$claimed_by" ]; then
+    holder="$(claim_label "$claimed_by")"
+    is_mine "$holder" || die "$issue is claimed by $holder; this machine is $my_label. Not booting"
+    claimed_by="${holder#"$prefix"}"
+  fi
+  if [ -n "$prefix" ]; then
+    IFS=',' read -r -a label_list <<<"$labels"
+    for l in ${label_list[@]+"${label_list[@]}"}; do
+      l="$(trim "$l")"
+      case "$l" in "$prefix"*) is_mine "$l" || die "$issue is claimed by $l; this machine is $my_label. Not booting" ;; esac
+    done
+  fi
+fi
+scope_json=null
+if [ -n "$scope_arg" ]; then
+  scope_json="$(parse_scope "$scope_arg")"
+  others="$("$registry" list --live | jq -c --arg team "$team" --arg p "$prefix" \
+    '[.[] | select(.team != $team and .scope != null) | {team, label: ($p + (.machine // "local")), scope}] | unique_by(.team)')"
+  for pc in ${peers[@]+"${peers[@]}"}; do # KEY/team=repo: p1, p2
+    pk="${pc%%/*}"; rest="${pc#*/}"; pt="${rest%%=*}"
+    others="$(printf '%s' "$others" | jq -c --arg t "$pt" --arg l "$(claim_label "$pk")" --argjson s "$(parse_scope "${rest#*=}")" \
+      '. + [{team: $t, label: $l, scope: $s}]')"
+  done
+  printf '%s' "$others" | jq -r --arg team "$team" --arg me "$my_label" --argjson mine "$scope_json" '
+    def segs: split("/") | map(select(length > 0));
+    def pre($a; $b): ($a | segs) as $x | ($b | segs) as $y | ([($x | length), ($y | length)] | min) as $k | $x[0:$k] == $y[0:$k];
+    ($mine.repo | ascii_downcase) as $repo
+    | .[] | select((.scope.repo | ascii_downcase) == $repo) as $o
+    | [$mine.paths[] as $p | select(($o.scope.paths | length) == 0 or any($o.scope.paths[]; pre($p; .))) | $p] as $hit
+    | select(($mine.paths | length) == 0 or ($o.scope.paths | length) == 0 or ($hit | length) > 0)
+    | "\($team) (\($me)) overlaps \($o.team) (\($o.label)) in \($mine.repo): \(if ($mine.paths | length) == 0 or ($hit | length) == 0 then "whole repo" else ($hit | join(", ")) end)"' |
+    while IFS= read -r msg; do warn "$msg"; done
+fi
 
 # Concurrency cap.
 live="$("$registry" count-live)"; cap="$(max_agents)"
@@ -200,9 +272,12 @@ row() { # row <name> <tier> <agent> <pane> <kind> <model> <status> <cwd> <worktr
   jq -cn --arg name "$1" --arg tier "$2" --arg ref "$3" --arg pane "$4" --arg harness "$5" --arg model "$6" \
     --arg status "$7" --arg cwd "$8" --arg wt "$9" --arg br "${10}" --arg ex "${11}" \
     --arg team "$team" --arg tpl "$template" --arg repo "$repo" --arg task "$task" --arg m "$machine" --arg ws "$workspace" \
+    --arg issue "$issue" --arg cb "$claimed_by" --argjson scope "$scope_json" \
     '{name: $name, team: $team, tier: $tier, template: $tpl, harness: $harness, model: $model, repo: $repo,
       machine: $m, status: $status, assignment: $task, herdr_ref: $ref, pane: $pane, workspace: $ws,
-      cwd: $cwd, worktree: $wt, branch: $br, expertise_file: $ex}'
+      cwd: $cwd, worktree: $wt, branch: $br, expertise_file: $ex}
+    + (if $issue != "" then {issue: $issue, claimed_by: $cb} else {} end)
+    + (if $scope != null then {scope: $scope} else {} end)'
 }
 
 expertise_for() { local f="$repo/.claude/experts/$1.md"; [ -f "$f" ] && printf '%s' "$f" || true; }
