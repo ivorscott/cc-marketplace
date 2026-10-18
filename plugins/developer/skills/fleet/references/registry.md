@@ -22,12 +22,19 @@ restarted, compacted or replaced agent picks up from the row, not from memory.
 | `lease_expires`, `takeover_of` | the claim's lease (UTC, renewed with `registry.sh set`) and, after a takeover, the key of the machine it replaced |
 | `assignment` | the task it owes (the hook) |
 | `status` | Booting, Working, Needs input, Stalled, Zombie, Idle, Done, Retired |
-| `escalation`, `escalations[]` | latest severity, and the full history |
+| `escalation`, `escalations[]` | `escalation` is derived: the highest severity among open entries, `""` when none. Each entry is `{severity, message, at}` plus `resolved_at` and `resolution` once `registry.sh resolve` closes it; `(name, at)` identifies one. Open entries survive `done` and `retire` |
 | `discovered[]` | unrelated work the agent filed instead of doing |
 | `expertise_file` | the role's expertise file, if the repo has one |
 | `started`, `done_at`, `ended` | lifecycle timestamps (UTC) |
 | `outcome`, `summary`, `lessons` | how it ended, its one-line summary, and debrief lessons |
 | `updated_at`, `synced_at` | change tracking for the sink |
+
+## Escalation inbox
+
+`registry.sh escalate` also appends one JSON line `{at, name, team, severity, message}` to
+`escalations.jsonl` in the state dir (`FLEET_INBOX` overrides). It is append-only and never
+rotated; resolving does not write to it. `scripts/escalation-wait.sh` reads it with a persisted
+cursor (`escalations.cursor`) so no arrival is missed between two arms.
 
 ## Team environments
 

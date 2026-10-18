@@ -256,6 +256,7 @@ case "$1 $2" in
     if [ -n "${DEAD_ONCE:-}" ] && [ -e "$DEAD_ONCE" ]; then rm -f "$DEAD_ONCE"; echo '{"result":{"process_info":{"foreground_process_group_id":1,"shell_pid":1}}}'
     else echo '{"result":{"process_info":{"foreground_process_group_id":2,"shell_pid":1}}}'; fi ;;
   "agent get") echo '{"result":{"agent":{"agent_status":"idle"}}}' ;;
+  "notification show") if [ -n "${NOTIFY_FAIL:-}" ]; then echo "herdr: no server" >&2; exit 1; fi; echo '{}' ;;
   *) echo '{}' ;;
 esac
 S
@@ -752,10 +753,83 @@ check "SKILL.md says the tracker has no compare-and-swap" grep -q 'compare-and-s
 check "SKILL.md: the heartbeat does not renew a voided claim" grep -qi 'must not renew' "$SKD/SKILL.md"
 check "registry.md documents the claim fields" grep -q 'claimed_by' "$SKD/references/registry.md"
 
+# Escalations reach the Orchestrator (DEV-364): inbox, resolve, open until resolved, notify failures, wait
+INBOX="$FLEET_STATE_DIR/escalations.jsonl"; EW="$SCRIPTS/escalation-wait.sh"
+rm -f "$INBOX" "$FLEET_STATE_DIR/escalations.cursor"
+"$REG" add '{"name":"esc/builder","team":"esc","tier":"Worker","status":"Working"}'
+"$REG" escalate esc/builder P1 "which db?" >/dev/null 2>&1
+sleep 1  # (name, at) has one-second resolution
+eq "escalate appends one inbox line" "$(wc -l <"$INBOX" | tr -d ' ')" 1
+eq "inbox line has the five fields" "$(jq -c 'keys' "$INBOX")" '["at","message","name","severity","team"]'
+eq "inbox line carries the team and message" "$(jq -r '[.team, .name, .severity, .message] | join("|")' "$INBOX")" "esc|esc/builder|P1|which db?"
+"$REG" escalate esc/builder P2 "naming?" >/dev/null 2>&1
+eq "two escalates make two inbox lines" "$(wc -l <"$INBOX" | tr -d ' ')" 2
+eq "an unwritable inbox warns and still exits 0" "$(FLEET_INBOX=/nonexistent/dir/in.jsonl "$REG" escalate esc/builder P2 "x" 2>&1 >/dev/null | grep -c 'cannot write the escalation inbox')" 1
+FLEET_INBOX=/nonexistent/dir/in.jsonl "$REG" escalate esc/builder P2 "x" >/dev/null 2>&1; eq "unwritable inbox exits 0" "$?" 0
+AT_P1="$("$REG" escalations --team esc | jq -r '[.[] | select(.severity == "P1")][0].at')"
+eq ".escalation is the highest open severity" "$("$REG" get esc/builder | jq -r .escalation)" P1
+"$REG" resolve esc/builder "$AT_P1" --note "use pg" >/dev/null 2>&1
+eq "resolve records resolved_at and the note" "$("$REG" escalations --team esc | jq -r '[.[] | select(.at == "'"$AT_P1"'" and .severity == "P1")][0] | (.resolved_at != null) and .resolution == "use pg"')" true
+eq "resolve recomputes .escalation from what is still open" "$("$REG" get esc/builder | jq -r .escalation)" P2
+eq "escalations --open excludes the resolved entry" "$("$REG" escalations --open --team esc | jq '[.[] | select(.severity == "P1")] | length')" 0
+check "resolve rejects an unknown agent" bash -c "! '$REG' resolve nobody/x 2020-01-01T00:00:00Z"
+check "resolve rejects an unknown at" bash -c "! '$REG' resolve esc/builder 2020-01-01T00:00:00Z"
+"$REG" resolve esc/builder "$AT_P1" >/dev/null 2>&1; eq "resolving twice is idempotent" "$?" 0
+"$REG" add '{"name":"esc/solo","team":"esc2","tier":"Worker","status":"Working"}'
+"$REG" escalate esc/solo P1 "only one" >/dev/null 2>&1
+"$REG" resolve esc/solo "$("$REG" escalations --team esc2 | jq -r '.[0].at')" >/dev/null 2>&1
+eq "resolving the last one clears .escalation" "$("$REG" get esc/solo | jq -r .escalation)" ""
+eq "resolving the last one moves status off Needs input" "$("$REG" get esc/solo | jq -r .status)" Working
+# open until resolved: done, set and add keep it
+"$REG" escalate esc/builder P1 "still open" >/dev/null 2>&1
+"$REG" done esc/builder --outcome Shipped --summary "PR ready" >/dev/null 2>&1
+eq "a Done agent's escalation is still open" "$("$REG" escalations --open --team esc | jq '[.[] | select(.name == "esc/builder" and .severity == "P1")] | length')" 1
+eq "list --problems includes a Done row with an open escalation" "$("$REG" list --problems | jq '[.[] | select(.name == "esc/builder")] | length')" 1
+eq "retire --summary shows it open" "$("$SCRIPTS/retire.sh" --summary esc 2>/dev/null | jq '[.escalations[] | select(.message == "still open" and .open)] | length')" 1
+eq "retire --summary shows a resolved one closed" "$("$SCRIPTS/retire.sh" --summary esc 2>/dev/null | jq '[.escalations[] | select(.message == "which db?" and (.open | not))] | length')" 1
+"$REG" set esc/builder status=Idle >/dev/null 2>&1
+eq "set status keeps the open escalation" "$("$REG" escalations --open --team esc | jq '[.[] | select(.name == "esc/builder")] | length')" 4
+check "set escalation= is refused" bash -c "! '$REG' set esc/builder escalation="
+check "set escalations= is refused" bash -c "! '$REG' set esc/builder escalations=[]"
+"$REG" add '{"name":"esc/builder","team":"esc","note":"re-add"}'
+eq "add on an existing row keeps its escalations" "$("$REG" get esc/builder | jq '.escalations | length')" 5
+eq "status.sh lists open escalations after the table" "$("$SCRIPTS/status.sh" 2>/dev/null | grep -c 'still open')" 1
+# notify: a failing herdr call is logged, not hidden, and does not fail the command
+err="$(NOTIFY_FAIL=1 "$REG" escalate esc/builder P2 "n1" 2>&1 >/dev/null)"; rc=$?
+eq "escalate exits 0 when the notification fails" "$rc" 0
+check "escalate logs 'notification failed'" grep -q 'notification failed' <<<"$err"
+err="$(NOTIFY_FAIL=1 "$REG" done esc/solo --outcome Shipped --summary s 2>&1 >/dev/null)"
+check "done logs 'notification failed'" grep -q 'notification failed' <<<"$err"
+eq "a working notification logs nothing" "$("$REG" escalate esc/builder P2 "n2" 2>&1 >/dev/null)" ""
+eq "watch.sh --once logs a failing notification" "$(NOTIFY_FAIL=1 "$SCRIPTS/watch.sh" --once 2>&1 >/dev/null | grep -c 'notification failed' | awk '{print ($1 > 0)}')" 1
+# escalation-wait.sh
+rm -f "$FLEET_STATE_DIR/escalations.cursor"
+out="$("$EW" --timeout 2 --every 1)"; eq "wait: nothing new exits 0 with no output" "$out:$?" ":0"
+"$EW" --timeout 30 --every 1 >"$T/ew.out" & ewpid=$!
+sleep 1; "$REG" escalate esc/builder P1 "wake up" >/dev/null 2>&1
+for _ in $(seq 1 20); do kill -0 "$ewpid" 2>/dev/null || break; sleep 0.5; done
+if kill -0 "$ewpid" 2>/dev/null; then kill "$ewpid"; bad "wait: exits when an escalation arrives"; else wait "$ewpid"; ok "wait: exits when an escalation arrives"; fi
+eq "wait: prints the new line" "$(jq -r .message "$T/ew.out")" "wake up"
+eq "wait: a second run does not replay it" "$("$EW" --timeout 1 --every 1)" ""
+"$REG" escalate esc/builder P2 "between arms" >/dev/null 2>&1
+eq "wait: one filed between arms is delivered by the next" "$("$EW" --timeout 5 --every 1 | jq -r .message)" "between arms"
+eq "wait: --from-start replays the inbox" "$("$EW" --from-start --timeout 1 --every 1 | wc -l | tr -d ' ')" "$(wc -l <"$INBOX" | tr -d ' ')"
+check "wait: rejects an unknown option" bash -c "! '$EW' --bogus"
+for f in registry.sh status.sh watch.sh retire.sh escalation-wait.sh common.sh boot.sh; do check "bash -n $f" bash -n "$SCRIPTS/$f"; done
+SKD0="$SCRIPTS/.."
+check "SKILL.md mentions escalation-wait.sh" grep -q 'escalation-wait.sh' "$SKD0/SKILL.md"
+check "SKILL.md documents resolve" grep -q 'registry.sh resolve' "$SKD0/SKILL.md"
+check "SKILL.md has the Orchestrator send a push" grep -q 'PushNotification' "$SKD0/SKILL.md"
+check "build lead brief says P1 is only for a user decision" grep -q 'P1 is only for a decision the user must make' "$SKD0/templates/build.json"
+check "build lead brief no longer files an escalation for UNVERIFIED" test -z "$(grep 'UNVERIFIED with an escalation filed' "$SKD0/templates/build.json")"
+check "lead agent says P1 is only for a user decision" grep -q 'P1 is only for a decision the' "$SKD0/../../agents/lead.md"
+check "agent fleet rules say P1 is only for a user decision" grep -q 'P1 is only for a decision the user must make' "$SCRIPTS/boot.sh"
+check "registry.md documents the inbox and resolved_at" grep -q 'resolved_at' "$SKD0/references/registry.md"
+
 # version and docs
 SK="$SCRIPTS/.."; PLUGIN="$SK/../.."
-eq "plugin.json version" "$(jq -r .version "$PLUGIN/.claude-plugin/plugin.json")" 3.6.0
-eq "marketplace.json developer version" "$(jq -r '.plugins[] | select(.name == "developer") | .version' "$PLUGIN/../../.claude-plugin/marketplace.json")" 3.6.0
+eq "plugin.json version" "$(jq -r .version "$PLUGIN/.claude-plugin/plugin.json")" 3.6.1
+eq "marketplace.json developer version" "$(jq -r '.plugins[] | select(.name == "developer") | .version' "$PLUGIN/../../.claude-plugin/marketplace.json")" 3.6.1
 for k in min_free_gb warn_free_gb fleet-archive; do
   check "SKILL.md mentions $k" grep -q "$k" "$SK/SKILL.md"; check "README mentions $k" grep -q "$k" "$SK/README.md"
 done

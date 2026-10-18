@@ -181,7 +181,7 @@ contract() { # the done contract appended to every brief
   [ -n "$expertise" ] && x=" Before you start, read your expertise file $expertise and follow it."
   printf '%s' "
 
-Fleet rules for $name.$x Stay on this one task. If you notice unrelated work, run \`$registry note $name discovered \"<what>\"\` instead of doing it. If you need a decision you cannot make, run \`$registry escalate $name P1 \"<question>\"\` and wait. If you stop to wait for instructions, first run \`$registry set $name status=Idle\`. Every commit carries the trailer \`Agent: $name\`. When your part is finished: push your branch if you have one, then run \`$registry done $name --outcome <Shipped|Partial|Failed> --summary \"<one line>\"\`, then stop. Going idle without that command marks you Stalled."
+Fleet rules for $name.$x Stay on this one task. If you notice unrelated work, run \`$registry note $name discovered \"<what>\"\` instead of doing it. If you need a decision you cannot make, run \`$registry escalate $name P1 \"<question>\"\` and wait. P1 is only for a decision the user must make; \"PR ready\" goes through done, not an escalation. If you stop to wait for instructions, first run \`$registry set $name status=Idle\`. Every commit carries the trailer \`Agent: $name\`. When your part is finished: push your branch if you have one, then run \`$registry done $name --outcome <Shipped|Partial|Failed> --summary \"<one line>\"\`, then stop. Going idle without that command marks you Stalled."
 }
 
 claude_args() { # claude_args <model> <tier> <worktree> <allow-json>

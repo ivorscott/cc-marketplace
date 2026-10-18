@@ -22,6 +22,12 @@ while [ $# -gt 0 ]; do
   esac
 done
 
+# A failed notification is logged, never hidden; it must not stop the monitor.
+push() {
+  local err
+  err="$(hd notification show "$@" 2>&1 >/dev/null)" || warn "notification failed: $1: $(printf '%s' "$err" | head -1)"
+}
+
 prev="{}"; disk_state=ok
 check_disk() {
   local free warn min state
@@ -33,8 +39,8 @@ check_disk() {
   if [ "$state" != "$disk_state" ]; then
     printf '%s  disk %s GiB free (warn_free_gb=%s)\n' "$(date +%H:%M:%S)" "$free" "$warn"
     case "$state" in
-      warn) hd notification show "fleet: disk $free GiB free (warn_free_gb=$warn)" --sound request >/dev/null 2>&1 || true ;;
-      min) hd notification show "fleet: disk $free GiB free, boot refuses below min_free_gb=$min" --sound request >/dev/null 2>&1 || true ;;
+      warn) push "fleet: disk $free GiB free (warn_free_gb=$warn)" --sound request ;;
+      min) push "fleet: disk $free GiB free, boot refuses below min_free_gb=$min" --sound request ;;
     esac
     disk_state="$state"
   fi
@@ -47,8 +53,8 @@ while :; do
     [ -z "$to" ] && to="$("$FLEET_SCRIPTS/registry.sh" get "$name" 2>/dev/null | jq -r .status || echo gone)"
     printf '%s  %-40s %s → %s\n' "$(date +%H:%M:%S)" "$name" "${from:-new}" "$to"
     case "$to" in
-      Stalled|Zombie|"Needs input") hd notification show "fleet: $name $to" --sound request >/dev/null 2>&1 || true ;;
-      Done) hd notification show "fleet: $name done" --sound done >/dev/null 2>&1 || true ;;
+      Stalled|Zombie|"Needs input") push "fleet: $name $to" --sound request ;;
+      Done) push "fleet: $name done" --sound done ;;
     esac
   done < <(jq -rn --argjson p "$prev" --argjson c "$cur" '
     (($p | keys) + ($c | keys) | unique)[] as $k
