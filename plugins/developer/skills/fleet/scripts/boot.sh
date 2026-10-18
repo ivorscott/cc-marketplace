@@ -176,14 +176,6 @@ render() { # render <text> <name> <worktree> <workers>
   printf '%s' "$s"
 }
 
-contract() { # the done contract appended to every brief
-  local name="$1" expertise="$2" x=""
-  [ -n "$expertise" ] && x=" Before you start, read your expertise file $expertise and follow it."
-  printf '%s' "
-
-Fleet rules for $name.$x Stay on this one task. If you notice unrelated work, run \`$registry note $name discovered \"<what>\"\` instead of doing it. If you need a decision you cannot make, run \`$registry escalate $name P1 \"<question>\"\` and wait. P1 is only for a decision the user must make; \"PR ready\" goes through done, not an escalation. If you stop to wait for instructions, first run \`$registry set $name status=Idle\`. Every commit carries the trailer \`Agent: $name\`. When your part is finished: push your branch if you have one, then run \`$registry done $name --outcome <Shipped|Partial|Failed> --summary \"<one line>\"\`, then stop. Going idle without that command marks you Stalled."
-}
-
 claude_args() { # claude_args <model> <tier> <worktree> <allow-json>
   local settings extra="${4:-[]}"
   extra="${extra//\{\{scripts\}\}/$FLEET_SCRIPTS}"
@@ -306,6 +298,13 @@ row() { # row <name> <tier> <agent> <pane> <kind> <model> <status> <cwd> <worktr
     + (if $scope != null then {scope: $scope} else {} end)'
 }
 
+# deliver <name> <brief>: tell.sh sends it and checks it arrived. An undelivered brief marks the
+# row Failed (never Working) and boot exits non-zero once the team JSON is printed.
+failed_agents=()
+deliver() {
+  "$FLEET_SCRIPTS/tell.sh" "$1" "$2" >/dev/null || { "$registry" set "$1" status=Failed >/dev/null; failed_agents+=("$1"); }
+}
+
 expertise_for() { local f="$repo/.claude/experts/$1.md"; [ -f "$f" ] && printf '%s' "$f" || true; }
 
 # 3. Start workers, register them, send their briefs.
@@ -319,8 +318,8 @@ for i in $(seq 0 $((nworkers - 1))); do
   ex="$(expertise_for "$(get role)")"
   "$registry" add "$(row "$(get name)" Worker "$(get agent)" "$(get pane)" "$kind" "$(get model)" "$status" "$(get cwd)" "$(get worktree)" "$(get branch)" "$ex")"
   if [ "$status" = "Working" ]; then
-    brief="$(render "$(get brief)" "$(get name)" "$(get worktree)" "$worker_agents")$(contract "$(get name)" "$ex")"
-    hd agent prompt "$(get agent)" "$brief" >/dev/null 2>&1 || "$registry" set "$(get name)" status="Needs input"
+    brief="$(build_brief "$(get name)" "$ex" "$(render "$(get brief)" "$(get name)" "$(get worktree)" "$worker_agents")")"
+    deliver "$(get name)" "$brief"
   fi
 done
 
@@ -331,9 +330,13 @@ status="$(start_agent "$lead_agent" "$lead_kind" "$lead_pane" "$lead_model" Lead
 ex="$(expertise_for lead)"
 "$registry" add "$(row "$lead_name" Lead "$lead_agent" "$lead_pane" "$lead_kind" "$lead_model" "$status" "$repo" "" "" "$ex")"
 if [ "$status" = "Working" ]; then
-  brief="$(render "$(jq -r .lead.brief "$tpl")" "$lead_name" "" "$worker_agents")$(contract "$lead_name" "$ex")"
-  hd agent prompt "$lead_agent" "$brief" >/dev/null 2>&1 || "$registry" set "$lead_name" status="Needs input"
+  brief="$(build_brief "$lead_name" "$ex" "$(render "$(jq -r .lead.brief "$tpl")" "$lead_name" "" "$worker_agents")")"
+  deliver "$lead_name" "$brief"
 fi
 
 "$registry" list --team "$team" |
   jq --arg ws "$workspace" --arg team "$team" '{team: $team, workspace: $ws, agents: [.[] | {name, herdr_ref, pane, status, worktree}]}'
+if [ "${#failed_agents[@]}" -gt 0 ]; then
+  warn "brief not delivered to: ${failed_agents[*]} (rows set to Failed)"
+  exit 1
+fi

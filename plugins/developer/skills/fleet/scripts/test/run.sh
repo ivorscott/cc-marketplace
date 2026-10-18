@@ -255,12 +255,23 @@ case "$1 $2" in
   "pane process-info")
     if [ -n "${DEAD_ONCE:-}" ] && [ -e "$DEAD_ONCE" ]; then rm -f "$DEAD_ONCE"; echo '{"result":{"process_info":{"foreground_process_group_id":1,"shell_pid":1}}}'
     else echo '{"result":{"process_info":{"foreground_process_group_id":2,"shell_pid":1}}}'; fi ;;
-  "agent get") echo '{"result":{"agent":{"agent_status":"idle"}}}' ;;
+  # Per-agent state in $AS: "agent get" reports it (idle when unset), a prompt makes the agent
+  # working unless PROMPT_NOSTATE is set, and `agent read` prints $AS/<agent>.read.
+  "agent start") rm -f "$AS/$3" "$AS/$3.read"; echo '{}' ;;
+  "agent get") echo "{\"result\":{\"agent\":{\"agent_status\":\"$(cat "$AS/$3" 2>/dev/null || echo idle)\"}}}" ;;
+  "agent wait") [ ! -e "$AS/$3" ] || echo idle >"$AS/$3"; echo '{}' ;;
+  "agent prompt")
+    [ -z "${PROMPT_FAIL:-}" ] || exit 1
+    [ -n "${PROMPT_NOSTATE:-}" ] || echo working >"$AS/$3"
+    [ -z "${PROMPT_ECHO:-}" ] || printf '%s\n> %s\n\n────────\n❯ \n────────\n' "$(cat "$AS/$3.read" 2>/dev/null)" "$4" >"$AS/$3.read"
+    echo '{}' ;;
+  "agent send-keys") [ -z "${ENTER_WORKS:-}" ] || echo working >"$AS/$3"; echo '{}' ;;
+  "agent read") cat "$AS/$3.read" 2>/dev/null || true ;;
   "notification show") if [ -n "${NOTIFY_FAIL:-}" ]; then echo "herdr: no server" >&2; exit 1; fi; echo '{}' ;;
   *) echo '{}' ;;
 esac
 S
-chmod +x "$T/bin/herdr"; export HERDR_LOG="$T/herdr.log"
+chmod +x "$T/bin/herdr"; export HERDR_LOG="$T/herdr.log" AS="$T/as"; mkdir -p "$AS"
 export PATH="$T/bin:$PATH"; export FLEET_FORCE=1
 
 : >"$HERDR_LOG"; "$SCRIPTS/boot.sh" build envt "$T/repo" task >/dev/null 2>&1
@@ -815,7 +826,7 @@ eq "wait: a second run does not replay it" "$("$EW" --timeout 1 --every 1)" ""
 eq "wait: one filed between arms is delivered by the next" "$("$EW" --timeout 5 --every 1 | jq -r .message)" "between arms"
 eq "wait: --from-start replays the inbox" "$("$EW" --from-start --timeout 1 --every 1 | wc -l | tr -d ' ')" "$(wc -l <"$INBOX" | tr -d ' ')"
 check "wait: rejects an unknown option" bash -c "! '$EW' --bogus"
-for f in registry.sh status.sh watch.sh retire.sh escalation-wait.sh common.sh boot.sh; do check "bash -n $f" bash -n "$SCRIPTS/$f"; done
+for f in registry.sh status.sh watch.sh retire.sh escalation-wait.sh common.sh boot.sh tell.sh tick.sh next.sh; do check "bash -n $f" bash -n "$SCRIPTS/$f"; done
 SKD0="$SCRIPTS/.."
 check "SKILL.md mentions escalation-wait.sh" grep -q 'escalation-wait.sh' "$SKD0/SKILL.md"
 check "SKILL.md documents resolve" grep -q 'registry.sh resolve' "$SKD0/SKILL.md"
@@ -823,7 +834,7 @@ check "SKILL.md has the Orchestrator send a push" grep -q 'PushNotification' "$S
 check "build lead brief says P1 is only for a user decision" grep -q 'P1 is only for a decision the user must make' "$SKD0/templates/build.json"
 check "build lead brief no longer files an escalation for UNVERIFIED" test -z "$(grep 'UNVERIFIED with an escalation filed' "$SKD0/templates/build.json")"
 check "lead agent says P1 is only for a user decision" grep -q 'P1 is only for a decision the' "$SKD0/../../agents/lead.md"
-check "agent fleet rules say P1 is only for a user decision" grep -q 'P1 is only for a decision the user must make' "$SCRIPTS/boot.sh"
+check "agent fleet rules say P1 is only for a user decision" grep -q 'P1 is only for a decision the user must make' "$SCRIPTS/common.sh"
 check "registry.md documents the inbox and resolved_at" grep -q 'resolved_at' "$SKD0/references/registry.md"
 
 # Retire closes escalations, resolve by id, defensive reads (DEV-367)
@@ -959,6 +970,223 @@ eq "a debrief-queue row is still found after an archive run" "$("$REG" list | jq
 export FLEET_STATE_DIR="$_cstate" FLEET_REGISTRY="$_creg"; [ -n "$_cinbox" ] && export FLEET_INBOX="$_cinbox" || unset FLEET_INBOX
 check "SKILL.md documents the registry archive" grep -q 'registry.sh archive' "$SCRIPTS/../SKILL.md"
 check "registry.md documents archive_after_days" grep -q 'archive_after_days' "$SCRIPTS/../references/registry.md"
+# ---- DEV-368 A: tell, boot delivery, signoff, reassign/next, tick ---------------------------------
+export FLEET_TELL_POLL=0.05
+cp "$FLEET_CONFIG_DIR/config.toml" "$T/config.a.bak"; printf 'tell_confirm_secs = 3\n' >>"$FLEET_CONFIG_DIR/config.toml"
+GH_DIR="$T/gh"; mkdir -p "$GH_DIR"; export GH_DIR GH_LOG="$T/gh.log" REAL_GH_LOG="$T/realgh.log"; : >"$GH_LOG"; : >"$REAL_GH_LOG"
+cat >"$T/bin/gh" <<'S'
+#!/usr/bin/env bash
+echo "$*" >>"$REAL_GH_LOG"; exit 1
+S
+cat >"$T/gh-shim" <<'S'
+#!/usr/bin/env bash
+echo "$*" >>"$GH_LOG"
+n="${3##*/}"
+[ ! -e "$GH_DIR/$n.fail" ] || { echo "HTTP 502: bad gateway" >&2; exit 1; }
+cat "$GH_DIR/$n.json"
+S
+chmod +x "$T/bin/gh" "$T/gh-shim"; export FLEET_GH="$T/gh-shim"
+ghset() { # ghset <pr number> <state> <mergeable> <rollup json> <head> <body>
+  jq -cn --arg s "$2" --arg m "$3" --argjson r "$4" --arg h "$5" --arg b "$6" --arg u "https://github.com/o/r/pull/$1" \
+    '{state: $s, mergeable: $m, statusCheckRollup: $r, headRefOid: $h, body: $b, url: $u}' >"$GH_DIR/$1.json"; rm -f "$GH_DIR/$1.fail"
+}
+GREEN='[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"}]'
+RED='[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"FAILURE"}]'
+PEND='[{"__typename":"CheckRun","status":"IN_PROGRESS","conclusion":null}]'
+H1="$(printf 'a%.0s' $(seq 1 40))"; H2="$(printf 'b%.0s' $(seq 1 40))"
+
+# Fresh registry, state dir and inbox for this block.
+_ostate="$FLEET_STATE_DIR"; _oreg="$FLEET_REGISTRY"; _oinbox="${FLEET_INBOX:-}"
+export FLEET_STATE_DIR="$T/astate" FLEET_REGISTRY="$T/astate/fleet.json" FLEET_INBOX="$T/astate/escalations.jsonl"; mkdir -p "$FLEET_STATE_DIR"
+git init -q "$T/ra"; git -C "$T/ra" remote add origin git@github.com:o/r.git
+arow() { # arow <team/role> <tier> <herdr ref> [status]
+  "$REG" add "$(jq -cn --arg n "$1" --arg t "${1%%/*}" --arg tier "$2" --arg r "$T/ra" --arg ref "$3" --arg st "${4:-Idle}" \
+    '{name: $n, team: $t, repo: $r, tier: $tier, status: $st, herdr_ref: $ref, pane: "p"}')"
+}
+evc() { printf '%s' "$1" | jq -s --arg t "$2" '[.[][]? | select(.type == $t)] | length'; }
+
+# -- tell
+arow tl/builder Worker tl-b
+rm -f "$AS"/*
+out="$("$SCRIPTS/tell.sh" tl/builder "do the thing" 2>/dev/null)"; rc=$?
+eq "tell: delivered when the agent goes working" "$rc:$(printf '%s' "$out" | jq -r .delivered)" "0:true"
+rm -f "$AS"/*; : >"$AS/tl-b.read"
+out="$(PROMPT_NOSTATE=1 PROMPT_ECHO=1 "$SCRIPTS/tell.sh" tl/builder "echoed into the transcript only" 2>/dev/null)"; rc=$?
+eq "tell: delivered when the text is echoed in the transcript" "$rc:$(printf '%s' "$out" | jq -r .delivered)" "0:true"
+rm -f "$AS"/*; printf '● earlier output\n────────\n❯ Try: ship the thing to prod next\n────────\n' >"$AS/tl-b.read"
+out="$(PROMPT_NOSTATE=1 "$SCRIPTS/tell.sh" tl/builder "Try: ship the thing to prod next" 2>/dev/null)"; rc=$?
+eq "tell: ghost text in the input box is not delivery (exit 1)" "$rc:$(printf '%s' "$out" | jq -r .delivered)" "1:false"
+rm -f "$AS"/*; : >"$HERDR_LOG"
+out="$(PROMPT_NOSTATE=1 ENTER_WORKS=1 "$SCRIPTS/tell.sh" tl/builder "needs an enter" 2>/dev/null)"; rc=$?
+eq "tell: retry once (enter) succeeds on the second poll" "$rc:$(printf '%s' "$out" | jq -r .delivered)" "0:true"
+check "tell: the retry pressed enter" grep -q '^agent send-keys tl-b enter' "$HERDR_LOG"
+rm -f "$AS"/*
+out="$(PROMPT_NOSTATE=1 "$SCRIPTS/tell.sh" tl/builder "never arrives" --no-confirm 2>/dev/null)"; rc=$?
+eq "tell: --no-confirm needs only herdr's acceptance" "$rc:$(printf '%s' "$out" | jq -r .delivered)" "0:true"
+out="$(PROMPT_FAIL=1 "$SCRIPTS/tell.sh" tl/builder "x" 2>/dev/null)"; rc=$?
+eq "tell: a send herdr rejects is exit 1" "$rc:$(printf '%s' "$out" | jq -r .delivered)" "1:false"
+export DEAD_ONCE="$T/dead_once_a"; : >"$DEAD_ONCE"
+out="$("$SCRIPTS/tell.sh" tl/builder "x" 2>/dev/null)"; rc=$?
+unset DEAD_ONCE
+eq "tell: a pane back at the shell exits 2" "$rc:$(printf '%s' "$out" | jq -r .reason)" "2:pane is a shell"
+echo gone >"$AS/tl-b"; "$SCRIPTS/tell.sh" tl/builder "x" >/dev/null 2>&1; eq "tell: an agent herdr cannot find exits 2" "$?" 2
+rm -f "$AS"/*
+check "tell: bad option fails" bash -c "! '$SCRIPTS/tell.sh' tl/builder x --bogus"
+
+# -- boot: an undelivered brief is a failure (AC4)
+: >"$HERDR_LOG"; rm -f "$AS"/*
+export FLEET_STATE_DIR="$_ostate" FLEET_REGISTRY="$_oreg"; [ -n "$_oinbox" ] && export FLEET_INBOX="$_oinbox" || unset FLEET_INBOX
+PROMPT_NOSTATE=1 "$SCRIPTS/boot.sh" build nodeliver "$T/repo" task >"$T/nd.out" 2>"$T/nd.err"; rc=$?
+eq "boot: a brief that never lands makes boot exit non-zero" "$((rc != 0))" 1
+eq "boot: no row of that team stays Working" "$("$REG" list --team build-nodeliver | jq '[.[] | select(.status == "Working")] | length')" 0
+eq "boot: every row of that team is Failed" "$("$REG" list --team build-nodeliver | jq '[.[] | select(.status == "Failed")] | length')" "$("$REG" list --team build-nodeliver | jq length)"
+check "boot: the error names the failed agents" grep -q 'not delivered to' "$T/nd.err"
+"$SCRIPTS/boot.sh" build delivered "$T/repo" task >/dev/null 2>&1; rc=$?
+eq "boot: confirmed briefs exit 0" "$rc" 0
+eq "boot: confirmed rows are Working" "$("$REG" list --team build-delivered | jq '[.[] | select(.status == "Working")] | length')" "$("$REG" list --team build-delivered | jq length)"
+export FLEET_STATE_DIR="$T/astate" FLEET_REGISTRY="$T/astate/fleet.json" FLEET_INBOX="$T/astate/escalations.jsonl"
+
+# -- signoff
+arow sg/tester Worker sg-t
+"$REG" signoff sg/tester https://github.com/o/r/pull/12 abc1234 >/dev/null
+eq "signoff: records the PR and the SHA" "$("$REG" get sg/tester | jq -c '[.pr, .signoff.pr, .signoff.sha, (.signoff.at | length > 0)]')" '["https://github.com/o/r/pull/12","https://github.com/o/r/pull/12","abc1234",true]'
+"$REG" signoff sg/tester 7 "$H1" >/dev/null
+eq "signoff: a bare number takes the repo from the origin remote" "$("$REG" get sg/tester | jq -r .pr)" https://github.com/o/r/pull/7
+check "signoff: a bad sha is refused" bash -c "! '$REG' signoff sg/tester 7 zzz"
+check "signoff: a short sha is refused" bash -c "! '$REG' signoff sg/tester 7 abc12"
+check "signoff: a non-URL, non-number PR is refused" bash -c "! '$REG' signoff sg/tester seven abc1234"
+"$REG" retire sg/tester >/dev/null
+check "signoff: a Retired row is refused" bash -c "! '$REG' signoff sg/tester 7 abc1234"
+
+# -- reassign and next
+arow tn/lead Lead tn-l; arow tn/w1 Worker tn-w1; arow tn/w2 Worker tn-w2
+for r in tn/lead tn/w1 tn/w2; do "$REG" done "$r" --outcome Shipped --summary "PR ready" >/dev/null 2>&1; "$REG" signoff "$r" https://github.com/o/r/pull/5 abc1234 >/dev/null; done
+"$REG" escalate tn/w1 P1 "old question" >/dev/null 2>&1
+"$REG" set tn/w2 lessons=learned >/dev/null
+"$REG" reassign tn DEV-9 >/dev/null
+eq "reassign: every row gets the issue and status Working" "$("$REG" list --team tn | jq -c '[.[] | [.issue, .status] | join(":")] | unique')" '["DEV-9:Working"]'
+eq "reassign: outcome, summary, PR, sign-off and lessons are cleared" "$("$REG" list --team tn | jq '[.[] | select(.outcome != null or .summary != null or .done_at != null or .pr != null or .signoff != null or .lessons != null)] | length')" 0
+eq "reassign: the open escalation is closed with the note" "$("$REG" get tn/w1 | jq -c '[.escalation, .escalations[0].resolution, (.escalations[0].resolved_at != null)]')" '["","closed at next",true]'
+check "reassign: an unknown team is refused" bash -c "! '$REG' reassign nosuchteam DEV-1"
+
+for r in tn/lead tn/w1 tn/w2; do "$REG" done "$r" --outcome Shipped --summary x >/dev/null 2>&1; done
+: >"$HERDR_LOG"; rm -f "$AS"/*; printf 'chat\n20%% context used\n' >"$AS/tn-l.read"
+"$SCRIPTS/next.sh" tn DEV-10 --brief "Work on DEV-10 now" >"$T/next.out" 2>&1; rc=$?
+eq "next: exits 0" "$rc" 0
+eq "next: each worker is told /clear" "$(grep -c '^agent prompt tn-w[12] /clear' "$HERDR_LOG")" 2
+eq "next: the lead is not compacted below the threshold" "$(grep -c '^agent prompt tn-l /compact' "$HERDR_LOG")" 0
+eq "next: the lead gets the brief" "$(grep -c '^agent prompt tn-l Work on DEV-10 now' "$HERDR_LOG")" 1
+check "next: the brief carries the fleet rules" grep -q 'Fleet rules for tn/lead' "$HERDR_LOG"
+eq "next: rows moved to the new issue" "$("$REG" list --team tn | jq -c '[.[].issue] | unique')" '["DEV-10"]'
+: >"$HERDR_LOG"; printf 'chat\n80%% context used\n' >"$AS/tn-l.read"
+"$SCRIPTS/next.sh" tn DEV-11 >/dev/null 2>&1
+eq "next: the lead is compacted above the threshold" "$(grep -c '^agent prompt tn-l /compact' "$HERDR_LOG")" 1
+eq "next: the default brief names the issue" "$(grep -c 'New issue: DEV-11' "$HERDR_LOG")" 1
+: >"$HERDR_LOG"; printf 'nothing to see\n' >"$AS/tn-l.read"
+"$SCRIPTS/next.sh" tn DEV-12 >/dev/null 2>&1
+eq "next: an unreadable context percentage compacts" "$(grep -c '^agent prompt tn-l /compact' "$HERDR_LOG")" 1
+PROMPT_FAIL=1 "$SCRIPTS/next.sh" tn DEV-13 >/dev/null 2>&1; rc=$?
+eq "next: an undelivered message exits non-zero" "$((rc != 0))" 1
+eq "next: and the row is Failed, not Working" "$("$REG" get tn/lead | jq -r .status)" Failed
+# a failed claim aborts before any row changes (linear.sh arrives in a later slice; this stub stands in for it)
+cp -R "$SCRIPTS" "$T/sc"; printf '#!/usr/bin/env bash\nexit 1\n' >"$T/sc/linear.sh"; chmod +x "$T/sc/linear.sh"
+"$REG" reassign tn DEV-20 >/dev/null; : >"$HERDR_LOG"
+"$T/sc/next.sh" tn DEV-21 >/dev/null 2>&1; rc=$?
+eq "next: a failed claim exits non-zero" "$((rc != 0))" 1
+eq "next: a failed claim leaves the old issue" "$("$REG" list --team tn | jq -c '[.[].issue] | unique')" '["DEV-20"]'
+eq "next: a failed claim sends nothing" "$(grep -c '^agent prompt' "$HERDR_LOG")" 0
+printf '#!/usr/bin/env bash\nexit 3\n' >"$T/sc/linear.sh"
+"$T/sc/next.sh" tn DEV-22 >/dev/null 2>&1; eq "next: no Linear key (exit 3) proceeds unclaimed" "$?" 0
+eq "next: without linear.sh the claim step is skipped" "$("$SCRIPTS/next.sh" tn DEV-23 >/dev/null 2>&1; echo $?)" 0
+rm -rf "$T/sc"
+
+# -- tick
+rm -f "$FLEET_STATE_DIR/tick.state.json" "$AS"/*
+export FLEET_STATE_DIR="$T/tstate" FLEET_REGISTRY="$T/tstate/fleet.json" FLEET_INBOX="$T/tstate/escalations.jsonl"; mkdir -p "$FLEET_STATE_DIR"
+arow tk/lead Lead tk-l; arow tk/builder Worker tk-b; arow tk/tester Worker tk-t
+: >"$GH_LOG"
+out="$("$SCRIPTS/tick.sh" 2>"$T/tick.err")"; rc=$?
+eq "tick: a quiet tick prints nothing" "$out" ""
+eq "tick: a quiet tick exits 0" "$rc" 0
+eq "tick: a quiet tick logs nothing" "$(wc -c <"$T/tick.err" | tr -d ' ')" 0
+eq "tick: gh is not called when no row has a PR" "$(wc -l <"$GH_LOG" | tr -d ' ')" 0
+tkr() { rm -f "$FLEET_STATE_DIR/tick.state.json"; "$SCRIPTS/tick.sh" 2>"$T/tick.err"; }
+ready() { evc "$(tkr)" pr_ready; } # fresh state each time: how many pr_ready events would this PR produce
+"$REG" signoff tk/tester https://github.com/o/r/pull/12 "${H1:0:7}" >/dev/null
+ghset 12 OPEN MERGEABLE "$GREEN" "$H1" "Closes https://linear.app/devpies/issue/DEV-1"
+eq "tick: all conditions met → ready" "$(ready)" 1
+ghset 12 OPEN CONFLICTING "$GREEN" "$H1" ok;       eq "tick: not mergeable → not ready" "$(ready)" 0
+ghset 12 OPEN MERGEABLE "$RED" "$H1" ok;           eq "tick: CI red → not ready" "$(ready)" 0
+ghset 12 OPEN MERGEABLE "$PEND" "$H1" ok;          eq "tick: CI pending → not ready" "$(ready)" 0
+ghset 12 OPEN MERGEABLE '[]' "$H1" ok;             eq "tick: no checks and repo not in no_pr_ci → not ready" "$(ready)" 0
+printf 'no_pr_ci = ["ra"]\n' >>"$FLEET_CONFIG_DIR/config.toml"
+eq "tick: no checks and repo in no_pr_ci → ready" "$(ready)" 1
+ghset 12 OPEN MERGEABLE "$GREEN" "$H2" ok;         eq "tick: sign-off SHA not the head → not ready" "$(ready)" 0
+ghset 12 CLOSED MERGEABLE "$GREEN" "$H1" ok;       eq "tick: closed PR → not ready" "$(ready)" 0
+for body in "DO NOT MERGE yet" "do not merge" "Merge order: B before C" "before/after screenshots"; do
+  ghset 12 OPEN MERGEABLE "$GREEN" "$H1" "$body";  eq "tick: body '$body' → not ready" "$(ready)" 0
+done
+ghset 12 OPEN MERGEABLE "$GREEN" "$H1" ok
+rm -f "$FLEET_STATE_DIR/tick.state.json"
+t1="$("$SCRIPTS/tick.sh" 2>/dev/null)"; t2="$("$SCRIPTS/tick.sh" 2>/dev/null)"; t3="$("$SCRIPTS/tick.sh" 2>/dev/null)"
+eq "tick: ready is emitted on the first tick" "$(evc "$t1" pr_ready)" 1
+eq "tick: and not on the second or third" "$(evc "$t2$t3" pr_ready)" 0
+eq "tick: the event carries the full PR URL" "$(printf '%s' "$t1" | jq -r '.[] | select(.type == "pr_ready") | .url')" https://github.com/o/r/pull/12
+eq "tick: the event names team and agent" "$(printf '%s' "$t1" | jq -r '.[] | select(.type == "pr_ready") | .team + " " + .name')" "tk tk/tester"
+"$REG" signoff tk/tester https://github.com/o/r/pull/12 "${H2:0:7}" >/dev/null; ghset 12 OPEN MERGEABLE "$GREEN" "$H2" ok
+eq "tick: a new head SHA re-arms ready" "$(evc "$("$SCRIPTS/tick.sh" 2>/dev/null)" pr_ready)" 1
+eq "tick: and it is then quiet again" "$("$SCRIPTS/tick.sh" 2>/dev/null)" ""
+ghset 12 MERGED UNKNOWN "$GREEN" "$H2" ok
+m1="$("$SCRIPTS/tick.sh" 2>/dev/null)"; m2="$("$SCRIPTS/tick.sh" 2>/dev/null)"
+eq "tick: a merged PR is reported" "$(evc "$m1" pr_merged)" 1
+eq "tick: once" "$(evc "$m2" pr_merged)" 0
+eq "tick: the merged event carries the URL and team" "$(printf '%s' "$m1" | jq -c '[.[] | select(.type == "pr_merged") | .url, .team]')" '["https://github.com/o/r/pull/12","tk"]'
+# gh failure: skipped, logged, never a fake "not ready" or "merged"
+rm -f "$FLEET_STATE_DIR/tick.state.json"; ghset 12 OPEN MERGEABLE "$GREEN" "$H2" ok; touch "$GH_DIR/12.fail"
+out="$("$SCRIPTS/tick.sh" 2>"$T/tick.err")"; rc=$?
+eq "tick: a gh failure emits no PR event" "$(evc "$out" pr_ready)$(evc "$out" pr_merged)" 00
+check "tick: a gh failure is logged on stderr" grep -q 'gh could not read https://github.com/o/r/pull/12' "$T/tick.err"
+eq "tick: a gh failure still exits 0" "$rc" 0
+rm -f "$GH_DIR/12.fail"
+out="$(FLEET_GH=nosuchgh "$SCRIPTS/tick.sh" 2>"$T/tick.err")"
+eq "tick: no gh at all → one warning" "$(grep -c 'not found; no PR events' "$T/tick.err")" 1
+eq "tick: no gh at all → no PR events" "$(evc "$out" pr_ready)" 0
+# escalation, once
+"$REG" escalate tk/builder P1 "which db?" >/dev/null 2>&1
+e1="$("$SCRIPTS/tick.sh" 2>/dev/null)"; e2="$("$SCRIPTS/tick.sh" 2>/dev/null)"
+eq "tick: an open escalation is reported" "$(printf '%s' "$e1" | jq -r '[.[] | select(.type == "escalation")] | .[0].message')" "which db?"
+eq "tick: once" "$(evc "$e2" escalation)" 0
+# disk
+DF_GB=10 "$SCRIPTS/tick.sh" >"$T/d1.out" 2>/dev/null; DF_GB=10 "$SCRIPTS/tick.sh" >"$T/d2.out" 2>/dev/null; DF_GB=500 "$SCRIPTS/tick.sh" >"$T/d3.out" 2>/dev/null
+eq "tick: disk below warn_free_gb is reported once" "$(evc "$(cat "$T/d1.out")" disk)$(evc "$(cat "$T/d2.out")" disk)" 10
+eq "tick: recovery is reported" "$(evc "$(cat "$T/d3.out")" disk_ok)" 1
+# repos without a team
+printf 'repos = ["ra", "rb"]\n' >>"$FLEET_CONFIG_DIR/config.toml"
+r1="$("$SCRIPTS/tick.sh" 2>/dev/null)"; r2="$("$SCRIPTS/tick.sh" 2>/dev/null)"
+eq "tick: a configured repo with no team is reported" "$(printf '%s' "$r1" | jq -r '[.[] | select(.type == "repo_without_team") | .name] | join(",")')" rb
+eq "tick: once" "$(evc "$r2" repo_without_team)" 0
+# stalled and dead, on transition
+"$REG" set tk/builder status=Working >/dev/null
+s1="$("$SCRIPTS/tick.sh" 2>/dev/null)"; s2="$("$SCRIPTS/tick.sh" 2>/dev/null)"
+eq "tick: a stalled agent is reported" "$(printf '%s' "$s1" | jq -r '[.[] | select(.type == "stalled") | .name] | join(",")')" tk/builder
+eq "tick: once" "$(evc "$s2" stalled)" 0
+echo gone >"$AS/tk-t"
+d1="$("$SCRIPTS/tick.sh" 2>/dev/null)"
+eq "tick: an agent herdr cannot find is reported dead" "$(printf '%s' "$d1" | jq -r '[.[] | select(.type == "dead") | .name] | join(",")')" tk/tester
+eq "tick: --team limits the events" "$(evc "$("$SCRIPTS/tick.sh" --team nosuch 2>/dev/null)" dead)" 0
+check "tick: bad option fails" bash -c "! '$SCRIPTS/tick.sh' --bogus"
+eq "tick: only gh shim calls were made through FLEET_GH" "$(grep -vc '^pr view https://github.com/o/r/pull/12 --json state,mergeable,statusCheckRollup,headRefOid,body,url$' "$GH_LOG" | tr -d ' ')" 0
+eq "no real gh call was made" "$(wc -l <"$REAL_GH_LOG" | tr -d ' ')" 0
+
+export FLEET_STATE_DIR="$_ostate" FLEET_REGISTRY="$_oreg"; [ -n "$_oinbox" ] && export FLEET_INBOX="$_oinbox" || unset FLEET_INBOX
+cp "$T/config.a.bak" "$FLEET_CONFIG_DIR/config.toml"; unset FLEET_TELL_POLL
+SKA="$SCRIPTS/.."
+check "SKILL.md documents tick.sh" grep -q 'tick.sh' "$SKA/SKILL.md"
+check "SKILL.md documents tell.sh and next.sh" bash -c "grep -q 'tell.sh' '$SKA/SKILL.md' && grep -q 'next.sh' '$SKA/SKILL.md'"
+check "registry.md documents signoff and pr" grep -q 'signoff' "$SKA/references/registry.md"
+check "tester brief runs signoff" grep -q 'signoff {{name}}' "$SKA/templates/build.json"
+check "orchestrator agent runs tick.sh" grep -q 'tick.sh' "$SKA/../../agents/orchestrator.md"
+check "watch.sh header says tick.sh supersedes it" grep -q 'tick.sh' "$SCRIPTS/watch.sh"
 
 # version and docs
 SK="$SCRIPTS/.."; PLUGIN="$SK/../.."

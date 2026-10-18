@@ -13,6 +13,8 @@
 #   registry.sh resolve <name> <id|at> [--note TEXT]       close one escalation (the Orchestrator does this; <id> is unique, <at> is the legacy form)
 #   registry.sh note <name> discovered TEXT                file discovered work instead of fixing it
 #   registry.sh retire <name|team> [--outcome O]           also closes the rows' open escalations ("closed at retire")
+#   registry.sh signoff <name> <pr-url|N> <sha>            the tester's sign-off: records the PR and the exact SHA verified
+#   registry.sh reassign <team> <issue>                    move a team to a new issue (next.sh): clears the old outcome, PR and sign-off
 #   registry.sh unsynced                                   rows changed since the sink last mirrored them
 #   registry.sh synced <name> [name ...]                   mark rows as mirrored
 #   registry.sh env-claim <team> <max> <cluster> [busy-slots]  atomically take the lowest free port slot
@@ -238,6 +240,39 @@ case "$cmd" in
       mv "$tmp" "$FLEET_REGISTRY"
     fi
     printf '%s\n' "$moved"
+    ;;
+  signoff)
+    name="${1:?usage: signoff <name> <pr-url|N> <sha>}"; pr="${2:?usage: signoff <name> <pr-url|N> <sha>}"; sha="${3:?usage: signoff <name> <pr-url|N> <sha>}"
+    exists "$name"
+    printf '%s' "$sha" | grep -Eq '^[0-9a-fA-F]{7,40}$' || die "sha must be 7-40 hex characters: $sha"
+    [ "$(jq -r --arg n "$name" '.agents[$n].status' "$FLEET_REGISTRY")" != "Retired" ] || die "$name is Retired; cannot sign off"
+    case "$pr" in
+      https://*/*) ;;
+      *[!0-9]* | "") die "pr must be a full PR URL or a number: $pr" ;;
+      *)
+        # A bare number: the repo comes from the git remote of the row's worktree (or repo).
+        dir="$(jq -r --arg n "$name" '.agents[$n] | (if (.worktree // "") != "" then .worktree else (.repo // "") end)' "$FLEET_REGISTRY")"
+        remote="$(git -C "$dir" remote get-url origin 2>/dev/null)" || die "cannot read the origin remote of '$dir'; pass the full PR URL"
+        slug="$(printf '%s' "$remote" | sed -E 's#^(git@|ssh://git@|https?://)([^/:]+)[:/](.+)$#\2/\3#; s#\.git$##')"
+        case "$slug" in */*/*) ;; *) die "cannot make a PR URL from remote '$remote'; pass the full PR URL" ;; esac
+        pr="https://$slug/pull/$pr" ;;
+    esac
+    update --arg n "$name" --arg pr "$pr" --arg sha "$sha" --arg t "$(now)" \
+      '.agents[$n] += {pr: $pr, signoff: {pr: $pr, sha: $sha, at: $t}, updated_at: $t}'
+    ;;
+  reassign)
+    team="${1:?usage: reassign <team> <issue>}"; issue="${2:?usage: reassign <team> <issue>}"
+    jq -e --arg t "$team" '[.agents[] | select(.team == $t and .status != "Retired" and .tier != "Orchestrator")] | length > 0' "$FLEET_REGISTRY" >/dev/null ||
+      die "no live rows for team '$team'"
+    # One update for every row: a half-moved team would be worse than an unmoved one.
+    update --arg t "$team" --arg i "$issue" --arg now "$(now)" "$DERIVE"'
+      .agents |= with_entries(
+        if .value.team == $t and .value.status != "Retired" and .value.tier != "Orchestrator" then
+          .value |= (
+            del(.outcome, .summary, .done_at, .signoff, .pr, .lessons)
+            | .escalations = [(.escalations // [])[] | if .resolved_at == null then . + {resolved_at: $now, resolution: "closed at next"} else . end]
+            | derive | .issue = $i | .status = "Working" | .updated_at = $now)
+        else . end)'
     ;;
   unsynced)
     jq '[.agents[] | select((.updated_at // "") > (.synced_at // ""))]' "$FLEET_REGISTRY"

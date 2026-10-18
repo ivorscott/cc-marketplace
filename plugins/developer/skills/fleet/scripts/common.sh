@@ -163,3 +163,34 @@ cfg_str() {
 label_prefix() { printf '%s\n' "${FLEET_LABEL_PREFIX:-$(cfg_str label_prefix 'fleet:')}"; }
 machine_key() { "$FLEET_SCRIPTS/machine-id.sh" key; }
 machine_label() { printf '%s%s\n' "$(label_prefix)" "$(machine_key)"; }
+
+# contract <name> <expertise-file>: the fleet rules appended to every brief (boot, next).
+contract() {
+  local name="$1" expertise="$2" x="" registry="$FLEET_SCRIPTS/registry.sh"
+  [ -n "$expertise" ] && x=" Before you start, read your expertise file $expertise and follow it."
+  printf '%s' "
+
+Fleet rules for $name.$x Stay on this one task. If you notice unrelated work, run \`$registry note $name discovered \"<what>\"\` instead of doing it. If you need a decision you cannot make, run \`$registry escalate $name P1 \"<question>\"\` and wait. P1 is only for a decision the user must make; \"PR ready\" goes through done, not an escalation. If you stop to wait for instructions, first run \`$registry set $name status=Idle\`. Every commit carries the trailer \`Agent: $name\`. When your part is finished: push your branch if you have one, then run \`$registry done $name --outcome <Shipped|Partial|Failed> --summary \"<one line>\"\`, then stop. Going idle without that command marks you Stalled."
+}
+
+# build_brief <name> <expertise-file> <text>: a brief plus the fleet rules.
+build_brief() { printf '%s%s' "$3" "$(contract "$1" "$2")"; }
+
+# FLEET_GH: the GitHub CLI, overridable for tests. Scripts only ever make read-only calls (pr view).
+FLEET_GH="${FLEET_GH:-gh}"
+
+# tick_state_file, tick_state: the Orchestrator tick's memory of what it already reported.
+tick_state_file() { printf '%s\n' "$FLEET_STATE_DIR/tick.state.json"; }
+tick_state() {
+  local f; f="$(tick_state_file)"
+  if [ -f "$f" ] && jq -e 'type == "object"' "$f" >/dev/null 2>&1; then cat "$f"; else printf '{}\n'; fi
+}
+tick_state_write() { # tick_state_write <json>
+  local f tmp; f="$(tick_state_file)"; mkdir -p "$(dirname "$f")"
+  tmp="$(mktemp "$f.XXXXXX")"; printf '%s\n' "$1" >"$tmp" && mv "$tmp" "$f"
+}
+
+# forge_pr_json <pr url>: read-only PR state as JSON. Fails (stderr says why) when gh can't tell.
+forge_pr_json() {
+  "$FLEET_GH" pr view "$1" --json state,mergeable,statusCheckRollup,headRefOid,body,url
+}

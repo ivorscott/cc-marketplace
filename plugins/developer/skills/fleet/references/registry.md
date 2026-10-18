@@ -23,6 +23,8 @@ restarted, compacted or replaced agent picks up from the row, not from memory.
 | `assignment` | the task it owes (the hook) |
 | `status` | Booting, Working, Needs input, Stalled, Zombie, Idle, Done, Retired |
 | `escalation`, `escalations[]` | `escalation` is derived: the highest severity among open entries, `""` when none. Each entry is `{id, severity, message, at}` (`id` is `<at compact>-<seq>`, seq the 1-based array position; entries filed before ids existed get the same derived id on read) plus `resolved_at` and `resolution` once `registry.sh resolve` closes it; `(name, id)` identifies one. Open entries survive `done`; `retire` closes them with resolution "closed at retire". A non-array `escalations` reads as empty and non-object elements are skipped |
+| `pr`, `signoff` | `registry.sh signoff <name> <PR URL or N> <sha>` (the tester) sets `pr` and `signoff = {pr, sha, at}`; `tick.sh` reads them. `registry.sh reassign <team> <issue>` (run by `next.sh`) clears `outcome`, `summary`, `done_at`, `pr`, `signoff` and `lessons`, closes open escalations with `resolution: "closed at next"`, and sets `issue` and status Working |
+| `escalation`, `escalations[]` | `escalation` is derived: the highest severity among open entries, `""` when none. Each entry is `{severity, message, at}` plus `resolved_at` and `resolution` once `registry.sh resolve` closes it; `(name, at)` identifies one. Open entries survive `done` and `retire` |
 | `discovered[]` | unrelated work the agent filed instead of doing |
 | `expertise_file` | the role's expertise file, if the repo has one |
 | `started`, `done_at`, `ended` | lifecycle timestamps (UTC) |
@@ -48,6 +50,11 @@ state dir once `lessons` is written, no escalation is open, and `archive_after_d
 default 0) have passed since `ended`. Rows without lessons stay: they are the debrief queue.
 `list` and `status` read the live file only; `get --archived <name>`, `list --with-archived` and
 `retire.sh --summary` read both.
+## Tick state
+
+`tick.state.json` in the state dir remembers what `tick.sh` already reported (statuses, escalation
+keys, `PR@sha` ready, merged PRs, disk state, repos without a team) so each event is emitted once.
+Deleting it replays the current events.
 
 ## Team environments
 

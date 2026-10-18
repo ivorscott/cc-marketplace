@@ -121,6 +121,9 @@ The Orchestrator and agents call these directly (from `scripts/`). You can call 
 | `machine-id.sh` | `id\|key\|label\|description\|show`: this machine's tracker identity, e.g. `fleet:3f9a2c1e` |
 | `status.sh` | `status.sh [--problems] [--team T] [--json] [--all [--claims FILE\|-]]` recomputes health, writes it to the registry and prints free disk first |
 | `registry.sh archive` | moves Retired rows with lessons and no open escalation to `fleet-archive.json` (`archive_after_days` in config.toml, default 0); `get --archived` and `list --with-archived` read both |
+| `tick.sh` | `tick.sh [--team T]` one JSON array of what changed since the last tick (stalled, dead, escalation, pr_ready, pr_merged, repo_without_team, disk), or nothing · reads PRs with read-only `gh pr view` through `FLEET_GH` |
+| `tell.sh` | `tell.sh <team/role> <text> [--no-confirm]` sends and checks delivery; exit 1 not delivered, 2 pane at the shell |
+| `next.sh` | `next.sh <team> <issue> [--brief TEXT]` after a merge: reassign, `/clear` workers, `/compact` a large lead, brief the lead |
 | `watch.sh` | `watch.sh [--team T] [--every SECONDS] [--once]` live monitor, polls every 20s by default; notifies on low disk |
 | `escalation-wait.sh` | `escalation-wait.sh [--timeout SECONDS] [--every SECONDS] [--from-start]` prints new inbox lines and exits; default timeout 1500s, polls every 5s |
 | `retire.sh` | `retire.sh <team\|team/role> [--outcome O]` safe teardown; `--summary <target...>` read-only pre-retire summary |
@@ -283,7 +286,8 @@ warns. Two clones that run the same team names are not caught.
 | `scripts/chat.sh` | chat channel settings and message format (never posts) |
 | `scripts/machine-id.sh` | this machine's id, key and tracker label for claims |
 | `scripts/status.sh` | health computation |
-| `scripts/watch.sh` | live monitor |
+| `scripts/watch.sh` | live monitor (humans; the Orchestrator loop uses `tick.sh`) |
+| `scripts/tick.sh`, `tell.sh`, `next.sh` | loop tick, checked delivery, moving a team to its next issue |
 | `scripts/escalation-wait.sh` | waits for new escalations in the inbox (the Orchestrator arms it in the background each tick) |
 | `scripts/retire.sh` | safe teardown: archives reports to `reports/fleet-archive/`, removes worktrees, removes the team's test cluster |
 | `scripts/env.sh` | per-team disposable test cluster, declared by the repo's `.claude/fleet-env.json` |

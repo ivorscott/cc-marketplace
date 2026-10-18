@@ -52,6 +52,7 @@ reinvent it here. This skill adds only what herdr doesn't have:
 | `status`, "how is the fleet", "what's running", "any problems" | **B. Status** |
 | `tell …`, "ask the build team to …", "reassign", "add a worker" | **C. Steer** |
 | `watch`, "keep an eye on it" | **D. Watch** |
+| a loop tick, "run the fleet" | **Tick** |
 | `escalate …` | **E. Escalate** |
 | `retire …`, "stop the race", "shut the team down" | **F. Retire** |
 | `prime`, or you have lost track after a compaction | **G. Prime** |
@@ -158,7 +159,7 @@ machine holds a claim for (registry rows with `issue` and `lease_expires`):
 2. Otherwise renew: `$F/claim.sh renew <your claim comment body>` and write the result back with
    the tracker's comment-update tool, then `$F/registry.sh set <team>/lead lease_expires=<new lease>`.
 
-Scripts cannot renew, because they never call a tracker. An Orchestrator that is not running
+Scripts cannot renew, because they never call a tracker (they call the forge, read-only, only through `FLEET_GH`; see Tick). An Orchestrator that is not running
 stops renewing, and that is exactly when a takeover is allowed. Say so when a user closes it with
 teams still running.
 
@@ -257,6 +258,26 @@ with `run_in_background: true`. It exits as soon as a new escalation lands in th
 (`escalations.jsonl` in the state dir) and prints the new lines, which re-invokes you; re-arm it
 after every wake and every tick. A persisted cursor means one filed between two arms is delivered
 by the next arm, never lost. Never rely on the tick alone: a P0/P1 must reach the user within a minute.
+
+## Tick
+
+In a loop run `$F/tick.sh` once per tick (add `--team T` to limit it). It prints a JSON array of
+what changed, or **nothing** when nothing did; a quiet tick is answered in one line. Each event
+has `type`, `team`, `name` and, where a PR exists, the full `url`. Act on each:
+
+- `pr_ready`: send ONE `PushNotification` with the full PR URL (it is emitted once per PR and head SHA).
+- `pr_merged`: run `$F/next.sh <team> <next issue> [--brief TEXT]`. It reassigns every row, sends workers
+  `/clear`, compacts the lead when its context is large, and briefs the lead.
+- `escalation`, `stalled`, `dead`, `repo_without_team`, `disk`, `disk_ok`: as in routes B, E and F.
+
+`$F/tell.sh <team/role> <text>` is how you (and boot and next) send text: it checks the message
+arrived and exits 1 (not delivered) or 2 (pane at the shell or agent gone) when it did not. Never
+treat an undelivered message as sent. The tester records the PR and the exact SHA it verified with
+`registry.sh signoff <name> <PR URL|N> <sha>`; `tick.sh` only calls a PR ready when that SHA is the PR head.
+
+Scripts now call the forge: `tick.sh` runs read-only `gh pr view` through `FLEET_GH` (default `gh`).
+A repo whose PRs have no CI is listed in `no_pr_ci = ["repo"]` in config.toml. Real-pane delivery
+checks and the lead's context percentage are UNVERIFIED against live herdr output.
 
 ## E. Escalate
 
@@ -416,6 +437,7 @@ sink failure is a one-line warning, never a reason to stop. With no sink file, s
 ## References
 
 - `scripts/claim.sh` and `scripts/chat.sh`: pure helpers for claim comments and chat lines; they never call a tracker or chat tool
+- `scripts/tick.sh`, `scripts/tell.sh`, `scripts/next.sh`: the loop tick, checked delivery and moving a team to its next issue (see Tick). `tick.sh` is the only script that calls the forge: read-only `gh pr view`, through `FLEET_GH`
 - `references/herdr-patterns.md`: the four herdr pitfalls and the safe call pattern for each
 - `references/registry.md`: row fields, the done contract, the sink format
 - `references/experts.md`: expertise files and how debrief proposes changes

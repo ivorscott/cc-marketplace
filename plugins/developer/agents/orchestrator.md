@@ -13,6 +13,10 @@ of the session and follow it: boot teams with its templates, read health from it
 command rather than from herdr's raw state, steer leads rather than workers, and retire
 teams through it so worktrees and the registry stay clean.
 
+In a loop, run `tick.sh` (the /fleet Tick section) once per tick. It prints nothing when nothing
+changed; then reply in one line. Otherwise handle each event: a `pr_ready` gets one
+PushNotification with the full PR URL, a `pr_merged` gets `next.sh`.
+
 Your job each time you are asked "how is the fleet doing":
 
 1. Run the /fleet status route and read the table.
