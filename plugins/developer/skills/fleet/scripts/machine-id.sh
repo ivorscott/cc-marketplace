@@ -11,6 +11,11 @@
 # Id sources, first valid one wins (>= 8 hex characters, not all zeros or all F):
 # a stored random id, then macOS ioreg, Linux /etc/machine-id and the dbus copy, Windows
 # powershell then wmic, and last a random id stored under $FLEET_STATE_DIR (or the config dir).
+#
+# Cloned machine id: a cloned VM or restored disk copies /etc/machine-id (or the stored
+# machine-id file), so two machines share one key and claims cannot tell them apart. Give a
+# clone its own key with FLEET_MACHINE=<unique>, or delete the stored file and regenerate the OS
+# id. `status.sh --all` flags a claim with this key and no local team (best effort).
 set -uo pipefail
 . "$(dirname "$0")/common.sh"
 

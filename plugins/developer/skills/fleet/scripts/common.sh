@@ -57,6 +57,10 @@ permission_mode() {
 min_free_gb() { cfg_int min_free_gb 40; }
 warn_free_gb() { cfg_int warn_free_gb 75; }
 
+# lease_hours: how long a claim lease runs, and how long without PR activity before a lapsed
+# lease can be taken over (default 2).
+lease_hours() { cfg_int lease_hours 2; }
+
 # free_gb: whole GiB free on the volume holding the fleet worktrees (the nearest existing
 # ancestor of $FLEET_WORKTREES). Prints nothing and returns 1 when df can't tell.
 free_gb() {

@@ -625,19 +625,137 @@ eq "boot: the scope repo defaults to the repo-dir name" "$("$REG" get build-ovk/
 bt --issue DEV-12 build iss1 "$T/plain" t
 eq "status: the ISSUE column appears once a row has an issue" "$(DF_GB=100 "$SCRIPTS/status.sh" --team build-iss1 2>/dev/null | sed -n 2p | grep -c ISSUE)" 1
 
+# claim.sh: the claim comment, parse, renew, lease, expired
+CL="$SCRIPTS/claim.sh"
+eq "claim line: exact output" "$("$CL" line --machine 3f9a2c1e --team build-d --at 2026-10-18T09:00:00Z --scope 'platform: deploy/local, scripts/local.sh')" \
+  "$(printf 'fleet-claim: machine=3f9a2c1e team=build-d at=2026-10-18T09:00:00Z lease=2026-10-18T11:00:00Z\nscope: platform: deploy/local, scripts/local.sh')"
+eq "claim line: name and lease-hours" "$("$CL" line --machine 3f9a2c1e --name 'Mac 1' --team build-d --at 2026-10-18T09:00:00Z --lease-hours 3 --scope platform | head -1)" \
+  'fleet-claim: machine=3f9a2c1e name="Mac 1" team=build-d at=2026-10-18T09:00:00Z lease=2026-10-18T12:00:00Z'
+eq "claim line: takeover names the voided comment" "$("$CL" line --machine 3f9a2c1e --team build-d --at 2026-10-18T09:00:00Z --scope platform --takeover-from 9b1d4e07 --takeover-team build-o --takeover-of-comment cmt-1 --previous-lease 2026-10-18T08:00:00Z | tail -1)" \
+  'takeover: from=9b1d4e07 team=build-o comment=cmt-1 at=2026-10-18T09:00:00Z previous-lease=2026-10-18T08:00:00Z reason=expired'
+eq "claim line: a takeover without the comment id dies" "$("$CL" line --machine a --team t --scope p --takeover-from b >/dev/null 2>&1; echo $?)" 1
+BODY1="$("$CL" line --machine 3f9a2c1e --name 'Mac 1' --team build-d --at 2026-10-18T09:00:00Z --scope 'platform: a/b, c')"
+BODY2="$("$CL" line --machine 9b1d4e07 --team build-o --at 2026-10-18T07:00:00Z --scope zeta --takeover-from 11111111 --takeover-team build-p --takeover-of-comment c0 --previous-lease 2026-10-18T06:00:00Z)"
+P="$(jq -cn --arg a "$BODY1" --arg b "$BODY2" '[{id:"c1",issue:"DEV-9",createdAt:"2026-10-18T09:00:01Z",updatedAt:"2026-10-18T09:00:01Z",body:$a},{id:"c2",body:"just a comment"},{id:"c3",body:$b}]' | "$CL" parse)"
+eq "claim parse: skips comments that are not claims" "$(printf '%s' "$P" | jq length)" 2
+eq "claim parse: fields" "$(printf '%s' "$P" | jq -r '.[0] | [.id, .issue, .machine, .name, .team, .at, .lease, .scope.repo, (.scope.paths | join("|")), .created_at] | join(",")')" \
+  "c1,DEV-9,3f9a2c1e,Mac 1,build-d,2026-10-18T09:00:00Z,2026-10-18T11:00:00Z,platform,a/b|c,2026-10-18T09:00:01Z"
+eq "claim parse: takeover_of_comment" "$(printf '%s' "$P" | jq -r '.[1] | [.takeover_from, .takeover_of_comment, .takeover_previous_lease, .scope.repo, (.scope.paths | length)] | join(",")')" "11111111,c0,2026-10-18T06:00:00Z,zeta,0"
+eq "claim parse: no takeover is null" "$(printf '%s' "$P" | jq -r '.[0].takeover_of_comment')" null
+R="$("$CL" renew --now 2026-10-18T10:30:00Z "$BODY2")"
+eq "claim renew: only lease= changes" "$(diff <(printf '%s\n' "$BODY2") <(printf '%s\n' "$R") | grep -c '^[<>]')" 2
+eq "claim renew: new lease is now + lease_hours" "$(printf '%s' "$R" | head -1 | sed 's/.*lease=//')" 2026-10-18T12:30:00Z
+eq "claim renew: keeps the takeover line" "$(printf '%s' "$R" | grep -c '^takeover:')" 1
+eq "claim renew: a non-claim body dies" "$("$CL" renew --now 2026-10-18T10:30:00Z 'hello' >/dev/null 2>&1; echo $?)" 1
+eq "claim lease: now + 2h by default" "$("$CL" lease --now 2026-10-18T10:00:00Z)" 2026-10-18T12:00:00Z
+L=2026-10-18T11:00:00Z
+"$CL" expired --lease $L --now 2026-10-18T10:59:59Z 2>"$T/ex.err"; eq "claim expired: a live lease is not takeable" "$?" 1
+check "claim expired: the reason names the lease" grep -q 'lease is live until 2026-10-18T11:00:00Z' "$T/ex.err"
+"$CL" expired --lease $L --now 2026-10-18T11:00:00Z 2>/dev/null; eq "claim expired: the expiry second itself is still live" "$?" 1
+"$CL" expired --lease $L --now 2026-10-18T11:00:01Z; eq "claim expired: lapsed, no activity given" "$?" 0
+"$CL" expired --lease $L --now 2026-10-18T13:30:00Z --last-activity 2026-10-18T12:00:00Z 2>"$T/ex.err"; eq "claim expired: lapsed but recent PR activity" "$?" 1
+check "claim expired: the reason names the activity" grep -q 'PR activity at 2026-10-18T12:00:00Z' "$T/ex.err"
+"$CL" expired --lease $L --now 2026-10-18T13:30:00Z --last-activity 2026-10-18T10:00:00Z; eq "claim expired: lapsed with old activity" "$?" 0
+echo 'lease_hours = 4' >>"$FLEET_CONFIG_DIR/config.toml"
+"$CL" expired --lease $L --now 2026-10-18T13:30:00Z --last-activity 2026-10-18T10:00:00Z 2>/dev/null; eq "claim expired: lease_hours from config widens the activity window" "$?" 1
+eq "claim lease: lease_hours from config" "$("$CL" lease --now 2026-10-18T10:00:00Z)" 2026-10-18T14:00:00Z
+cp "$T/config.bak2" "$FLEET_CONFIG_DIR/config.toml"
+eq "claim expired: a bad time dies" "$("$CL" expired --lease nope >/dev/null 2>&1; echo $?)" 1
+
+# boot: takeover of a lapsed claim
+OLD=2026-10-18T08:00:00Z
+bt --issue DEV-20 --claimed-by test --takeover-of 9b1d4e07 --labels fleet:9b1d4e07 build tk1 "$T/plain" t
+check "boot takeover: a missing lease refuses" grep -q 'DEV-20 is claimed by fleet:9b1d4e07; no --lease-expires given. Not taking over' "$T/bt.err"
+FLEET_NOW=2026-10-18T07:00:00Z bt --issue DEV-20 --claimed-by test --takeover-of 9b1d4e07 --lease-expires $OLD --labels fleet:9b1d4e07 build tk2 "$T/plain" t
+check "boot takeover: a live lease refuses and names it" grep -q 'lease is live until 2026-10-18T08:00:00Z.*Not taking over' "$T/bt.err"
+eq "boot takeover: a refusal adds no rows" "$(rows_of build-tk2)" 0
+FLEET_FORCE=1 FLEET_NOW=2026-10-18T07:00:00Z bt --issue DEV-20 --claimed-by test --takeover-of 9b1d4e07 --lease-expires $OLD --labels fleet:9b1d4e07 build tk3 "$T/plain" t
+eq "boot takeover: FLEET_FORCE=1 does not bypass a live lease" "$BTRC" 1
+FLEET_NOW=2026-10-18T11:00:00Z bt --issue DEV-20 --claimed-by test --takeover-of 9b1d4e07 --lease-expires $OLD --last-activity 2026-10-18T10:30:00Z --labels fleet:9b1d4e07 build tk4 "$T/plain" t
+check "boot takeover: recent PR activity refuses" grep -q 'PR activity at 2026-10-18T10:30:00Z.*Not taking over' "$T/bt.err"
+FLEET_NOW=2026-10-18T11:00:00Z bt --issue DEV-20 --claimed-by test --takeover-of 9b1d4e07 --lease-expires $OLD --last-activity 2026-10-18T08:30:00Z --labels fleet:9b1d4e07,kind:ops build tk5 "$T/plain" t
+eq "boot takeover: an expired lease boots" "$BTRC" 0
+eq "boot takeover: the row records takeover_of and the new lease" "$("$REG" get build-tk5/builder | jq -r '[.issue, .claimed_by, .takeover_of, .lease_expires] | join(",")')" "DEV-20,test,9b1d4e07,2026-10-18T13:00:00Z"
+FLEET_NOW=2026-10-18T11:00:00Z bt --issue DEV-20 --claimed-by test --takeover-of 9b1d4e07 --lease-expires $OLD --labels fleet:5555aaaa build tk6 "$T/plain" t
+check "boot takeover: a label of a third machine refuses" grep -q 'DEV-20 is claimed by fleet:5555aaaa' "$T/bt.err"
+FLEET_NOW=2026-10-18T11:00:00Z bt --issue DEV-20 --claimed-by 9b1d4e07 --takeover-of 5555aaaa --lease-expires $OLD build tk7 "$T/plain" t
+check "boot takeover: --claimed-by must be this machine" grep -q 'DEV-20 is claimed by fleet:9b1d4e07; this machine is fleet:test' "$T/bt.err"
+FLEET_NOW=2026-10-18T11:00:00Z bt --issue DEV-20 --claimed-by test --takeover-of test --lease-expires $OLD build tk8 "$T/plain" t
+check "boot takeover: taking over from this machine refuses" grep -q 'names this machine' "$T/bt.err"
+FLEET_FORCE=1 bt --issue DEV-20 --labels fleet:9b1d4e07 --claimed-by test build tk9 "$T/plain" t
+eq "boot takeover: FLEET_FORCE=1 does not bypass a foreign label without --takeover-of" "$BTRC" 1
+bt --lease-expires $OLD build tk10 "$T/plain" t; eq "boot takeover: --lease-expires without --takeover-of refuses" "$BTRC" 1
+FLEET_LABEL_PREFIX='ops/' FLEET_NOW=2026-10-18T11:00:00Z bt --issue DEV-21 --claimed-by test --takeover-of 9b1d4e07 --lease-expires $OLD --labels ops/9b1d4e07 build tk11 "$T/plain" t
+eq "boot takeover: a custom label_prefix works" "$BTRC" 0
+echo 'machine_legacy_label = "fleet:mac1"' >>"$FLEET_CONFIG_DIR/config.toml"
+FLEET_NOW=2026-10-18T11:00:00Z bt --issue DEV-22 --claimed-by test --takeover-of fleet:mac1 --lease-expires $OLD --labels fleet:test build tk12 "$T/plain" t
+check "boot takeover: the legacy label is this machine, nothing to take over" grep -q 'names this machine' "$T/bt.err"
+cp "$T/config.bak2" "$FLEET_CONFIG_DIR/config.toml"
+eq "boot: a new claim's row carries lease_expires" "$("$REG" get build-own1/builder | jq -r '.lease_expires | type')" string
+
+# status --all
+CF="$T/claims.json"
+jq -cn --arg a "$BODY1" --arg b "$("$CL" line --machine test --team build-ghost --at 2026-10-18T09:00:00Z --scope zeta)" --arg c "$("$CL" line --machine test --team build-own1 --at 2026-10-18T09:00:00Z --scope zeta)" \
+  '[{id:"c1",issue:"DEV-9",body:$a},{id:"c4",body:$b},{id:"c5",body:$c}]' | "$CL" parse >"$CF"
+FLEET_NOW=2026-10-18T10:00:00Z DF_GB=100 "$SCRIPTS/status.sh" --all --claims "$CF" --team build-own1 >"$T/all.out" 2>"$T/all.err"
+check "status --all: MACHINE and LEASE columns" grep -q 'MACHINE *LEASE' "$T/all.out"
+check "status --all: a tracker row shows the machine with its name and the lease" grep -Eq 'build-d .*Claimed .*DEV-9 .*3f9a2c1e \(Mac 1\) .*2026-10-18T11:00:00Z' "$T/all.out"
+check "status --all: the local team is a registry row on this machine" grep -Eq '^build-own1/builder .*test' "$T/all.out"
+check "status --all: a claim of this key with no local team is flagged" grep -Eq 'build-ghost .*SAME KEY\?' "$T/all.out"
+check "status --all: the warning names the team and machine-id.sh" grep -q 'claim for build-ghost carries this machine.s key (test) but no local team: cloned machine id? (see machine-id.sh)' "$T/all.err"
+eq "status --all: this machine's own claim for a local team is not duplicated" "$(grep -c 'c5\|build-own1 ' "$T/all.out")" 0
+FLEET_NOW=2026-10-18T12:00:00Z DF_GB=100 "$SCRIPTS/status.sh" --all --claims "$CF" >"$T/all2.out" 2>/dev/null; check "status --all: a lapsed lease is shown" grep -q 'Claimed (lease lapsed)' "$T/all2.out"
+eq "status --all: the footer stays last" "$(DF_GB=100 "$SCRIPTS/status.sh" --all --claims "$CF" --team build-nope 2>/dev/null | tail -1)" "machine: fleet:test"
+DF_GB=100 "$SCRIPTS/status.sh" --all --team build-own1 >"$T/all3.out" 2>/dev/null; check "status --all without claims says so" grep -q '^peer claims: not provided' "$T/all3.out"
+eq "status --all --json: bare array with machine and source" "$(DF_GB=100 "$SCRIPTS/status.sh" --all --json --claims "$CF" --team build-own1 2>/dev/null | jq -c '[.[] | [.source, .machine]] | unique')" '[["registry","test"],["tracker","3f9a2c1e"],["tracker","test"]]'
+cat "$CF" | DF_GB=100 "$SCRIPTS/status.sh" --all --json --claims - --team build-own1 2>/dev/null | jq -e 'type == "array"' >/dev/null; eq "status --all: --claims - reads stdin" "$?" 0
+eq "status --claims without --all dies" "$("$SCRIPTS/status.sh" --claims "$CF" >/dev/null 2>&1; echo $?)" 1
+eq "status --all: an unreadable claims file dies" "$(DF_GB=100 "$SCRIPTS/status.sh" --all --claims "$T/none.json" >/dev/null 2>&1; echo $?)" 1
+echo '{}' >"$T/bad.json"; eq "status --all: claims that are not an array die" "$(DF_GB=100 "$SCRIPTS/status.sh" --all --claims "$T/bad.json" >/dev/null 2>&1; echo $?)" 1
+eq "status without --all has no MACHINE column" "$(DF_GB=100 "$SCRIPTS/status.sh" --team build-own1 2>/dev/null | grep -c MACHINE)" 0
+
+# chat.sh: settings and format only, never the network
+CH="$SCRIPTS/chat.sh"
+eq "chat channel: empty when unset" "$("$CH" channel)" ""
+eq "chat allow: [] when unset" "$("$CH" allow)" "[]"
+printf 'chat_channel = "#fleet"\nchat_allow = ["chat__send", "chat__read"]\n' >>"$FLEET_CONFIG_DIR/config.toml"
+eq "chat channel: from config" "$("$CH" channel)" "#fleet"
+eq "chat allow: the list from config" "$("$CH" allow)" '["chat__send","chat__read"]'
+eq "chat format: one stable line" "$("$CH" format claim DEV-317 build-d lease=2026-10-18T11:00:00Z)" "fleet[test] claim DEV-317 build-d lease=2026-10-18T11:00:00Z"
+eq "chat format: every event" "$(for e in claim pr merge escalation takeover rebase; do "$CH" format $e x; done | wc -l | tr -d ' ')" 6
+eq "chat format: an unknown event dies" "$("$CH" format nope >/dev/null 2>&1; echo $?)" 1
+cp "$T/config.bak2" "$FLEET_CONFIG_DIR/config.toml"
+cat >"$T/bin/curl" <<'S'
+#!/usr/bin/env bash
+echo "curl $*" >>"$NETLOG"; exit 1
+S
+chmod +x "$T/bin/curl"; export NETLOG="$T/net.log"; : >"$NETLOG"
+"$CH" format claim DEV-1 >/dev/null; "$CH" channel >/dev/null; "$CL" lease >/dev/null
+eq "chat.sh and claim.sh never touch the network" "$(wc -l <"$NETLOG" | tr -d ' ')" 0
+check "no script calls a chat or tracker tool" test -z "$(grep -lE 'slack|curl|linear|gh ' "$CH" "$CL")"
+eq "boot adds no chat_allow to agent settings" "$(grep -c chat_allow "$SCRIPTS/boot.sh")" 0
+
 # docs
 SKD="$SCRIPTS/.."
 for k in label_prefix machine_name machine_legacy_label claimed-by; do
   check "SKILL.md mentions $k" grep -q -- "$k" "$SKD/SKILL.md"
 done
 for k in label_prefix machine_name machine_legacy_label; do check "fleet README mentions $k" grep -q "$k" "$SKD/README.md"; done
-for k in leases Slack 'status --all'; do check "SKILL.md lists the follow-up: $k" grep -q "$k" "$SKD/SKILL.md"; done
+for k in lease_hours chat_channel chat_allow 'status --all' --takeover-of claim.sh chat.sh; do check "SKILL.md documents $k" grep -q -- "$k" "$SKD/SKILL.md"; done
+check "SKILL.md no longer lists the follow-ups as not yet done" test -z "$(grep 'Not yet' "$SKD/SKILL.md")"
+for k in lease_hours chat_channel chat_allow claim.sh chat.sh 'status --all'; do check "README documents $k" grep -q -- "$k" "$SKD/README.md"; done
+check "README tracker_allow example omits save_issue_label" test -z "$(grep -E 'tracker_allow.*save_issue_label' "$SKD/README.md")"
+check "README documents the cloned machine id risk" grep -qi 'cloned' "$SKD/README.md"
+check "machine-id.sh documents the cloned machine id risk" grep -qi 'cloned' "$SCRIPTS/machine-id.sh"
+check "registry.md documents the cloned machine id risk" grep -qi 'cloned' "$SKD/references/registry.md"
+check "SKILL.md says the tracker has no compare-and-swap" grep -q 'compare-and-swap' "$SKD/SKILL.md"
+check "SKILL.md: the heartbeat does not renew a voided claim" grep -qi 'must not renew' "$SKD/SKILL.md"
 check "registry.md documents the claim fields" grep -q 'claimed_by' "$SKD/references/registry.md"
 
 # version and docs
 SK="$SCRIPTS/.."; PLUGIN="$SK/../.."
-eq "plugin.json version" "$(jq -r .version "$PLUGIN/.claude-plugin/plugin.json")" 3.5.1
-eq "marketplace.json developer version" "$(jq -r '.plugins[] | select(.name == "developer") | .version' "$PLUGIN/../../.claude-plugin/marketplace.json")" 3.5.1
+eq "plugin.json version" "$(jq -r .version "$PLUGIN/.claude-plugin/plugin.json")" 3.6.0
+eq "marketplace.json developer version" "$(jq -r '.plugins[] | select(.name == "developer") | .version' "$PLUGIN/../../.claude-plugin/marketplace.json")" 3.6.0
 for k in min_free_gb warn_free_gb fleet-archive; do
   check "SKILL.md mentions $k" grep -q "$k" "$SK/SKILL.md"; check "README mentions $k" grep -q "$k" "$SK/README.md"
 done

@@ -30,6 +30,14 @@
 # Boot refuses an issue claimed by another machine (FLEET_FORCE=1 does not bypass it), and warns
 # when the declared scope overlaps a live claim in the same repo.
 #
+# Takeover (see SKILL.md, "Takeover"): a claim whose lease has lapsed can be taken over.
+#   --takeover-of KEY      the holder being replaced; --claimed-by must be this machine
+#   --lease-expires ISO    that holder's lease, as read from its claim comment
+#   --last-activity ISO    the last activity on the issue's PR, if there is one
+# Boot accepts the takeover only when claim.sh expired agrees: the lease is past and there was
+# no PR activity within lease_hours. A missing lease, a live lease or recent activity refuse.
+# FLEET_FORCE=1 never bypasses this. The clock is FLEET_NOW when set (tests), else now.
+#
 # Env: FLEET_SESSION (named herdr session, for isolated runs), FLEET_FORCE=1 (ignore
 # max_agents and min_free_gb), FLEET_MACHINE (replaces this machine's key, see machine-id.sh),
 # FLEET_LABEL_PREFIX (claim label prefix, default "fleet:").
@@ -38,13 +46,16 @@ set -euo pipefail
 require_herdr
 need git
 
-issue=""; claimed_by=""; labels=""; scope_arg=""; peers=()
+issue=""; claimed_by=""; labels=""; scope_arg=""; peers=(); takeover_of=""; lease_expires=""; last_activity=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --issue) issue="${2:?--issue needs a value}"; shift 2 ;;
     --claimed-by) claimed_by="${2:?--claimed-by needs a value}"; shift 2 ;;
     --labels) labels="${2:?--labels needs a value}"; shift 2 ;;
     --scope) scope_arg="${2:?--scope needs a value}"; shift 2 ;;
+    --takeover-of) takeover_of="${2:?--takeover-of needs a value}"; shift 2 ;;
+    --lease-expires) lease_expires="${2:?--lease-expires needs a value}"; shift 2 ;;
+    --last-activity) last_activity="${2:?--last-activity needs a value}"; shift 2 ;;
     --peer-claim) peers+=("${2:?--peer-claim needs a value}"); shift 2 ;;
     -*) die "unknown option: $1" ;;
     *) break ;;
@@ -81,7 +92,18 @@ parse_scope() { # parse_scope <'repo: p1, p2'> → {repo, paths[]}; the repo def
 prefix="$(label_prefix)"; my_label="$(machine_label)"; legacy_label="$(cfg_str machine_legacy_label '')"
 is_mine() { [ "$1" = "$my_label" ] || { [ -n "$legacy_label" ] && [ "$1" = "$legacy_label" ]; }; }
 claim_label() { case "$1" in "$prefix"*) printf '%s' "$1" ;; *) printf '%s%s' "$prefix" "$1" ;; esac; }
+[ -z "$takeover_of" ] || [ -n "$issue" ] || die "--takeover-of needs --issue"
+[ -z "$lease_expires$last_activity" ] || [ -n "$takeover_of" ] || die "--lease-expires and --last-activity belong with --takeover-of"
 if [ -n "$issue" ]; then
+  if [ -n "$takeover_of" ]; then
+    old_label="$(claim_label "$takeover_of")"
+    ! is_mine "$old_label" || die "--takeover-of names this machine ($my_label); nothing to take over"
+    [ -n "$claimed_by" ] || die "a takeover needs --claimed-by (this machine's key)"
+    [ -n "$lease_expires" ] || die "$issue is claimed by $old_label; no --lease-expires given. Not taking over"
+    expired_args=(expired --lease "$lease_expires" --now "${FLEET_NOW:-$(now)}")
+    [ -z "$last_activity" ] || expired_args+=(--last-activity "$last_activity")
+    why="$("$FLEET_SCRIPTS/claim.sh" "${expired_args[@]}" 2>&1)" || die "$issue is claimed by $old_label ($why). Not taking over"
+  fi
   if [ -n "$claimed_by" ]; then
     holder="$(claim_label "$claimed_by")"
     is_mine "$holder" || die "$issue is claimed by $holder; this machine is $my_label. Not booting"
@@ -91,10 +113,12 @@ if [ -n "$issue" ]; then
     IFS=',' read -r -a label_list <<<"$labels"
     for l in ${label_list[@]+"${label_list[@]}"}; do
       l="$(trim "$l")"
-      case "$l" in "$prefix"*) is_mine "$l" || die "$issue is claimed by $l; this machine is $my_label. Not booting" ;; esac
+      case "$l" in "$prefix"*) is_mine "$l" || { [ -n "$takeover_of" ] && [ "$l" = "$old_label" ]; } || die "$issue is claimed by $l; this machine is $my_label. Not booting" ;; esac
     done
   fi
 fi
+lease_new=""
+[ -z "$issue" ] || [ -z "$claimed_by" ] || lease_new="$("$FLEET_SCRIPTS/claim.sh" lease --now "${FLEET_NOW:-$(now)}")"
 scope_json=null
 if [ -n "$scope_arg" ]; then
   scope_json="$(parse_scope "$scope_arg")"
@@ -272,11 +296,13 @@ row() { # row <name> <tier> <agent> <pane> <kind> <model> <status> <cwd> <worktr
   jq -cn --arg name "$1" --arg tier "$2" --arg ref "$3" --arg pane "$4" --arg harness "$5" --arg model "$6" \
     --arg status "$7" --arg cwd "$8" --arg wt "$9" --arg br "${10}" --arg ex "${11}" \
     --arg team "$team" --arg tpl "$template" --arg repo "$repo" --arg task "$task" --arg m "$machine" --arg ws "$workspace" \
-    --arg issue "$issue" --arg cb "$claimed_by" --argjson scope "$scope_json" \
+    --arg issue "$issue" --arg cb "$claimed_by" --argjson scope "$scope_json" --arg lease "$lease_new" --arg toof "$takeover_of" \
     '{name: $name, team: $team, tier: $tier, template: $tpl, harness: $harness, model: $model, repo: $repo,
       machine: $m, status: $status, assignment: $task, herdr_ref: $ref, pane: $pane, workspace: $ws,
       cwd: $cwd, worktree: $wt, branch: $br, expertise_file: $ex}
     + (if $issue != "" then {issue: $issue, claimed_by: $cb} else {} end)
+    + (if $lease != "" then {lease_expires: $lease} else {} end)
+    + (if $toof != "" then {takeover_of: $toof} else {} end)
     + (if $scope != null then {scope: $scope} else {} end)'
 }
 
