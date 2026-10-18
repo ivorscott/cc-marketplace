@@ -64,7 +64,7 @@ This skill builds the rest on top of it.
 | `/fleet status [--problems] [--team T] [--json] [--all]` | Shows each live agent's health (see below) and its team's test cluster, under a disk line (free GiB, `LOW` below `warn_free_gb`). `--problems` lists only agents that need you, `--team` limits it to one team, `--json` gives machine-readable output. `--all` adds one row per claim other machines hold, with a MACHINE and a LEASE column (Linear only; see "Several machines") |
 | `/fleet tell <team\|agent> <msg>` | Sends a message to the team's lead, or to one agent if you name it, then quotes a line of its reply so you know it arrived |
 | `/fleet watch [--team T]` | Opens a monitor pane beside yours that raises a herdr notification whenever an agent stalls, dies, needs input or finishes, or free disk drops below `warn_free_gb` |
-| `/fleet escalate <P0\|P1\|P2> <msg>` | Raises a question by severity. The Orchestrator answers P2 itself, brings P1 to you with a recommendation, and stops for P0 and brings it to you immediately (a P0 in a race pauses the race) |
+| `/fleet escalate <P0\|P1\|P2> <msg>` | Raises a question by severity (also appended to the escalation inbox, which `escalation-wait.sh` delivers to the Orchestrator within seconds). It stays open until the Orchestrator runs `registry.sh resolve`. The Orchestrator answers P2 itself, brings P1 to you with a recommendation, and stops for P0 and brings it to you immediately (a P0 in a race pauses the race) |
 | `/fleet retire <team\|team/role> [--outcome O]` | Shuts down a whole team or a single agent. Live agents are asked to push their work first, then only the fleet's own panes are closed, worktrees are removed (build outputs ignored, untracked reports copied to `reports/fleet-archive/<team>-<role>/`; one with unpushed commits, untracked source or uncommitted edits is kept and the files or commits named), and the team's test cluster and images are deleted. `O` is `Shipped`, `Won race`, `Partial`, `Abandoned` or `Failed` |
 | `/fleet prime` | Rebuilds the Orchestrator's picture of the fleet from the registry (which teams exist, who is doing what, what needs attention). Use it after a context compaction or in a new session |
 | `/fleet debrief` | For each retired team: records one or two lessons per agent and *proposes* (never applies) diffs to `.claude/experts/<role>.md` and to the template, plus a list of discovered follow-up work |
@@ -121,9 +121,10 @@ The Orchestrator and agents call these directly (from `scripts/`). You can call 
 | `machine-id.sh` | `id\|key\|label\|description\|show`: this machine's tracker identity, e.g. `fleet:3f9a2c1e` |
 | `status.sh` | `status.sh [--problems] [--team T] [--json] [--all [--claims FILE\|-]]` recomputes health, writes it to the registry and prints free disk first |
 | `watch.sh` | `watch.sh [--team T] [--every SECONDS] [--once]` live monitor, polls every 20s by default; notifies on low disk |
+| `escalation-wait.sh` | `escalation-wait.sh [--timeout SECONDS] [--every SECONDS] [--from-start]` prints new inbox lines and exits; default timeout 1500s, polls every 5s |
 | `retire.sh` | `retire.sh <team\|team/role> [--outcome O]` safe teardown; `--summary <target...>` read-only pre-retire summary |
 | `env.sh` | `up [--branch B] <team>` creates the team's cluster (exit 75 = queued at `max_envs`) · `down <team>` removes it, with its images and builder · `status` lists every env |
-| `registry.sh` | `add '<json>'` · `set <name> key=value…` · `get <name>` · `list [--team T] [--live] [--problems]` · `list --envs` · `done <name> --outcome O --summary TEXT` · `escalate <name> P0\|P1\|P2 TEXT` · `note <name> discovered TEXT` · `retire <name\|team> [--outcome O]` · `unsynced` · `synced <name…>` · `path` |
+| `registry.sh` | `add '<json>'` · `set <name> key=value…` · `get <name>` · `list [--team T] [--live] [--problems]` · `list --envs` · `done <name> --outcome O --summary TEXT` · `escalate <name> P0\|P1\|P2 TEXT` · `escalations [--open] [--team T]` · `resolve <name> <at> [--note TEXT]` · `note <name> discovered TEXT` · `retire <name\|team> [--outcome O]` · `unsynced` · `synced <name…>` · `path` |
 
 ## Requirements
 
@@ -282,6 +283,7 @@ warns. Two clones that run the same team names are not caught.
 | `scripts/machine-id.sh` | this machine's id, key and tracker label for claims |
 | `scripts/status.sh` | health computation |
 | `scripts/watch.sh` | live monitor |
+| `scripts/escalation-wait.sh` | waits for new escalations in the inbox (the Orchestrator arms it in the background each tick) |
 | `scripts/retire.sh` | safe teardown: archives reports to `reports/fleet-archive/`, removes worktrees, removes the team's test cluster |
 | `scripts/env.sh` | per-team disposable test cluster, declared by the repo's `.claude/fleet-env.json` |
 | `scripts/test/run.sh` | offline tests (stub `up`/`down`, docker, df and herdr; no kind, no live fleet) |

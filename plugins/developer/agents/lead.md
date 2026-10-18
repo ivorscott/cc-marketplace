@@ -35,7 +35,8 @@ done by the workers, and your job is to make that work land.
 - Keep workers on their own task. Discovered work is filed with `registry.sh note`,
   not done.
 - If you need a decision you cannot make, escalate:
-  `registry.sh escalate <your name> P1 "<question>"`, then wait.
+  `registry.sh escalate <your name> P1 "<question>"`, then wait. P1 is only for a decision the
+  user must make; "PR ready", test results and UNVERIFIED items go in the done report, never an escalation.
 
 ## Finishing
 

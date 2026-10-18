@@ -8,6 +8,9 @@
 # warn_free_gb in config.toml) and ends with a machine line (fleet:<key>, plus machine_name
 # when set). --json is the bare array of agents, without either.
 #
+# Open escalations are listed after the table, Done and Retired agents included: an
+# escalation stays open until the Orchestrator runs `registry.sh resolve`.
+#
 # --all adds the other machines: one row per claim in the JSON that `claim.sh parse` printed
 # (--claims FILE, or - for stdin), which the Orchestrator builds from the claim comments on
 # the tracker. Peers are never probed; their rows show Claimed, the lease and the scope. The
@@ -136,6 +139,12 @@ printf '%s' "$out" | jq -r --argjson all "$all" --arg mykey "$mykey" --arg mynam
     + (if $all then [mcell, (.lease_expires // "-")] else [] end)
     + [.herdr_ref, ((.assignment // "")[0:50])] | @tsv)' |
   column -t -s $'\t'
+open_esc="$("$registry" escalations --open ${team:+--team "$team"})"
+if [ "$(printf '%s' "$open_esc" | jq length)" != 0 ]; then
+  echo "open escalations:"
+  printf '%s' "$open_esc" | jq -r --arg now "${FLEET_NOW:-$(now)}" '.[] | [.name, .severity, .at,
+    ((($now | fromdateiso8601) - (.at | fromdateiso8601)) / 60 | floor | tostring + "m ago"), (.message | .[0:80])] | @tsv' | column -t -s $'\t' | sed 's/^/  /'
+fi
 if $all && [ -z "$claims_file" ]; then echo "peer claims: not provided"; fi
 # Which machine this is, so rows from two machines are never confused.
 printf 'machine: %s%s\n' "$(machine_label)" "${myname:+ ($myname)}"

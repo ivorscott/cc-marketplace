@@ -228,6 +228,9 @@ probed: only what the claim comments say. Without `--claims` it says `peer claim
 A claim carrying this machine's key but no local team shows `SAME KEY?` with a warning: a cloned
 machine id (see the README), best effort. Run the heartbeat while you are at it.
 
+The table ends with an `open escalations:` block (name, severity, age, message), Done and
+Retired agents included, until each is resolved (E).
+
 Answer with the table (or just the problems) and one line per action you took.
 
 ## C. Steer
@@ -249,15 +252,29 @@ herdr notification when an agent stalls, dies, needs input or finishes, and when
 falls below `warn_free_gb` (once per crossing; again below `min_free_gb`). `--once` does one pass. Tell the user it is
 running, and check it with `herdr pane read <pane> --source recent --lines 40` when asked.
 
+**While you run a loop, arm the escalation inbox watch every tick:** run `$F/escalation-wait.sh`
+with `run_in_background: true`. It exits as soon as a new escalation lands in the inbox
+(`escalations.jsonl` in the state dir) and prints the new lines, which re-invokes you; re-arm it
+after every wake and every tick. A persisted cursor means one filed between two arms is delivered
+by the next arm, never lost. Never rely on the tick alone: a P0/P1 must reach the user within a minute.
+
 ## E. Escalate
 
 `$F/registry.sh escalate <name> <P0|P1|P2> "<message>"` marks the agent Needs input, logs the
-escalation and raises a notification. Agents escalate themselves the same way. When you
-see an escalation:
+escalation, appends a line to the inbox and raises a notification (a failed notification is
+logged to stderr, not hidden). Agents escalate themselves the same way. On each wake from
+`escalation-wait.sh`, for every new P0/P1 line send ONE `PushNotification` with the agent name,
+severity and message, then handle it:
 
 - **P2:** answer it yourself if the answer is in the brief, the repo or the registry
 - **P1:** bring it to the user with the agent's own words and your recommendation
 - **P0:** stop and bring it to the user now. A P0 in a race also pauses the race
+
+An escalation stays open, even after its agent is Done, until you run
+`$F/registry.sh resolve <name> <at> --note "<decision>"` once the user's decision has reached the
+agent (`at` is the line's timestamp; `(name, at)` identifies it). `$F/registry.sh escalations --open`
+lists the open ones. Agents cannot close their own: `set escalation=` is refused. P1 is only for a
+decision the user must make; "PR ready" and UNVERIFIED belong in the done summary.
 
 ## F. Retire
 
@@ -347,7 +364,7 @@ nothing changes. With it:
 
 ## G. Prime
 
-Read `$F/registry.sh list --live` and `$F/status.sh --problems`, then summarise which teams
+Read `$F/registry.sh list --live`, `$F/registry.sh escalations --open` and `$F/status.sh --problems`, then summarise which teams
 exist, who is doing what, and what needs attention. The registry is the memory: never
 rebuild state from guesswork.
 

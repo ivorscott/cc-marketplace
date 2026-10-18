@@ -8,7 +8,9 @@
 #   registry.sh list [--team T] [--live] [--problems]
 #   registry.sh count-live                                 agents counted against max_agents
 #   registry.sh done <name> --outcome O --summary TEXT     the done contract (+ notification)
-#   registry.sh escalate <name> P0|P1|P2 TEXT              severity-routed escalation (+ notification)
+#   registry.sh escalate <name> P0|P1|P2 TEXT              severity-routed escalation (+ notification + inbox line)
+#   registry.sh escalations [--open] [--team T]            every escalation, Done and Retired rows included
+#   registry.sh resolve <name> <at> [--note TEXT]          close one escalation (the Orchestrator does this; same-second twins close one per call)
 #   registry.sh note <name> discovered TEXT                file discovered work instead of fixing it
 #   registry.sh retire <name|team> [--outcome O]
 #   registry.sh unsynced                                   rows changed since the sink last mirrored them
@@ -50,10 +52,17 @@ exists() { jq -e --arg n "$1" '.agents[$n] != null' "$FLEET_REGISTRY" >/dev/null
 notify() {
   [ "${HERDR_ENV:-}" = "1" ] || [ -n "${FLEET_SESSION:-}" ] || return 0
   command -v herdr >/dev/null 2>&1 || return 0
-  hd notification show "$1" --body "$2" --sound "${3:-done}" >/dev/null 2>&1 || true
+  local err
+  if ! err="$(hd notification show "$1" --body "$2" --sound "${3:-done}" 2>&1 >/dev/null)"; then
+    warn "notification failed: $1: $(printf '%s' "$err" | head -1)"
+  fi
 }
 
 LIVE='(.status != "Done" and .status != "Retired")'
+OPEN_ESC='([(.escalations // [])[] | select(.resolved_at == null)] | length > 0)'
+# .escalation is derived from the open entries: the highest open severity, "" when none is open.
+DERIVE='def derive: ([(.escalations // [])[] | select(.resolved_at == null) | .severity]) as $o
+  | .escalation = (if ($o | index("P0")) then "P0" elif ($o | index("P1")) then "P1" elif ($o | index("P2")) then "P2" else "" end);'
 PROBLEM='(.status == "Stalled" or .status == "Zombie" or .status == "Needs input" or (.escalation // "") != "")'
 
 cmd="${1:-}"; shift || true
@@ -62,7 +71,8 @@ case "$cmd" in
     row="${1:?usage: add '<json>'}"
     printf '%s' "$row" | jq -e 'type == "object" and (.name | type == "string")' >/dev/null || die "add needs a JSON object with .name"
     update --argjson r "$row" --arg t "$(now)" \
-      '.agents[$r.name] = ((.agents[$r.name] // {started: $t, discovered: [], escalations: []}) + $r + {updated_at: $t})'
+      '(.agents[$r.name] // {started: $t, discovered: [], escalations: []}) as $o
+       | .agents[$r.name] = (($o + $r + {updated_at: $t}) | .escalations = ($o.escalations // []))'
     ;;
   set)
     name="${1:?usage: set <name> key=value ...}"; shift
@@ -71,6 +81,7 @@ case "$cmd" in
     i=0
     for kv in "$@"; do
       k="${kv%%=*}"; v="${kv#*=}"
+      case "$k" in escalation|escalations) die "cannot set $k: use 'resolve <name> <at>' to close an escalation" ;; esac
       args+=(--arg "k$i" "$k" --arg "v$i" "$v"); prog="$prog | .[\$k$i] = \$v$i"; i=$((i + 1))
     done
     update "${args[@]}" --arg t "$(now)" ".agents[\$n] = ($prog | .updated_at = \$t)"
@@ -85,7 +96,7 @@ case "$cmd" in
       case "$1" in
         --team) team="$2"; shift 2 ;;
         --live) filter="$filter and $LIVE"; shift ;;
-        --problems) filter="$filter and $LIVE and $PROBLEM"; shift ;;
+        --problems) filter="$filter and (($LIVE and $PROBLEM) or $OPEN_ESC)"; shift ;;
         *) die "unknown list option: $1" ;;
       esac
     done
@@ -113,9 +124,52 @@ case "$cmd" in
     name="${1:?usage: escalate <name> P0|P1|P2 TEXT}"; sev="${2:?}"; msg="${3:?}"
     case "$sev" in P0|P1|P2) ;; *) die "severity must be P0, P1 or P2" ;; esac
     exists "$name"
-    update --arg n "$name" --arg s "$sev" --arg m "$msg" --arg t "$(now)" \
-      '.agents[$n] |= (.status = "Needs input" | .escalation = $s | .escalations += [{severity: $s, message: $m, at: $t}] | .updated_at = $t)'
+    at="$(now)"
+    update --arg n "$name" --arg s "$sev" --arg m "$msg" --arg t "$at" \
+      "$DERIVE"'.agents[$n] |= (.status = "Needs input" | .escalations += [{severity: $s, message: $m, at: $t}] | derive | .updated_at = $t)'
+    # The inbox is what escalation-wait.sh delivers to the Orchestrator; the registry row stays the source of truth.
+    line="$(jq -nc --arg at "$at" --arg n "$name" --arg tm "$(jq -r --arg n "$name" '.agents[$n].team // ""' "$FLEET_REGISTRY")" --arg s "$sev" --arg m "$msg" \
+      '{at: $at, name: $n, team: $tm, severity: $s, message: $m}')"
+    { printf '%s\n' "$line" >>"$FLEET_INBOX"; } 2>/dev/null || warn "cannot write the escalation inbox $FLEET_INBOX"
     notify "fleet $sev: $name" "$msg" request
+    ;;
+  escalations)
+    team=""; open=false
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --open) open=true; shift ;;
+        --team) team="$2"; shift 2 ;;
+        *) die "unknown escalations option: $1" ;;
+      esac
+    done
+    jq --arg t "$team" --argjson open "$open" '
+      [.agents[] | select($t == "" or .team == $t) | . as $a | (.escalations // [])[]
+        | select(($open | not) or .resolved_at == null)
+        | {name: $a.name, team: $a.team, at, severity, message, resolved_at: (.resolved_at // null), resolution: (.resolution // null)}]
+      | sort_by(.at)' "$FLEET_REGISTRY"
+    ;;
+  resolve)
+    name="${1:?usage: resolve <name> <at> [--note TEXT]}"; at="${2:?usage: resolve <name> <at> [--note TEXT]}"; shift 2
+    note=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --note) note="${2:?--note needs text}"; shift 2 ;;
+        *) die "unknown resolve option: $1" ;;
+      esac
+    done
+    exists "$name"
+    jq -e --arg n "$name" --arg a "$at" '.agents[$n].escalations // [] | any(.at == $a)' "$FLEET_REGISTRY" >/dev/null ||
+      die "no escalation at '$at' on $name (see: escalations --open)"
+    if jq -e --arg n "$name" --arg a "$at" '.agents[$n].escalations | all(.at != $a or .resolved_at != null)' "$FLEET_REGISTRY" >/dev/null; then
+      warn "escalation $name $at is already resolved"; exit 0
+    fi
+    update --arg n "$name" --arg a "$at" --arg note "$note" --arg t "$(now)" \
+      "$DERIVE"'.agents[$n] |= (
+        (.escalations | map(.at == $a and .resolved_at == null) | index(true)) as $i
+        | .escalations[$i] += {resolved_at: $t} + (if $note != "" then {resolution: $note} else {} end)
+        | derive
+        | if .escalation == "" and .status == "Needs input" then .status = "Working" else . end
+        | .updated_at = $t)'
     ;;
   note)
     name="${1:?usage: note <name> discovered TEXT}"; kind="${2:?}"; msg="${3:?}"
@@ -180,5 +234,5 @@ case "$cmd" in
       'if .envs[$t] then .envs[$t] |= (.state = "Down" | .slot = null | .http_port = null | .https_port = null | .updated_at = $now) else . end'
     ;;
   path) printf '%s\n' "$FLEET_REGISTRY" ;;
-  *) sed -n '2,21p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+  *) sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

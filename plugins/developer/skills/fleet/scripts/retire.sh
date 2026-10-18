@@ -7,7 +7,7 @@
 #
 # --summary changes nothing. It prints, as JSON, what the user needs to see before (and
 # after) a retire: every agent's outcome and summary, the PRs the summaries name, the
-# UNVERIFIED items, escalations (open = the row still carries .escalation), discovered
+# UNVERIFIED items, escalations (open = not yet resolved with `registry.sh resolve`), discovered
 # work, and the worktrees a retire would keep. PRs are found as "PR #n" (GitHub style) or
 # "MR !n" (GitLab style) in summaries; each carries its repo's {host, project}. The
 # Orchestrator adds live PR state with that host's CLI and the next issues from whatever
@@ -133,7 +133,7 @@ summary() {
             | unique_by([.host, .repo, .number])),
       unverified: [.[] | select(text | test("unverified"; "i")) | {name, summary}],
       escalations: [.[] | . as $a | (.escalations // [])[]
-                    | {name: $a.name, severity, message, at, open: (($a.escalation // "") != "")}]
+                    | {name: $a.name, severity, message, at, open: (.resolved_at == null)}]
                     | sort_by(.at) | reverse,
       discovered: [.[] | . as $a | (.discovered // [])[] | {name: $a.name, message, at}],
       worktrees: $wts
