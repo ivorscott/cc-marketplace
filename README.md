@@ -17,6 +17,7 @@ A curated collection of Claude Code plugins for learners and developers.
   - [`/fleet` — Agent Fleet Orchestrator](#fleet--agent-fleet-orchestrator)
   - [`/archify` — Create Architecture Map](#archify--create-architecture-map)
 - [Installation](#installation)
+- [License](#license)
 
 ---
 
@@ -412,3 +413,10 @@ Use Archify to diagram the architecture of this repo.
 ```
 
 > **NOTE:** Requires Node 18+. The browser check needs Chrome.
+
+---
+
+## License
+
+[MIT](LICENSE). The vendored Archify skill keeps its own MIT license in
+`plugins/developer/skills/archify/LICENSE`.

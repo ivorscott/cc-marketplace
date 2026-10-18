@@ -4,5 +4,6 @@
   "description": "Cut through ambiguity faster. Skills for writing specs, breaking down features, tracking work without losing momentum, mapping architecture, and orchestrating fleets of coding agents.",
   "author": {
     "name": "Ivor Scott Cummings"
-  }
+  },
+  "license": "MIT"
 }
