@@ -147,7 +147,8 @@ max_envs = 3     # test clusters at once
 min_free_gb = 40   # boot refuses below this much free disk (0 = off; FLEET_FORCE=1 overrides)
 warn_free_gb = 75  # status marks LOW and watch notifies below this
 
-# Several machines on one tracker: each claims issues with the label <label_prefix><machine key>.
+# Several machines on one Linear workspace: each claims issues with the label <label_prefix><machine key>.
+# Claims need Linear. With another tracker, run the fleet on one machine and leave these unset.
 label_prefix = "fleet:"
 machine_name = "Mac 1"   # display name, optional
 machine_legacy_label = "fleet:mac1"   # only while migrating an older label
@@ -163,7 +164,7 @@ first permission prompt and sit idle. Set `permission_mode = "acceptEdits"` (or 
 `config.toml`, or `FLEET_PERMISSION_MODE=...` for one boot, to change it. The template allow lists
 and the blocked-prompt policy still apply.
 
-Other setups only change the two lists, for example Jira and GitLab:
+Other setups only change the two lists, for example Jira and GitLab (one machine; claims need Linear):
 
 ```toml
 tracker_allow = ["mcp__atlassian__getJiraIssue"]   # or "Bash(jira issue view:*)"

@@ -98,6 +98,8 @@ After each change, append one line per unsynced row to ~/fleet-log.md:
 
 ## Claims across machines
 
+Linear only. With one machine, or any other tracker, `issue`, `claimed_by` and `scope` stay unset.
+
 `machine` is the machine key (first 8 hex characters of its id; `FLEET_MACHINE` overrides it).
 The tracker label is `<label_prefix><key>`, e.g. `fleet:3f9a2c1e`, and its description reads
 `<name or hostname> · <OS> · machine id <full id> · first claim <YYYY-MM-DD>`. A claim comment is
