@@ -61,7 +61,11 @@ After any route that changed the registry, run **Sink** (end of file).
 
 ## A0. Identity
 
-Several machines can run a fleet against one tracker. Each is told apart by its **label**,
+Several machines can run a fleet against one Linear workspace. Claims rely on Linear label
+groups and label descriptions, so other trackers (Jira, ...) run the fleet on one machine only.
+On one machine, with any tracker, skip **A0** and **A0b** and boot without the claim options.
+
+Each machine is told apart by its **label**,
 `<label_prefix><key>` (default `fleet:3f9a2c1e`): the prefix from `label_prefix` in `config.toml`
 plus the first 8 hex characters of the machine's own id. No tracker lookup, nothing to number.
 
@@ -77,7 +81,8 @@ plus the first 8 hex characters of the machine's own id. No tracker lookup, noth
 
 ## A0b. Claim
 
-Before you boot a team for a tracker issue, claim the issue so two machines never work it.
+With several machines on one Linear workspace, claim an issue before you boot a team for it, so
+two machines never work it. On one machine, skip this section.
 The tracker is only a lock: use your tracker tools (the `tracker_allow` list); the scripts never
 call it. Boot takes the claim result as input.
 
@@ -117,7 +122,7 @@ merges, and `status --all` across machines.
    same problem, first verified answer wins), `review` (independent read-only reviewers) or
    `research` (problem-first study guide). A path to a custom template JSON also works.
    Unsure → ask.
-2. Run `$F/boot.sh <template> <focus> <dir> <task text>` (for a tracker issue, after **A0b**, with the claim options). It creates the workspace, gives
+2. Run `$F/boot.sh <template> <focus> <dir> <task text>` (with several machines on Linear: after **A0b**, with the claim options). It creates the workspace, gives
    writers their own `git worktree` on branch `fleet/<team>/<role>`, starts every agent,
    answers folder-trust only for the repo and those worktrees, sends each brief with the
    done contract appended, and writes the registry rows. If the repo has
