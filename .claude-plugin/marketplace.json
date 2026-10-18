@@ -12,8 +12,8 @@
     {
       "name": "developer",
       "source": "./plugins/developer",
-      "description": "Cut through ambiguity faster. Skills for writing specs, breaking down features, tracking work without losing momentum, mapping architecture, and orchestrating fleets of coding agents.",
-      "version": "3.4.0",
+      "description": "Cut through ambiguity faster. Skills for writing specs, breaking down features, tracking work without losing momentum, and orchestrating fleets of coding agents.",
+      "version": "3.3.2",
       "author": {
         "name": "Ivor Scott Cummings"
       },
@@ -24,9 +24,7 @@
         "planning",
         "orchestration",
         "multi-agent",
-        "herdr",
-        "architecture",
-        "diagram"
+        "herdr"
       ]
     },
     {
@@ -48,6 +46,31 @@
         "obsidian",
         "wiki",
         "knowledge-base"
+      ]
+    },
+    {
+      "name": "archify",
+      "source": {
+        "source": "github",
+        "repo": "tt-a1i/archify",
+        "sha": "b25142deac4b19b293e45b6bf6d69351d3c8f3b6"
+      },
+      "description": "Create an architecture map: interactive architecture, sequence, ERD and workflow diagrams as standalone HTML. Third-party skill by tt-a1i (MIT), pinned to a reviewed commit.",
+      "version": "3.1.0",
+      "author": {
+        "name": "tt-a1i"
+      },
+      "homepage": "https://github.com/tt-a1i/archify",
+      "license": "MIT",
+      "strict": false,
+      "skills": [
+        "./archify"
+      ],
+      "keywords": [
+        "diagram",
+        "architecture",
+        "sequence",
+        "erd"
       ]
     }
   ]
