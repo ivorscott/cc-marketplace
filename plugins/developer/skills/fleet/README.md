@@ -61,7 +61,7 @@ This skill builds the rest on top of it.
 | Command | What it does |
 |---|---|
 | `/fleet boot <template> <focus> <dir> [task]` | Creates the herdr workspace `<template>-<focus>` (the team name), starts a lead and its workers in split panes, gives every writer its own git worktree on branch `fleet/<team>/<role>`, sends each agent its brief and registers it. `<template>` is `build`, `race`, `review`, `research` or a path to your own template JSON |
-| `/fleet status [--problems] [--team T] [--json]` | Shows each live agent's health (see below) and its team's test cluster, under a disk line (free GiB, `LOW` below `warn_free_gb`). `--problems` lists only agents that need you, `--team` limits it to one team, `--json` gives machine-readable output |
+| `/fleet status [--problems] [--team T] [--json] [--all]` | Shows each live agent's health (see below) and its team's test cluster, under a disk line (free GiB, `LOW` below `warn_free_gb`). `--problems` lists only agents that need you, `--team` limits it to one team, `--json` gives machine-readable output. `--all` adds one row per claim other machines hold, with a MACHINE and a LEASE column (Linear only; see "Several machines") |
 | `/fleet tell <team\|agent> <msg>` | Sends a message to the team's lead, or to one agent if you name it, then quotes a line of its reply so you know it arrived |
 | `/fleet watch [--team T]` | Opens a monitor pane beside yours that raises a herdr notification whenever an agent stalls, dies, needs input or finishes, or free disk drops below `warn_free_gb` |
 | `/fleet escalate <P0\|P1\|P2> <msg>` | Raises a question by severity. The Orchestrator answers P2 itself, brings P1 to you with a recommendation, and stops for P0 and brings it to you immediately (a P0 in a race pauses the race) |
@@ -115,9 +115,11 @@ The Orchestrator and agents call these directly (from `scripts/`). You can call 
 
 | Script | Commands |
 |---|---|
-| `boot.sh` | `boot.sh [--issue ID --claimed-by KEY --labels a,b --scope 'repo: paths' --peer-claim …] <template> <focus> <dir> [task…]` boots a team (`FLEET_FORCE=1` goes over the `max_agents` cap and the `min_free_gb` disk floor, never over another machine's claim) |
+| `boot.sh` | `boot.sh [--issue ID --claimed-by KEY --labels a,b --scope 'repo: paths' --peer-claim … --takeover-of KEY --lease-expires ISO --last-activity ISO] <template> <focus> <dir> [task…]` boots a team (`FLEET_FORCE=1` goes over the `max_agents` cap and the `min_free_gb` disk floor, never over another machine's claim or a live lease). `--takeover-of` is accepted only when the passed lease is past and the PR shows no activity within `lease_hours` |
+| `claim.sh` | `line` builds the claim comment · `renew` moves its `lease=` · `lease` prints now + `lease_hours` · `parse` turns tracker comments (JSON on stdin) into claims · `expired --lease ISO [--last-activity ISO]` says whether a claim can be taken over. Pure: it never calls a tracker |
+| `chat.sh` | `channel` and `allow` print `chat_channel` and `chat_allow` · `format <event> …` prints the one-line message. It never posts or reads; the Orchestrator does with its own chat tools |
 | `machine-id.sh` | `id\|key\|label\|description\|show`: this machine's tracker identity, e.g. `fleet:3f9a2c1e` |
-| `status.sh` | `status.sh [--problems] [--team T] [--json]` recomputes health, writes it to the registry and prints free disk first |
+| `status.sh` | `status.sh [--problems] [--team T] [--json] [--all [--claims FILE\|-]]` recomputes health, writes it to the registry and prints free disk first |
 | `watch.sh` | `watch.sh [--team T] [--every SECONDS] [--once]` live monitor, polls every 20s by default; notifies on low disk |
 | `retire.sh` | `retire.sh <team\|team/role> [--outcome O]` safe teardown; `--summary <target...>` read-only pre-retire summary |
 | `env.sh` | `up [--branch B] <team>` creates the team's cluster (exit 75 = queued at `max_envs`) · `down <team>` removes it, with its images and builder · `status` lists every env |
@@ -150,13 +152,28 @@ warn_free_gb = 75  # status marks LOW and watch notifies below this
 # Several machines on one Linear workspace: each claims issues with the label <label_prefix><machine key>.
 # Claims need Linear. With another tracker, run the fleet on one machine and leave these unset.
 label_prefix = "fleet:"
+lease_hours = 2   # a claim's lease; a lapsed lease with no PR activity this long can be taken over
 machine_name = "Mac 1"   # display name, optional
 machine_legacy_label = "fleet:mac1"   # only while migrating an older label
 
 # Permissions added to every Claude agent at boot. Templates never name a tracker or a
 # code host; put yours here. Values are Claude Code permission rules.
-tracker_allow = ["mcp__claude_ai_Linear__get_issue", "mcp__claude_ai_Linear__list_comments", "mcp__claude_ai_Linear__list_issue_labels", "mcp__claude_ai_Linear__save_issue_label"]
+tracker_allow = ["mcp__claude_ai_Linear__get_issue", "mcp__claude_ai_Linear__list_comments", "mcp__claude_ai_Linear__list_issue_labels"]
 forge_allow = ["Bash(gh pr view:*)", "Bash(gh pr checks:*)", "Bash(gh pr create:*)"]
+```
+
+Only the Orchestrator claims, labels and comments, so the write tools (Linear's label, issue and
+comment tools) go in the Orchestrator's own Claude Code settings, not in `tracker_allow`, which
+goes to every agent.
+
+The chat channel is for coordination, never the lock. It is generic: `chat_channel` is free text
+the Orchestrator hands to your chat tool, and `chat_allow` lists the permission rules for those
+tools. Slack is only the example, and like the write tools above `chat_allow` belongs in the
+Orchestrator's own settings; boot gives it to no agent (agents never post).
+
+```toml
+chat_channel = "#fleet"
+chat_allow = ["mcp__claude_ai_Slack__slack_send_message", "mcp__claude_ai_Slack__slack_read_channel"]
 ```
 
 Every agent starts in Claude Code's `auto` permission mode, so a fresh pane doesn't stop on its
@@ -225,6 +242,34 @@ Example using kind:
 - Foreign clusters are refused: an ambient `$CLUSTER`, or a `CLUSTER=` in a template, that is not
   `fleet-<team>` stops `up` and `down`. Templates run with `CLUSTER` pinned to `fleet-<team>`.
 
+## Several machines
+
+Claims, leases, takeover and `status --all` need Linear (label groups and comments). Any other
+tracker runs the fleet on one machine, and those parts are skipped.
+
+- A claim comment carries `lease=`, `lease_hours` ahead (default 2). The Orchestrator renews the
+  lease on every pass (each `status`, each `watch` check, each `/loop` tick). Scripts cannot renew:
+  an Orchestrator that is not running stops renewing, and that is when a takeover is allowed.
+- A lease older than `lease_hours` with no PR activity in that time can be taken over. The
+  taker posts a new claim comment with a `takeover:` line naming the voided comment, and boot
+  accepts it only when the passed lease is really expired. `FLEET_FORCE=1` never bypasses a live claim.
+- **The tracker has no compare-and-swap.** Re-reading and the earliest-wins rule narrow the race
+  between two takers; they do not remove it. A machine whose claim was taken over stops renewing
+  and tells you; it never fights back.
+- `status --all` builds one table from the claim comments the Orchestrator can read and this
+  machine's registry. Other machines' health is not probed: their rows show `Claimed`, the lease
+  and the scope.
+
+### Cloned machine id
+
+Each machine is told apart by its key, the first 8 hex characters of its machine id. A cloned VM
+or a restored disk image copies `/etc/machine-id` (or the stored `machine-id` file), so two
+machines then share one key and the label and arbitration cannot tell them apart. Give each
+clone its own key: set `FLEET_MACHINE=<unique>`, or delete `$FLEET_STATE_DIR/machine-id` and, for
+the OS-derived sources, regenerate the OS id. Detection is best effort: `status --all` marks a
+claim that carries this machine's key but names no team in the local registry as `SAME KEY?` and
+warns. Two clones that run the same team names are not caught.
+
 ## Files
 
 | Path | Purpose |
@@ -232,6 +277,8 @@ Example using kind:
 | `SKILL.md` | routes and rules the Orchestrator follows |
 | `templates/*.json` | team shapes: roles, agent kind, model, worktree, briefs, exit criteria |
 | `scripts/boot.sh` | one-command team boot |
+| `scripts/claim.sh` | claim comment: build, parse, renew, lease expiry test |
+| `scripts/chat.sh` | chat channel settings and message format (never posts) |
 | `scripts/machine-id.sh` | this machine's id, key and tracker label for claims |
 | `scripts/status.sh` | health computation |
 | `scripts/watch.sh` | live monitor |

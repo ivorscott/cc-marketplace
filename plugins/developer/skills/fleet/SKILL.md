@@ -62,8 +62,10 @@ After any route that changed the registry, run **Sink** (end of file).
 ## A0. Identity
 
 Several machines can run a fleet against one Linear workspace. Claims rely on Linear label
-groups and label descriptions, so other trackers (Jira, ...) run the fleet on one machine only.
-On one machine, with any tracker, skip **A0** and **A0b** and boot without the claim options.
+groups, label descriptions and comments, so claims, leases, takeover and `status --all` need Linear.
+Other trackers (Jira, ...) run the fleet on one machine only. On one machine, with any tracker,
+skip **A0**, **A0b** and the heartbeat, and boot without the claim options. The chat channel
+(**A0c**) works with any tracker but is coordination, never a lock.
 
 Each machine is told apart by its **label**,
 `<label_prefix><key>` (default `fleet:3f9a2c1e`): the prefix from `label_prefix` in `config.toml`
@@ -92,17 +94,22 @@ call it. Boot takes the claim result as input.
    named by the prefix without its trailing `:` if that group exists (otherwise a plain label),
    with `$F/machine-id.sh description` as its description. Present with an empty description →
    fill it in. A non-empty description is left alone.
-3. **Write.** Set the issue In Progress, add the label, and post the claim comment:
+3. **Write.** Set the issue In Progress, add the label, and post the claim comment that
+   `$F/claim.sh line --machine <key> [--name <machine_name>] --team <team> --scope '<repo: paths>'`
+   prints:
 
    ```
-   fleet-claim: machine=3f9a2c1e name="Mac 1" team=build-dev317 at=2026-10-18T09:00:00Z
+   fleet-claim: machine=3f9a2c1e name="Mac 1" team=build-dev317 at=2026-10-18T09:00:00Z lease=2026-10-18T11:00:00Z
    scope: platform: deploy/local, scripts/local.sh
    ```
 
    (`name=` only when `machine_name` is set; `scope:` is the repo and paths the team will touch,
-   no paths means the whole repo.)
-4. **Re-read after about 5 seconds and arbitrate on the earliest claim comment** (`createdAt`,
-   ties broken by key). The label group is single-select and keeps only the last label added, so
+   no paths means the whole repo; `lease=` is `lease_hours` ahead, default 2. A claim comment
+   with no `lease=` predates leases: it has no lease to test, so ask the user before taking it over.)
+4. **Re-read after about 5 seconds and arbitrate.** List the issue's comments and pass them
+   (`[{id, createdAt, updatedAt, body}]`) to `$F/claim.sh parse`. A claim comment is **void** when a
+   later claim comment's `takeover_of_comment` names its id (see **Takeover**). Among the claims
+   that are not void, the earliest comment wins (`createdAt`, ties broken by key). The label group is single-select and keeps only the last label added, so
    the label alone cannot decide. The winner re-adds its label if it was replaced. The loser
    removes its own comment and its own label if still present, leaves In Progress alone, reports
    the holder, and picks other work.
@@ -113,8 +120,61 @@ call it. Boot takes the claim result as input.
    claim in the same repo. Live claims on other machines come from the claim comments you read:
    pass each as `--peer-claim`.
 
-**Not yet** (follow-ups): leases and heartbeat takeover, a `#fleet` Slack channel for claims and
-merges, and `status --all` across machines.
+### Takeover
+
+A claim whose lease has lapsed can be taken over, so a crashed machine does not hold an issue
+forever. Only a lapsed lease **and** a quiet PR qualify; `FLEET_FORCE=1` never bypasses a live claim.
+
+1. Re-read the issue and its comments, and run `claim.sh parse`. Take the holder's newest
+   non-void claim. Read the PR's last activity (latest commit, review or comment time) with the
+   `forge_allow` tools; no PR means no activity. Run
+   `$F/claim.sh expired --lease <its lease> [--last-activity <ISO>]`. Exit 1 prints why (lease
+   live, or recent PR activity): leave the issue alone and pick other work.
+2. Post a **new** claim comment from `$F/claim.sh line … --takeover-from <holder key> --takeover-team <holder team> --takeover-of-comment <holder's comment id> --previous-lease <its lease>`.
+   The `takeover:` line is the log and names exactly the comment it voids; the old comment is not edited. Then
+   add this machine's label (the group is single-select, so it replaces theirs) and re-read after about 5 seconds.
+3. Arbitrate as in **Claim** step 4: a claim comment is void exactly when a takeover comment
+   names its id, and among live claims the earliest by `createdAt` wins (ties by key). Two
+   simultaneous takers resolve the same way. The loser removes its own comment and label.
+4. Boot as the winner:
+   `$F/boot.sh --issue DEV-123 --claimed-by <mine> --takeover-of <holder key> --lease-expires <its old lease> [--last-activity <ISO>] --labels <labels from the re-read> --scope '<repo: paths>' build <focus> <dir> <task>`.
+   Boot accepts a foreign label only when it is the holder named by `--takeover-of`, and only when
+   `claim.sh expired` agrees on the lease and activity you passed. Tell the user, and post a `takeover` chat line (**A0c**).
+
+**The tracker has no compare-and-swap.** The re-read and the earliest-wins rule narrow the race
+between two takers but do not remove it. Treat a takeover as a distributed decision, and
+re-read once more before the team's first push.
+
+### Heartbeat
+
+On every pass (each `status`, each `watch` check, each `/loop` tick), for every team this
+machine holds a claim for (registry rows with `issue` and `lease_expires`):
+
+1. **Re-read the issue's comments first** and run `claim.sh parse`. If a later claim comment's
+   `takeover_of_comment` names this machine's claim comment, another machine took over. You
+   **must not renew**, must not fight back (no re-claim, no label swap, no deleting their
+   comment). Stop or hand off that team (`retire.sh`, after the summary in **F**), tell the
+   user, and raise `$F/registry.sh escalate <team>/lead P1 "claim taken over by <key>"`.
+2. Otherwise renew: `$F/claim.sh renew <your claim comment body>` and write the result back with
+   the tracker's comment-update tool, then `$F/registry.sh set <team>/lead lease_expires=<new lease>`.
+
+Scripts cannot renew, because they never call a tracker. An Orchestrator that is not running
+stops renewing, and that is exactly when a takeover is allowed. Say so when a user closes it with
+teams still running.
+
+## A0c. Chat
+
+With `chat_channel` set (`$F/chat.sh channel`) and the tools in `chat_allow` (`$F/chat.sh allow`,
+the Orchestrator's own settings, never given to agents) available, the channel is for
+coordination between machines. It is never the lock: the tracker claim decides.
+
+- **Read** the channel before every claim and boot. Use it only as a hint, for instance to
+  double check on the tracker an issue someone mentions. It can never grant or deny a claim.
+- **Post** with `$F/chat.sh format <event> <ISSUE> <team> k=v…` (events `claim`, `pr`, `merge`,
+  `escalation`, `takeover`, `rebase`): claims, PRs opened, merges, escalations and takeovers.
+- A failed read or post is a one-line warning. It is never a reason to stop and never a reason to
+  skip the tracker check. With `chat_channel` unset, skip this section. The channel is not tied to
+  any chat product: the tools are whatever `chat_allow` names.
 
 ## A. Boot
 
@@ -136,7 +196,7 @@ merges, and `status --all` across machines.
 
 ## B. Status
 
-Run `$F/status.sh` (add `--problems`, `--team T` or `--json` as needed). It recomputes health
+Run `$F/status.sh` (add `--problems`, `--team T`, `--json` or `--all` as needed). It recomputes health
 and writes it back:
 
 | Status | Meaning | Your move |
@@ -158,6 +218,15 @@ the disk is LOW, say so first and suggest retiring teams that are done (F).
 
 The table ends with a `machine: fleet:<key>` line (plus `(<machine_name>)` when set), so rows
 from two machines are never confused. A team booted for an issue also shows an ISSUE column.
+
+**`status --all`** (Linear claims only) adds the other machines. List the comments of the open
+issues carrying a `<label_prefix>*` label, attach each issue id as `issue` to its comments, pipe the
+JSON array through `$F/claim.sh parse`, and pass the result with `status.sh --all --claims <file|->`.
+The table gains a MACHINE column (key, plus the claim's name) and a LEASE column; peer rows show
+`Claimed` (`Claimed (lease lapsed)` when the lease is past), the lease and the scope. Peers are never
+probed: only what the claim comments say. Without `--claims` it says `peer claims: not provided`.
+A claim carrying this machine's key but no local team shows `SAME KEY?` with a warning: a cloned
+machine id (see the README), best effort. Run the heartbeat while you are at it.
 
 Answer with the table (or just the problems) and one line per action you took.
 
@@ -322,6 +391,7 @@ sink failure is a one-line warning, never a reason to stop. With no sink file, s
 
 ## References
 
+- `scripts/claim.sh` and `scripts/chat.sh`: pure helpers for claim comments and chat lines; they never call a tracker or chat tool
 - `references/herdr-patterns.md`: the four herdr pitfalls and the safe call pattern for each
 - `references/registry.md`: row fields, the done contract, the sink format
 - `references/experts.md`: expertise files and how debrief proposes changes
