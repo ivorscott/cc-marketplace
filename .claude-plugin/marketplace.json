@@ -5,7 +5,7 @@
   },
   "metadata": {
     "description": "Curated Claude Code plugins built for engineers who want to move faster without thinking less.",
-    "version": "1.5.0",
+    "version": "1.6.0",
     "pluginRoot": "./plugins"
   },
   "plugins": [
@@ -13,11 +13,19 @@
       "name": "developer",
       "source": "./plugins/developer",
       "description": "Cut through ambiguity faster. Skills for writing specs, breaking down features, tracking work without losing momentum, and orchestrating fleets of coding agents.",
-      "version": "3.3.2",
+      "version": "3.4.0",
       "author": {
         "name": "Ivor Scott Cummings"
       },
-      "keywords": ["spec", "jira", "feature", "planning", "orchestration", "multi-agent", "herdr"]
+      "keywords": [
+        "spec",
+        "jira",
+        "feature",
+        "planning",
+        "orchestration",
+        "multi-agent",
+        "herdr"
+      ]
     },
     {
       "name": "learner",
@@ -27,7 +35,43 @@
       "author": {
         "name": "Ivor Scott Cummings"
       },
-      "keywords": ["books", "ascii", "diagram", "render", "study", "flashcard", "quiz", "obsidian", "wiki", "knowledge-base"]
+      "keywords": [
+        "books",
+        "ascii",
+        "diagram",
+        "render",
+        "study",
+        "flashcard",
+        "quiz",
+        "obsidian",
+        "wiki",
+        "knowledge-base"
+      ]
+    },
+    {
+      "name": "archify",
+      "source": {
+        "source": "github",
+        "repo": "tt-a1i/archify",
+        "sha": "b25142deac4b19b293e45b6bf6d69351d3c8f3b6"
+      },
+      "description": "Create an architecture map: interactive architecture, sequence, ERD and workflow diagrams as standalone HTML. Third-party skill by tt-a1i (MIT), pinned to a reviewed commit.",
+      "version": "3.1.0",
+      "author": {
+        "name": "tt-a1i"
+      },
+      "homepage": "https://github.com/tt-a1i/archify",
+      "license": "MIT",
+      "strict": false,
+      "skills": [
+        "./archify"
+      ],
+      "keywords": [
+        "diagram",
+        "architecture",
+        "sequence",
+        "erd"
+      ]
     }
   ]
 }

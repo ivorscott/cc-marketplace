@@ -15,7 +15,9 @@ A curated collection of Claude Code plugins for learners and developers.
   - [`/spec` — Feature Spec Generator](#spec--feature-spec-generator)
   - [`/spec-archaeology` — Spec Archaeology](#spec-archaeology--spec-archaeology)
   - [`/fleet` — Agent Fleet Orchestrator](#fleet--agent-fleet-orchestrator)
+- [archify — Create Architecture Map](#archify--create-architecture-map)
 - [Installation](#installation)
+- [License](#license)
 
 ---
 
@@ -395,3 +397,28 @@ tells the Orchestrator where to mirror the registry, such as a tracker or wiki.
 > start the herdr server from your own terminal. The plugin also ships `developer:lead`
 > and `developer:orchestrator` agents and two hooks, which do nothing outside fleet panes.
 
+---
+
+## `archify` — Create Architecture Map
+
+[Archify](https://github.com/tt-a1i/archify) by tt-a1i (MIT) turns a description or a codebase into an
+interactive diagram: architecture, sequence, ERD, workflow, lifecycle and more. Each diagram is a
+standalone HTML file built from a JSON source, checked in a real browser before delivery.
+
+Installing `developer` installs it too, as a dependency. The marketplace pulls it straight from
+upstream, pinned to a reviewed commit. To take a newer
+version, review upstream and bump `sha` and `version` in `.claude-plugin/marketplace.json`.
+
+**Usage:**
+
+```
+Use Archify to diagram the architecture of this repo.
+```
+
+> **NOTE:** Requires Node 18+. The browser check needs Chrome.
+
+---
+
+## License
+
+[MIT](LICENSE). Archify is installed from its own repo under its own MIT license.
