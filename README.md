@@ -15,7 +15,7 @@ A curated collection of Claude Code plugins for learners and developers.
   - [`/spec` — Feature Spec Generator](#spec--feature-spec-generator)
   - [`/spec-archaeology` — Spec Archaeology](#spec-archaeology--spec-archaeology)
   - [`/fleet` — Agent Fleet Orchestrator](#fleet--agent-fleet-orchestrator)
-- [archify — Third-party skill](#archify--third-party-skill)
+  - [`/archify` — Create Architecture Map](#archify--create-architecture-map)
 - [Installation](#installation)
 
 ---
@@ -28,7 +28,6 @@ Add the marketplace, then install whichever plugins you need:
 /plugin marketplace add ivorscott/cc-marketplace
 /plugin install developer@cc-marketplace
 /plugin install learner@cc-marketplace
-/plugin install archify@cc-marketplace
 ```
 
 ---
@@ -397,16 +396,14 @@ tells the Orchestrator where to mirror the registry, such as a tracker or wiki.
 > start the herdr server from your own terminal. The plugin also ships `developer:lead`
 > and `developer:orchestrator` agents and two hooks, which do nothing outside fleet panes.
 
----
-
-## `archify` — Third-party skill
+### `/archify` — Create Architecture Map
 
 [Archify](https://github.com/tt-a1i/archify) by tt-a1i (MIT) turns a description or a codebase into an
 interactive diagram: architecture, sequence, ERD, workflow, lifecycle and more. Each diagram is a
 standalone HTML file built from a JSON source, checked in a real browser before delivery.
 
-The marketplace pins it to a reviewed commit. To take a newer version, review upstream and bump
-`sha` and `version` in `.claude-plugin/marketplace.json`.
+Vendored from upstream commit `b25142d` (v3.1.0), without the rendered example HTML. To update,
+review upstream and copy its `archify/` folder over `plugins/developer/skills/archify/`.
 
 **Usage:**
 
