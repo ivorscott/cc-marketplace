@@ -29,7 +29,6 @@ Add the marketplace, then install whichever plugins you need:
 /plugin marketplace add ivorscott/cc-marketplace
 /plugin install developer@cc-marketplace
 /plugin install learner@cc-marketplace
-/plugin install archify@cc-marketplace
 ```
 
 ---
@@ -406,7 +405,8 @@ tells the Orchestrator where to mirror the registry, such as a tracker or wiki.
 interactive diagram: architecture, sequence, ERD, workflow, lifecycle and more. Each diagram is a
 standalone HTML file built from a JSON source, checked in a real browser before delivery.
 
-The marketplace installs it straight from upstream, pinned to a reviewed commit. To take a newer
+Installing `developer` installs it too, as a dependency. The marketplace pulls it straight from
+upstream, pinned to a reviewed commit. To take a newer
 version, review upstream and bump `sha` and `version` in `.claude-plugin/marketplace.json`.
 
 **Usage:**
