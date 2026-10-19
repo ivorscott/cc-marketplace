@@ -1441,11 +1441,11 @@ case "$FLEET_CONFIG_DIR" in "$T"/*) ;; *) echo "refusing to run B tests outside 
 LIN="$SCRIPTS/linear.sh"; STUB="$HERE/linear-stub.sh"
 export LINEAR_DB="$T/linear.json" LINEAR_LOG="$T/linear.log" LINEAR_ARGV_LOG="$T/linear.argv" LINEAR_STUB_KEY="KEYFIXTURE-9f3a77c1" FLEET_CURL="$STUB"
 printf '%s\n' "$LINEAR_STUB_KEY" >"$FLEET_CONFIG_DIR/linear_api_key"; chmod 600 "$FLEET_CONFIG_DIR/linear_api_key"
-cp "$FLEET_CONFIG_DIR/config.toml" "$T/config.b.bak"; printf 'claim_settle_secs = 0\nlinear_writes = "on"\n' >>"$FLEET_CONFIG_DIR/config.toml"
+cp "$FLEET_CONFIG_DIR/config.toml" "$T/config.b.bak"; printf 'claim_settle_secs = 0\nlinear_writes = "on"\nmachine_name = "test box"\n' >>"$FLEET_CONFIG_DIR/config.toml"
 : >"$NETLOG"
 # A fixture machine id: these tests never use this machine's real id (a stored id wins over the OS one).
 FIXID="AAAAAAAA-1111-4222-8333-444455556666"; printf '%s\n' "$FIXID" >"$FLEET_STATE_DIR/machine-id"
-setw() { cp "$T/config.b.bak" "$FLEET_CONFIG_DIR/config.toml"; printf 'claim_settle_secs = 0\n' >>"$FLEET_CONFIG_DIR/config.toml"; [ -z "${1:-}" ] || printf 'linear_writes = "%s"\n' "$1" >>"$FLEET_CONFIG_DIR/config.toml"; } # setw [off-by-default | value]
+setw() { cp "$T/config.b.bak" "$FLEET_CONFIG_DIR/config.toml"; printf 'claim_settle_secs = 0\nmachine_name = "test box"\n' >>"$FLEET_CONFIG_DIR/config.toml"; [ -z "${1:-}" ] || printf 'linear_writes = "%s"\n' "$1" >>"$FLEET_CONFIG_DIR/config.toml"; } # setw [off-by-default | value]
 setw on
 IDRE='[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}|[0-9A-Fa-f]{32}'
 dbreset() { # two issues, a team, a state; labels: the fleet group and a foreign machine's label with a stale heartbeat
@@ -1578,7 +1578,7 @@ eq "machine-id hash: first 12 hex of sha256 of the id" "$("$MID" hash "$FIXID")"
 eq "machine-id hash: stable" "$("$MID" hash "$FIXID")$("$MID" hash "$FIXID")" "$want$want"
 eq "machine-id hash: 12 hex characters" "$("$MID" hash "$FIXID" | grep -Ec '^[0-9a-f]{12}$')" 1
 eq "machine-id description: publishes sha256:<hash>" "$("$MID" description | grep -c "machine id sha256:$want · first claim")" 1
-eq "machine-id description: no UUID-shaped or 32-hex id" "$("$MID" description | grep -Ec "$IDRE" || true)" 0
+eq "machine-id description: no UUID-shaped or 32-hex id (a failure names the field)" "$("$MID" description | sed 's/ · /\n/g' | grep -nE "$IDRE" | cut -d: -f1 | paste -sd, -)" ""
 eq "machine-id description: the full id is not in it" "$("$MID" description | grep -c "$FIXID" || true)" 0
 eq "machine-id id: the local command still prints the full id" "$("$MID" id)" "$FIXID"
 # without any sha256 tool nothing is published (never the full id as a fallback)
@@ -1586,8 +1586,21 @@ nh="$T/nohash/bin"; mkdir -p "$nh"; for t in jq sed head tr cut cat date dirname
 nhout="$(env PATH="$nh" FLEET_STATE_DIR="$FLEET_STATE_DIR" FLEET_CONFIG_DIR="$FLEET_CONFIG_DIR" "$BASH" "$MID" description 2>"$T/nh.err")"; nhrc=$?
 eq "N3: no sha256 tool: description fails and prints nothing" "$nhrc:$nhout" "1:"
 check "N3: and says why" grep -q 'no sha256 tool' "$T/nh.err"
+# a hash tool that exists but misbehaves must fail closed too: it fails, prints nothing, or echoes the id
+for mode in fail empty echo garbage; do
+  bad="$T/badhash-$mode/bin"; mkdir -p "$bad"; for t in jq sed head tr cut cat date dirname mkdir od; do ln -sf "$(command -v "$t")" "$bad/$t"; done
+  case "$mode" in
+    fail) printf '#!/bin/sh\nexit 1\n' >"$bad/shasum" ;;
+    empty) printf '#!/bin/sh\ncat >/dev/null\n' >"$bad/shasum" ;;
+    echo) printf '#!/bin/sh\ncat\n' >"$bad/shasum" ;;
+    garbage) printf '#!/bin/sh\ncat >/dev/null; echo "ZZZZZZZZZZZZZZZZ  -"\n' >"$bad/shasum" ;;
+  esac
+  chmod +x "$bad/shasum"
+  bout="$(env PATH="$bad" FLEET_STATE_DIR="$FLEET_STATE_DIR" FLEET_CONFIG_DIR="$FLEET_CONFIG_DIR" "$BASH" "$MID" description 2>/dev/null)"; brc=$?
+  eq "N3: a hash tool that $mode: description fails closed (exit 1, nothing printed, never the id)" "$brc:$bout" "1:"
+done
 dbreset; "$LIN" claim DEV-1 >/dev/null 2>&1
-eq "N3: no label description the code wrote holds a full machine id" "$(jq -r '.labels[].description' "$LINEAR_DB" | grep -Ec "$IDRE" || true)" 0
+eq "N3: no label description the code wrote holds a full machine id (a failure names the line:field)" "$(jq -r '.labels[].description' "$LINEAR_DB" | sed 's/ · /\n/g' | grep -nE "$IDRE" | cut -d: -f1 | paste -sd, -)" ""
 eq "N3: the claim's label description has the hash" "$(jq -r --arg n "$ml" '.labels[] | select(.name == $n) | .description' "$LINEAR_DB" | grep -c "machine id sha256:$want")" 1
 eq "N3: the full id is in no request the code sent" "$(grep -c "$FIXID" "$LINEAR_ARGV_LOG" || true)" 0
 # a label published by an older version holds the full id: rewrite it, keep the other text and the heartbeat line
@@ -1755,7 +1768,7 @@ bt --issue DEV-81 --claimed-by test build nk2 "$T/plain" t
 eq "boot: --issue without a key refuses when machines > 1" "$BTRC" 1
 eq "boot: the refusal adds no rows" "$(rows_of build-nk2)" 0
 bt build nk3 "$T/plain" t; eq "boot: no --issue needs no key even with machines > 1" "$BTRC" 0
-cp "$T/config.b.bak" "$FLEET_CONFIG_DIR/config.toml"; printf 'claim_settle_secs = 0\nlinear_writes = "on"\n' >>"$FLEET_CONFIG_DIR/config.toml"
+cp "$T/config.b.bak" "$FLEET_CONFIG_DIR/config.toml"; printf 'claim_settle_secs = 0\nlinear_writes = "on"\nmachine_name = "test box"\n' >>"$FLEET_CONFIG_DIR/config.toml"
 # the key never reaches an agent: boot with the key in its own environment and on disk
 printf '%s\n' "$LINEAR_STUB_KEY" >"$FLEET_CONFIG_DIR/linear_api_key"; chmod 600 "$FLEET_CONFIG_DIR/linear_api_key"
 LINEAR_API_KEY="$LINEAR_STUB_KEY" bt --issue DEV-82 --claimed-by test build lk1 "$T/plain" t

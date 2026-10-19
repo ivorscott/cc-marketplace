@@ -110,6 +110,10 @@ sha256_hex() {
 id_hash() {
   local h; h="$(printf '%s' "$1" | sha256_hex | cut -c1-12)"
   [ "${#h}" = 12 ] || { echo "machine-id: no sha256 tool (shasum, sha256sum or openssl); not publishing the machine id" >&2; return 1; }
+  # Fail closed on a tool that misbehaves: the result must be 12 lowercase hex characters and must not be
+  # the start of the id itself (a tool that echoed its input would otherwise publish the raw id).
+  case "$h" in *[!0-9a-f]*) echo "machine-id: the sha256 tool gave an unusable result; not publishing the machine id" >&2; return 1 ;; esac
+  case "$1" in "$h"* | "$(printf '%s' "$h" | tr 'a-f' 'A-F')"*) echo "machine-id: the sha256 tool echoed the id; not publishing the machine id" >&2; return 1 ;; esac
   printf '%s\n' "$h"
 }
 
