@@ -799,7 +799,7 @@ eq "wait: a second run does not replay it" "$("$EW" --timeout 1 --every 1)" ""
 eq "wait: one filed between arms is delivered by the next" "$("$EW" --timeout 5 --every 1 | jq -r .message)" "between arms"
 eq "wait: --from-start replays the inbox" "$("$EW" --from-start --timeout 1 --every 1 | wc -l | tr -d ' ')" "$(wc -l <"$INBOX" | tr -d ' ')"
 check "wait: rejects an unknown option" bash -c "! '$EW' --bogus"
-for f in registry.sh status.sh watch.sh retire.sh escalation-wait.sh common.sh boot.sh tell.sh tick.sh next.sh linear.sh claim.sh respawn.sh metrics.sh agent-lib.sh; do check "bash -n $f" bash -n "$SCRIPTS/$f"; done
+for f in registry.sh status.sh watch.sh retire.sh escalation-wait.sh common.sh boot.sh tell.sh tick.sh next.sh linear.sh claim.sh respawn.sh metrics.sh agent-lib.sh schedule.sh loop-tick.sh; do check "bash -n $f" bash -n "$SCRIPTS/$f"; done
 SKD0="$SCRIPTS/.."
 check "SKILL.md mentions escalation-wait.sh" grep -q 'escalation-wait.sh' "$SKD0/SKILL.md"
 check "SKILL.md documents resolve" grep -q 'registry.sh resolve' "$SKD0/SKILL.md"
@@ -1525,6 +1525,81 @@ eq "migrate --dry-run deleted nothing" "$(nmut)" 0
 eq "migrate: deletes our claim comment" "$("$LIN" migrate | jq -r .deleted)" 1
 eq "migrate: the other machine's claim comment and a human comment remain" "$(jq -c '[.issues[] | select(.identifier == "DEV-1") | .comments[].id]' "$LINEAR_DB")" '["C2","C3"]'
 : >"$LINEAR_LOG"; eq "migrate: a second run deletes nothing" "$("$LIN" migrate | jq -r .deleted):$(nmut)" "0:0"
+
+# ---- DEV-368 S: schedule.sh and loop-tick.sh ------------------------------------------------------------
+_sstate="$FLEET_STATE_DIR"; _sreg="$FLEET_REGISTRY"; _sinbox="${FLEET_INBOX:-}"
+export FLEET_STATE_DIR="$T/sst" FLEET_REGISTRY="$T/sst/fleet.json" FLEET_INBOX="$T/sst/e.jsonl"; mkdir -p "$FLEET_STATE_DIR"
+SCH="$SCRIPTS/schedule.sh"; LA="$T/la"; LCL="$T/lctl.log"; LOADED="$T/lctl.loaded"; : >"$LCL"; rm -f "$LOADED"
+cat >"$T/lctl" <<'S'
+#!/usr/bin/env bash
+echo "$*" >>"$LCL"
+case "$1" in
+  bootstrap) : >"$LOADED" ;;
+  bootout) rm -f "$LOADED" ;;
+  print) [ -e "$LOADED" ] && printf 'service = {\n\tlast exit code = 0\n}\n' ;;
+esac
+S
+chmod +x "$T/lctl"; export LCL LOADED
+sch() { FLEET_LAUNCH_AGENTS="$LA" FLEET_LAUNCHCTL="$T/lctl" FLEET_UID=501 "$SCH" "$@"; }
+printf 'tick_secs = 120\n' >"$FLEET_CONFIG_DIR/config.toml"
+LINEAR_API_KEY=lin_api_SECRETKEYFIXTURE sch render >"$T/plist1"
+check "schedule: the plist is valid XML" plutil -lint "$T/plist1"
+eq "schedule: label defaults to io.devpie.fleet.tick" "$(plutil -extract Label raw "$T/plist1")" io.devpie.fleet.tick
+eq "schedule: interval comes from config" "$(plutil -extract StartInterval raw "$T/plist1")" 120
+eq "schedule: runs loop-tick.sh under /bin/bash" "$(plutil -extract ProgramArguments json -o - "$T/plist1" | jq -c .)" "[\"/bin/bash\",\"$SCRIPTS/loop-tick.sh\"]"
+eq "schedule: RunAtLoad" "$(plutil -extract RunAtLoad raw "$T/plist1")" true
+eq "schedule: output goes to loop.log" "$(plutil -extract StandardOutPath raw "$T/plist1")" "$FLEET_STATE_DIR/loop.log"
+check "schedule: PATH carries homebrew and the system dirs" bash -c "plutil -extract EnvironmentVariables.PATH raw '$T/plist1' | tr : '\n' | grep -qx /opt/homebrew/bin && plutil -extract EnvironmentVariables.PATH raw '$T/plist1' | tr : '\n' | grep -qx /usr/bin"
+eq "schedule: only PATH and HOME are in the environment" "$(plutil -extract EnvironmentVariables json -o - "$T/plist1" | jq -c 'keys')" '["HOME","PATH"]'
+eq "schedule: no key value in the plist" "$(grep -c 'SECRETKEYFIXTURE\|lin_api' "$T/plist1" || true)" 0
+printf 'schedule_label = "x.test.tick"\n' >>"$FLEET_CONFIG_DIR/config.toml"
+eq "schedule: label from config" "$(sch render | plutil -extract Label raw -)" x.test.tick
+rm -f "$FLEET_CONFIG_DIR/config.toml"
+eq "schedule: status before install" "$(sch status)" "not installed"
+sch install >/dev/null; P="$LA/io.devpie.fleet.tick.plist"
+check "schedule: install writes the plist" test -f "$P"
+eq "schedule: install bootstraps once into gui/501" "$(grep -c '^bootstrap gui/501 ' "$LCL")" 1
+cp "$P" "$T/plist.before"; : >"$LCL"
+eq "schedule: a second install says so" "$(sch install)" "already installed: io.devpie.fleet.tick"
+eq "schedule: and changes nothing" "$(cat "$LCL" | grep -c '^bootstrap\|^bootout' || true)$(cmp -s "$P" "$T/plist.before" && echo same)" 0same
+check "schedule: status says loaded" bash -c "FLEET_LAUNCH_AGENTS='$LA' FLEET_LAUNCHCTL='$T/lctl' '$SCH' status | grep -q '^loaded: io.devpie.fleet.tick'"
+check "schedule: and the last exit" bash -c "FLEET_LAUNCH_AGENTS='$LA' FLEET_LAUNCHCTL='$T/lctl' '$SCH' status | grep -q '^last exit: 0'"
+sch uninstall >/dev/null
+check "schedule: uninstall removes the plist" test ! -e "$P"
+check "schedule: and boots it out" grep -q '^bootout gui/501/io.devpie.fleet.tick' "$LCL"
+eq "schedule: uninstall again is fine" "$(sch uninstall)" "not installed: io.devpie.fleet.tick"
+eq "schedule: the real LaunchAgents dir was never touched" "$(ls "$HOME/Library/LaunchAgents" 2>/dev/null | wc -l | tr -d ' ')" 0
+
+# -- loop-tick.sh: the wake rule, with a fake tick
+FT="$T/fake-tick"; FTJ="$T/fake-tick.json"
+printf '#!/usr/bin/env bash\n[ ! -s "%s" ] || cat "%s"\n' "$FTJ" "$FTJ" >"$FT"; chmod +x "$FT"
+lt() { FLEET_TICK="$FT" "$SCRIPTS/loop-tick.sh"; }
+"$REG" add '{"name":"orchestrator","team":"orch","tier":"Orchestrator","status":"Working","herdr_ref":"orch-ref","pane":"po"}'
+nprompt() { grep -c '^agent prompt orch-ref ' "$HERDR_LOG" || true; }
+: >"$HERDR_LOG"; : >"$FTJ"; EVS="$FLEET_STATE_DIR/events.jsonl"; rm -f "$EVS"
+eq "loop: a quiet tick prints nothing" "$(lt)" ""
+eq "loop: and wakes nobody" "$(nprompt)" 0
+echo '[{"type":"stalled","team":"t","name":"t/builder"},{"type":"pr_opened","team":"t","name":"t/builder","url":"u"},{"type":"escalation","team":"t","name":"t/lead","severity":"P2","message":"low"},{"type":"disk","team":"","name":"disk"}]' >"$FTJ"
+lt >/dev/null; eq "loop: non-judgment events wake nobody" "$(nprompt)" 0
+for ev in '{"type":"pr_ready","team":"t","name":"t/tester","url":"https://x/pull/1"}' '{"type":"pr_merged","team":"t","name":"t/tester","url":"https://x/pull/1"}' '{"type":"escalation","team":"t","name":"t/lead","severity":"P1","message":"which db?"}' '{"type":"escalation","team":"t","name":"t/lead","severity":"P0","message":"down"}' '{"type":"dead","team":"t","name":"t/builder"}' '{"type":"claim_takeover","team":"t","name":"t/lead","issue":"DEV-9","holder":"Mac 2"}' '{"type":"respawned","team":"t","name":"t/builder","status":"Failed"}'; do
+  : >"$HERDR_LOG"; rm -f "$AS"/orch-ref*; echo "[$ev]" >"$FTJ"; lt >/dev/null; k="$(printf '%s' "$ev" | jq -r '.type + "/" + (.severity // .status // "")')"
+  eq "loop: $k wakes the Orchestrator once" "$(nprompt)" 1
+done
+: >"$HERDR_LOG"; echo '[{"type":"dead","team":"t","name":"t/a"},{"type":"pr_ready","team":"t","name":"t/tester","url":"https://x/pull/2"},{"type":"stalled","team":"t","name":"t/b"}]' >"$FTJ"; rm -f "$AS"/orch-ref*; lt >/dev/null
+eq "loop: several events are one wake" "$(nprompt)" 1
+check "loop: that names both judgment events and not the stall" bash -c "grep '^agent prompt orch-ref ' '$HERDR_LOG' | grep -q 't/a died' && grep '^agent prompt orch-ref ' '$HERDR_LOG' | grep -q 'pull/2' && ! grep '^agent prompt orch-ref ' '$HERDR_LOG' | grep -q 't/b'"
+eq "loop: a good respawn is not a wake" "$(echo '[{"type":"respawned","team":"t","name":"t/builder","status":"Working"}]' >"$FTJ"; : >"$HERDR_LOG"; rm -f "$AS"/orch-ref*; lt >/dev/null; nprompt)" 0
+# no pane: a notification and orchestrator_wake_missed
+"$REG" set orchestrator herdr_ref= >/dev/null
+: >"$HERDR_LOG"; echo '[{"type":"dead","team":"t","name":"t/builder"}]' >"$FTJ"; lt >/dev/null
+eq "loop: no pane means no prompt" "$(nprompt)" 0
+eq "loop: a notification instead" "$(grep -c '^notification show ' "$HERDR_LOG")" 1
+eq "loop: and orchestrator_wake_missed is logged" "$(grep -c '"type":"orchestrator_wake_missed"' "$EVS")" 1
+shim "$T" osascript 'echo "$*" >>"$T_OSA"'; export T_OSA="$T/osa.log"; : >"$T_OSA"
+NOTIFY_FAIL=1 lt >/dev/null
+eq "loop: herdr notification failing falls back to osascript" "$(grep -c 'display notification' "$T_OSA" || true)" 1
+rm -f "$T/bin/osascript"
+export FLEET_STATE_DIR="$_sstate" FLEET_REGISTRY="$_sreg"; [ -n "$_sinbox" ] && export FLEET_INBOX="$_sinbox" || unset FLEET_INBOX
 
 # -- N3: the full machine id never leaves the machine; only its hash is published
 MID="$SCRIPTS/machine-id.sh"
