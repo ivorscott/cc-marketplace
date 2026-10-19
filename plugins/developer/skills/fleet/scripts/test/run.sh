@@ -1983,9 +1983,17 @@ for c in "cd /tmp${NLC}grep -r x ~" "echo hi${NLC}find ~" "cd /tmp${NLC}ls -R ~"
   'sudo Find ~' 'timeout 5 Grep -r x ~' 'nice -n 5 Tar cf x ~' 'xargs Grep -r x ~' 'env Find ~' 'if Find ~' '! Grep -r x ~' 'echo ~ | xargs Grep -r x' 'echo Tree ~'; do
   eq "bash guard (lines, quotes, case): $(printf '%s' "$c" | tr '\n' '~') is denied" "$(bgh "$c")" deny
 done
+# every form from the review of f9ec6f9
+for c in '\grep -r x ~' '\Find ~' '$(which grep) -r x ~' '`which grep` -r x ~' 'watch "grep -r x ~"' '/USR/BIN/GREP -r x ~' '/Usr/Bin/Find ~' \
+  'echo "; grep -r x ~; echo "' 'grep -e a -e b -e c -e d -e e -e f -e g -e h -e i -e j -e k -e l -e m -e n -e o -e p -e q -e r2 -e s -e t -e u -r x ~'; do
+  eq "bash guard (review forms): $c is denied" "$(bgh "$c")" deny
+done
 bigw="echo $(for i in $(seq 1 1000); do printf 'ls '; done); grep -r x ~"
-t0=$(date +%s); r="$(jq -nc --arg c "$bigw" '{tool_name: "Bash", tool_input: {command: $c}}' | env -u FLEET_CONFIG_DIR -u XDG_CONFIG_HOME FLEET_STATE_DIR="$T/gstate" FLEET_ROLE=worker FLEET_TEAM=build-ft "$BG")"; t1=$(date +%s)
-eq "bash guard: 1000 ls words then grep -r x ~ is denied by the size cap within 2 seconds" "$((t1 - t0 <= 2)):$(printf '%s' "$r" | jq -r '.hookSpecificOutput.permissionDecisionReason' | grep -c 'too long for the fleet guard')" "1:1"
+t0=$(date +%s); r="$(bgh "$bigw")"; t1=$(date +%s)
+eq "bash guard: 1000 ls words then grep -r x ~ is denied within 2 seconds (one pass, no size cap)" "$((t1 - t0 <= 2)):$r" "1:deny"
+bigq="gh pr create --title t --body \"$(for i in $(seq 1 2000); do printf 'word '; done)\""
+t0=$(date +%s); r="$(bgh "$bigq")"; t1=$(date +%s)
+eq "bash guard: a 2000-word quoted PR body is allowed within 2 seconds" "$((t1 - t0 <= 2)):$r" "1:allow"
 benign="echo $(for i in $(seq 1 300); do printf 'ls '; done)"
 t0=$(date +%s); r="$(bgh "$benign")"; t1=$(date +%s)
 eq "bash guard: a 300-word benign command is allowed within 2 seconds" "$((t1 - t0 <= 2)):$r" "1:allow"
