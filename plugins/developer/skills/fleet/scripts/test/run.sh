@@ -311,7 +311,7 @@ eq "boot: every pane split gets KUBECONFIG" "$(grep '^pane split' "$HERDR_LOG" |
 check "boot: env dir exists but no kubeconfig file yet" test -d "$FLEET_STATE_DIR/env/build-envt" -a ! -e "$FLEET_STATE_DIR/env/build-envt/kubeconfig"
 eq "boot: no cluster created" "$(calls up)" 0
 check "boot: tester allow has env.sh up with the scripts path" grep -q "env.sh up" <(grep '^agent start build-envt-tester' "$HERDR_LOG")
-eq "boot: the Linear key is dropped in each claude pane before its agent starts" "$(awk '/^pane run .*unset LINEAR_API_KEY/ {u++} /^agent start/ {if (u <= a) bad++; a++} END {print a + 0, bad + 0}' "$HERDR_LOG")" "$(grep -c '^agent start' "$HERDR_LOG") 0"
+eq "boot: the Linear key is dropped in each claude pane before its agent starts" "$(awk '/^pane run .*unset LINEAR_API_KEY / {u++} /^agent start/ {if (u <= a) bad++; a++} END {print a + 0, bad + 0}' "$HERDR_LOG")" "$(grep -c '^agent start' "$HERDR_LOG") 0"
 eq "boot: no unsubstituted {{scripts}}" "$(grep -c '{{scripts}}' "$HERDR_LOG")" 0
 check "boot: tester allow has the team-scoped kubectl context" grep -q -- "kubectl --context fleet-build-envt get" <(grep '^agent start build-envt-tester' "$HERDR_LOG")
 eq "boot: no unsubstituted {{team}} or {{worktree}} in an allow list" "$(grep '^agent start' "$HERDR_LOG" | grep -c '{{team}}\|{{worktree}}')" 0
@@ -1336,6 +1336,11 @@ check "F3: still untouched" test "$(cat "$FLEET_REGISTRY")" = "$before"
 FLEET_ROLE=worker FLEET_NAME=fx/builder "$REG" set fx/builder summary="did it" status=Working >/dev/null 2>&1; eq "F3: an agent may set status and summary" "$?" 0
 FLEET_ROLE=worker FLEET_NAME=fx/builder "$REG" signoff fx/builder https://github.com/o/r/pull/43 abc1234 >/dev/null 2>&1; eq "F3: a builder's signoff is refused" "$?" 1
 FLEET_ROLE=worker FLEET_NAME=fx/tester "$REG" signoff fx/builder https://github.com/o/r/pull/43 abc1234 >/dev/null 2>&1; eq "F3: a tester may not sign off another row" "$?" 1
+FLEET_ROLE=worker FLEET_NAME=fx/tester "$REG" signoff fx/tester https://github.com/o/r/pull/43 ABCDEF1 >/dev/null 2>&1; FLEET_ROLE=tester FLEET_NAME=fx/builder "$REG" signoff fx/builder https://github.com/o/r/pull/43 abc1234 >/dev/null 2>&1; eq "6b: FLEET_ROLE=tester does not skip the name check (a builder cannot sign off)" "$?" 1
+FLEET_ROLE=tester FLEET_NAME=fx/tester "$REG" signoff fx/builder https://github.com/o/r/pull/43 abc1234 >/dev/null 2>&1; eq "6b: FLEET_ROLE=tester does not let the tester sign off another row" "$?" 1
+FLEET_ROLE=tester "$REG" signoff fx/tester https://github.com/o/r/pull/43 abc1234 >/dev/null 2>&1; eq "6b: FLEET_ROLE=tester with no FLEET_NAME is refused" "$?" 1
+FLEET_ROLE=tester FLEET_NAME=fx/tester FLEET_TEAM=othertm "$REG" signoff fx/tester https://github.com/o/r/pull/43 abc1234 >/dev/null 2>&1; eq "6b: a tester of another team may not sign off this row" "$?" 1
+FLEET_ROLE=tester FLEET_NAME=fx/tester FLEET_TEAM=fx "$REG" signoff fx/tester https://github.com/o/r/pull/43 abc1234 >/dev/null 2>&1; eq "6b: a tester signs off its own row in its own team" "$?" 0
 FLEET_ROLE=worker FLEET_NAME=fx/tester "$REG" signoff fx/tester https://github.com/o/r/pull/43 ABCDEF1 >/dev/null 2>&1; eq "F3: the tester signs off for itself" "$?" 0
 eq "F3: the sha is stored lowercase" "$("$REG" get fx/tester | jq -r .signoff.sha)" abcdef1
 eq "F3: the Orchestrator (no FLEET_ROLE) may record a signoff" "$("$REG" signoff fx/tester https://github.com/o/r/pull/41 "${H1:0:7}" >/dev/null 2>&1; echo $?)" 0
@@ -2053,7 +2058,7 @@ cp "$T/config.b.bak" "$FLEET_CONFIG_DIR/config.toml"; printf 'claim_settle_secs 
 printf '%s\n' "$LINEAR_STUB_KEY" >"$FLEET_CONFIG_DIR/linear_api_key"; chmod 600 "$FLEET_CONFIG_DIR/linear_api_key"
 LINEAR_API_KEY="$LINEAR_STUB_KEY" bt --issue DEV-82 --claimed-by test build lk1 "$T/plain" t
 eq "boot: with a key it boots" "$BTRC" 0
-eq "boot: no herdr command line holds the key or its file name" "$(grep -v '^pane run [^ ]* unset LINEAR_API_KEY$' "$HERDR_LOG" | grep -c "KEYFIXTURE\|linear_api_key\|LINEAR_API_KEY")" 0
+eq "boot: no herdr command line holds the key or its file name" "$(grep -v '^pane run [^ ]* unset LINEAR_API_KEY AWS_' "$HERDR_LOG" | grep -c "KEYFIXTURE\|linear_api_key\|LINEAR_API_KEY")" 0
 rm -f "$FLEET_CONFIG_DIR/linear_api_key"
 
 # -- the key is never in an argv, a log or an output
@@ -2665,6 +2670,44 @@ EXIT_STUCK=1 "$SCRIPTS/next.sh" build-hb DEV-9 >/dev/null 2>"$T/next.err"; rc=$?
 eq "next: an agent that does not exit is set Failed and next exits 1" "$rc:$("$REG" list --team build-hb | jq -c '[.[].status] | unique')" '1:["Failed"]'
 eq "next: and it was never started again" "$(grep -c '^agent start' "$HERDR_LOG" || true)" 0
 check "next: the error names it" grep -q 'did not exit' "$T/next.err"
+
+# -- env scrub: every claude pane drops the key, the AWS variables and config scrub_env, then points the AWS files at /dev/null
+printf 'scrub_env = ["MY_SECRET_TOKEN", "bad name"]\n' >>"$FLEET_CONFIG_DIR/config.toml"
+: >"$HERDR_LOG"; rm -f "${AS:?}"/*
+AWS_PROFILE=prod AWS_DEFAULT_PROFILE=prod AWS_ACCESS_KEY_ID=AKIAX AWS_SECRET_ACCESS_KEY=sek AWS_SESSION_TOKEN=tok MY_SECRET_TOKEN=s3 LINEAR_API_KEY=KEYFIXTURE KUBECONFIG=/home/me/.kube/config \
+  "$SCRIPTS/boot.sh" build scr "$T/repo" task >/dev/null 2>&1
+envf="$(ls "$AS"/*.env | head -1)"
+eq "scrub: each claude pane's shell drops every credential variable" "$(for f in "$AS"/*.env; do grep -c '^\(AWS_PROFILE\|AWS_DEFAULT_PROFILE\|AWS_ACCESS_KEY_ID\|AWS_SECRET_ACCESS_KEY\|AWS_SESSION_TOKEN\|MY_SECRET_TOKEN\|LINEAR_API_KEY\)=' "$f" || true; done | sort -u | tr '\n' ' ')" "0 "
+eq "scrub: and points the AWS files and KUBECONFIG at /dev/null" "$(grep '^\(AWS_SHARED_CREDENTIALS_FILE\|AWS_CONFIG_FILE\|KUBECONFIG\)=' "$envf" | sort | tr '\n' ' ')" "AWS_CONFIG_FILE=/dev/null AWS_SHARED_CREDENTIALS_FILE=/dev/null KUBECONFIG=/dev/null "
+eq "scrub: it runs before the agent starts, in every pane" "$(awk '/^pane run .*unset LINEAR_API_KEY AWS_PROFILE/ {u++} /^agent start/ {if (u <= a) bad++; a++} END {print a + 0, bad + 0}' "$HERDR_LOG")" "$(grep -c '^agent start' "$HERDR_LOG") 0"
+eq "scrub: a name that is not a variable name never reaches the shell" "$(grep -c 'bad name' "$HERDR_LOG" || true)" 0
+eq "scrub: the team's own kubeconfig survives" "$(. "$SCRIPTS/common.sh"; . "$SCRIPTS/agent-lib.sh"; KUBECONFIG="$FLEET_STATE_DIR/env/t/kubeconfig" bash -c "$(scrub_cmd); echo \$KUBECONFIG")" "$FLEET_STATE_DIR/env/t/kubeconfig"
+eq "scrub: no key, file name or credential value reached a herdr command line" "$(grep -c 'KEYFIXTURE\|AKIAX\|s3$' "$HERDR_LOG" || true)" 0
+cp "$T/config.d.bak" "$FLEET_CONFIG_DIR/config.toml"; printf 'tell_confirm_secs = 2\nbrief_idle_secs = 2\n' >>"$FLEET_CONFIG_DIR/config.toml"
+
+# -- bash guard: installers, merges, force pushes and pushes to the default branch
+gd() { jq -nc --arg c "$1" '{tool_name: "Bash", tool_input: {command: $c}}' | FLEET_ROLE=worker FLEET_TEAM=build-ft FLEET_NAME=build-ft/builder FLEET_CONFIG_DIR="${2:-$FLEET_CONFIG_DIR}" "$BG" | dec; }
+for c in "brew install jq" "npm i left-pad" "npm install left-pad" "pip install requests" "pip3 install requests" "python3 -m pip install requests" "go install x@latest" "gem install rake" "cargo install ripgrep" "sudo apt-get install foo" "apt install foo" "yarn add x" "pnpm add x" "cd w && FOO=1 brew install jq"; do
+  eq "guard: '$c' is denied by default" "$(gd "$c")" deny
+done
+for c in "npm ci" "npm install" "go mod download" "bundle install" "pip install -r requirements.txt" "pip install --requirement=r.txt" "echo brew install" "ls | grep install"; do
+  eq "guard: '$c' passes (lockfile or not an installer)" "$(gd "$c")" allow
+done
+mkdir -p "$T/gcfg"; printf 'installs = "allow"\n' >"$T/gcfg/config.toml"
+eq "guard: installs = \"allow\" lifts the installer rule" "$(gd "brew install jq" "$T/gcfg")" allow
+eq "guard: ...but not the merge rule" "$(gd "gh pr merge 4" "$T/gcfg")" deny
+eq "guard: gh pr merge is denied" "$(gd "gh pr merge 4 --squash")" deny
+eq "guard: gh pr merge is denied behind &&" "$(gd "true && gh pr merge 4")" deny
+eq "guard: gh pr view passes" "$(gd "gh pr view 4")" allow
+for c in "git push --force origin fleet/x" "git push -f origin fleet/x" "git push origin fleet/x --force" "git push origin +fleet/x" "git push origin main" "git push origin HEAD:main" "git push origin HEAD:refs/heads/master" "git -C w push origin main" "git push --force --force-with-lease origin fleet/x"; do
+  eq "guard: '$c' is denied" "$(gd "$c")" deny
+done
+for c in "git push --force-with-lease origin fleet/x" "git push --force-with-lease=fleet/x origin fleet/x" "git push origin fleet/dev-1-x" "git push -u origin fleet/dev-1-x" "git status"; do
+  eq "guard: '$c' passes" "$(gd "$c")" allow
+done
+eq "guard: a lead is held to the same rules" "$(jq -nc '{tool_name: "Bash", tool_input: {command: "gh pr merge 4"}}' | FLEET_ROLE=lead FLEET_TEAM=build-ft "$BG" | dec)" deny
+eq "guard: the Orchestrator (no FLEET_ROLE) may merge and install" "$(jq -nc '{tool_name: "Bash", tool_input: {command: "brew install jq && gh pr merge 4 && git push --force origin main"}}' | env -u FLEET_ROLE "$BG" | dec)" allow
+check "README says the guard is not a security boundary" grep -q 'not a security boundary' "$SKD_/README.md"
 
 # -- sandbox: temporary roots, no session, no key, no role; refuses the live roots; the incident replay
 LIVEDIR="$HOME/.local/state/fleet"; mkdir -p "$LIVEDIR"

@@ -14,6 +14,11 @@
 #   and send-keys only for leads: a worker cannot drive anyone. A target that cannot be read off the command
 #   (a variable, a substitution) is denied, and so is any target when the registry cannot be read.
 #
+#   Every fleet agent also: package installers are denied (brew/npm/pnpm/yarn/pip/go/gem/cargo/apt install of
+#   a named package) unless config.toml has installs = "allow"; installs from a lockfile pass (npm ci, bundle
+#   install, go mod download, pip install -r). `gh pr merge` is denied, a git push with --force or -f (or a
+#   +refspec) is denied (--force-with-lease is the way), and so is a push to the default branch.
+#
 # Command names are matched without regard to case (APFS: /opt/homebrew/bin/HERDR runs herdr, GREP runs grep).
 # Deliberate evasion of a lexical guard (eval, variables, aliases, encodings, an interpreter such as python -c)
 # is part of the documented residual.
@@ -31,6 +36,87 @@ deny() { jq -n --arg r "$1" '{hookSpecificOutput: {hookEventName: "PreToolUse", 
 if printf '%s' "$cmd" | grep -qi 'linear_api_key'; then
   deny "fleet bash guard: the command names the Linear key; only the Orchestrator reads it."
 fi
+
+# --- installers, merges and pushes (every fleet agent) ---------------------------------------------------------
+# Matched on the command position of each simple command (split on ; & | ( ) and newlines), after leading
+# VAR=value words and sudo/command/env. `installs = "allow"` in config.toml turns the installer rule off.
+installs=deny
+cfg="${FLEET_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/fleet}/config.toml"
+if [ -f "$cfg" ] && sed -n 's/^[[:space:]]*installs[[:space:]]*=[[:space:]]*"\([a-z]*\)".*/\1/p' "$cfg" | head -1 | grep -qx allow; then installs=allow; fi
+
+default_branches() { # main, master and whatever origin/HEAD points at
+  printf 'main\nmaster\n'
+  git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##'
+}
+is_default_branch() { default_branches | grep -Fxq -- "$1"; }
+
+check_install() { # check_install <words...>: deny a package installer unless it installs from a lockfile
+  [ "$installs" = allow ] && return 0
+  local tool="${1##*/}" sub="${2:-}" a pkgs=0 lock=0 skip=1
+  case "$tool" in python | python3 | python3.*) if [ "$sub" = -m ] && [ "${3:-}" = pip ]; then shift 2; tool=pip; sub="${2:-}"; else return 0; fi ;; esac
+  case "$tool $sub" in
+    "brew install" | "brew reinstall" | "go install" | "gem install" | "cargo install" | "apt install" | "apt-get install" | "yarn add" | "pnpm add" | "npm add")
+      deny "fleet bash guard: $tool $sub installs software; say what is needed in your report and let the owner run it (config installs = \"allow\" lifts this)." ;;
+    "npm i" | "npm install" | "pnpm install" | "pnpm i" | "yarn install")
+      for a in "${@:3}"; do case "$a" in -*) ;; *) pkgs=1 ;; esac; done
+      [ "$pkgs" = 0 ] || deny "fleet bash guard: $tool $sub <package> adds a dependency; install from the lockfile (npm ci) or report the need." ;;
+    "pip install" | "pip3 install")
+      for a in "${@:3}"; do case "$a" in -r | --requirement | -r* | --requirement=*) lock=1 ;; esac; done
+      [ "$lock" = 1 ] || deny "fleet bash guard: $tool install <package> installs software; use -r with a lockfile or report the need." ;;
+  esac
+}
+
+check_git_push() { # check_git_push <words after "git push">
+  local a force=0 lease=0 refs=0 cur ref
+  for a in "$@"; do
+    case "$a" in
+      --force-with-lease | --force-with-lease=* | --force-if-includes) lease=1 ;;
+      --force | -f) force=1 ;;
+      --*) ;;
+      -*f*) force=1 ;;
+      -*) ;;
+    esac
+  done
+  [ "$force" = 0 ] || deny "fleet bash guard: a bare force push can overwrite work; use git push --force-with-lease origin <branch>."
+  local pos=0
+  for a in "$@"; do
+    case "$a" in -*) continue ;; esac
+    pos=$((pos + 1)); [ "$pos" -ge 2 ] || continue
+    refs=1; ref="${a#+}"
+    [ "$ref" = "$a" ] || deny "fleet bash guard: a +refspec forces the push; use --force-with-lease."
+    ref="${ref##*:}"; ref="${ref#refs/heads/}"
+    if is_default_branch "$ref"; then deny "fleet bash guard: agents never push to the default branch ($ref); push your fleet/<slug> branch."; fi
+    [ "$ref" != HEAD ] || { cur="$(git symbolic-ref -q --short HEAD 2>/dev/null || true)"; [ -z "$cur" ] || ! is_default_branch "$cur" || deny "fleet bash guard: HEAD is the default branch ($cur); agents never push to it."; }
+  done
+  if [ "$refs" = 0 ]; then # a bare `git push`: pushes the current branch
+    cur="$(git symbolic-ref -q --short HEAD 2>/dev/null || true)"
+    [ -z "$cur" ] || ! is_default_branch "$cur" || deny "fleet bash guard: you are on the default branch ($cur); agents never push to it."
+  fi
+  : "$lease"
+}
+
+while IFS= read -r seg; do
+  read -r -a w <<<"${seg//[\"\'\`]/ }"
+  i=0
+  while [ "$i" -lt "${#w[@]}" ]; do
+    case "${w[$i]}" in *=* | sudo | command | env | exec | nohup | time) i=$((i + 1)) ;; *) break ;; esac
+  done
+  [ "$i" -lt "${#w[@]}" ] || continue
+  rest=("${w[@]:$i}")
+  case "${rest[0]##*/}" in
+    git)
+      j=1; while [ "$j" -lt "${#rest[@]}" ]; do # git's own options before the subcommand
+        case "${rest[$j]}" in -C | -c | --git-dir | --work-tree) j=$((j + 2)) ;; -*) j=$((j + 1)) ;; *) break ;; esac
+      done
+      if [ "${rest[$j]:-}" = push ]; then check_git_push "${rest[@]:$((j + 1))}"; fi ;;
+    gh)
+      if [ "${rest[1]:-}" = pr ] && [ "${rest[2]:-}" = merge ]; then
+        deny "fleet bash guard: agents never merge a PR; the merger (config merger, default a human) does."
+      fi ;;
+    *) check_install "${rest[@]}" ;;
+  esac
+done < <(printf '%s\n' "$cmd" | tr ';&|()' '\n\n\n\n\n')
+
 
 
 # --- the key's directory ------------------------------------------------------------------------------------

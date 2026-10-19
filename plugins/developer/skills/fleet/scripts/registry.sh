@@ -279,10 +279,15 @@ case "$cmd" in
     name="${1:?usage: signoff <name> <pr-url|N> <sha>}"; pr="${2:?usage: signoff <name> <pr-url|N> <sha>}"; sha="${3:?usage: signoff <name> <pr-url|N> <sha>}"
     exists "$name"
     # Only the tester signs off, and only for itself: an agent's FLEET_NAME must end in /tester and be the row
-    # named. (FLEET_NAME and FLEET_ROLE are conventions an agent could set: this guards against mistakes,
-    # not against an adversary.) The Orchestrator and scripts (FLEET_ROLE unset) may record a sign-off.
-    if [ -n "${FLEET_ROLE:-}" ] && [ "${FLEET_ROLE:-}" != tester ]; then
-      case "${FLEET_NAME:-}" in */tester) [ "${FLEET_NAME:-}" = "$name" ] || die "signoff: $name is not you (${FLEET_NAME:-unknown})" ;; *) die "signoff is the tester's: ${FLEET_NAME:-this agent} may not sign off" ;; esac
+    # named, in the agent's own team (FLEET_TEAM). No FLEET_ROLE value skips this check. (FLEET_NAME, FLEET_TEAM
+    # and FLEET_ROLE are conventions an agent could set: this guards against mistakes, not against an
+    # adversary.) The Orchestrator and scripts (FLEET_ROLE unset) may record a sign-off.
+    if [ -n "${FLEET_ROLE:-}" ]; then
+      case "${FLEET_NAME:-}" in
+        */tester) [ "${FLEET_NAME:-}" = "$name" ] || die "signoff: $name is not you (${FLEET_NAME:-unknown})"
+          [ -z "${FLEET_TEAM:-}" ] || [ "$(jq -r --arg n "$name" '.agents[$n].team' "$FLEET_REGISTRY")" = "${FLEET_TEAM:-}" ] || die "signoff: $name is not in your team (${FLEET_TEAM:-unknown})" ;;
+        *) die "signoff is the tester's: ${FLEET_NAME:-this agent} may not sign off" ;;
+      esac
     fi
     printf '%s' "$sha" | grep -Eq '^[0-9a-fA-F]{7,40}$' || die "sha must be 7-40 hex characters: $sha"
     sha="$(printf '%s' "$sha" | tr 'A-F' 'a-f')"
