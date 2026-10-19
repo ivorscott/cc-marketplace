@@ -1556,6 +1556,22 @@ eq "guard: a worker editing a file of that name inside the worktree is denied" "
 eq "guard: reading another file outside the worktree is allowed" "$(gin Read "$T/elsewhere.txt" | FLEET_ROLE=worker FLEET_WORKTREE="$T/wtg" "$GUARD")" ""
 eq "guard: editing a file inside the worktree is allowed" "$(gin Edit "$T/wtg/x.txt" | FLEET_ROLE=worker FLEET_WORKTREE="$T/wtg" "$GUARD")" ""
 eq "guard: writing outside the worktree is still denied" "$(gin Write "$T/elsewhere.txt" | FLEET_ROLE=worker FLEET_WORKTREE="$T/wtg" "$GUARD" | jq -r .hookSpecificOutput.permissionDecision)" deny
+dec() { local o; o="$(cat)"; if [ -z "$o" ]; then echo allow; else printf '%s' "$o" | jq -r '.hookSpecificOutput.permissionDecision // "allow"'; fi; } # a hook that prints nothing allows
+eq "guard: a lead reading the key is denied too" "$(gin Read "$T/anywhere/.config/fleet/$kf" | FLEET_ROLE=lead "$GUARD" | dec)" deny
+eq "guard: a lead editing the key is denied" "$(gin Edit "$FLEET_CONFIG_DIR/$kf" | FLEET_ROLE=lead "$GUARD" | dec)" deny
+eq "guard: a lead may still read and write outside any worktree" "$(gin Write "$T/elsewhere.txt" | FLEET_ROLE=lead "$GUARD" | dec)" allow
+eq "guard: a session that is not a fleet agent (the Orchestrator) is never restricted" "$(gin Read "$FLEET_CONFIG_DIR/$kf" | env -u FLEET_ROLE "$GUARD" | dec)" allow
+ln -s "$FLEET_CONFIG_DIR/$kf" "$T/wtg/innocent.txt"
+eq "guard: a symlink with another name to the key is denied (worker)" "$(gin Read "$T/wtg/innocent.txt" | FLEET_ROLE=worker FLEET_WORKTREE="$T/wtg" "$GUARD" | dec)" deny
+eq "guard: and for a lead" "$(gin Edit "$T/wtg/innocent.txt" | FLEET_ROLE=lead "$GUARD" | dec)" deny
+ln -s "$FLEET_CONFIG_DIR" "$T/wtg/cfg"; ln -s "$kf" "$FLEET_CONFIG_DIR/k3"
+eq "guard: a relative symlink reached through a symlinked directory is denied" "$(gin Read "$T/wtg/cfg/k3" | FLEET_ROLE=lead "$GUARD" | dec)" deny
+eq "guard: a path with .. through a directory that does not exist is resolved" "$(gin Read "$T/wtg/nope/../../config/k3" | FLEET_ROLE=lead "$GUARD" | dec)" deny
+eq "guard: the key by a .. path is denied" "$(gin Read "$T/wtg/sub/../../config/$kf" | FLEET_ROLE=worker FLEET_WORKTREE="$T/wtg" "$GUARD" | dec)" deny
+eq "guard: an ordinary file beside the key is allowed to a lead" "$(gin Read "$FLEET_CONFIG_DIR/config.toml" | FLEET_ROLE=lead "$GUARD" | dec)" allow
+eq "guard: a worker's symlink out of the worktree is resolved and denied for writes" "$(ln -s "$T/elsewhere2.txt" "$T/wtg/out.txt"; gin Write "$T/wtg/out.txt" | FLEET_ROLE=worker FLEET_WORKTREE="$T/wtg" "$GUARD" | dec)" deny
+eq "guard: .. out of the worktree is denied for a worker's write" "$(gin Write "$T/wtg/../escape.txt" | FLEET_ROLE=worker FLEET_WORKTREE="$T/wtg" "$GUARD" | dec)" deny
+rm -f "$T/wtg/innocent.txt" "$T/wtg/cfg" "$T/wtg/out.txt" "$FLEET_CONFIG_DIR/k3"
 check "hooks.json runs the guard for Read" grep -q '"matcher": "Read|' "$SCRIPTS/../../../hooks/hooks.json"
 check "linear.sh keeps reads and writes apart (gql_read and gql_write)" bash -c "grep -q '^gql_read()' '$LIN' && grep -q '^gql_write()' '$LIN'"
 realkey="config/fleet/""linear_api_key"
