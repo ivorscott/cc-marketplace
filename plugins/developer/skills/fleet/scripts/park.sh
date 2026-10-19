@@ -35,7 +35,7 @@ rows="$("$registry" list --team "$team" | jq -c '[.[] | select(.tier != "Orchest
 [ "$(printf '%s' "$rows" | jq '[.[] | select(.status == "Parked")] | length')" = 0 ] || die "team '$team' is already parked"
 
 if [ "$after" = 1 ]; then
-  "$registry" park-next "$team" "$reason" >/dev/null
+  "$registry" park-mark "$team" "$reason" >/dev/null
   ev_log park_marked team="$team" detail="$reason"
   jq -cn --arg t "$team" --arg r "$reason" '{team: $t, parked: false, will_park_after_merge: true, reason: $r}'
   exit 0
