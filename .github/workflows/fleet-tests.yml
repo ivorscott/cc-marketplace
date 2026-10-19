@@ -1,0 +1,33 @@
+name: fleet-tests
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  tests:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fleet test suite
+        run: bash plugins/developer/skills/fleet/scripts/test/run.sh
+
+  shellcheck:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: shellcheck changed scripts
+        run: |
+          files="$(git diff --name-only --diff-filter=ACMR "origin/${{ github.base_ref }}...HEAD" -- '*.sh')"
+          if [ -z "$files" ]; then
+            echo "no changed *.sh files"
+            exit 0
+          fi
+          printf '%s\n' "$files"
+          printf '%s\n' "$files" | xargs shellcheck --severity=error

@@ -46,7 +46,7 @@ check_disk() {
   fi
 }
 while :; do
-  cur="$("$FLEET_SCRIPTS/status.sh" "${args[@]}" --json 2>/dev/null | jq -c 'map({(.name): .status}) | add // {}')" || cur="$prev"
+  cur="$("$FLEET_SCRIPTS/status.sh" ${args[@]+"${args[@]}"} --json 2>/dev/null | jq -c 'map({(.name): .status}) | add // {}')" || cur="$prev"
   # Rows that left the live list (Done or Retired) are reported from the registry.
   while IFS='|' read -r name from to; do
     [ -z "$name" ] && continue
