@@ -58,7 +58,11 @@ check_install() { # check_install <words...>: deny a package installer unless it
     "brew install" | "brew reinstall" | "go install" | "gem install" | "cargo install" | "apt install" | "apt-get install" | "yarn add" | "pnpm add" | "npm add")
       deny "fleet bash guard: $tool $sub installs software; say what is needed in your report and let the owner run it (config installs = \"allow\" lifts this)." ;;
     "npm i" | "npm install" | "pnpm install" | "pnpm i" | "yarn install")
-      for a in "${@:3}"; do case "$a" in -*) ;; *) pkgs=1 ;; esac; done
+      set -- "${@:3}"
+      while [ $# -gt 0 ]; do
+        case "$1" in --prefix | --workspace | -w | --registry | --cwd | --dir | -C) shift 2; continue ;; -*) ;; *) pkgs=1 ;; esac
+        shift
+      done
       [ "$pkgs" = 0 ] || deny "fleet bash guard: $tool $sub <package> adds a dependency; install from the lockfile (npm ci) or report the need." ;;
     "pip install" | "pip3 install")
       for a in "${@:3}"; do case "$a" in -r | --requirement | -r* | --requirement=*) lock=1 ;; esac; done
@@ -102,7 +106,16 @@ while IFS= read -r seg; do
     case "${w[$i]}" in *=* | sudo | command | env | exec | nohup | time) i=$((i + 1)) ;; *) break ;; esac
   done
   [ "$i" -lt "${#w[@]}" ] || continue
-  rest=("${w[@]:$i}")
+  # Redirections are not arguments: drop 2>, >/dev/null, 2>&1's leftover and the word after a bare > or <.
+  rest=(); skipnext=0
+  for x in "${w[@]:$i}"; do
+    if [ "$skipnext" = 1 ]; then skipnext=0; continue; fi
+    case "$x" in
+      [0-9]*[\<\>]* | [\<\>]*) case "$x" in *[\<\>]) skipnext=1 ;; esac; continue ;;
+    esac
+    rest+=("$x")
+  done
+  [ "${#rest[@]}" -gt 0 ] || continue
   case "${rest[0]##*/}" in
     git)
       j=1; while [ "$j" -lt "${#rest[@]}" ]; do # git's own options before the subcommand
