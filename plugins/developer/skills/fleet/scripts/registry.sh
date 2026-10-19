@@ -45,6 +45,8 @@ lock() {
 update() {
   lock
   local tmp; tmp="$(mktemp "$FLEET_REGISTRY.XXXXXX")"
+  # The trap frees the temp file (and the lock) even when jq or the schema check kills the script.
+  trap "rm -f '$tmp'; rmdir '$LOCK' 2>/dev/null || true" EXIT
   if jq "$@" "$FLEET_REGISTRY" >"$tmp" && jq -e '.agents | type == "object"' "$tmp" >/dev/null 2>&1; then
     # Schema: a write may not make a row malformed (name a string, escalations an array of
     # entries with severity P0/P1/P2, message and at, discovered an array). A row that was
