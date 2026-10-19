@@ -28,7 +28,8 @@ plus the first 8 hex characters of the machine's own id. No tracker lookup, noth
 ## Claims: A0b. Claim
 
 With several machines on one Linear workspace, claim an issue before you boot a team for it, so
-two machines never work it. On one machine, skip this section. Claims need a Linear API key,
+two machines never work it. On one machine, skip this section. `scripts/claim.sh` holds the lease and heartbeat helpers;
+`linear.sh` talks to Linear. Claims need a Linear API key,
 `~/.config/fleet/linear_api_key` (mode 600) or `LINEAR_API_KEY` in your own shell; **read the
 `linear.sh` header before you use it, and never read, print or pass the key yourself**. Boot gives
 it to no agent, and the hooks deny agents its file and name (Read, Grep, Glob, Bash). That is a
@@ -222,3 +223,17 @@ nothing changes. With it:
 escalation move to `fleet-archive.json` (`archive_after_days`, default 0); the rest stay for the debrief.
 `retire.sh --summary` and `registry.sh get --archived` still find archived rows.
 
+## Blocked-prompt policy
+
+You may answer on your own only: **folder trust** for the repo passed to boot or a worktree under the fleet's state
+directory; **file edits** inside the worker's own worktree when its template sets `edits_in_worktree`; **read-only
+git** (`status`, `log`, `diff`, `show`) in the fleet's repo or worktrees. Tracker and forge tools belong in
+`tracker_allow` / `forge_allow` in `config.toml`; a role's routine commands in its template's `allow` list.
+Everything else goes to the user with the dialog text quoted: edits outside a worktree, shell commands, network
+access, credentials, anything unidentified. Read the options before sending a key: some default to the destructive
+choice (Claude's trust dialog defaults to "No, exit").
+
+## Sink
+
+If `~/.config/fleet/sink.md` exists, follow it after every route that changed the registry: push only
+`$F/registry.sh unsynced`, then `$F/registry.sh synced <names…>`. A sink failure is a one-line warning.

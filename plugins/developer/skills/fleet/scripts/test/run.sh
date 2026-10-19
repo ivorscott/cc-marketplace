@@ -741,19 +741,19 @@ eq "boot adds no chat_allow to agent settings" "$(grep -c chat_allow "$SCRIPTS/b
 # docs
 SKD="$SCRIPTS/.."
 for k in label_prefix machine_name machine_legacy_label claimed-by; do
-  check "SKILL.md mentions $k" grep -q -- "$k" "$SKD/SKILL.md"
+  check "SKILL.md mentions $k" grep -q -- "$k" "$SKD/SKILL.md" "$SKD/references/operations.md"
 done
-for k in linear_writes; do check "fleet README mentions $k" grep -q "$k" "$SKD/README.md"; check "SKILL.md mentions $k" grep -q "$k" "$SKD/SKILL.md"; done
+for k in linear_writes; do check "fleet README mentions $k" grep -q "$k" "$SKD/README.md"; check "SKILL.md mentions $k" grep -q "$k" "$SKD/SKILL.md" "$SKD/references/operations.md"; done
 for k in label_prefix machine_name machine_legacy_label; do check "fleet README mentions $k" grep -q "$k" "$SKD/README.md"; done
-for k in lease_hours chat_channel chat_allow 'status --all' linear.sh claim.sh chat.sh; do check "SKILL.md documents $k" grep -q -- "$k" "$SKD/SKILL.md"; done
+for k in lease_hours chat_channel chat_allow 'status --all' linear.sh claim.sh chat.sh; do check "SKILL.md documents $k" grep -q -- "$k" "$SKD/SKILL.md" "$SKD/references/operations.md"; done
 check "SKILL.md no longer lists the follow-ups as not yet done" test -z "$(grep 'Not yet' "$SKD/SKILL.md")"
 for k in lease_hours chat_channel chat_allow claim.sh chat.sh 'status --all'; do check "README documents $k" grep -q -- "$k" "$SKD/README.md"; done
 check "README tracker_allow example omits save_issue_label" test -z "$(grep -E 'tracker_allow.*save_issue_label' "$SKD/README.md")"
 check "README documents the cloned machine id risk" grep -qi 'cloned' "$SKD/README.md"
 check "machine-id.sh documents the cloned machine id risk" grep -qi 'cloned' "$SCRIPTS/machine-id.sh"
 check "registry.md documents the cloned machine id risk" grep -qi 'cloned' "$SKD/references/registry.md"
-check "SKILL.md says the tracker has no compare-and-swap" grep -q 'compare-and-swap' "$SKD/SKILL.md"
-check "SKILL.md: the heartbeat does not renew a voided claim" grep -qi 'must not renew' "$SKD/SKILL.md"
+check "SKILL.md says the tracker has no compare-and-swap" grep -q 'compare-and-swap' "$SKD/SKILL.md" "$SKD/references/operations.md"
+check "SKILL.md: the heartbeat does not renew a voided claim" grep -qi 'must not renew' "$SKD/SKILL.md" "$SKD/references/operations.md"
 check "registry.md documents the claim fields" grep -q 'claimed_by' "$SKD/references/registry.md"
 
 # Escalations reach the Orchestrator (DEV-364): inbox, resolve, open until resolved, notify failures, wait
@@ -809,8 +809,8 @@ eq "a working notification logs nothing" "$("$REG" escalate esc/builder P2 "n2" 
 for f in registry.sh status.sh retire.sh common.sh boot.sh tell.sh tick.sh next.sh linear.sh claim.sh respawn.sh metrics.sh agent-lib.sh schedule.sh loop-tick.sh sandbox.sh park.sh unpark.sh focus.sh; do check "bash -n $f" bash -n "$SCRIPTS/$f"; done
 SKD0="$SCRIPTS/.."
 eq "SKILL.md no longer routes through escalation-wait.sh" "$(grep -c 'escalation-wait' "$SKD0/SKILL.md" || true)" 0
-check "SKILL.md documents resolve" grep -q 'registry.sh resolve' "$SKD0/SKILL.md"
-check "SKILL.md has the Orchestrator send a push" grep -q 'PushNotification' "$SKD0/SKILL.md"
+check "SKILL.md documents resolve" grep -q 'registry.sh resolve' "$SKD0/SKILL.md" "$SKD0/references/operations.md"
+check "SKILL.md has the Orchestrator send a push" grep -q 'PushNotification' "$SKD0/SKILL.md" "$SKD0/references/operations.md"
 check "build lead brief says P1 is only for a user decision" grep -q 'P1 is only for a decision the user must make' "$SKD0/templates/build.json"
 check "build lead brief no longer files an escalation for UNVERIFIED" test -z "$(grep 'UNVERIFIED with an escalation filed' "$SKD0/templates/build.json")"
 check "lead agent says P1 is only for a user decision" grep -q 'P1 is only for a decision the' "$SKD0/../../agents/lead.md"
@@ -880,7 +880,7 @@ for bad in '"[]"' '{}' '5'; do
   eq "escalations=$bad: retire closes it" "$("$REG" escalations --open --team bad | jq length)" 0
 done
 printf '%s' "$saved" >"$FLEET_REGISTRY"
-check "SKILL.md documents 'closed at retire'" grep -q 'closed at retire' "$SKD0/SKILL.md"
+check "SKILL.md documents 'closed at retire'" grep -q 'closed at retire' "$SKD0/SKILL.md" "$SKD0/references/operations.md"
 check "registry.md documents 'closed at retire'" grep -q 'closed at retire' "$SKD0/references/registry.md"
 check "README documents resolve <id|at>" grep -q '<id|at>' "$SKD0/README.md"
 
@@ -948,7 +948,7 @@ eq "list --with-archived does" "$("$REG" list --with-archived --team ca | jq len
 eq "retire --summary reports the archived team's rows" "$("$SCRIPTS/retire.sh" --summary ca 2>/dev/null | jq -c '[.. | objects | select(.name? == "ca/w")] | length > 0')" true
 eq "a debrief-queue row is still found after an archive run" "$("$REG" list | jq -c '[.[] | select(.outcome != null and (.lessons // "") == "") | .name] | sort')" '["cb/x"]'
 export FLEET_STATE_DIR="$_cstate" FLEET_REGISTRY="$_creg"; [ -n "$_cinbox" ] && export FLEET_INBOX="$_cinbox" || unset FLEET_INBOX
-check "SKILL.md documents the registry archive" grep -q 'registry.sh archive' "$SCRIPTS/../SKILL.md"
+check "SKILL.md documents the registry archive" grep -q 'registry.sh archive' "$SCRIPTS/../SKILL.md" "$SCRIPTS/../references/operations.md"
 check "registry.md documents archive_after_days" grep -q 'archive_after_days' "$SCRIPTS/../references/registry.md"
 # ---- DEV-368 A: tell, boot delivery, signoff, reassign/next, tick ---------------------------------
 export FLEET_TELL_POLL=0.05
@@ -1245,8 +1245,8 @@ eq "tick: a new week archives again" "$("$REG" list --team wk | jq length)" 0
 export FLEET_STATE_DIR="$_ostate" FLEET_REGISTRY="$_oreg"; [ -n "$_oinbox" ] && export FLEET_INBOX="$_oinbox" || unset FLEET_INBOX
 cp "$T/config.a.bak" "$FLEET_CONFIG_DIR/config.toml"; unset FLEET_TELL_POLL
 SKA="$SCRIPTS/.."
-check "SKILL.md documents tick.sh" grep -q 'tick.sh' "$SKA/SKILL.md"
-check "SKILL.md documents tell.sh and next.sh" bash -c "grep -q 'tell.sh' '$SKA/SKILL.md' && grep -q 'next.sh' '$SKA/SKILL.md'"
+check "SKILL.md documents tick.sh" grep -q 'tick.sh' "$SKA/SKILL.md" "$SKA/references/operations.md"
+check "SKILL.md documents tell.sh and next.sh" bash -c "grep -q 'tell.sh' '$SKA/SKILL.md' '$SKA/references/operations.md' && grep -q 'next.sh' '$SKA/SKILL.md' '$SKA/references/operations.md'"
 check "registry.md documents signoff and pr" grep -q 'signoff' "$SKA/references/registry.md"
 check "tester brief runs signoff" grep -q 'signoff {{name}}' "$SKA/templates/build.json"
 check "orchestrator agent runs tick.sh" grep -q 'tick.sh' "$SKA/../../agents/orchestrator.md"
@@ -2263,7 +2263,7 @@ check "NH2: outside the tests curl comes from a fixed list of absolute paths, no
 eq "bash guard: an unreadable registry denies every target" "$(jq -nc '{tool_name: "Bash", tool_input: {command: "herdr agent read build-ft-tester"}}' | FLEET_STATE_DIR="$T/nostate" FLEET_ROLE=worker FLEET_TEAM=build-ft "$BG" | dec)" deny
 eq "bash guard: the Orchestrator is never restricted" "$(jq -nc '{tool_name: "Bash", tool_input: {command: "herdr pane run p1 ls"}}' | env -u FLEET_ROLE "$BG" | dec)" allow
 check "boot: workers get no blanket Bash(herdr:*)" bash -c "! grep -q 'Bash(herdr:\*)' '$SCRIPTS/boot.sh'"
-check "SKILL.md states the same-uid residual risk" grep -qi 'same-uid\|same user' "$SCRIPTS/../SKILL.md"
+check "SKILL.md states the same-uid residual risk" grep -qi 'same-uid\|same user' "$SCRIPTS/../SKILL.md" "$SCRIPTS/../references/operations.md"
 check "README states the same-uid residual risk" grep -qi 'same-uid\|same user' "$SCRIPTS/../README.md"
 check "hooks.json runs the guard for Read" grep -q '"matcher": "Read|' "$SCRIPTS/../../../hooks/hooks.json"
 check "linear.sh keeps reads and writes apart (gql_read and gql_write)" bash -c "grep -q '^gql_read()' '$LIN' && grep -q '^gql_write()' '$LIN'"
@@ -2529,7 +2529,7 @@ check "metrics: a bad --since is refused" bash -c "! '$SCRIPTS/metrics.sh' --sin
 unset FLEET_NOW
 
 export FLEET_STATE_DIR="$_rstate" FLEET_REGISTRY="$_rreg"; [ -n "$_rinbox" ] && export FLEET_INBOX="$_rinbox" || unset FLEET_INBOX
-for k in events.jsonl metrics.sh respawn respawn_max nudge; do check "SKILL.md documents $k" grep -qi -- "$k" "$SCRIPTS/../SKILL.md"; done
+for k in events.jsonl metrics.sh respawn respawn_max nudge; do check "SKILL.md documents $k" grep -qi -- "$k" "$SCRIPTS/../SKILL.md" "$SCRIPTS/../references/operations.md"; done
 for k in metrics.sh respawn.sh events.jsonl; do check "README documents $k" grep -q -- "$k" "$SCRIPTS/../README.md"; done
 check "registry.md documents the event log and nudged_at" bash -c "grep -q 'events.jsonl' '$SCRIPTS/../references/registry.md' && grep -q 'nudged_at' '$SCRIPTS/../references/registry.md'"
 
@@ -2791,7 +2791,7 @@ rm -rf "$LIVEDIR"
 cp "$T/config.d.bak" "$FLEET_CONFIG_DIR/config.toml"; unset FLEET_EXIT_WAIT_SECS
 export FLEET_STATE_DIR="$_dds" FLEET_REGISTRY="$_ddr"; [ -n "$_ddi" ] && export FLEET_INBOX="$_ddi" || unset FLEET_INBOX
 rm -f "${AS:?}"/*
-check "SKILL.md documents the sandbox and briefs as files" bash -c "grep -q 'sandbox.sh' '$SKD_/SKILL.md' && grep -q 'briefs/<team>/<role>/<id>.md' '$SKD_/SKILL.md'"
+check "SKILL.md documents the sandbox and briefs as files" bash -c "grep -q 'sandbox.sh' '$SKD_/SKILL.md' '$SKD_/references/operations.md' && grep -q 'briefs/<team>/<role>/<id>.md' '$SKD_/SKILL.md' '$SKD_/references/operations.md'"
 check "README documents sandbox.sh and rules/house.md" bash -c "grep -q 'sandbox.sh' '$SKD_/README.md' && grep -q 'rules/house.md' '$SKD_/README.md'"
 check "registry.md documents last_brief and plugin_version" bash -c "grep -q 'last_brief' '$SKD_/references/registry.md' && grep -q 'plugin_version' '$SKD_/references/registry.md'"
 
@@ -3009,9 +3009,9 @@ pv="$(jq -r .version "$PLUGIN/.claude-plugin/plugin.json")"; mv_="$(jq -r '.plug
 eq "plugin.json and marketplace.json carry the same version" "$pv" "$mv_"
 check "the version looks like x.y.z" bash -c "printf '%s' '$pv' | grep -Eq '^[0-9]+[.][0-9]+[.][0-9]+\$'"
 for k in min_free_gb warn_free_gb fleet-archive; do
-  check "SKILL.md mentions $k" grep -q "$k" "$SK/SKILL.md"; check "README mentions $k" grep -q "$k" "$SK/README.md"
+  check "SKILL.md mentions $k" grep -q "$k" "$SK/SKILL.md" "$SK/references/operations.md"; check "README mentions $k" grep -q "$k" "$SK/README.md"
 done
-check "docs say the image marks" grep -q 'FLEET_IMAGE_TAG' "$SK/SKILL.md"
+check "docs say the image marks" grep -q 'FLEET_IMAGE_TAG' "$SK/SKILL.md" "$SK/references/operations.md"
 eq "no docker call reached the real binary (whole run)" "$(wc -l <"$REAL_DOCKER_LOG" | tr -d ' ')" 0
 
 # Isolation

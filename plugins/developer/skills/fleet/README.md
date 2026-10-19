@@ -242,9 +242,9 @@ Claims, leases, takeover and `status --all` need Linear (label groups and commen
 tracker runs the fleet on one machine, and those parts are skipped.
 
 - A claim is the machine's label on the issue; liveness is a `heartbeat=` line in that label's
-  description, rewritten by the Orchestrator's tick (one API call per tick). No claim or lease
-  comments. Scripts cannot heartbeat: an Orchestrator that is not running stops, and that is when a
-  takeover is allowed.
+  description, rewritten by tick (one API call per tick, only when `linear_writes` allows it; the
+  launchd loop runs tick without an Orchestrator session). No claim or lease comments. A Mac whose
+  loop stops (asleep, off, uninstalled) stops heartbeating, and that is when a takeover is allowed.
 - A heartbeat older than `lease_hours` (default 2) with no open PR (looked up on `fleet/<slug>`,
   Linear's branch, and any open PR whose title or body names the issue key, whatever its branch) can
   be taken over with `linear.sh takeover`, which re-reads like claim (of two at once, one wins) and
