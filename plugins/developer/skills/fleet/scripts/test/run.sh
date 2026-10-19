@@ -1952,6 +1952,16 @@ done
 for c in 'GREP -r tok ~/.config' 'FIND ~/.config' 'TAR cf /tmp/x ~/.config' 'Cp -r ~/.config /tmp/c' 'RG tok ~' 'Ls -R ~/.config' 'RG tok $HOME'; do
   eq "bash guard (command case): $c is denied" "$(bgh "$c")" deny
 done
+# flags are not folded, and a capitalised word that is not a command names no tool
+for c in 'ls -ltr ~' 'ls -r ~' 'ls -latr ~/.config' 'ls -ltr $HOME' 'ls -ltr /' 'echo Tree ~' 'git commit -m "Find it" ~' 'grep -n foo ~'; do
+  eq "bash guard (flags): $c is allowed" "$(bgh "$c")" allow
+done
+for c in 'ls -R ~' 'sudo find ~' 'xargs grep -r x ~' 'Grep -rn tok ~' 'RSYNC -a ~/.config /tmp' 'DU ~' 'TREE ~' 'ZIP x ~'; do
+  eq "bash guard (command word): $c is denied" "$(bgh "$c")" deny
+done
+longcmd="$(for i in 1 2 3 4 5 6 7 8 9 10; do printf 'herdr agent read build-ft-tester; '; done)"
+t0=$(date +%s); bg "$longcmd" >/dev/null; t1=$(date +%s)
+eq "bash guard: a long command naming herdr ten times stays within 2 seconds" "$((t1 - t0 <= 2))" 1
 eq "bash guard (command case): HERDR pane run is denied" "$(bg "HERDR pane run p1 ls")" deny
 eq "bash guard (command case): Herdr pane send-text is denied" "$(bg "Herdr pane send-text p1 x" lead)" deny
 eq "bash guard (command case): /opt/homebrew/bin/HERDR pane read is denied" "$(bg "/opt/homebrew/bin/HERDR pane read p1")" deny
@@ -1970,8 +1980,7 @@ printf '#!/usr/bin/env bash\ncat >"$CAPTURE"\necho "{}"\n' >"$T/capture.sh"; chm
 FLEET_ROLE=worker CAPTURE="$T/captured" FLEET_CURL="$T/capture.sh" LINEAR_API_KEY=KEYFIXTURE-nh2 "$SCRIPTS/linear.sh" whoami >/dev/null 2>"$T/nh2.err"; rc=$?
 eq "NH2: linear.sh refuses a fleet agent" "$rc:$(grep -c 'may not run it' "$T/nh2.err")" "1:1"
 eq "NH2: and nothing reached the agent's own transport" "$(wc -c <"$T/captured" | tr -d ' ')" 0
-env -u FLEET_TEST CAPTURE="$T/captured" FLEET_CURL="$T/capture.sh" LINEAR_URL=http://127.0.0.1:9/x LINEAR_API_KEY=KEYFIXTURE-nh2 FLEET_STATE_DIR="$T/nh2state" "$SCRIPTS/linear.sh" whoami >/dev/null 2>&1
-eq "NH2: outside FLEET_TEST FLEET_CURL is ignored (the key never reaches a program of the caller's)" "$(grep -c KEYFIXTURE "$T/captured" || true)" 0
+# (No test runs linear.sh outside FLEET_TEST with a key: with the real curl that would post to api.linear.app.)
 eq "NH2: curl is called with -q first (no ~/.curlrc)" "$(dbreset; LINEAR_API_KEY="$LINEAR_STUB_KEY" "$LIN" holder DEV-1 >/dev/null 2>&1; awk '{print $1}' "$LINEAR_ARGV_LOG" | sort -u)" "-q"
 check "NH2: outside the tests curl comes from a fixed list of absolute paths, not the caller's PATH" bash -c "grep -q 'for _c in /usr/bin/curl ' '$SCRIPTS/linear.sh'"
 eq "bash guard: an unreadable registry denies every target" "$(jq -nc '{tool_name: "Bash", tool_input: {command: "herdr agent read build-ft-tester"}}' | FLEET_STATE_DIR="$T/nostate" FLEET_ROLE=worker FLEET_TEAM=build-ft "$BG" | dec)" deny

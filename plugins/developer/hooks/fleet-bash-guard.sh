@@ -66,7 +66,35 @@ if printf '%s' "$flat" | grep -qiE '\.config/+fleet([^a-z0-9_.-]|$)|XDG_CONFIG_H
   deny "fleet bash guard: the command reaches the Linear key's directory (.config/fleet); only the Orchestrator reads it."
 fi
 recursive=false
-if printf '%s' "$flat" | grep -qiE '(^|[;&|( ])(grep|egrep|fgrep|zgrep)[^;&|]* (-[a-zA-Z]*[rR]|--recursive|--dereference-recursive)|(^|[;&|( ])(rg|ag|ack|find|fd|tar|zip|rsync|du|tree|ls[^;&|]* -[a-zA-Z]*R|cp[^;&|]* -[a-zA-Z]*[rRa])( |$)'; then recursive=true; fi
+# A recursive tool is a command word (the first of a segment, or after a wrapper such as sudo or xargs): its NAME
+# is matched without regard to case (GREP, /opt/homebrew/bin/Find), its flags are not (ls -r is not ls -R).
+# `echo Tree ~` and `git commit -m "Find it"` name no tool.
+while IFS= read -r seg; do
+  set -f; read -r -a sw <<<"$seg"; set +f
+  cmdpos=true; k=0
+  while [ "$k" -lt "${#sw[@]}" ]; do
+    cw="${sw[$k]}"; k=$((k + 1))
+    $cmdpos || continue
+    case "$cw" in *=*) continue ;; esac
+    tool="${cw##*/}"; flags=" ${sw[*]:$k} "; kind=""
+    shopt -s nocasematch
+    case "$tool" in
+      sudo | xargs | env | time | command | exec | nice | nohup | builtin) shopt -u nocasematch; continue ;;
+      rg | ag | ack | find | fd | tar | zip | rsync | du | tree | gfind | gtar) kind=always ;;
+      grep | egrep | fgrep | zgrep | ggrep) kind=grep ;;
+      ls | gls) kind=ls ;;
+      cp | gcp) kind=cp ;;
+    esac
+    shopt -u nocasematch
+    cmdpos=false
+    case "$kind" in
+      always) recursive=true ;;
+      grep) printf '%s' "$flags" | grep -qE ' (-[a-zA-Z]*[rR]|--recursive|--dereference-recursive|-d recurse)' && recursive=true ;;
+      ls) printf '%s' "$flags" | grep -qE ' -[a-zA-Z]*R' && recursive=true ;;
+      cp) printf '%s' "$flags" | grep -qE ' -[a-zA-Z]*[rRa]' && recursive=true ;;
+    esac
+  done
+done < <(printf '%s\n' "$flat" | tr ';&|()' '\n\n\n\n\n')
 prev=""
 set -f # the words are looked at, never expanded: ~/.config/* stays a pattern
 for w in $(printf '%s' "$flat" | tr ';&|()<>' '       '); do
@@ -94,7 +122,7 @@ done
 set +f
 
 # --- herdr ---------------------------------------------------------------------------------------------------
-case "$(printf '%s' "$cmd" | tr 'A-Z' 'a-z')" in *herdr*) ;; *) exit 0 ;; esac
+shopt -s nocasematch; case "$cmd" in *herdr*) ;; *) exit 0 ;; esac; shopt -u nocasematch
 team="${FLEET_TEAM:-}"
 reg="${FLEET_STATE_DIR:-${XDG_STATE_HOME:-$home/.local/state}/fleet}/fleet.json"
 # The herdr names of the team's agents, one per line, read from the registry; empty when it cannot be read.
@@ -105,7 +133,8 @@ while IFS= read -r seg; do
   read -r -a w <<<"${seg//[\"\'\`]/ }"
   i=0
   while [ "$i" -lt "${#w[@]}" ]; do
-    case "$(printf '%s' "${w[$i]##*/}" | tr 'A-Z' 'a-z')" in herdr) ;; *) i=$((i + 1)); continue ;; esac
+    shopt -s nocasematch; case "${w[$i]##*/}" in herdr) hit=true ;; *) hit=false ;; esac; shopt -u nocasematch
+    $hit || { i=$((i + 1)); continue; }
     i=$((i + 1))
     while [ "$i" -lt "${#w[@]}" ]; do # herdr's own options before the group
       case "${w[$i]}" in --session | --socket) i=$((i + 2)) ;; --*) i=$((i + 1)) ;; *) break ;; esac
