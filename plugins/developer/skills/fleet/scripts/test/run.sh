@@ -2517,6 +2517,15 @@ eq "scrub: it runs before the agent starts, in every pane" "$(awk '/^pane run .*
 eq "scrub: a name that is not a variable name never reaches the shell" "$(grep -c 'bad name' "$HERDR_LOG" || true)" 0
 eq "scrub: the team's own kubeconfig survives" "$(. "$SCRIPTS/common.sh"; . "$SCRIPTS/agent-lib.sh"; KUBECONFIG="$FLEET_STATE_DIR/env/t/kubeconfig" bash -c "$(scrub_cmd); echo \$KUBECONFIG")" "$FLEET_STATE_DIR/env/t/kubeconfig"
 eq "scrub: no key, file name or credential value reached a herdr command line" "$(grep -c 'KEYFIXTURE\|AKIAX\|s3$' "$HERDR_LOG" || true)" 0
+# a codex-kind agent gets the same scrub (every harness, before the kind branch)
+jq '.workers |= map(if .role == "builder" then . + {kind: "codex"} else . end)' "$SKD_/templates/build.json" >"$T/tpl-codex.json"
+: >"$HERDR_LOG"; rm -f "${AS:?}"/*
+mkdir -p "$T/cxbin"; printf '#!/bin/sh\n' >"$T/cxbin/codex"; chmod +x "$T/cxbin/codex"
+PATH="$T/cxbin:$PATH" AWS_PROFILE=prod AWS_ACCESS_KEY_ID=AKIAX MY_SECRET_TOKEN=s3 LINEAR_API_KEY=KEYFIXTURE "$SCRIPTS/boot.sh" "$T/tpl-codex.json" scx "$T/repo" task >/dev/null 2>&1
+cxenv="$AS/$(grep '^agent start [^ ]* --kind codex' "$HERDR_LOG" | awk '{print $3}' | head -1 | xargs -I{} jq -r --arg a {} '.agents[] | select(.herdr_ref == $a) | .pane' "$FLEET_REGISTRY").env"
+check "scrub: a codex-kind agent was started" grep -q -- '--kind codex' "$HERDR_LOG"
+eq "scrub: its pane shell has no key, AWS credentials or scrub_env variable" "$(grep -c '^\(AWS_PROFILE\|AWS_ACCESS_KEY_ID\|MY_SECRET_TOKEN\|LINEAR_API_KEY\)=' "$cxenv" || true)" 0
+eq "scrub: and the AWS files are /dev/null" "$(grep -c '^AWS_SHARED_CREDENTIALS_FILE=/dev/null' "$cxenv")" 1
 cp "$T/config.d.bak" "$FLEET_CONFIG_DIR/config.toml"; printf 'tell_confirm_secs = 2\nbrief_idle_secs = 2\n' >>"$FLEET_CONFIG_DIR/config.toml"
 
 # -- bash guard: installers, merges, force pushes and pushes to the default branch
@@ -2539,6 +2548,21 @@ done
 for c in "git push --force-with-lease origin fleet/x" "git push --force-with-lease=fleet/x origin fleet/x" "git push origin fleet/dev-1-x" "git push -u origin fleet/dev-1-x" "git status"; do
   eq "guard: '$c' passes" "$(gd "$c")" allow
 done
+# a redirect is not a refspec (reviewer H2): the current branch decides a push with no refspec
+gdr() { (cd "$GRP" && gd "$@"); }
+GRP="$T/guard-repo"; mkdir -p "$GRP"; (cd "$GRP" && git init -q -b main && git -c user.email=t@t -c user.name=t commit -q --allow-empty -m x)
+for c in "git push origin 2>&1 | tail -3" "git push origin >/dev/null" "git push origin > /dev/null" "git push origin 2>/dev/null" "git push 2>&1" "git push origin HEAD:main"; do
+  eq "guard: on main, '$c' is denied" "$(gdr "$c")" deny
+done
+for c in "git push origin fleet/x 2>&1 | tail -3" "git push --force-with-lease origin fleet/x >/dev/null" "npm install 2>&1 | tail" "npm i --prefix web" "npm ci 2>&1"; do
+  eq "guard: on main, '$c' passes" "$(gdr "$c")" allow
+done
+eq "guard: 'npm i left-pad 2>&1' is still denied" "$(gdr "npm i left-pad 2>&1")" deny
+(cd "$GRP" && git checkout -q -b fleet/x)
+for c in "git push origin 2>&1 | tail" "git push origin >/dev/null" "git push --force-with-lease origin fleet/x"; do
+  eq "guard: on fleet/x, '$c' passes" "$(gdr "$c")" allow
+done
+eq "guard: on fleet/x, a push to HEAD:main is denied" "$(gdr "git push origin HEAD:main")" deny
 eq "guard: a lead is held to the same rules" "$(jq -nc '{tool_name: "Bash", tool_input: {command: "gh pr merge 4"}}' | FLEET_ROLE=lead FLEET_TEAM=build-ft "$BG" | dec)" deny
 eq "guard: the Orchestrator (no FLEET_ROLE) may merge and install" "$(jq -nc '{tool_name: "Bash", tool_input: {command: "brew install jq && gh pr merge 4 && git push --force origin main"}}' | env -u FLEET_ROLE "$BG" | dec)" allow
 check "README says the guard is not a security boundary" grep -q 'not a security boundary' "$SKD_/README.md"
