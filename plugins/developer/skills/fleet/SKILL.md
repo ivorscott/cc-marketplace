@@ -117,26 +117,34 @@ re-read once more before the team's first push.
 ### Takeover
 
 A claim whose holder stopped heartbeating can be taken over, so a crashed machine does not hold an
-issue forever. Only a heartbeat older than `lease_hours` (default 2) **and** a quiet PR qualify;
+issue forever. Only a heartbeat older than `lease_hours` (default 2) **and** no open PR qualify;
 `FLEET_FORCE=1` never bypasses it.
 
-1. Read the PR's last activity with the `forge_allow` tools (no PR means none).
-2. `$F/linear.sh takeover <ISSUE> [--last-activity <ISO>]`. It refuses, saying why, while the
-   heartbeat is fresh, the PR is active, or the holder has no heartbeat. On success it swaps the
-   label, sets In Progress and posts **one** comment (`fleet: taken over from … (heartbeat …, PR
-   quiet since …)`), the only comment the scripts ever post. Boot as the winner as above, tell the
+1. `$F/linear.sh takeover <ISSUE> [--repo OWNER/NAME]`. It looks the PR up itself (`gh pr list`,
+   read-only) on `fleet/<slug>` and on the issue's Linear branch, and refuses, saying why, while
+   the heartbeat is fresh, an open PR exists (a PR waiting on a merge counts: the taker's push
+   would overwrite it), gh cannot answer, or the holder has no heartbeat. On success it swaps the
+   label, sets In Progress and posts **one** comment (`fleet: taken over from … (heartbeat …, no
+   open PR)`), the only comment the scripts ever post. It needs `linear_writes` on (below). Boot as the winner as above, tell the
    user, and post a `takeover` chat line (**A0c**).
 
 ### Heartbeat
 
 `tick.sh` does it: with a key, one heartbeat mutation per tick however many issues are claimed, and
-one `claim_takeover` event when a team's issue now carries another machine's label. On that event
+one `claim_takeover` event when a team's issue now carries another machine's label; Done rows
+keep their claim (a team waiting on a merge is still heartbeated). **Nothing writes to Linear until
+`linear_writes` says so:** `linear_writes = "off"` (the default), `"test:FT"` or `"on"` in
+`config.toml`. Off: `linear.sh` writes exit 3 like a missing key, tick skips the heartbeat and logs
+`claims_readonly` once, `next.sh` proceeds unclaimed, and boot treats it as keyless (with
+`machines > 1` it refuses `--issue`). `test:FT` writes only on issues of Linear team FT (and this
+machine's own label). Ivor sets `on`. On that event
 you **must not renew** or fight back (no re-claim, no label swap): stop or hand off the team
 (`retire.sh`, after the summary in **F**), tell the user, and run
 `$F/registry.sh escalate <team>/lead P1 "claim taken over by <label>"`. An Orchestrator that is not
 running does not heartbeat, and that is exactly when a takeover is allowed. Say so when a user
-closes it with teams still running. The first keyed tick also runs `linear.sh migrate`, which
-deletes this machine's old `fleet-claim:` comments (`--dry-run` lists them).
+closes it with teams still running. Tick never migrates: `linear.sh migrate` (deletes this
+machine's old `fleet-claim:` comments, rewrites a label that holds a full machine id; `--dry-run`
+lists them) is a release-checklist step that needs `linear_writes` on.
 
 ## A0c. Chat
 

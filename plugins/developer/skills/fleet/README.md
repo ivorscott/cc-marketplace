@@ -116,8 +116,8 @@ The Orchestrator and agents call these directly (from `scripts/`). You can call 
 | Script | Commands |
 |---|---|
 | `boot.sh` | `boot.sh [--issue ID --claimed-by KEY --labels a,b --scope 'repo: paths'] <template> <focus> <dir> [task…]` boots a team (`FLEET_FORCE=1` goes over the `max_agents` cap and the `min_free_gb` disk floor, never over another machine's claim). A takeover is done with `linear.sh takeover` before boot |
-| `claim.sh` | `lease` prints now + `lease_hours` · `hb` reads the `heartbeat=` line of a label description (stdin) · `expired --lease ISO [--last-activity ISO]` says whether a claim can be taken over. Pure: it never calls a tracker |
-| `linear.sh` | claims and heartbeat on the Linear API: `claim <ISSUE> [--dry-run]` · `heartbeat` (one mutation) · `holder <ISSUE>` and `peers` (read-only) · `takeover <ISSUE> [--last-activity ISO]` · `migrate [--dry-run]` · `has-key`. Key in `~/.config/fleet/linear_api_key` (mode 600) or `LINEAR_API_KEY`; none: exit 3. Never posts claim or lease comments |
+| `claim.sh` | `lease` prints now + `lease_hours` · `hb` reads the `heartbeat=` line of a label description (stdin) · `expired --lease ISO` says whether a lease has lapsed (the open-PR check is `linear.sh takeover`'s). Pure: it never calls a tracker |
+| `linear.sh` | claims and heartbeat on the Linear API: `claim <ISSUE> [--dry-run]` · `heartbeat` (one mutation) · `holder <ISSUE>` and `peers` (read-only) · `takeover <ISSUE> [--repo OWNER/NAME]` (refuses while a PR is open) · `migrate [--dry-run]` · `has-key`. Key in `~/.config/fleet/linear_api_key` (mode 600) or `LINEAR_API_KEY`; none: exit 3. Writes need `linear_writes` (below): off, the default, exits 3 too. Never posts claim or lease comments |
 | `chat.sh` | `channel` and `allow` print `chat_channel` and `chat_allow` · `format <event> …` prints the one-line message. It never posts or reads; the Orchestrator does with its own chat tools |
 | `machine-id.sh` | `id\|key\|label\|description\|hash\|show`: this machine's tracker identity, e.g. `fleet:3f9a2c1e`. The label description publishes `machine id sha256:<12 hex>`, never the full id; `linear.sh migrate` rewrites an older label that still holds the full id |
 | `status.sh` | `status.sh [--problems] [--team T] [--json] [--all [--claims FILE\|-]]` recomputes health, writes it to the registry and prints free disk first |
@@ -158,7 +158,8 @@ warn_free_gb = 75  # status marks LOW and watch notifies below this
 # Several machines on one Linear workspace: each claims issues with the label <label_prefix><machine key>.
 # Claims need Linear. With another tracker, run the fleet on one machine and leave these unset.
 label_prefix = "fleet:"
-lease_hours = 2   # a claim's lease; a lapsed lease with no PR activity this long can be taken over
+lease_hours = 2   # a claim's lease; a lapsed lease with no open PR can be taken over
+linear_writes = "off"   # off (default) | "test:FT" (writes only on issues of Linear team FT) | "on". Off: no heartbeat, claim, takeover or migrate
 machine_name = "Mac 1"   # display name, optional
 machine_legacy_label = "fleet:mac1"   # only while migrating an older label
 
@@ -257,8 +258,10 @@ tracker runs the fleet on one machine, and those parts are skipped.
   description, rewritten by the Orchestrator's tick (one API call per tick). No claim or lease
   comments. Scripts cannot heartbeat: an Orchestrator that is not running stops, and that is when a
   takeover is allowed.
-- A heartbeat older than `lease_hours` (default 2) with no PR activity in that time can be taken
-  over with `linear.sh takeover`, which leaves one comment. `FLEET_FORCE=1` never bypasses a live claim.
+- A heartbeat older than `lease_hours` (default 2) with no open PR (looked up on `fleet/<slug>` and
+  Linear's branch) can be taken over with `linear.sh takeover`, which leaves one comment.
+- Nothing writes to Linear while `linear_writes = "off"` (the default); Ivor sets `on` after the FT proof.
+  Tick keeps heartbeating Done rows (a team waiting on a merge keeps its claim) and never migrates. `FLEET_FORCE=1` never bypasses a live claim.
 - **The tracker has no compare-and-swap.** The last writer wins and both machines re-read; that
   narrows the race, it does not remove it. A machine whose issue was taken over stops and tells
   you; it never fights back.

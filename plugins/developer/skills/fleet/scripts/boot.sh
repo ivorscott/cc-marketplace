@@ -43,6 +43,8 @@ need git
 # Whether a key exists (nothing is read from it), then agents never get it: boot starts them from
 # a shell that does not carry LINEAR_API_KEY.
 have_key=0; "$FLEET_SCRIPTS/linear.sh" has-key >/dev/null 2>&1 && have_key=1
+# linear_writes = off counts as no key here: claims cannot be made, so with several machines there is no lock.
+claims_why="no Linear key"; if [ "$have_key" = 1 ] && [ "$(linear_writes)" = off ]; then have_key=0; claims_why="linear_writes = off"; fi
 unset LINEAR_API_KEY
 
 issue=""; claimed_by=""; labels=""; scope_arg=""
@@ -101,8 +103,8 @@ if [ -n "$issue" ]; then
     done
   fi
   if [ "$have_key" != 1 ]; then
-    if [ "$(cfg_int machines 1)" -gt 1 ]; then die "$issue: no Linear key and machines > 1 in config.toml, so claims cannot be checked. Not booting"; fi
-    warn "no Linear key; booting $issue without checking claims (machines = 1)"
+    if [ "$(cfg_int machines 1)" -gt 1 ]; then die "$issue: $claims_why and machines > 1 in config.toml, so claims cannot be checked. Not booting"; fi
+    warn "$claims_why; booting $issue without checking claims (machines = 1)"
   fi
 fi
 scope_json=null

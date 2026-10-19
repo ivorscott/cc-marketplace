@@ -38,6 +38,8 @@ case "$op" in
     ok "$(db '{viewer: {id: "U1", name: (.viewer.name // "Fixture Owner")}}')" ;;
   IssueTeamKey)
     ok "$(db --argjson v "$vars" '{issue: ((.issues[] | select(.identifier == $v.id)) | {identifier, team: {key: (.team.key // "ENG")}})}')" ;;
+  IssueBranch)
+    ok "$(db --argjson v "$vars" '{issue: ((.issues[] | select(.identifier == $v.id)) | {identifier, branchName: (.branchName // "")})}')" ;;
   IssueLabels)
     ok "$(db --argjson v "$vars" '{issueLabels: {nodes: [.labels[] | select(.name == $v.n)]}}')" ;;
   WorkflowStates)
@@ -47,7 +49,7 @@ case "$op" in
       (.next + 1) as $n | ("L" + ($n | tostring)) as $id
       | .next = $n
       | .labels += [{id: $id, name: $v.input.name, description: ($v.input.description // ""),
-          parent: (if $v.input.parentId then (.labels[] | select(.id == $v.input.parentId) | {id, name}) else null end)}]')"
+          teamId: $v.input.teamId, parent: (if $v.input.parentId then (.labels[] | select(.id == $v.input.parentId) | {id, name}) else null end)}]')"
     save "$new"
     ok "$(printf '%s' "$new" | jq -c '{issueLabelCreate: {success: true, issueLabel: {id: .labels[-1].id}}}')" ;;
   IssueLabelUpdate)
