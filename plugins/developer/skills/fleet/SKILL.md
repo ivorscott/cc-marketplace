@@ -250,6 +250,9 @@ has `type`, `team`, `name` and, where a PR exists, the full `url`. Act on each:
 - `pr_ready`: send ONE `PushNotification` with the full PR URL (it is emitted once per PR and head SHA).
 - `pr_merged`: run `$F/next.sh <team> <next issue> [--brief TEXT]`. It reassigns every row, sends workers
   `/clear`, compacts the lead when its context is large, and briefs the lead.
+- `dead`: tick already respawned the agent (`respawn.sh`) unless it died twice inside `respawn_window_hours` (default 6; `respawn_max`, default 1), in which case it filed a P1 escalation instead. Done and Retired rows are never respawned.
+- `stalled`: the agent was nudged a tick ago ("run your done step or say what is missing") and is still stalled; there is one nudge per stall, flagged by `nudged_at` on the row.
+- `weekly_summary`: once per ISO week: run `$F/metrics.sh --since 7d`, write `reports/fleet-metrics-<date>.md` from it, and send Ivor one line.
 - `pr_opened`: a builder opened a PR without running done; tick recorded it on the row and told the lead.
 - `escalation`, `stalled`, `dead`, `repo_without_team`, `disk`, `disk_ok`: as in routes B, E and F.
 
@@ -273,6 +276,14 @@ child must not go ready before its parent). PR discovery reads the builder's bra
 (`git branch --show-current`), writes it back to the row, and ignores fork PRs. Every path the scripts use comes
 from `FLEET_STATE_DIR` (there is no `FLEET_REGISTRY`, `FLEET_INBOX` or `FLEET_WORKTREES`); an agent (`FLEET_ROLE`
 set) cannot run `add`, `retire`, `archive`, `reassign`, `resolve` or `close-stale`.
+
+### The event log and metrics
+
+Boot, briefs (delivered or failed), signoff, escalations, `next`, tick events (`pr_opened`, `pr_ready`,
+`pr_merged`, `stalled`, `dead`), `respawned` and `retired` are appended to `events.jsonl` in the state dir
+(`ev_log` in common.sh: `{at, type, team, name, issue, pr, sha, detail}`; `detail` is a short reason, never
+brief text and never the key). `$F/metrics.sh [--since 7d] [--json]` reads it, with the agents' transcripts,
+and prints per PR: minutes from boot or next to ready, rework rounds, stalls, missed messages and tokens.
 
 ## E. Escalate
 

@@ -7,7 +7,11 @@
 #
 # Events (each has type, team, name; url where a PR exists). Each is reported once; what has
 # been reported lives in $FLEET_STATE_DIR/tick.state.json.
-#   stalled, dead   status.sh says Stalled or Zombie, on the transition only
+#   stalled         still Stalled a tick after the nudge (a newly Stalled agent gets one nudge, no event)
+#   dead            status.sh says Zombie, on the transition; the row is also respawned (respawn.sh) within
+#                   a budget, and the second death inside the window escalates P1 instead
+#   weekly_summary  the ISO week changed (the Orchestrator writes reports/fleet-metrics-<date>.md from
+#                   metrics.sh and sends one line); the first tick ever only records the week
 #   escalation      an open escalation not yet reported (keyed by agent name and escalation id)
 #   pr_opened       a live builder on a fleet/ branch has an open PR the row doesn't know yet
 #                   (gh pr list --head, even when the builder skipped its done step): recorded as
@@ -115,12 +119,50 @@ heartbeat
 claims_taken_over
 
 # --- stalled / dead -------------------------------------------------------------------------
+# A newly Stalled agent gets ONE nudge through tell.sh (nudged_at on its row) and no event; still
+# Stalled on a later tick: a `stalled` event, once. A Zombie is a `dead` event on the transition and is
+# respawned within a budget (respawn_max = 1 per respawn_window_hours = 6 per agent): the next death
+# inside the window escalates P1 and does not respawn. Done and Retired rows are never touched.
+now_iso="${FLEET_NOW:-$(now)}"; now_epoch="$(jq -rn --arg t "$now_iso" '$t | fromdateiso8601')"
 targs=(); [ -n "$team" ] && targs=(--team "$team")
 if rows="$("$FLEET_SCRIPTS/status.sh" ${targs[@]+"${targs[@]}"} --json 2>/dev/null)" && printf '%s' "$rows" | jq -e 'type == "array"' >/dev/null 2>&1; then
   add_events "$(jq -cn --argjson rows "$rows" --argjson st "$state" '
-    [$rows[] | select(.tier != "Orchestrator" and (.status == "Stalled" or .status == "Zombie") and (($st.status // {})[.name] != .status))
-      | {type: (if .status == "Zombie" then "dead" else "stalled" end), team, name, status}
-        + (if (.pr // "") != "" then {url: .pr} else {} end)]')"
+    [$rows[] | select(.tier != "Orchestrator" and .status == "Zombie" and (($st.status // {})[.name] != .status))
+      | {type: "dead", team, name, status} + (if (.pr // "") != "" then {url: .pr} else {} end)]')"
+  while IFS= read -r r; do
+    [ -n "$r" ] || continue
+    sname="$(printf '%s' "$r" | jq -r .name)"
+    if [ -z "$(printf '%s' "$r" | jq -r '.nudged_at // ""')" ]; then
+      "$FLEET_SCRIPTS/tell.sh" "$sname" "You went idle without running your done step. Run it now, or say what is missing." >/dev/null 2>&1 ||
+        warn "could not nudge $sname"
+      "$registry" set "$sname" nudged_at="$now_iso" >/dev/null || true
+    elif [ "$(printf '%s' "$state" | jq --arg n "$sname" '(.stalled_emitted // []) | index($n) == null')" = true ]; then
+      add_events "$(printf '%s' "$r" | jq -c '[{type: "stalled", team, name, status} + (if (.pr // "") != "" then {url: .pr} else {} end)]')"
+      state="$(jq -cn --argjson st "$state" --arg n "$sname" '$st + {stalled_emitted: ((($st.stalled_emitted // []) + [$n]) | unique)}')"
+    fi
+  done < <(printf '%s' "$rows" | jq -c '.[] | select(.tier != "Orchestrator" and .status == "Stalled")')
+  # An agent that is no longer Stalled may be nudged and reported again next time.
+  while IFS= read -r sname; do
+    [ -n "$sname" ] || continue
+    "$registry" set "$sname" nudged_at= >/dev/null || true
+    state="$(jq -cn --argjson st "$state" --arg n "$sname" '$st + {stalled_emitted: (($st.stalled_emitted // []) - [$n])}')"
+  done < <(printf '%s' "$rows" | jq -r '.[] | select(.tier != "Orchestrator" and .status != "Stalled" and ((.nudged_at // "") != "")) | .name')
+  rwin="$(cfg_int respawn_window_hours 6)"; rmax="$(cfg_int respawn_max 1)"
+  while IFS= read -r zname; do
+    [ -n "$zname" ] || continue
+    recent="$(printf '%s' "$state" | jq -c --arg n "$zname" --argjson now "$now_epoch" --argjson w "$rwin" '((.respawns // {})[$n] // []) | map(select(. > $now - $w * 3600))')"
+    if [ "$(printf '%s' "$recent" | jq length)" -ge "$rmax" ]; then
+      ekey="$zname|$(printf '%s' "$recent" | jq 'max')"
+      if [ "$(printf '%s' "$state" | jq --arg k "$ekey" '(.respawn_escalated // []) | index($k) == null')" = true ]; then
+        "$registry" escalate "$zname" P1 "$zname died twice in ${rwin}h" >/dev/null 2>&1 || warn "could not escalate $zname"
+        state="$(jq -cn --argjson st "$state" --arg k "$ekey" '$st + {respawn_escalated: ((($st.respawn_escalated // []) + [$k]) | unique)}')"
+      fi
+    elif "$FLEET_SCRIPTS/respawn.sh" "$zname" >/dev/null 2>"$FLEET_STATE_DIR/respawn.err"; then
+      state="$(jq -cn --argjson st "$state" --arg n "$zname" --argjson now "$now_epoch" '$st + {respawns: (($st.respawns // {}) + {($n): ((($st.respawns // {})[$n] // []) + [$now])})}')"
+    else
+      warn "could not respawn $zname: $(head -n 1 "$FLEET_STATE_DIR/respawn.err" 2>/dev/null)"
+    fi
+  done < <(printf '%s' "$rows" | jq -r '.[] | select(.tier != "Orchestrator" and .status == "Zombie") | .name')
   state="$(jq -cn --argjson st "$state" --argjson rows "$rows" '$st + {status: (($st.status // {}) + ([$rows[] | {(.name): .status}] | add // {}))}')"
 else
   warn "status.sh failed; no stalled/dead events this tick"
@@ -247,6 +289,20 @@ if [ "$(printf '%s' "$state" | jq -r '.archive_week // ""')" != "$week" ]; then
   "$registry" archive >/dev/null 2>&1 || warn "weekly archive failed"
   state="$(jq -cn --argjson st "$state" --arg w "$week" '$st + {archive_week: $w}')"
 fi
+
+# --- weekly summary ---------------------------------------------------------------------------------
+sweek="$(date +%G-W%V)"; prev_week="$(printf '%s' "$state" | jq -r '.summary_week // ""')"
+if [ -n "$prev_week" ] && [ "$prev_week" != "$sweek" ]; then
+  add_events "$(jq -cn --arg w "$sweek" '[{type: "weekly_summary", team: "", name: "", week: $w, detail: "run metrics.sh --since 7d and write reports/fleet-metrics-<date>.md"}]')"
+fi
+state="$(jq -cn --argjson st "$state" --arg w "$sweek" '$st + {summary_week: $w}')"
+
+# --- the event log ------------------------------------------------------------------------------------
+while IFS=$'\t' read -r etype eteam ename eurl esha; do
+  [ -n "$etype" ] || continue
+  [ "$eurl" != - ] || eurl=""; [ "$esha" != - ] || esha=""; [ "$eteam" != - ] || eteam=""
+  ev_log "$etype" team="$eteam" name="$ename" pr="$eurl" sha="$esha"
+done < <(printf '%s' "$events" | jq -r '.[] | select(.type | IN("pr_opened", "pr_ready", "pr_merged", "stalled", "dead")) | [.type, (.team // "-" | if . == "" then "-" else . end), .name, (.url // "-"), (.sha // "-")] | @tsv')
 
 tick_state_write "$state"
 [ "$(printf '%s' "$events" | jq length)" = 0 ] || printf '%s\n' "$events"

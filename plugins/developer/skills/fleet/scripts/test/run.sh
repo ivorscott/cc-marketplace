@@ -804,7 +804,7 @@ eq "wait: a second run does not replay it" "$("$EW" --timeout 1 --every 1)" ""
 eq "wait: one filed between arms is delivered by the next" "$("$EW" --timeout 5 --every 1 | jq -r .message)" "between arms"
 eq "wait: --from-start replays the inbox" "$("$EW" --from-start --timeout 1 --every 1 | wc -l | tr -d ' ')" "$(wc -l <"$INBOX" | tr -d ' ')"
 check "wait: rejects an unknown option" bash -c "! '$EW' --bogus"
-for f in registry.sh status.sh watch.sh retire.sh escalation-wait.sh common.sh boot.sh tell.sh tick.sh next.sh linear.sh claim.sh; do check "bash -n $f" bash -n "$SCRIPTS/$f"; done
+for f in registry.sh status.sh watch.sh retire.sh escalation-wait.sh common.sh boot.sh tell.sh tick.sh next.sh linear.sh claim.sh respawn.sh metrics.sh agent-lib.sh; do check "bash -n $f" bash -n "$SCRIPTS/$f"; done
 SKD0="$SCRIPTS/.."
 check "SKILL.md mentions escalation-wait.sh" grep -q 'escalation-wait.sh' "$SKD0/SKILL.md"
 check "SKILL.md documents resolve" grep -q 'registry.sh resolve' "$SKD0/SKILL.md"
@@ -1156,9 +1156,12 @@ eq "tick: a configured repo with no team is reported" "$(printf '%s' "$r1" | jq 
 eq "tick: once" "$(evc "$r2" repo_without_team)" 0
 # stalled and dead, on transition
 "$REG" set tk/builder status=Working >/dev/null
-s1="$("$SCRIPTS/tick.sh" 2>/dev/null)"; s2="$("$SCRIPTS/tick.sh" 2>/dev/null)"
-eq "tick: a stalled agent is reported" "$(printf '%s' "$s1" | jq -r '[.[] | select(.type == "stalled") | .name] | join(",")')" tk/builder
-eq "tick: once" "$(evc "$s2" stalled)" 0
+s1="$("$SCRIPTS/tick.sh" 2>/dev/null)"; echo idle >"$AS/tk-b" # the nudge made it work; it goes idle again
+s2="$("$SCRIPTS/tick.sh" 2>/dev/null)"; s3="$("$SCRIPTS/tick.sh" 2>/dev/null)"
+eq "tick: a newly stalled agent is nudged, not reported" "$(evc "$s1" stalled)" 0
+eq "tick: a stalled agent still stalled a tick later is reported" "$(printf '%s' "$s2" | jq -r '[.[] | select(.type == "stalled") | .name] | join(",")')" tk/builder
+eq "tick: once" "$(evc "$s3" stalled)" 0
+eq "tick: the nudge was sent exactly once" "$(grep -c '^agent prompt tk-b You went idle' "$HERDR_LOG" || true)" 1
 echo gone >"$AS/tk-t"
 d1="$("$SCRIPTS/tick.sh" 2>/dev/null)"
 eq "tick: an agent herdr cannot find is reported dead" "$(printf '%s' "$d1" | jq -r '[.[] | select(.type == "dead") | .name] | join(",")')" tk/tester
@@ -2036,6 +2039,153 @@ eq "the real key path is not named in the tests" "$(grep -c "$realkey" "$HERE/ru
 
 export FLEET_STATE_DIR="$_ostate" FLEET_REGISTRY="$_oreg"; [ -n "$_oinbox" ] && export FLEET_INBOX="$_oinbox" || unset FLEET_INBOX
 cp "$T/config.b.bak" "$FLEET_CONFIG_DIR/config.toml"; unset FLEET_CURL
+
+# ---- DEV-368 R: event log, metrics, weekly summary, respawn, stall nudge ---------------------------------
+_rstate="$FLEET_STATE_DIR"; _rreg="$FLEET_REGISTRY"; _rinbox="${FLEET_INBOX:-}"
+export FLEET_STATE_DIR="$T/rstate" FLEET_REGISTRY="$T/rstate/fleet.json" FLEET_INBOX="$T/rstate/escalations.jsonl"; mkdir -p "$FLEET_STATE_DIR"
+EVF="$FLEET_STATE_DIR/events.jsonl"; unset FLEET_NOW
+evn() { if [ -f "$EVF" ]; then grep -c "\"type\":\"$1\"" "$EVF" || true; else echo 0; fi; }
+
+# -- ev_log shape
+rm -f "$EVF"
+( . "$SCRIPTS/common.sh"; ev_log pr_ready team=t name=n/x issue=DEV-1 pr=https://github.com/o/r/pull/1 sha=abc1234 detail=short text="a brief that must not be logged" brief="nor this" )
+eq "ev_log: one line per call" "$(wc -l <"$EVF" | tr -d ' ')" 1
+eq "ev_log: the fields" "$(jq -c 'keys' "$EVF")" '["at","detail","issue","name","pr","sha","team","type"]'
+eq "ev_log: values" "$(jq -c '[.type, .team, .name, .issue, .pr, .sha, .detail]' "$EVF")" '["pr_ready","t","n/x","DEV-1","https://github.com/o/r/pull/1","abc1234","short"]'
+( . "$SCRIPTS/common.sh"; ev_log boot team=t )
+eq "ev_log: empty fields are null" "$(tail -n 1 "$EVF" | jq -c '[.name, .issue, .pr, .sha, .detail]')" '[null,null,null,null,null]'
+eq "ev_log: any key but the eight is ignored (no brief text)" "$(grep -c 'must not be logged\|nor this' "$EVF" || true)" 0
+( . "$SCRIPTS/common.sh"; ev_log x detail="$(printf 'z%.0s' $(seq 1 300))" )
+eq "ev_log: detail is cut at 120 characters" "$(tail -n 1 "$EVF" | jq '.detail | length')" 120
+eq "ev_log: an unwritable log is a warning, not a failure" "$( . "$SCRIPTS/common.sh"; FLEET_EVENTS="$T/rstate/events.jsonl/x/y.jsonl" ev_log boot team=t 2>/dev/null; echo $?)" 0
+
+# -- the callers: boot, briefs, signoff, escalate/resolve, next, retire
+rm -f "$EVF"; : >"$HERDR_LOG"; rm -f "${AS:?}"/*
+"$SCRIPTS/boot.sh" build evt "$T/repo" "SECRETTASKWORDS go" >/dev/null 2>&1
+nrows="$("$REG" list --team build-evt | jq length)"
+eq "events: boot is logged once" "$(evn boot)" 1
+eq "events: every delivered brief is logged" "$(evn brief_delivered)" "$nrows"
+PROMPT_NOSTATE=1 FLEET_TELL_POLL=0.01 "$SCRIPTS/boot.sh" build evf "$T/repo" "SECRETTASKWORDS again" >/dev/null 2>&1
+eq "events: every undelivered brief is logged as brief_failed" "$(evn brief_failed)" "$("$REG" list --team build-evf | jq length)"
+eq "events: no brief text, task text or key reaches the log" "$(grep -c 'Fleet rules for\|SECRETTASKWORDS\|KEYFIXTURE\|Role:' "$EVF" || true)" 0
+"$REG" signoff build-evt/tester https://github.com/o/r/pull/21 abc1234 >/dev/null
+eq "events: signoff is logged with pr and sha" "$(grep '"type":"signoff"' "$EVF" | jq -c '[.name, .pr, .sha]')" '["build-evt/tester","https://github.com/o/r/pull/21","abc1234"]'
+"$REG" escalate build-evt/lead P1 "which db?" >/dev/null 2>&1
+eid="$("$REG" escalations --open --team build-evt | jq -r '.[0].id')"
+"$REG" resolve build-evt/lead "$eid" >/dev/null 2>&1
+eq "events: escalation raised and resolved" "$(evn escalation_raised)$(evn escalation_resolved)" 11
+eq "events: the escalation text is not logged" "$(grep -c 'which db' "$EVF" || true)" 0
+"$SCRIPTS/next.sh" build-evt DEV-77 >/dev/null 2>&1
+eq "events: next is logged" "$(grep '"type":"next"' "$EVF" | jq -c '[.team, .issue]')" '["build-evt","DEV-77"]'
+"$SCRIPTS/retire.sh" build-evt >/dev/null 2>&1
+eq "events: retire logs every retired row" "$(evn retired)" "$nrows"
+
+# -- tick logs pr_ready/pr_merged to the event log
+rm -f "$EVF" "$FLEET_STATE_DIR/tick.state.json"
+arow3() { "$REG" add "$(jq -cn --arg n "$1" --arg t "${1%%/*}" --arg r "$T/ra" --arg ref "$2" '{name: $n, team: $t, repo: $r, tier: "Worker", status: "Idle", herdr_ref: $ref, pane: "p"}')"; }
+arow3 lg/tester lg-t; "$REG" signoff lg/tester https://github.com/o/r/pull/31 "${H1:0:7}" >/dev/null
+ghset 31 OPEN MERGEABLE "$GREEN" "$H1" ok
+"$SCRIPTS/tick.sh" >/dev/null 2>&1
+eq "events: tick logs pr_ready with the url and head sha" "$(grep '"type":"pr_ready"' "$EVF" | jq -c '[.team, .name, .pr, .sha]')" "[\"lg\",\"lg/tester\",\"https://github.com/o/r/pull/31\",\"$H1\"]"
+ghset 31 MERGED UNKNOWN "$GREEN" "$H1" ok; "$SCRIPTS/tick.sh" >/dev/null 2>&1
+eq "events: tick logs pr_merged" "$(evn pr_merged)" 1
+
+# -- weekly_summary: once per ISO week; the first tick only records the week
+rm -f "$FLEET_STATE_DIR/tick.state.json"
+w1="$("$SCRIPTS/tick.sh" 2>/dev/null)"
+eq "weekly: the first ever tick emits no summary" "$(evc "$w1" weekly_summary)" 0
+eq "weekly: and records the week" "$(jq -r .summary_week "$FLEET_STATE_DIR/tick.state.json")" "$(date +%G-W%V)"
+jq '.summary_week = "2000-W01"' "$FLEET_STATE_DIR/tick.state.json" >"$T/ts.tmp" && mv "$T/ts.tmp" "$FLEET_STATE_DIR/tick.state.json"
+w2="$("$SCRIPTS/tick.sh" 2>/dev/null)"; w3="$("$SCRIPTS/tick.sh" 2>/dev/null)"
+eq "weekly: a new week emits weekly_summary once" "$(evc "$w2" weekly_summary)$(evc "$w3" weekly_summary)" 10
+
+# -- respawn: a Zombie row is started again from the row, within a budget
+export FLEET_STATE_DIR="$T/rsp" FLEET_REGISTRY="$T/rsp/fleet.json" FLEET_INBOX="$T/rsp/escalations.jsonl"; mkdir -p "$FLEET_STATE_DIR"; EVF="$FLEET_STATE_DIR/events.jsonl"
+rm -f "${AS:?}"/*; : >"$HERDR_LOG"
+"$SCRIPTS/boot.sh" build rsp "$T/repo" "SECRETTASKWORDS respawn me" >/dev/null 2>&1
+BWT="$("$REG" get build-rsp/builder | jq -r .worktree)"; mkdir -p "$BWT/reports"; echo "# report" >"$BWT/reports/DEV-1-builder.md"; echo "dirty" >"$BWT/untracked-note.txt"
+for r in build-rsp/lead build-rsp/planner build-rsp/builder build-rsp/tester; do "$REG" set "$r" status=Idle >/dev/null; done
+rm -f "$FLEET_STATE_DIR/tick.state.json"; : >"$EVF"
+OLDT="$("$REG" get build-rsp/builder | jq -r .transcript)"
+nstart() { grep -c "^agent start $1 " "$HERDR_LOG" || true; }
+export FLEET_NOW=2026-10-18T10:00:00Z
+echo gone >"$AS/build-rsp-builder"; : >"$HERDR_LOG"
+d1="$("$SCRIPTS/tick.sh" 2>"$T/rsp.err")"
+eq "respawn: the death is reported" "$(printf '%s' "$d1" | jq -r '[.[] | select(.type == "dead") | .name] | join(",")')" build-rsp/builder
+eq "respawn: the agent is started again" "$(nstart build-rsp-builder)" 1
+eq "respawn: with a new session id" "$(grep "^agent start build-rsp-builder " "$HERDR_LOG" | grep -c -- '--session-id')" 1
+check "respawn: the row has a new transcript path" bash -c "[ \"\$('$REG' get build-rsp/builder | jq -r .transcript)\" != '$OLDT' ]"
+eq "respawn: the row is Working" "$("$REG" get build-rsp/builder | jq -r .status)" Working
+eq "respawn: respawned is logged" "$(evn respawned)" 1
+check "respawn: the resume brief is sent to the agent and says so" bash -c "grep -q '^agent prompt build-rsp-builder ' '$HERDR_LOG' && grep -q 'You are being respawned' '$HERDR_LOG'"
+check "respawn: and carries the assignment" grep -q 'Assignment: SECRETTASKWORDS respawn me' "$HERDR_LOG"
+check "respawn: and the last report file" grep -q "DEV-1-builder.md" "$HERDR_LOG"
+check "respawn: and git log and git status of the branch" bash -c "grep -q 'git log -5 --oneline' '$HERDR_LOG' && grep -q 'untracked-note.txt' '$HERDR_LOG'"
+check "respawn: and the fleet rules" grep -q 'Fleet rules for build-rsp/builder' "$HERDR_LOG"
+eq "respawn: the brief text itself is not in the event log" "$(grep -c 'SECRETTASKWORDS\|Fleet rules' "$EVF" || true)" 0
+# a second death inside the window: P1 escalation, no respawn
+echo gone >"$AS/build-rsp-builder"; : >"$HERDR_LOG"
+"$SCRIPTS/tick.sh" >/dev/null 2>&1
+eq "respawn: a second death inside the window is not respawned" "$(nstart build-rsp-builder)" 0
+eq "respawn: it escalates P1" "$("$REG" escalations --open --team build-rsp | jq -c '[.[] | select(.name == "build-rsp/builder") | [.severity, .message]]')" '[["P1","build-rsp/builder died twice in 6h"]]'
+echo gone >"$AS/build-rsp-builder"; "$SCRIPTS/tick.sh" >/dev/null 2>&1
+eq "respawn: and escalates only once" "$("$REG" escalations --open --team build-rsp | jq '[.[] | select(.name == "build-rsp/builder")] | length')" 1
+# outside the window it is respawned again
+export FLEET_NOW=2026-10-18T17:00:00Z; echo gone >"$AS/build-rsp-builder"; : >"$HERDR_LOG"
+"$SCRIPTS/tick.sh" >/dev/null 2>&1
+eq "respawn: after the window a new death is respawned" "$(nstart build-rsp-builder)" 1
+# a lead is respawned as a lead
+echo gone >"$AS/build-rsp-lead"; : >"$HERDR_LOG"; "$SCRIPTS/tick.sh" >/dev/null 2>&1
+eq "respawn: a lead is started again as the lead agent" "$(grep "^agent start build-rsp-lead " "$HERDR_LOG" | grep -c -- '--agent developer:lead')" 1
+check "respawn: a lead's resume brief names the team" grep -q 'The team:' "$HERDR_LOG"
+# Done and Retired rows are never respawned
+"$REG" done build-rsp/tester --outcome Shipped --summary x >/dev/null 2>&1; echo gone >"$AS/build-rsp-tester"; : >"$HERDR_LOG"
+"$SCRIPTS/tick.sh" >/dev/null 2>&1; eq "respawn: a Done row is not respawned" "$(nstart build-rsp-tester)" 0
+"$REG" retire build-rsp/planner >/dev/null 2>&1; echo gone >"$AS/build-rsp-planner"; "$SCRIPTS/tick.sh" >/dev/null 2>&1
+eq "respawn: a Retired row is not respawned" "$(nstart build-rsp-planner)" 0
+check "respawn.sh refuses a Done row directly" bash -c "! '$SCRIPTS/respawn.sh' build-rsp/tester"
+unset FLEET_NOW
+
+# -- metrics from a fixture log and fixture transcripts
+export FLEET_STATE_DIR="$T/mx" FLEET_REGISTRY="$T/mx/fleet.json" FLEET_INBOX="$T/mx/e.jsonl"; mkdir -p "$FLEET_STATE_DIR/tr"; EVF="$FLEET_STATE_DIR/events.jsonl"
+export FLEET_NOW=2026-10-14T00:00:00Z
+PR=https://github.com/o/r/pull/50
+{
+  echo '{"at":"2026-09-01T09:00:00Z","type":"pr_ready","team":"mo","name":"mo/t","issue":null,"pr":"https://github.com/o/r/pull/1","sha":"old","detail":null}'
+  echo '{"at":"2026-10-12T09:00:00Z","type":"boot","team":"mt","name":null,"issue":"DEV-5","pr":null,"sha":null,"detail":"template build"}'
+  echo '{"at":"2026-10-12T10:00:00Z","type":"brief_failed","team":"mt","name":"mt/builder","issue":null,"pr":null,"sha":null,"detail":"no confirmation after retry"}'
+  echo '{"at":"2026-10-12T10:30:00Z","type":"stalled","team":"mt","name":"mt/builder","issue":null,"pr":null,"sha":null,"detail":null}'
+  echo '{"at":"2026-10-12T11:00:00Z","type":"pr_ready","team":"mt","name":"mt/tester","issue":null,"pr":"'$PR'","sha":"aaa1111","detail":null}'
+  echo '{"at":"2026-10-12T11:05:00Z","type":"signoff","team":"mt","name":"mt/tester","issue":null,"pr":"'$PR'","sha":"aaa1111","detail":null}'
+  echo '{"at":"2026-10-12T12:00:00Z","type":"pr_ready","team":"mt","name":"mt/tester","issue":null,"pr":"'$PR'","sha":"bbb2222","detail":null}'
+  echo '{"at":"2026-10-12T13:00:00Z","type":"pr_merged","team":"mt","name":"mt/tester","issue":null,"pr":"'$PR'","sha":null,"detail":null}'
+} >"$EVF"
+TRD2="$FLEET_STATE_DIR/tr"
+{
+  echo '{"type":"assistant","timestamp":"2026-10-12T09:30:00.123Z","message":{"usage":{"input_tokens":100,"cache_read_input_tokens":200,"cache_creation_input_tokens":300,"output_tokens":400}}}'
+  echo '{"type":"assistant","timestamp":"2026-10-12T12:30:00Z","message":{"usage":{"input_tokens":100,"cache_read_input_tokens":200,"cache_creation_input_tokens":300,"output_tokens":400}}}'
+  echo '{"type":"assistant","timestamp":"2026-10-11T08:00:00Z","message":{"usage":{"input_tokens":9999}}}'
+  echo '{"type":"user","timestamp":"2026-10-12T10:00:00Z","message":{"content":"hi"}}'
+} >"$TRD2/s1.jsonl"
+echo '{"type":"assistant","timestamp":"2026-10-12T14:00:00Z","message":{"usage":{"input_tokens":5000}}}' >"$TRD2/s2.jsonl"
+"$REG" add "$(jq -cn --arg tr "$TRD2/s1.jsonl" '{name: "mt/builder", team: "mt", tier: "Worker", status: "Done", transcript: $tr}')"
+mj="$("$SCRIPTS/metrics.sh" --since 7d --json)"
+eq "metrics: one row for the PR in the window (the old one is out)" "$(printf '%s' "$mj" | jq length)" 1
+eq "metrics: time from boot to the first pr_ready" "$(printf '%s' "$mj" | jq '.[0].ready_minutes')" 120
+eq "metrics: rework rounds are distinct head SHAs minus one" "$(printf '%s' "$mj" | jq '.[0].rework_rounds')" 1
+eq "metrics: stalls" "$(printf '%s' "$mj" | jq '.[0].stalls')" 1
+eq "metrics: missed messages" "$(printf '%s' "$mj" | jq '.[0].missed_messages')" 1
+eq "metrics: tokens from the transcripts between start and merge only" "$(printf '%s' "$mj" | jq '.[0].tokens')" 2000
+eq "metrics: the PR and team" "$(printf '%s' "$mj" | jq -c '[.[0].pr, .[0].team, .[0].issue]')" "[\"$PR\",\"mt\",\"DEV-5\"]"
+"$SCRIPTS/metrics.sh" --since 7d >"$T/m.out"; check "metrics: the table has a header and the PR" bash -c "grep -q 'READY_MIN' '$T/m.out' && grep -q 'pull/50' '$T/m.out'"
+eq "metrics: a window with nothing says so" "$("$SCRIPTS/metrics.sh" --since 1d)" "no PRs in the last 1d"
+check "metrics: a bad --since is refused" bash -c "! '$SCRIPTS/metrics.sh' --since forever"
+unset FLEET_NOW
+
+export FLEET_STATE_DIR="$_rstate" FLEET_REGISTRY="$_rreg"; [ -n "$_rinbox" ] && export FLEET_INBOX="$_rinbox" || unset FLEET_INBOX
+for k in events.jsonl metrics.sh respawn respawn_max nudge; do check "SKILL.md documents $k" grep -qi -- "$k" "$SCRIPTS/../SKILL.md"; done
+for k in metrics.sh respawn.sh events.jsonl; do check "README documents $k" grep -q -- "$k" "$SCRIPTS/../README.md"; done
+check "registry.md documents the event log and nudged_at" bash -c "grep -q 'events.jsonl' '$SCRIPTS/../references/registry.md' && grep -q 'nudged_at' '$SCRIPTS/../references/registry.md'"
 
 # version and docs
 SK="$SCRIPTS/.."; PLUGIN="$SK/../.."
