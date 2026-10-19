@@ -13,7 +13,7 @@
 #                   the team's transcripts (only the session files on the team's rows, live and archived:
 #                   each `transcript` and the earlier ones in `transcripts`) between the PR's start and
 #                   its merge (or now); lines are parsed one at a time and unparsable ones skipped
-# Reads $FLEET_STATE_DIR/events.jsonl (FLEET_EVENTS overrides) and the registry; writes nothing.
+# Reads $FLEET_STATE_DIR/events.jsonl and the registry; writes nothing.
 # UNVERIFIED: the transcript line shape (`.timestamp`, `.type == "assistant"`, `.message.usage`).
 set -euo pipefail
 . "$(dirname "$0")/common.sh"

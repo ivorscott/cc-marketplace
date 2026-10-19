@@ -267,8 +267,8 @@ Boot starts every claude agent with `--session-id` and records the transcript pa
 Scripts now call the forge: `tick.sh` runs read-only `gh pr view` through `FLEET_GH` (default `gh`).
 A repo whose PRs have no CI is listed in `no_pr_ci = ["repo"]` in config.toml. UNVERIFIED: herdr's `state_change_seq` is observed, not documented; the window size per model; the transcript format across Claude Code updates; the pane-text handling.
 
-One tick runs at a time (`tick.lock` in the state dir, `tick_lock_stale_secs`, default 900); a second one
-exits quietly. An agent with a background task running (a started task with no notification in its
+One tick runs at a time (`tick.lock` in the state dir); a second one exits quietly, and a lock whose
+holder pid is gone (a killed tick) is recovered by the next tick. An agent with a background task running (a started task with no notification in its
 transcript, or "N shell(s)" / "N monitor(s)" in the pane footer when there is no transcript) counts as
 Working, not Stalled; a task older than `bg_task_max_hours` (default 6) is aged out.
 

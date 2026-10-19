@@ -30,8 +30,8 @@
 # With a key and linear_writes allowing it, every tick makes ONE heartbeat mutation (linear.sh heartbeat);
 # with a key, one read per claimed issue (holder), Done rows included. Tick never runs linear.sh migrate.
 # Once a week (ISO week, in the state file) tick also runs `registry.sh archive`.
-# One tick at a time: tick.lock (mkdir; pid and start time inside). A tick that finds a live, recent lock
-# exits 0 quietly; a stale one (dead pid, or older than tick_lock_stale_secs, default 900) is broken.
+# One tick at a time: tick.lock (mkdir; pid and start time inside). A tick that finds a held lock exits 0
+# quietly (tick_skipped on stderr); a lock whose holder pid is no longer running is recovered.
 # PR state is read with `gh pr view` / `gh pr list` (FLEET_GH), read-only. A gh failure for one PR is logged on
 # stderr and skips that PR for this tick; no gh on PATH is one warning and no PR events.
 set -euo pipefail
@@ -50,12 +50,23 @@ done
 # --- one tick at a time -------------------------------------------------------------------------------
 # An mkdir lock (no flock on macOS) around the whole tick, from the state read to the state write, with the
 # holder's pid and start time inside. Held: this tick exits 0, quietly (tick_skipped on stderr). The trap frees
-# the lock on exit and on INT/TERM/HUP, so there is no stale-lock breaking; only SIGKILL or a power cut leaves
-# one behind, and then the message names the directory to remove.
+# the lock on exit and on INT/TERM/HUP. SIGKILL or a power cut bypasses the trap, so a lock whose holder pid is
+# no longer running is recovered (pid check only, never by age), under a short mutex so two ticks cannot both
+# break it. A lock with no pid yet, or a live one, is left alone.
 lockdir="$FLEET_STATE_DIR/tick.lock"
 mkdir -p "$FLEET_STATE_DIR"
 if ! mkdir "$lockdir" 2>/dev/null; then
-  printf 'fleet: tick_skipped: another tick holds %s (pid %s); remove it if no tick is running\n' "$lockdir" "$(cat "$lockdir/pid" 2>/dev/null || echo unknown)" >&2; exit 0
+  lpid="$(cat "$lockdir/pid" 2>/dev/null || true)"
+  if [[ "$lpid" =~ ^[0-9]+$ ]] && ! ps -p "$lpid" >/dev/null 2>&1 && mkdir "$lockdir.recover" 2>/dev/null; then
+    # Re-read under the mutex: another tick may have recovered it and taken a new lock meanwhile.
+    if [ "$(cat "$lockdir/pid" 2>/dev/null || true)" = "$lpid" ]; then
+      rm -rf "$lockdir"; printf 'fleet: tick_lock_recovered: the holder (pid %s) is gone\n' "$lpid" >&2
+    fi
+    rmdir "$lockdir.recover" 2>/dev/null || true
+  fi
+  if ! mkdir "$lockdir" 2>/dev/null; then
+    printf 'fleet: tick_skipped: another tick holds %s (pid %s); remove it if no tick is running\n' "$lockdir" "$(cat "$lockdir/pid" 2>/dev/null || echo unknown)" >&2; exit 0
+  fi
 fi
 printf '%s\n' "$$" >"$lockdir/pid"; date +%s >"$lockdir/started"
 ghtmp=""
@@ -123,8 +134,8 @@ claims_taken_over
 
 # --- stalled / dead -------------------------------------------------------------------------
 # A newly Stalled agent gets ONE nudge through tell.sh (nudged_at on its row) and no event; still
-# Stalled on a later tick: a `stalled` event, once. A Zombie is a `dead` event on the transition and, if it is still
-# a Zombie on the next tick, is respawned within a budget (respawn_max = 1 per respawn_window_hours = 6 per agent): every attempt, successful
+# Stalled on a later tick: a `stalled` event, once. A Zombie on two ticks in a row is a `dead` event (once) and is
+# respawned within a budget (respawn_max = 1 per respawn_window_hours = 6 per agent): every attempt, successful
 # or not, spends it; once it is spent, one P1 escalation and no more respawns. Done and Retired rows are never touched.
 now_iso="${FLEET_NOW:-$(now)}"; now_epoch="$(jq -rn --arg t "$now_iso" '$t | fromdateiso8601')"
 targs=(); [ -n "$team" ] && targs=(--team "$team")
@@ -133,9 +144,6 @@ targs=(); [ -n "$team" ] && targs=(--team "$team")
 if ! hd agent list >/dev/null 2>&1; then
   warn "herdr agent list failed; no classification or respawn this tick"
 elif rows="$("$FLEET_SCRIPTS/status.sh" ${targs[@]+"${targs[@]}"} --json 2>/dev/null)" && printf '%s' "$rows" | jq -e 'type == "array"' >/dev/null 2>&1; then
-  add_events "$(jq -cn --argjson rows "$rows" --slurpfile stf "$STATE_FILE" '
-    [$rows[] | select(.tier != "Orchestrator" and .status == "Zombie" and (($stf[0].status // {})[.name] != .status))
-      | {type: "dead", team, name, status} + (if (.pr // "") != "" then {url: .pr} else {} end)]')"
   while IFS= read -r r; do
     [ -n "$r" ] || continue
     sname="$(printf '%s' "$r" | jq -r .name)"
@@ -169,12 +177,20 @@ elif rows="$("$FLEET_SCRIPTS/status.sh" ${targs[@]+"${targs[@]}"} --json 2>/dev/
       | select(.tier != "Orchestrator" and .status == "Needs input" and (.status_detail // "") != ""
         and ((($stf[0].needs_input_emitted // []) | index($k)) == null))
       | {type: "needs_input", team, name, detail: .status_detail}]')"
-  st_upd --argjson rows "$rows" '$st + {needs_input_emitted: [$rows[] | select(.status == "Needs input" and (.status_detail // "") != "") | .name + "|" + .status_detail]}'
+  # Only the rows this tick read are re-derived: a --team tick keeps the other teams' keys.
+  st_upd --argjson rows "$rows" '[$rows[].name] as $seen
+    | $st + {needs_input_emitted: ([($st.needs_input_emitted // [])[] | select(split("|")[0] as $n | $seen | index($n) | not)]
+        + [$rows[] | select(.status == "Needs input" and (.status_detail // "") != "") | .name + "|" + .status_detail])}'
   rwin="$(cfg_int respawn_window_hours 6)"; rmax="$(cfg_int respawn_max 1)"
   while IFS= read -r zname; do
     [ -n "$zname" ] || continue
-    # Respawn needs Zombie on two ticks in a row: the state still holds the previous tick's status.
+    # Respawn needs Zombie on two ticks in a row: the state still holds the previous tick's status. The
+    # `dead` event goes with that decision, once per death (dead_emitted, forgotten when the row recovers).
     [ "$(jq --arg n "$zname" '((.status // {})[$n]) == "Zombie"' "$STATE_FILE")" = true ] || continue
+    if [ "$(jq --arg n "$zname" '(.dead_emitted // []) | index($n) == null' "$STATE_FILE")" = true ]; then
+      add_events "$(printf '%s' "$rows" | jq -c --arg n "$zname" '[.[] | select(.name == $n) | {type: "dead", team, name, status} + (if (.pr // "") != "" then {url: .pr} else {} end)]')"
+      st_upd --arg n "$zname" '$st + {dead_emitted: ((($st.dead_emitted // []) + [$n]) | unique)}'
+    fi
     recent="$(jq -c --arg n "$zname" --argjson now "$now_epoch" --argjson w "$rwin" '((.respawns // {})[$n] // []) | map(select(. > $now - $w * 3600))' "$STATE_FILE")"
     if [ "$(printf '%s' "$recent" | jq length)" -ge "$rmax" ]; then
       ekey="$zname|$(printf '%s' "$recent" | jq 'max')"
@@ -196,7 +212,8 @@ elif rows="$("$FLEET_SCRIPTS/status.sh" ${targs[@]+"${targs[@]}"} --json 2>/dev/
       fi
     fi
   done < <(printf '%s' "$rows" | jq -r '.[] | select(.tier != "Orchestrator" and .status == "Zombie") | .name')
-  st_upd --argjson rows "$rows" '$st + {status: (($st.status // {}) + ([$rows[] | {(.name): .status}] | add // {}))}'
+  st_upd --argjson rows "$rows" '$st + {status: (($st.status // {}) + ([$rows[] | {(.name): .status}] | add // {})),
+    dead_emitted: (($st.dead_emitted // []) - [$rows[] | select(.status != "Zombie") | .name])}'
 else
   warn "status.sh failed; no stalled/dead events this tick"
 fi

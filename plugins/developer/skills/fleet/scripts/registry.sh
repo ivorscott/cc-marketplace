@@ -4,7 +4,7 @@
 #
 #   registry.sh add '<json object with at least .name>'   upsert a row
 #   registry.sh set <name> key=value [key=value ...]      update fields
-#   registry.sh append <name> key value                    add value to the row's list at key (no duplicates)
+#   registry.sh append <name> key value                    add value to the row's list at key (no duplicates; an agent: own row, transcripts only)
 #   registry.sh get [--archived] <name>                    --archived also looks in fleet-archive.json
 #   registry.sh list [--team T] [--live] [--problems]
 #   registry.sh count-live                                 agents counted against max_agents
@@ -61,10 +61,13 @@ update() {
       | [$n[0].agents | to_entries[] | select((.value | row_ok | not) and (($old[.key]) == null or ($old[.key] | row_ok)))
         | .key] | join(", ")')"
     if [ -n "$bad" ]; then rm -f "$tmp"; die "registry write refused: would leave malformed row(s): $bad; $FLEET_REGISTRY left unchanged"; fi
-    # A transcript path (new or changed) must be under Claude's projects directory.
+    # A transcript path (new or changed), and any new entry of `transcripts`, must be under Claude's projects directory.
     bad="$(jq -nr --slurpfile o "$FLEET_REGISTRY" --slurpfile n "$tmp" --arg pd "$(projects_dir)/" '($o[0].agents // {}) as $old
-      | [$n[0].agents | to_entries[] | select((.value.transcript // "") != "" and (.value.transcript != ($old[.key].transcript // ""))
-          and ((.value.transcript | tostring | startswith($pd)) | not)) | .key] | join(", ")')"
+      | [$n[0].agents | to_entries[] | select(
+          ((.value.transcript // "") != "" and (.value.transcript != ($old[.key].transcript // ""))
+            and ((.value.transcript | tostring | startswith($pd)) | not))
+          or ([(.value.transcripts // []) | if type == "array" then .[] else . end] - [($old[.key].transcripts // []) | if type == "array" then .[] else . end]
+            | any(tostring | startswith($pd) | not))) | .key] | join(", ")')"
     if [ -n "$bad" ]; then rm -f "$tmp"; die "registry write refused: transcript of $bad is not under $(projects_dir)/; $FLEET_REGISTRY left unchanged"; fi
     stale="$(jq -r "$ESC_DEFS"'[.agents | to_entries[] | select(.value | row_ok | not) | .key] | join(", ")' "$tmp")"
     [ -z "$stale" ] || warn "malformed row(s) already in the registry: $stale (a repairing write: escalate, resolve or retire)"
@@ -118,7 +121,7 @@ case "$cmd" in
       # An agent (FLEET_ROLE set in its pane) may set only these keys of its row; the Orchestrator and the
       # scripts (FLEET_ROLE unset) may set any other, and the schema check still applies to the result.
       if [ -n "${FLEET_ROLE:-}" ]; then
-        case "$k" in status | summary | nudged_at | branch | worktree) ;; *) die "cannot set $k from an agent: agents may set only status, summary, nudged_at, branch and worktree" ;; esac
+        case "$k" in status | status_detail | summary | nudged_at | branch | worktree) ;; *) die "cannot set $k from an agent: agents may set only status, status_detail, summary, nudged_at, branch and worktree" ;; esac
       fi
       args+=(--arg "k$i" "$k" --arg "v$i" "$v"); prog="$prog | .[\$k$i] = \$v$i"; i=$((i + 1))
     done
@@ -127,6 +130,11 @@ case "$cmd" in
   append)
     name="${1:?usage: append <name> key value}"; k="${2:?usage: append <name> key value}"; v="${3:?usage: append <name> key value}"
     exists "$name"
+    # An agent (FLEET_ROLE set) may append only to its own row (FLEET_NAME), and only to `transcripts`.
+    if [ -n "${FLEET_ROLE:-}" ]; then
+      [ "$name" = "${FLEET_NAME:-}" ] || die "an agent may append only to its own row (FLEET_NAME=${FLEET_NAME:-unset}), not $name"
+      case "$k" in transcripts) ;; *) die "cannot append to $k from an agent: agents may append only to transcripts" ;; esac
+    fi
     update --arg n "$name" --arg k "$k" --arg v "$v" --arg t "$(now)" \
       '.agents[$n] |= ((.[$k] = ((((.[$k] // []) | if type == "array" then . else [.] end) + [$v]) | unique)) | .updated_at = $t)'
     ;;
