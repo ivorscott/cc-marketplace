@@ -35,12 +35,13 @@
 # machines > 1, where it refuses: claims cannot be checked.
 #
 # Env: FLEET_SESSION (named herdr session, for isolated runs), FLEET_FORCE=1 (ignore
-# max_agents and min_free_gb), FLEET_MACHINE (replaces this machine's key, see machine-id.sh),
+# max_teams and min_free_gb), FLEET_MACHINE (replaces this machine's key, see machine-id.sh),
 # FLEET_LABEL_PREFIX (claim label prefix, default "fleet:").
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
 require_herdr
 need git
+config_warn_unknown
 # Whether a key exists (nothing is read from it), then agents never get it: boot starts them from
 # a shell that does not carry LINEAR_API_KEY.
 have_key=0; "$FLEET_SCRIPTS/linear.sh" has-key >/dev/null 2>&1 && have_key=1
@@ -125,10 +126,16 @@ if [ -n "$scope_arg" ]; then
     while IFS= read -r msg; do warn "$msg"; done
 fi
 
-# Concurrency cap.
-live="$("$registry" count-live)"; cap="$(max_agents)"
-if [ "${FLEET_FORCE:-}" != "1" ] && [ $((live + 1 + nworkers)) -gt "$cap" ]; then
-  die "booting $team needs $((1 + nworkers)) agents; $live live, max_agents=$cap (set FLEET_FORCE=1 or raise max_agents in $FLEET_CONFIG_DIR/config.toml)"
+# Concurrency cap: max_teams live teams (Parked teams do not count), and one team per repo.
+cap="$(max_teams)"; live="$(live_team_count "$team")"
+if [ "${FLEET_FORCE:-}" != "1" ]; then
+  if [ "$live" -ge "$cap" ]; then
+    die "booting $team would be live team number $((live + 1)); max_teams=$cap (park or retire one, set FLEET_FORCE=1, or raise max_teams in $FLEET_CONFIG_DIR/config.toml)"
+  fi
+  others="$(teams_on_repo "$repo" "$team")"
+  if [ -n "$others" ] && [ "$(printf '%s\n' "$others" | grep -c .)" -ge "$(teams_per_repo)" ]; then
+    die "booting $team: $(printf '%s' "$others" | paste -sd, -) already live on $repo, teams_per_repo=$(teams_per_repo) (park one, or set FLEET_FORCE=1)"
+  fi
 fi
 
 # Disk floor.

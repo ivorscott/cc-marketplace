@@ -256,6 +256,7 @@ case "$1 $2" in
   "workspace create") echo '{"result":{"workspace":{"workspace_id":"w1"},"root_pane":{"pane_id":"p0"}}}' ;;
   "pane split") n=$(( $(grep -c '^pane split' "$HERDR_LOG") )); echo "{\"result\":{\"pane\":{\"pane_id\":\"p$n\"}}}" ;;
   "pane process-info")
+    if [ -n "${GONE_ONCE:-}" ] && [ -e "$GONE_ONCE" ]; then rm -f "$GONE_ONCE"; exit 1; fi
     # an agent that got /exit shows its shell until it is started again
     if ls "$AS"/exited.* >/dev/null 2>&1; then
       for xr in $(jq -r --arg p "$4" '.agents[] | select(.pane == $p) | .herdr_ref' "$FLEET_STATE_DIR/fleet.json" 2>/dev/null); do
@@ -500,7 +501,7 @@ check "single-agent retire archives under <team>-<role>" test -f "$T/archive/bui
 check "single-agent retire leaves the other worktree" test -d "$T/wt-build-one-tester"
 
 # boot refuses below min_free_gb
-cp "$FLEET_CONFIG_DIR/config.toml" "$T/config.bak"; echo 'max_agents = 100' >>"$FLEET_CONFIG_DIR/config.toml"
+cp "$FLEET_CONFIG_DIR/config.toml" "$T/config.bak"; echo 'max_teams = 100' >>"$FLEET_CONFIG_DIR/config.toml"
 eq "min_free_gb defaults to 40" "$(bash -c ". $SCRIPTS/common.sh; min_free_gb")" 40
 eq "warn_free_gb defaults to 75" "$(bash -c ". $SCRIPTS/common.sh; warn_free_gb")" 75
 : >"$HERDR_LOG"; FLEET_FORCE= DF_GB=10 "$SCRIPTS/boot.sh" build disk1 "$T/plain" task >"$T/b.out" 2>"$T/b.err"; rc=$?
@@ -804,7 +805,7 @@ check "escalate logs 'notification failed'" grep -q 'notification failed' <<<"$e
 err="$(NOTIFY_FAIL=1 "$REG" done esc/solo --outcome Shipped --summary s 2>&1 >/dev/null)"
 check "done logs 'notification failed'" grep -q 'notification failed' <<<"$err"
 eq "a working notification logs nothing" "$("$REG" escalate esc/builder P2 "n2" 2>&1 >/dev/null)" ""
-for f in registry.sh status.sh retire.sh common.sh boot.sh tell.sh tick.sh next.sh linear.sh claim.sh respawn.sh metrics.sh agent-lib.sh schedule.sh loop-tick.sh sandbox.sh; do check "bash -n $f" bash -n "$SCRIPTS/$f"; done
+for f in registry.sh status.sh retire.sh common.sh boot.sh tell.sh tick.sh next.sh linear.sh claim.sh respawn.sh metrics.sh agent-lib.sh schedule.sh loop-tick.sh sandbox.sh park.sh unpark.sh focus.sh; do check "bash -n $f" bash -n "$SCRIPTS/$f"; done
 SKD0="$SCRIPTS/.."
 eq "SKILL.md no longer routes through escalation-wait.sh" "$(grep -c 'escalation-wait' "$SKD0/SKILL.md" || true)" 0
 check "SKILL.md documents resolve" grep -q 'registry.sh resolve' "$SKD0/SKILL.md"
@@ -950,7 +951,7 @@ check "SKILL.md documents the registry archive" grep -q 'registry.sh archive' "$
 check "registry.md documents archive_after_days" grep -q 'archive_after_days' "$SCRIPTS/../references/registry.md"
 # ---- DEV-368 A: tell, boot delivery, signoff, reassign/next, tick ---------------------------------
 export FLEET_TELL_POLL=0.05
-cp "$FLEET_CONFIG_DIR/config.toml" "$T/config.a.bak"; printf 'tell_confirm_secs = 3\n' >>"$FLEET_CONFIG_DIR/config.toml"
+cp "$FLEET_CONFIG_DIR/config.toml" "$T/config.a.bak"; export FLEET_TELL_CONFIRM_SECS=3
 GH_DIR="$T/gh"; mkdir -p "$GH_DIR"; export GH_DIR GH_LOG="$T/gh.log" REAL_GH_LOG="$T/realgh.log"; : >"$GH_LOG"; : >"$REAL_GH_LOG"
 cat >"$T/bin/gh" <<'S'
 #!/usr/bin/env bash
@@ -1425,11 +1426,12 @@ case "$FLEET_CONFIG_DIR" in "$T"/*) ;; *) echo "refusing to run B tests outside 
 LIN="$SCRIPTS/linear.sh"; STUB="$HERE/linear-stub.sh"
 export LINEAR_DB="$T/linear.json" LINEAR_LOG="$T/linear.log" LINEAR_ARGV_LOG="$T/linear.argv" LINEAR_STUB_KEY="KEYFIXTURE-9f3a77c1" FLEET_CURL="$STUB"
 printf '%s\n' "$LINEAR_STUB_KEY" >"$FLEET_CONFIG_DIR/linear_api_key"; chmod 600 "$FLEET_CONFIG_DIR/linear_api_key"
-cp "$FLEET_CONFIG_DIR/config.toml" "$T/config.b.bak"; printf 'claim_settle_secs = 0\nlinear_writes = "on"\nmachine_name = "test box"\n' >>"$FLEET_CONFIG_DIR/config.toml"
+export FLEET_CLAIM_SETTLE_SECS=0
+cp "$FLEET_CONFIG_DIR/config.toml" "$T/config.b.bak"; printf 'linear_writes = "on"\nmachine_name = "test box"\n' >>"$FLEET_CONFIG_DIR/config.toml"
 : >"$NETLOG"
 # A fixture machine id: these tests never use this machine's real id (a stored id wins over the OS one).
 FIXID="AAAAAAAA-1111-4222-8333-444455556666"; printf '%s\n' "$FIXID" >"$FLEET_STATE_DIR/machine-id"
-setw() { cp "$T/config.b.bak" "$FLEET_CONFIG_DIR/config.toml"; printf 'claim_settle_secs = 0\nmachine_name = "test box"\n' >>"$FLEET_CONFIG_DIR/config.toml"; [ -z "${1:-}" ] || printf 'linear_writes = "%s"\n' "$1" >>"$FLEET_CONFIG_DIR/config.toml"; } # setw [off-by-default | value]
+setw() { cp "$T/config.b.bak" "$FLEET_CONFIG_DIR/config.toml"; printf 'machine_name = "test box"\n' >>"$FLEET_CONFIG_DIR/config.toml"; [ -z "${1:-}" ] || printf 'linear_writes = "%s"\n' "$1" >>"$FLEET_CONFIG_DIR/config.toml"; } # setw [off-by-default | value]
 setw on
 IDRE='[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}|[0-9A-Fa-f]{32}'
 dbreset() { # two issues, a team, a state; labels: the fleet group and a foreign machine's label with a stale heartbeat
@@ -2053,7 +2055,7 @@ bt --issue DEV-81 --claimed-by test build nk2 "$T/plain" t
 eq "boot: --issue without a key refuses when machines > 1" "$BTRC" 1
 eq "boot: the refusal adds no rows" "$(rows_of build-nk2)" 0
 bt build nk3 "$T/plain" t; eq "boot: no --issue needs no key even with machines > 1" "$BTRC" 0
-cp "$T/config.b.bak" "$FLEET_CONFIG_DIR/config.toml"; printf 'claim_settle_secs = 0\nlinear_writes = "on"\nmachine_name = "test box"\n' >>"$FLEET_CONFIG_DIR/config.toml"
+cp "$T/config.b.bak" "$FLEET_CONFIG_DIR/config.toml"; printf 'linear_writes = "on"\nmachine_name = "test box"\n' >>"$FLEET_CONFIG_DIR/config.toml"
 # the key never reaches an agent: boot with the key in its own environment and on disk
 printf '%s\n' "$LINEAR_STUB_KEY" >"$FLEET_CONFIG_DIR/linear_api_key"; chmod 600 "$FLEET_CONFIG_DIR/linear_api_key"
 LINEAR_API_KEY="$LINEAR_STUB_KEY" bt --issue DEV-82 --claimed-by test build lk1 "$T/plain" t
@@ -2376,7 +2378,7 @@ echo gone >"$AS/build-rsp-lead"; : >"$HERDR_LOG"; "$SCRIPTS/tick.sh" >/dev/null 
 eq "respawn: a lead is started again as the lead agent" "$(grep "^agent start build-rsp-lead " "$HERDR_LOG" | grep -c -- '--agent developer:lead')" 1
 check "respawn: a lead's resume brief names the team" grep -q 'The team:' <<<"$(lastbrief build-rsp/lead)"
 # a respawn that always fails still spends the budget: tried respawn_max times, then one P1, no pane leak
-printf 'respawn_max = 2\n' >"$FLEET_CONFIG_DIR/config.toml"
+: >"$FLEET_CONFIG_DIR/config.toml"; export FLEET_RESPAWN_MAX=2
 "$SCRIPTS/boot.sh" build rsf "$T/repo" "task" >/dev/null 2>&1
 for r in build-rsf/lead build-rsf/planner build-rsf/builder build-rsf/tester; do "$REG" set "$r" status=Idle >/dev/null; done
 rm -f "$FLEET_STATE_DIR/tick.state.json"; export FLEET_NOW=2026-10-19T10:00:00Z
@@ -2793,6 +2795,214 @@ check "README documents sandbox.sh and rules/house.md" bash -c "grep -q 'sandbox
 check "registry.md documents last_brief and plugin_version" bash -c "grep -q 'last_brief' '$SKD_/references/registry.md' && grep -q 'plugin_version' '$SKD_/references/registry.md'"
 
 # version and docs
+
+# ---- DEV-368 E: park, focus, unpark; caps; the config budget; issue_done -----------------------------------
+_estate="$FLEET_STATE_DIR"; _ereg="$FLEET_REGISTRY"; _einbox="${FLEET_INBOX:-}"; _eforce="${FLEET_FORCE:-}"
+export FLEET_STATE_DIR="$T/estate" FLEET_REGISTRY="$T/estate/fleet.json" FLEET_INBOX="$T/estate/escalations.jsonl"; mkdir -p "$FLEET_STATE_DIR"
+EVF="$FLEET_STATE_DIR/events.jsonl"; unset FLEET_NOW; export FLEET_FORCE=
+PARK="$SCRIPTS/park.sh"; UNPARK="$SCRIPTS/unpark.sh"; FOCUS="$SCRIPTS/focus.sh"
+: >"$FLEET_CONFIG_DIR/config.toml"
+for r in er er2 er3 er4; do
+  git init -q -b main "$T/$r"; git -C "$T/$r" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+  git init -q --bare "$T/$r-origin.git"; git -C "$T/$r" remote add origin "$T/$r-origin.git"; git -C "$T/$r" push -q origin main 2>/dev/null
+done
+epwt() { # epwt <repo dir name> <branch>: a pushed worktree
+  git -C "$T/$1" worktree add -q -b "$2" "$T/ewt/${2//\//-}" >/dev/null 2>&1; git -C "$T/ewt/${2//\//-}" push -q origin "$2" 2>/dev/null; printf '%s' "$T/ewt/${2//\//-}"
+}
+eprow() { # eprow <team> <role> <tier> <repo dir name> [worktree]
+  "$REG" add "$(jq -cn --arg n "$1/$2" --arg role "$2" --arg t "$1" --arg tier "$3" --arg r "$T/$4" --arg wt "${5:-}" --arg root "$T/$4" \
+    '{name: $n, team: $t, repo: $r, tier: $tier, status: "Working", herdr_ref: ($t + "-" + $role), pane: ("p-" + $t + "-" + $role), workspace: "w0",
+      worktree: $wt, cwd: (if $wt == "" then $root else $wt end), harness: "claude", model: "", template: "build", assignment: "task", issue: "DEV-9", machine: "test"}')"; }
+epteam() { eprow "$1" lead Lead "$2"; eprow "$1" builder Worker "$2" "$(epwt "$2" "fleet/$1-b")"; }
+rows_sha() { shasum "$FLEET_REGISTRY" | cut -d' ' -f1; }
+nclose() { grep -c '^pane close' "$HERDR_LOG" || true; }
+nstartp() { grep -c '^agent start' "$HERDR_LOG" || true; }
+evn() { if [ -f "$EVF" ]; then grep -c "\"type\":\"$1\"" "$EVF" || true; else echo 0; fi; }
+stat_of() { "$REG" get "$1" | jq -r .status; }
+epteam ep-a er; epteam ep-b er2; epteam ep-c er3
+
+# -- park
+: >"$HERDR_LOG"; sha0="$(rows_sha)"
+"$PARK" ep-nosuch >/dev/null 2>"$T/p.err"; eq "park: an unknown team is refused" "$?" 1
+eq "park: and nothing changed" "$(rows_sha)" "$sha0"
+FLEET_ROLE=lead "$PARK" ep-a >/dev/null 2>&1; eq "park: an agent may not park" "$?" 1
+out="$("$PARK" ep-a 2>&1)"; rc=$?
+eq "park: a clean team parks" "$rc" 0
+eq "park: every row is Parked with the reason and a time" "$("$REG" list --team ep-a | jq -c '[.[] | [.status, .parked_reason, (.parked_at | length > 0)]] | unique')" '[["Parked","park",true]]'
+eq "park: the panes are closed" "$(nclose)" 2
+eq "park: the claim is kept (issue and claimant untouched)" "$("$REG" get ep-a/lead | jq -r .issue)" DEV-9
+eq "park: no Linear call is made by park.sh" "$(grep -c "linear.sh" "$SCRIPTS/park.sh" || true)" 0
+eq "park: the worktree and branch survive" "$(test -d "$T/ewt/fleet-ep-a-b" && git -C "$T/ewt/fleet-ep-a-b" branch --show-current)" fleet/ep-a-b
+eq "park: capacity is freed (live agents)" "$("$REG" count-live)" 4
+eq "park: and the team count" "$(bash -c ". '$SCRIPTS/common.sh'; live_team_count")" 2
+eq "park: the event is logged" "$(grep '"type":"parked"' "$EVF" | jq -c '[.team, .detail]')" '["ep-a","park"]'
+sha1="$(rows_sha)"; "$PARK" ep-a >/dev/null 2>"$T/p.err"; rc=$?
+eq "park: run twice, the team is already parked (refused)" "$rc" 1
+check "park: and says so" grep -q 'already parked' "$T/p.err"
+eq "park: and the registry is untouched" "$(rows_sha)" "$sha1"
+
+# a dirty worktree and an unpushed commit: refused at once, nothing closed
+echo wip >"$T/ewt/fleet-ep-b-b/wip.txt"; : >"$HERDR_LOG"; sha2="$(rows_sha)"
+"$PARK" ep-b >/dev/null 2>"$T/p.err"; rc=$?
+eq "park: a dirty worktree is refused" "$rc" 1
+check "park: the refusal names the worktree" grep -q 'uncommitted changes in .*fleet-ep-b-b' "$T/p.err"
+eq "park: refused means no pane closed and no row changed" "$(nclose):$(rows_sha)" "0:$sha2"
+rm -f "$T/ewt/fleet-ep-b-b/wip.txt"
+git -C "$T/ewt/fleet-ep-b-b" -c user.email=t@t -c user.name=t commit -q --allow-empty -m local
+"$PARK" ep-b >/dev/null 2>"$T/p.err"; rc=$?
+eq "park: a commit that is on no remote is refused" "$rc" 1
+check "park: and named" grep -q 'on no remote' "$T/p.err"
+git -C "$T/ewt/fleet-ep-b-b" push -q origin fleet/ep-b-b 2>/dev/null
+# herdr down: fails cleanly
+: >"$HERDR_LOG"; sha3="$(rows_sha)"
+AGENT_LIST_FAIL=1 "$PARK" ep-b >/dev/null 2>"$T/p.err"; rc=$?
+eq "park: herdr down is refused" "$rc" 1
+check "park: and says herdr is not answering" grep -q 'herdr is not answering' "$T/p.err"
+eq "park: herdr down leaves the rows unchanged and closes nothing" "$(nclose):$(rows_sha)" "0:$sha3"
+
+# a quiet tick ignores a Parked team
+printf 'repos = ["%s"]\n' "$T/er" >"$FLEET_CONFIG_DIR/config.toml"
+echo gone >"$AS/ep-a-lead"; echo gone >"$AS/ep-a-builder"; : >"$HERDR_LOG"; rm -f "$FLEET_STATE_DIR/tick.state.json" "$EVF"
+t1="$("$SCRIPTS/tick.sh" 2>/dev/null)"; t2="$("$SCRIPTS/tick.sh" 2>/dev/null)"; t3="$("$SCRIPTS/tick.sh" 2>/dev/null)"
+eq "tick: a Parked team is never Zombie: no dead event" "$(evc "$t1$t2$t3" dead)" 0
+eq "tick: nor respawned" "$(nstartp)" 0
+eq "tick: nor nudged" "$(grep -c '^agent prompt ep-a' "$HERDR_LOG" || true)" 0
+eq "tick: a parked team covers its repo (no repo_without_team)" "$(evc "$t1$t2$t3" repo_without_team)" 0
+eq "tick: and its status stays Parked" "$(stat_of ep-a/lead)" Parked
+: >"$FLEET_CONFIG_DIR/config.toml"; rm -f "$AS/ep-a-lead" "$AS/ep-a-builder"
+
+# status: one compact line for a parked team
+st="$("$SCRIPTS/status.sh" 2>/dev/null)"
+check "status: a parked team gets one line" bash -c "printf '%s' '$st' | grep -q '^parked: ep-a (park, since '"
+eq "status: and no table row" "$(printf '%s' "$st" | grep -c '^ep-a/')" 0
+
+# -- unpark
+: >"$HERDR_LOG"; echo '{}' >/dev/null
+printf 'max_teams = 2\n' >"$FLEET_CONFIG_DIR/config.toml"
+sha4="$(rows_sha)"; "$UNPARK" ep-a >/dev/null 2>"$T/u.err"; rc=$?
+eq "unpark: refused at once with the caps full (2 live teams, max_teams = 2)" "$rc" 1
+check "unpark: the refusal names the cap" grep -q 'max_teams=2' "$T/u.err"
+eq "unpark: refused means still Parked, nothing started" "$(rows_sha):$(nstartp)" "$sha4:0"
+"$UNPARK" ep-b >/dev/null 2>&1; eq "unpark: a team that is not parked is refused" "$?" 1
+"$UNPARK" ep-nosuch >/dev/null 2>&1; eq "unpark: an unknown team is refused" "$?" 1
+printf 'max_teams = 4\n' >"$FLEET_CONFIG_DIR/config.toml"
+"$REG" add "$(jq -cn --arg r "$T/er" '{name: "ep-d/lead", team: "ep-d", repo: $r, tier: "Lead", status: "Working", herdr_ref: "ep-d-lead", pane: "p-d"}')"
+"$UNPARK" ep-a >/dev/null 2>"$T/u.err"; rc=$?
+eq "unpark: a live team on the same repo refuses it (one team per repo)" "$rc" 1
+check "unpark: and names that team" grep -q 'ep-d live on' "$T/u.err"
+"$REG" retire ep-d >/dev/null
+export GONE_ONCE="$T/gone_once_e"; : >"$GONE_ONCE"
+out="$("$UNPARK" ep-a 2>"$T/u.err")"; rc=$?; unset GONE_ONCE
+eq "unpark: restores the team from its rows" "$rc:$(printf '%s' "$out" | jq -r .unparked)" "0:true"
+eq "unpark: every row is Working again, the park fields cleared" "$("$REG" list --team ep-a | jq -c '[.[] | [.status, (.parked_at // ""), (.parked_reason // "")]] | unique')" '[["Working","",""]]'
+eq "unpark: both agents were started again" "$(nstartp)" 2
+eq "unpark: the lead got a new workspace (its pane was closed)" "$(grep -c '^workspace create' "$HERDR_LOG" || true)" 1
+check "unpark: with the shared resume brief" grep -q 'You are being respawned: you were parked' "$HERDR_LOG"
+eq "unpark: the respawn budget is not charged" "$(jq '(.respawns // {}) | length' "$FLEET_STATE_DIR/tick.state.json")" 0
+eq "unpark: the event is logged" "$(evn unparked)" 1
+sha5="$(rows_sha)"; "$UNPARK" ep-a >/dev/null 2>&1; rc=$?
+eq "unpark: run twice, the second is refused" "$rc" 1
+eq "unpark: and changes nothing" "$(rows_sha)" "$sha5"
+
+# -- after merge
+"$PARK" ep-b --after-merge >/dev/null 2>&1; eq "park --after-merge: parks nothing now" "$(stat_of ep-b/lead)" Idle
+eq "park --after-merge: the team is marked" "$("$REG" get ep-b/builder | jq -r .park_after_merge)" after-merge
+"$REG" set ep-b/builder pr=https://github.com/o/r/pull/61 >/dev/null
+ghset 61 MERGED UNKNOWN "$GREEN" "$H1" ok; : >"$HERDR_LOG"
+m1="$("$SCRIPTS/tick.sh" 2>/dev/null)"
+eq "after-merge: the merge is reported and says the team parks" "$(printf '%s' "$m1" | jq -s -c '[.[][]? | select(.type == "pr_merged") | .parks]')" '["after-merge"]'
+eq "after-merge: on pr_merged the team parks instead of taking the next issue" "$("$REG" list --team ep-b | jq -c '[.[] | [.status, .parked_reason]] | unique')" '[["Parked","after-merge"]]'
+"$SCRIPTS/next.sh" ep-b DEV-10 >/dev/null 2>"$T/n.err"; rc=$?
+eq "next: a parked team is not given the next issue" "$rc" 1
+check "next: and says to unpark" grep -q 'is parked' "$T/n.err"
+"$REG" reassign ep-b DEV-10 >/dev/null 2>&1; eq "reassign: refuses a parked team too" "$?" 1
+
+# -- focus
+"$UNPARK" ep-b >/dev/null 2>&1; eq "focus setup: ep-b is back" "$(stat_of ep-b/lead)" Working
+"$PARK" ep-c >/dev/null 2>&1                       # parked by hand: focus --clear must leave it alone
+echo wip >"$T/ewt/fleet-ep-b-b/wip.txt"
+fo="$("$FOCUS" ep-a --now 2>/dev/null)"
+eq "focus --now: parks the other live team, refuses the dirty one" "$(printf '%s' "$fo" | jq -c '[.parked, .refused]')" '[[],["ep-b"]]'
+rm -f "$T/ewt/fleet-ep-b-b/wip.txt"
+"$FOCUS" ep-a --now >/dev/null 2>&1; eq "focus: a second focus is refused until cleared" "$?" 1
+"$FOCUS" --clear >/dev/null 2>&1
+fo="$("$FOCUS" ep-a --now 2>/dev/null)"
+eq "focus --now: now ep-b parks too" "$(printf '%s' "$fo" | jq -c '[.parked, .refused]')" '[["ep-b"],[]]'
+eq "focus: the reason names the focus" "$("$REG" get ep-b/lead | jq -r .parked_reason)" focus:ep-a
+check "focus: the status has one focus line" bash -c "'$SCRIPTS/status.sh' 2>/dev/null | grep -qx 'focus: ep-a'"
+eq "focus: focus_set is logged" "$(evn focus_set)" 2
+fc="$("$FOCUS" --clear 2>/dev/null)"
+eq "focus --clear: unparks only the teams focus parked" "$(printf '%s' "$fc" | jq -c '[.unparked, .refused]')" '[["ep-b"],[]]'
+eq "focus --clear: the team parked by hand stays parked" "$(stat_of ep-c/lead)" Parked
+eq "focus --clear: the focus line is gone" "$(test -f "$FLEET_STATE_DIR/focus" && echo yes || echo no)" no
+eq "focus: focus_cleared is logged" "$(evn focus_cleared)" 2
+"$FOCUS" --clear >/dev/null 2>&1; eq "focus --clear: run twice, nothing to clear is refused" "$?" 1
+"$FOCUS" ep-nosuch >/dev/null 2>&1; eq "focus: an unknown team is refused" "$?" 1
+# focus without --now: the other teams park when their PRs merge
+"$FOCUS" ep-a >/dev/null 2>&1
+eq "focus: without --now the others are marked focus:<team>" "$("$REG" get ep-b/lead | jq -r .park_after_merge)" focus:ep-a
+"$FOCUS" --clear >/dev/null 2>&1
+eq "focus --clear: the marks go" "$("$REG" list | jq '[.[] | select((.park_after_merge // "") != "")] | length')" 0
+
+# -- caps: max_teams, one team per repo, Parked teams not counted
+"$REG" retire ep-c >/dev/null
+printf 'max_teams = 2\n' >"$FLEET_CONFIG_DIR/config.toml"; : >"$HERDR_LOG"
+"$SCRIPTS/boot.sh" build epx "$T/er3" task >/dev/null 2>"$T/b.err"; rc=$?
+eq "boot: refused at max_teams (2 live teams, max_teams = 2)" "$rc" 1
+check "boot: the refusal names max_teams" grep -q 'max_teams=2' "$T/b.err"
+eq "boot: a refusal makes no herdr call" "$(wc -l <"$HERDR_LOG" | tr -d ' ')" 0
+"$SCRIPTS/boot.sh" build epy "$T/er" task >/dev/null 2>"$T/b.err"; eq "boot: a second live team on a repo is refused (one team per repo)" "$?" 1
+"$PARK" ep-b >/dev/null 2>&1
+"$SCRIPTS/boot.sh" build epz "$T/er3" task >/dev/null 2>&1; eq "boot: a parked team does not count against max_teams" "$?" 0
+printf 'max_teams = 1\nrepos = ["%s"]\n' "$T/er" >"$FLEET_CONFIG_DIR/config.toml"
+eq "caps: with repos set, only a team on a listed repo takes a slot" "$(bash -c ". '$SCRIPTS/common.sh'; live_team_count")" 1
+eq "caps: max_teams defaults to 3" "$(: >"$FLEET_CONFIG_DIR/config.toml"; bash -c ". '$SCRIPTS/common.sh'; max_teams")" 3
+
+# -- issue_done is logged before the row is cleared
+"$REG" retire build-epz >/dev/null 2>&1
+rm -f "$EVF"
+"$REG" done ep-a/builder --outcome Shipped --summary "shipped the thing" >/dev/null 2>&1
+"$REG" set ep-a/builder lessons="measure first" >/dev/null
+"$REG" reassign ep-a DEV-11 >/dev/null 2>&1; rc=$?
+eq "reassign: moves the team" "$rc:$("$REG" get ep-a/builder | jq -r .issue)" "0:DEV-11"
+eq "reassign: the row is cleared" "$("$REG" get ep-a/builder | jq -c '[.outcome, .summary, .lessons]')" '[null,null,null]'
+eq "reassign: issue_done was logged with the outcome, summary and lessons first" "$(grep '"type":"issue_done"' "$EVF" | jq -c '[.name, .issue, .outcome, .summary, .lessons]')" '["ep-a/builder","DEV-9","Shipped","shipped the thing","measure first"]'
+eq "reassign: run twice logs nothing more (the row holds no outcome now)" "$("$REG" reassign ep-a DEV-12 >/dev/null 2>&1; evn issue_done)" 1
+
+# -- the config budget
+KEYS_CODE="$(cd "$SCRIPTS" && grep -ohE "(cfg_int|cfg_str|config_list) '?[a-z_]+" *.sh | awk '{print $2}' | tr -d "'" | sort -u)"
+KEYS_EX="$(bash -c ". '$SCRIPTS/common.sh'; config_pairs '$SCRIPTS/../config.example.toml' 1" | cut -f1 | grep -v '^\[' | sort -u)"
+eq "config: the keys the code reads are the keys config.example.toml lists" "$KEYS_CODE" "$KEYS_EX"
+check "config: the context_window table is listed" grep -q '^\[context_window\]' "$SCRIPTS/../config.example.toml"
+eq "config: no hard rule is a setting" "$(grep -ciE 'cloud_writes|allow_bypass|issue_url_template|branch_prefix_swap|branch_prefix' "$SCRIPTS/../config.example.toml" "$SCRIPTS"/*.sh | grep -v ':0' | grep -vc 'run.sh' || true)" 0
+printf 'max_teams = 4\nmax_agents = 9\nfoo_bar = "x"\n' >"$FLEET_CONFIG_DIR/config.toml"
+"$SCRIPTS/tick.sh" >/dev/null 2>"$T/c.err"
+eq "config: each unknown key gets one warning" "$(grep -c "unknown key" "$T/c.err" || true)" 2
+check "config: naming the key" grep -q "unknown key 'foo_bar'" "$T/c.err"
+check "config: a removed key is unknown too" grep -q "unknown key 'max_agents'" "$T/c.err"
+printf 'max_teams = "three"\n' >"$FLEET_CONFIG_DIR/config.toml"
+"$SCRIPTS/tick.sh" >/dev/null 2>"$T/c.err"; check "config: a key of the wrong kind is ignored with one warning" grep -q "key 'max_teams' .* is not a number" "$T/c.err"
+eq "config: and the default is used" "$(bash -c ". '$SCRIPTS/common.sh'; max_teams")" 3
+: >"$FLEET_CONFIG_DIR/config.toml"; "$SCRIPTS/tick.sh" >/dev/null 2>"$T/c.err"
+eq "config: an empty config warns about nothing" "$(grep -c 'unknown key\|is not a' "$T/c.err" || true)" 0
+cp "$SCRIPTS/../config.example.toml" "$FLEET_CONFIG_DIR/config.toml"; "$SCRIPTS/tick.sh" >/dev/null 2>"$T/c.err"
+eq "config: the example file itself parses clean" "$(grep -c 'unknown key\|is not a' "$T/c.err" || true)" 0
+: >"$FLEET_CONFIG_DIR/config.toml"
+eq "config: a timing is a constant, FLEET_* overrides it" "$(FLEET_RESPAWN_MAX=7 bash -c ". '$SCRIPTS/common.sh'; const_int RESPAWN_MAX 1")" 7
+eq "config: and a junk override falls back to the default" "$(FLEET_RESPAWN_MAX=x bash -c ". '$SCRIPTS/common.sh'; const_int RESPAWN_MAX 1")" 1
+eq "config: a timing in config.toml no longer applies" "$(printf 'respawn_max = 9\n' >"$FLEET_CONFIG_DIR/config.toml"; bash -c ". '$SCRIPTS/common.sh'; const_int RESPAWN_MAX 1")" 1
+: >"$FLEET_CONFIG_DIR/config.toml"
+
+# -- bash 3.2 / BSD: no bash 4 features in the new scripts, and the scripts run under the system bash
+for f in park.sh unpark.sh focus.sh; do
+  eq "bash 3.2: $f uses no bash 4 feature" "$(grep -cE 'declare -A|mapfile|readarray|\$\{[a-zA-Z_]+(,,|\^\^)\}|&>>|coproc' "$SCRIPTS/$f" || true)" 0
+  check "bash -n $f" bash -n "$SCRIPTS/$f"
+done
+[ ! -x /bin/bash ] || eq "bash 3.2: park under /bin/bash (the system bash) refuses an unknown team cleanly" "$(/bin/bash "$PARK" ep-nosuch >/dev/null 2>&1; echo $?)" 1
+
+export FLEET_STATE_DIR="$_estate" FLEET_REGISTRY="$_ereg"; [ -n "$_einbox" ] && export FLEET_INBOX="$_einbox" || unset FLEET_INBOX
+export FLEET_FORCE="$_eforce"
+
 SK="$SCRIPTS/.."; PLUGIN="$SK/../.."
 pv="$(jq -r .version "$PLUGIN/.claude-plugin/plugin.json")"; mv_="$(jq -r '.plugins[] | select(.name == "developer") | .version' "$PLUGIN/../../.claude-plugin/marketplace.json")"
 eq "plugin.json and marketplace.json carry the same version" "$pv" "$mv_"

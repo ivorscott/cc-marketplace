@@ -57,6 +57,7 @@ trap 'rm -rf "$lock"' EXIT
 
 rows="$("$registry" list --team "$team" | jq -c '[.[] | select(.status != "Retired" and .tier != "Orchestrator")]')"
 [ "$(printf '%s' "$rows" | jq length)" != 0 ] || die "no live rows for team '$team'"
+[ "$(printf '%s' "$rows" | jq '[.[] | select(.status == "Parked")] | length')" = 0 ] || die "team '$team' is parked; unpark.sh $team first, or leave it parked"
 
 # 1. Safe point. herdr must answer (a failed call is not "idle"), every agent must be idle or done, and no
 # background task may be running (its transcript; the pane footer when there is no transcript).

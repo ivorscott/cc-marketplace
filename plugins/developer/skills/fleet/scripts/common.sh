@@ -71,12 +71,12 @@ require_herdr() {
   fi
 }
 
-# max_agents from config.toml (key = value), default 4.
-max_agents() {
-  local v=""
-  [ -f "$FLEET_CONFIG_DIR/config.toml" ] &&
-    v="$(sed -n 's/^[[:space:]]*max_agents[[:space:]]*=[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$FLEET_CONFIG_DIR/config.toml" | head -1)"
-  printf '%s\n' "${v:-4}"
+# const_int <NAME> <default>: an internal timing or limit. It is a constant, not a setting: only the
+# FLEET_<NAME> environment variable (upper case) overrides it, and the tests use that.
+const_int() {
+  local v; eval "v=\${FLEET_$1:-}"
+  case "$v" in "" | *[!0-9]*) v="$2" ;; esac
+  printf '%s\n' "$v"
 }
 
 # cfg_int <key> <default>: an integer from config.toml (key = value).
@@ -87,8 +87,8 @@ cfg_int() {
   printf '%s\n' "${v:-$2}"
 }
 # permission_mode: the Claude Code --permission-mode every agent starts in. FLEET_PERMISSION_MODE
-# wins, then config.toml (permission_mode = "..."), default auto. A pane that starts in a
-# stricter mode blocks on the first permission prompt and sits idle until someone enables auto.
+# wins, then config.toml, default auto. A pane that starts in a stricter mode blocks on the first
+# permission prompt and sits idle until someone enables auto.
 permission_mode() {
   local v="${FLEET_PERMISSION_MODE:-}"
   [ -z "$v" ] && [ -f "$FLEET_CONFIG_DIR/config.toml" ] &&
@@ -103,6 +103,9 @@ check_permission_mode() {
   esac
   printf '%s\n' "$1"
 }
+
+# max_teams: live teams at once (Parked teams do not count), default 3.
+max_teams() { cfg_int max_teams 3; }
 
 # min_free_gb (boot refuses below it, default 40; 0 disables) and warn_free_gb (status marks LOW and the loop alerts below it, default 75).
 min_free_gb() { cfg_int min_free_gb 40; }
@@ -143,6 +146,51 @@ config_list() {
     { warn "ignoring $1 in $f: not a one-level array of strings"; printf '[]\n'; }
 }
 
+# config_pairs <file> [commented]: the top-level keys of a TOML file as "key<TAB>value" lines, plus a "[table]<TAB>"
+# line for each table header (the keys inside a table are not listed). With a 2nd argument, commented
+# lines (# key = value) count too: that is how config.example.toml lists the keys that have no default worth setting.
+config_pairs() {
+  awk -v c="${2:-}" '
+    /^[[:space:]]*\[[A-Za-z_]+\]/ { t = $0; gsub(/[][[:space:]]/, "", t); print "[" t "]\t"; intbl = 1; next }
+    intbl { next }
+    { l = $0; if (c != "") sub(/^[[:space:]]*#+[[:space:]]*/, "", l)
+      if (match(l, /^[a-z_]+[[:space:]]*=[[:space:]]*/)) { k = substr(l, 1, RLENGTH); v = substr(l, RLENGTH + 1)
+        sub(/[[:space:]]*=[[:space:]]*$/, "", k); print k "\t" v } }' "$1"
+}
+
+# config_warn_unknown: config.example.toml is the only list of keys. One warning per key in config.toml that the
+# example does not list (a typo, or a key an older fleet read), and one per key whose value is not the kind the
+# example shows (a number, a quoted string, an array): the setting is ignored either way.
+config_warn_unknown() {
+  local f="$FLEET_CONFIG_DIR/config.toml" ex="$FLEET_SKILL_DIR/config.example.toml" k v want got
+  [ -f "$f" ] && [ -f "$ex" ] || return 0
+  while IFS=$'\t' read -r k v; do
+    [ -n "$k" ] || continue
+    want="$(config_pairs "$ex" 1 | awk -F'\t' -v k="$k" '$1 == k { print $2; found = 1; exit } END { if (!found) print "?" }')"
+    if [ "$want" = "?" ]; then warn "unknown key '$k' in $f (ignored; the keys are listed in config.example.toml)"; continue; fi
+    case "$want" in [0-9]*) want=number ;; '"'*) want=string ;; '['*) want=array ;; *) want="" ;; esac
+    case "$v" in [0-9]*) got=number ;; '"'*) got=string ;; '['*) got=array ;; *) got=other ;; esac
+    [ -z "$want" ] || [ "$got" = "$want" ] || warn "key '$k' in $f is not a $want (ignored)"
+  done < <(config_pairs "$f")
+}
+
+# live_team_count [exclude-team]: teams with a live row (Parked, Done and Retired rows are not live), which is what
+# max_teams caps. When `repos` is set in config.toml only the teams on a listed repo count: a tooling repo
+# takes a slot only when it is listed.
+live_team_count() {
+  "$FLEET_SCRIPTS/registry.sh" list --live | jq -r --arg x "${1:-}" --argjson repos "$(config_list repos)" '
+    [.[] | select(.tier != "Orchestrator" and .team != $x)
+      | select(($repos | length) == 0 or (.repo // "") as $r | any($repos[]; . == $r or (split("/") | last) == ($r | split("/") | last)))
+      | .team] | unique | length'
+}
+# teams_per_repo: live teams on one repo, default 1.
+teams_per_repo() { cfg_int teams_per_repo 1; }
+# teams_on_repo <repo> [exclude-team]: the live teams other than exclude-team that work <repo>, one per line.
+teams_on_repo() {
+  "$FLEET_SCRIPTS/registry.sh" list --live | jq -r --arg r "$1" --arg x "${2:-}" \
+    '[.[] | select(.tier != "Orchestrator" and .team != $x and (.repo // "") == $r) | .team] | unique[]'
+}
+
 # Agent names must match herdr's rule: [a-z][a-z0-9_-]{0,31}.
 agent_name() {
   local n
@@ -151,13 +199,8 @@ agent_name() {
   printf '%s\n' "${n:0:32}"
 }
 
-# max_envs from config.toml (key = value), default 3.
-max_envs() {
-  local v=""
-  [ -f "$FLEET_CONFIG_DIR/config.toml" ] &&
-    v="$(sed -n 's/^[[:space:]]*max_envs[[:space:]]*=[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$FLEET_CONFIG_DIR/config.toml" | head -1)"
-  printf '%s\n' "${v:-3}"
-}
+# max_envs: test clusters at once, default 3.
+max_envs() { cfg_int max_envs 3; }
 
 # Team environment: a repo opts in with <repo>/.claude/fleet-env.json.
 env_config() { [ -f "$1/.claude/fleet-env.json" ] && printf '%s\n' "$1/.claude/fleet-env.json" || true; }
@@ -241,8 +284,8 @@ resume_brief() {
     plan="$("$FLEET_SCRIPTS/registry.sh" list --team "$team" | jq -r '[.[] | select(.name | endswith("/planner")) | .summary // ""] | first // ""')"
     rows="$("$FLEET_SCRIPTS/registry.sh" list --team "$team" | jq -r '.[] | "- \(.name): \(.status)\(if (.summary // "") != "" then " (\(.summary))" else "" end)"')"
   fi
-  printf '%s\n\nYou are being respawned: your previous session died. Carry on from where the record below says you were; do not start over.\nAssignment: %s\n' \
-    "$role_brief" "$(printf '%s' "$row" | jq -r '.assignment // ""')"
+  printf '%s\n\nYou are being respawned: %s. Carry on from where the record below says you were; do not start over.\nAssignment: %s\n' \
+    "$role_brief" "${FLEET_RESUME_WHY:-your previous session died}" "$(printf '%s' "$row" | jq -r '.assignment // ""')"
   [ -z "$report" ] || printf 'Your last report file: %s\n' "$report"
   [ -z "$gl" ] || printf '\ngit log -5 --oneline:\n%s\n' "$gl"
   printf '\ngit status --short:\n%s\n' "${gs:-(clean)}"
@@ -288,22 +331,26 @@ api_error_detail() {
 # --- the event log: one append-only JSON line per thing that happened ---------------------------------
 # ev_log <type> [team=T] [name=N] [issue=I] [pr=URL] [sha=S] [detail=SHORT REASON]
 # {at, type, team, name, issue, pr, sha, detail}; empty values are null. detail is a short reason (cut
-# at 120 characters), never brief text and never the Linear key; any other key is ignored. One `>>`
+# at 120 characters), never brief text and never the Linear key; any other key is ignored. The one exception is
+# issue_done, which also takes outcome, summary and lessons (what a debrief reads after a row is cleared). One `>>`
 # write. A write that fails is a warning, never a failure of the caller.
 events_file() { printf '%s\n' "$FLEET_STATE_DIR/events.jsonl"; } # no override: every path comes from FLEET_STATE_DIR
 ev_log() {
   local type="$1" kv k v line f; shift
-  local a_team="" a_name="" a_issue="" a_pr="" a_sha="" a_detail=""
+  local a_team="" a_name="" a_issue="" a_pr="" a_sha="" a_detail="" a_outcome="" a_summary="" a_lessons=""
   for kv in "$@"; do
     k="${kv%%=*}"; v="${kv#*=}"
     case "$k" in
       team) a_team="$v" ;; name) a_name="$v" ;; issue) a_issue="$v" ;; pr) a_pr="$v" ;; sha) a_sha="$v" ;;
       detail) a_detail="${v:0:120}" ;;
+      outcome) a_outcome="${v:0:40}" ;; summary) a_summary="${v:0:300}" ;; lessons) a_lessons="${v:0:2000}" ;;
     esac
   done
   line="$(jq -nc --arg at "${FLEET_NOW:-$(now)}" --arg type "$type" --arg team "$a_team" --arg name "$a_name" --arg issue "$a_issue" \
-    --arg pr "$a_pr" --arg sha "$a_sha" --arg detail "$a_detail" \
-    '{at: $at, type: $type, team: $team, name: $name, issue: $issue, pr: $pr, sha: $sha, detail: $detail} | with_entries(if .value == "" then .value = null else . end)')" || return 0
+    --arg pr "$a_pr" --arg sha "$a_sha" --arg detail "$a_detail" --arg outcome "$a_outcome" --arg summary "$a_summary" --arg lessons "$a_lessons" \
+    '{at: $at, type: $type, team: $team, name: $name, issue: $issue, pr: $pr, sha: $sha, detail: $detail}
+      + (if $type == "issue_done" then {outcome: $outcome, summary: $summary, lessons: $lessons} else {} end)
+      | with_entries(if .value == "" then .value = null else . end)')" || return 0
   f="$(events_file)"
   { mkdir -p "$(dirname "$f")" && printf '%s\n' "$line" >>"$f"; } 2>/dev/null || warn "cannot write the event log $f"
   return 0
@@ -382,7 +429,7 @@ version_gt() {
 # Claude Code transcripts, not a documented contract: UNVERIFIED for stability. Unreadable: 0.
 transcript_bg_running() {
   [ -r "$1" ] || { echo 0; return 0; }
-  local maxs now_e; maxs=$(($(cfg_int bg_task_max_hours 6) * 3600))
+  local maxs now_e; maxs=$(($(const_int BG_TASK_MAX_HOURS 6) * 3600))
   now_e="$(jq -rn --arg t "${FLEET_NOW:-$(now)}" '$t | fromdateiso8601')"
   jq -nRr --argjson now "$now_e" --argjson max "$maxs" '
     def ep: (. // "" | tostring | sub("\\.[0-9]+Z$"; "Z") | (try fromdateiso8601 catch null));

@@ -6,8 +6,8 @@
 #   registry.sh set <name> key=value [key=value ...]      update fields
 #   registry.sh append <name> key value                    add value to the row's list at key (no duplicates; an agent: own row, transcripts only)
 #   registry.sh get [--archived] <name>                    --archived also looks in fleet-archive.json
-#   registry.sh list [--team T] [--live] [--problems]
-#   registry.sh count-live                                 agents counted against max_agents
+#   registry.sh list [--team T] [--live] [--parked] [--problems]
+#   registry.sh count-live                                 live agents (Parked, Done and Retired rows are not live)
 #   registry.sh done <name> --outcome O --summary TEXT     the done contract (+ notification)
 #   registry.sh escalate <name> P0|P1|P2 TEXT              severity-routed escalation (+ notification + inbox line)
 #   registry.sh escalations [--open] [--team T] [--not-retired]  every escalation, Done and Retired rows included unless --not-retired
@@ -19,6 +19,8 @@
 #                                                          move a team to a new issue (next.sh): logs issue_done for the old one,
 #                                                          clears the old outcome, PR and sign-off, rewrites the assignment;
 #                                                          workers go Idle, the lead Working
+#   registry.sh park <team> <reason>                       one write: every unfinished row of the team becomes Parked (park.sh, which also closes the panes)
+#   registry.sh park-mark <team> <reason|->                 mark the team to park when its PR merges (reason park-after-merge or focus:<team>); - clears it
 #   registry.sh unsynced                                   rows changed since the sink last mirrored them
 #   registry.sh synced <name> [name ...]                   mark rows as mirrored
 #   registry.sh env-claim <team> <max> <cluster> [busy-slots]  atomically take the lowest free port slot
@@ -83,7 +85,7 @@ update() {
 
 exists() { jq -e --arg n "$1" '.agents[$n] != null' "$FLEET_REGISTRY" >/dev/null || die "no agent '$1' in the registry"; }
 
-LIVE='(.status != "Done" and .status != "Retired")'
+LIVE='(.status != "Done" and .status != "Retired" and .status != "Parked")'
 OPEN_ESC='([escs[] | select(.resolved_at == null)] | length > 0)'
 # .escalation is derived from the open entries: the highest open severity, "" when none is open.
 DERIVE="$ESC_DEFS"'def derive: ([escs[] | select(.resolved_at == null) | .severity]) as $o
@@ -94,7 +96,7 @@ cmd="${1:-}"; shift || true
 # Agents (FLEET_ROLE set in their pane) can report on themselves (set, done, escalate, note, signoff for the
 # tester) but cannot create, retire, archive, move or resolve: those are the Orchestrator's.
 case "$cmd" in
-  add | retire | archive | reassign | resolve | close-stale | orchestrator)
+  add | retire | archive | reassign | resolve | close-stale | orchestrator | park | park-mark)
     [ -z "${FLEET_ROLE:-}" ] || die "$cmd is the Orchestrator's; an agent (FLEET_ROLE=$FLEET_ROLE) may not run it" ;;
 esac
 case "$cmd" in
@@ -145,6 +147,7 @@ case "$cmd" in
       case "$1" in
         --team) team="$2"; shift 2 ;;
         --live) filter="$filter and $LIVE"; shift ;;
+        --parked) filter="$filter and .status == \"Parked\""; shift ;;
         --with-archived) archived=true; shift ;;
         --problems) filter="$filter and (($LIVE and $PROBLEM) or $OPEN_ESC)"; shift ;;
         *) die "unknown list option: $1" ;;
@@ -320,11 +323,18 @@ case "$cmd" in
     [ -n "$assignment" ] || assignment="$issue"
     jq -e --arg t "$team" '[.agents[] | select(.team == $t and .status != "Retired" and .tier != "Orchestrator")] | length > 0' "$FLEET_REGISTRY" >/dev/null ||
       die "no live rows for team '$team'"
-    # The finished issue is logged before its row data is cleared, so debrief can still read what the team did.
-    old="$(jq -c --arg t "$team" '[.agents[] | select(.team == $t and .status != "Retired" and .tier != "Orchestrator")]
-      | {issue: ([.[] | .issue // empty | select(. != "")] | first // ""), pr: ([.[] | .pr // empty | select(. != "")] | first // ""),
-         outcome: ([.[] | select(.tier == "Lead") | .outcome // empty] | first // "")}' "$FLEET_REGISTRY")"
-    ev_log issue_done team="$team" issue="$(printf '%s' "$old" | jq -r .issue)" pr="$(printf '%s' "$old" | jq -r .pr)" detail="$(printf '%s' "$old" | jq -r .outcome)"
+    jq -e --arg t "$team" '[.agents[] | select(.team == $t and .status == "Parked")] | length == 0' "$FLEET_REGISTRY" >/dev/null ||
+      die "team '$team' is parked; unpark it first"
+    # The old issue's outcome, summary and lessons are written to the event log before the rows are cleared:
+    # the debrief reads these events, not rows that no longer hold them.
+    jq -c --arg t "$team" '.agents[] | select(.team == $t and .status != "Retired" and .tier != "Orchestrator"
+        and ((.outcome // "") != "" or (.summary // "") != "" or (.lessons // "") != ""))
+      | [.name, (.issue // ""), (.outcome // ""), (.summary // ""), (.lessons // ""), (.pr // "")]' "$FLEET_REGISTRY" |
+      while IFS= read -r line; do
+        ev_log issue_done team="$team" name="$(printf '%s' "$line" | jq -r '.[0]')" issue="$(printf '%s' "$line" | jq -r '.[1]')" \
+          outcome="$(printf '%s' "$line" | jq -r '.[2]')" summary="$(printf '%s' "$line" | jq -r '.[3]')" lessons="$(printf '%s' "$line" | jq -r '.[4]')" \
+          pr="$(printf '%s' "$line" | jq -r '.[5]')"
+      done
     # One update for every row: a half-moved team would be worse than an unmoved one.
     update --arg t "$team" --arg i "$issue" --arg a "$assignment" --arg u "$iurl" --arg now "$(now)" "$DERIVE"'
       .agents |= with_entries(
@@ -335,6 +345,26 @@ case "$cmd" in
             | derive | .issue = $i | .assignment = $a
             | (if $u != "" then .issue_url = $u else del(.issue_url) end)
             | .status = (if .tier == "Lead" then "Working" else "Idle" end) | .updated_at = $now)
+        else . end)'
+    ;;
+  park)
+    team="${1:?usage: park <team> <reason>}"; reason="${2:?usage: park <team> <reason>}"
+    jq -e --arg t "$team" '[.agents[] | select(.team == $t and .tier != "Orchestrator" and .status != "Retired")] | length > 0' "$FLEET_REGISTRY" >/dev/null ||
+      die "no rows for team '$team'"
+    # Inside the one write, so two parks (or a park and a tick) cannot both win.
+    update --arg t "$team" --arg r "$reason" --arg now "$(now)" '
+      if ([.agents[] | select(.team == $t and .status == "Parked")] | length) > 0 then error("team is already parked") else . end
+      | .agents |= with_entries(
+        if .value.team == $t and .value.tier != "Orchestrator" and (.value.status | IN("Done", "Retired") | not) then
+          .value |= (.status = "Parked" | .parked_at = $now | .parked_reason = $r | del(.park_after_merge) | .updated_at = $now)
+        else . end)'
+    ;;
+  park-mark)
+    team="${1:?usage: park-mark <team> <reason|->}"; reason="${2:?usage: park-mark <team> <reason|->}"
+    update --arg t "$team" --arg r "$reason" --arg now "$(now)" '
+      .agents |= with_entries(
+        if .value.team == $t and .value.tier != "Orchestrator" and .value.status != "Retired" then
+          .value |= ((if $r == "-" then del(.park_after_merge) else .park_after_merge = $r end) | .updated_at = $now)
         else . end)'
     ;;
   unsynced)

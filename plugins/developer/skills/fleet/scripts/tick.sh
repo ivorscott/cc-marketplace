@@ -5,6 +5,8 @@
 #
 #   tick.sh [--team T]
 #
+# A Parked team (park.sh) is skipped throughout: no nudge, no respawn, no Stalled or Zombie, no PR discovery or
+# PR events, and it still covers its repo for repo_without_team. Its claim is kept, so the heartbeat goes on.
 # Events (each has type, team, name; url where a PR exists). Each is reported once; what has
 # been reported lives in $FLEET_STATE_DIR/tick.state.json.
 #   stalled         still Stalled a tick after the nudge (a newly Stalled agent gets one nudge, no event)
@@ -26,7 +28,8 @@
 #                   no_pr_ci in config.toml), the tester's signed-off SHA is the PR head, and the
 #                   body has no "DO NOT MERGE", "merge order", "before/after", "merge after/before" or "stacked on",
 #                   and the PR is not a draft (a stacked child must not go ready before its parent). Once per (PR, head SHA).
-#   pr_merged       the row's PR was merged; the Orchestrator answers with next.sh. Once per PR.
+#   pr_merged       the row's PR was merged; the Orchestrator answers with next.sh. Once per PR. A team marked
+#                   park --after-merge (or by focus) is parked by tick instead; the event says `parks`.
 #   repo_without_team  a repo in config.toml `repos` with no live team, when it becomes so
 #   disk, disk_ok   free disk crossed below warn_free_gb, and recovered
 #   claim_takeover  a team's issue now carries another machine's label (once per team, issue and holder)
@@ -43,6 +46,7 @@ set -euo pipefail
 . "$(dirname "$0")/common.sh"
 require_herdr
 registry="$FLEET_SCRIPTS/registry.sh"
+config_warn_unknown
 
 team=""
 while [ $# -gt 0 ]; do
@@ -205,7 +209,7 @@ elif rows="$("$FLEET_SCRIPTS/status.sh" ${targs[@]+"${targs[@]}"} --json 2>/dev/
     fi
   done < <(printf '%s' "$rows" | jq -r '.[] | select(.tier != "Orchestrator" and .status == "Failed" and (.brief_failed_at // "") != "")
     | [.name, (.last_brief // ""), (.brief_resent // ""), (.brief_failed_issue // ""), (.issue // "")] | @tsv')
-  rwin="$(cfg_int respawn_window_hours 6)"; rmax="$(cfg_int respawn_max 1)"
+  rwin="$(const_int RESPAWN_WINDOW_HOURS 6)"; rmax="$(const_int RESPAWN_MAX 1)"
   while IFS= read -r zname; do
     [ -n "$zname" ] || continue
     # Respawn needs Zombie on two ticks in a row: the state still holds the previous tick's status. The
@@ -291,7 +295,7 @@ if command -v "$FLEET_GH" >/dev/null 2>&1; then
       add_events "$(jq -cn --arg t "$bteam" --arg n "$bname" --arg u "$purl" --argjson told "$told" '[{type: "pr_opened", team: $t, name: $n, url: $u, lead_told: $told}]')"
       st_upd --arg u "$purl" '$st + {pr_opened_emitted: ((($st.pr_opened_emitted // []) + [$u]) | unique)}'
     fi
-  done < <("$registry" list ${team:+--team "$team"} | jq -c '.[] | select(.tier == "Worker" and .status != "Retired" and (.pr // "") == "")')
+  done < <("$registry" list ${team:+--team "$team"} | jq -c '.[] | select(.tier == "Worker" and .status != "Retired" and .status != "Parked" and (.pr // "") == "")')
 fi
 
 # --- pull requests ----------------------------------------------------------------------------
@@ -304,9 +308,10 @@ badrows="$(printf '%s' "$all_rows" | jq -r '[.[] | select(type == "object") | se
 prs="$(printf '%s' "$all_rows" | jq -c '
   [.[] | select(type == "object") | select(((.pr // "") | type) == "string" and ((.repo // "") | type) == "string"
       and (.signoff == null or ((.signoff | type) == "object" and ((.signoff.sha // "") | type) == "string")))
-    | select(.status != "Retired" and (.pr // "") != "")]
+    | select(.status != "Retired" and .status != "Parked" and (.pr // "") != "")]
   | group_by(.pr) | map(. as $g | {pr: .[0].pr, team: .[0].team, name: .[0].name, repo: (.[0].repo // ""),
-      signoff: ([$g[] | select((.signoff | objects | .sha) != null and ((.name // "") | endswith("/tester")) and .team == $g[0].team) | .signoff.sha] | first // null)})')"
+      signoff: ([$g[] | select((.signoff | objects | .sha) != null and ((.name // "") | endswith("/tester")) and .team == $g[0].team) | .signoff.sha] | first // null),
+      park_after_merge: ([$g[] | .park_after_merge // empty] | first // null)})')"
 if [ "$(printf '%s' "$prs" | jq length)" != 0 ]; then
   if ! command -v "$FLEET_GH" >/dev/null 2>&1; then
     warn "$FLEET_GH not found; no PR events this tick"
@@ -337,7 +342,7 @@ if [ "$(printf '%s' "$prs" | jq length)" != 0 ]; then
         | (($g.body // "") | test("DO NOT MERGE|merge order|before/after|merge (after|before)|stacked on"; "i")) as $held
         | ($g.isDraft // false) as $draft
         | if $g.state == "MERGED" then
-            (if (($stf[0].pr_merged_emitted // []) | index($p.pr)) == null then {type: "pr_merged", team: $p.team, name: $p.name, url: $p.pr} else null end)
+            (if (($stf[0].pr_merged_emitted // []) | index($p.pr)) == null then {type: "pr_merged", team: $p.team, name: $p.name, url: $p.pr} + (if $p.park_after_merge != null then {parks: $p.park_after_merge} else {} end) else null end)
           elif $g.state == "OPEN" and ($draft | not) and $g.mergeable == "MERGEABLE" and ($ci == "green" or $ci == "none") and $signed and ($held | not)
                and (($stf[0].pr_ready_emitted // []) | index($p.pr + "@" + $head)) == null
           then {type: "pr_ready", team: $p.team, name: $p.name, url: $p.pr, sha: $head, ci: $ci}
@@ -345,7 +350,15 @@ if [ "$(printf '%s' "$prs" | jq length)" != 0 ]; then
       [ "$ev" != "null" ] || continue
       add_events "[$ev]"
       case "$(printf '%s' "$ev" | jq -r .type)" in
-        pr_merged) st_upd --arg u "$url" '$st + {pr_merged_emitted: ((($st.pr_merged_emitted // []) + [$u]) | unique)}' ;;
+        pr_merged)
+          st_upd --arg u "$url" '$st + {pr_merged_emitted: ((($st.pr_merged_emitted // []) + [$u]) | unique)}'
+          # A team marked to park after its merge parks now, instead of taking the next issue.
+          pn="$(printf '%s' "$ev" | jq -r '.parks // ""')"
+          if [ -n "$pn" ]; then
+            "$FLEET_SCRIPTS/park.sh" "$(printf '%s' "$ev" | jq -r .team)" --reason "$pn" >/dev/null 2>"$FLEET_STATE_DIR/park.err" ||
+              warn "could not park $(printf '%s' "$ev" | jq -r .team) after its merge: $(head -n 1 "$FLEET_STATE_DIR/park.err" 2>/dev/null)"
+            rm -f "$FLEET_STATE_DIR/park.err"
+          fi ;;
         pr_ready) st_upd --argjson e "$ev" '$st + {pr_ready_emitted: ((($st.pr_ready_emitted // []) + [$e.url + "@" + $e.sha]) | unique)}' ;;
       esac
     done < <(printf '%s' "$prs" | jq -c '.[]')
@@ -354,7 +367,8 @@ if [ "$(printf '%s' "$prs" | jq length)" != 0 ]; then
 fi
 
 # --- repos without a team ---------------------------------------------------------------------
-live="$("$registry" list --live | jq -c '[.[] | select(.tier != "Orchestrator") | .repo // ""]')"
+# A parked team still covers its repo.
+live="$("$registry" list | jq -c '[.[] | select(.tier != "Orchestrator" and (.status | IN("Done", "Retired") | not)) | .repo // ""]')"
 bare="$(jq -cn --argjson r "$(config_list repos)" --argjson live "$live" '
   [$r[] | . as $x | select(([$live[] | select(. == $x or (split("/") | last) == ($x | split("/") | last))] | length) == 0)]')"
 add_events "$(jq -cn --argjson b "$bare" --slurpfile stf "$STATE_FILE" '
@@ -399,7 +413,7 @@ live_prs="$("$registry" list | jq -c '[.[] | select(.status != "Retired") | .pr 
 live_esc="$("$registry" escalations --open | jq -c '[.[] | .name + "|" + .id]')"
 live_claims="$("$registry" list --live | jq -c '[.[] | select((.issue // "") != "") | .team + "|" + .issue]')"
 live_names="$("$registry" list --live | jq -c '[.[] | .name]')"
-st_upd --argjson prs "$live_prs" --argjson esc "$live_esc" --argjson cl "$live_claims" --argjson live_names "$live_names" --argjson now "$now_epoch" --argjson w "$(cfg_int respawn_window_hours 6)" '
+st_upd --argjson prs "$live_prs" --argjson esc "$live_esc" --argjson cl "$live_claims" --argjson live_names "$live_names" --argjson now "$now_epoch" --argjson w "$(const_int RESPAWN_WINDOW_HOURS 6)" '
   def inrecent: map(select(. > $now - $w * 3600));
   $st
   + (if .pr_ready_emitted then {pr_ready_emitted: [.pr_ready_emitted[] | select(split("@")[0] as $u | $prs | index($u))]} else {} end)

@@ -42,7 +42,7 @@ status="$(get status)"
 case "$status" in Done | Retired) die "$name is $status; not respawning it" ;; esac
 
 team="$(get team)"; tier="$(get tier)"; agent="$(get herdr_ref)"; pane="$(get pane)"; split_new=0
-cwd="$(get cwd)"; worktree="$(get worktree)"; model="$(get model)"; kind="$(get harness)"; kind="${kind:-claude}"
+new_ws=""; cwd="$(get cwd)"; worktree="$(get worktree)"; model="$(get model)"; kind="$(get harness)"; kind="${kind:-claude}"
 template="$(get template)"; repo="$(get repo)"; task="$(get assignment)"; ex="$(get expertise_file)"; issue_url="$(get issue_url)"
 role="${name#*/}"
 tpl="$FLEET_SKILL_DIR/templates/$template.json"
@@ -80,15 +80,23 @@ else
   brief="$(build_brief --resume "$name" "$ex" "$(render "$brief_tpl" "$name" "$worktree" "$workers")")"
 fi
 
-# The pane: reuse the row's, or split a new one beside the lead in the same workspace.
+# The pane: reuse the row's, or open a new one. A lead whose pane is gone (a parked team) gets a new workspace,
+# as boot makes it; any other agent is split from the lead's pane in the team's workspace.
 if ! hd pane process-info --pane "$pane" >/dev/null 2>&1; then
-  lead_pane="$("$registry" list --team "$team" | jq -r '[.[] | select(.tier == "Lead") | .pane] | first // ""')"
-  [ -n "$lead_pane" ] || die "$name's pane is gone and the team has no lead pane to split from"
   env_args=(); [ -z "$(env_config "$repo")" ] || env_args=(--env "KUBECONFIG=$(env_dir "$team")/kubeconfig")
-  pane="$(hd pane split --pane "$lead_pane" --direction down --cwd "${cwd:-$repo}" --no-focus \
-    --env "FLEET_ROLE=$(printf '%s' "$tier" | tr 'A-Z' 'a-z')" --env "FLEET_NAME=$name" --env "FLEET_TEAM=$team" \
-    --env "FLEET_WORKTREE=$worktree" --env "FLEET_STATE_DIR=$FLEET_STATE_DIR" ${env_args[@]+"${env_args[@]}"} | jq -r .result.pane.pane_id)"
-  [ -n "$pane" ] && [ "$pane" != null ] || die "could not split a new pane for $name"
+  if [ "$tier" = "Lead" ]; then
+    ws_json="$(hd workspace create --cwd "${cwd:-$repo}" --label "$team" --no-focus \
+      --env FLEET_ROLE=lead --env "FLEET_NAME=$name" --env "FLEET_TEAM=$team" --env "FLEET_STATE_DIR=$FLEET_STATE_DIR" ${env_args[@]+"${env_args[@]}"})" ||
+      die "could not open a workspace for $name"
+    pane="$(printf '%s' "$ws_json" | jq -r .result.root_pane.pane_id)"; new_ws="$(printf '%s' "$ws_json" | jq -r .result.workspace.workspace_id)"
+  else
+    lead_pane="$("$registry" list --team "$team" | jq -r '[.[] | select(.tier == "Lead") | .pane] | first // ""')"
+    [ -n "$lead_pane" ] || die "$name's pane is gone and the team has no lead pane to split from"
+    pane="$(hd pane split --pane "$lead_pane" --direction down --cwd "${cwd:-$repo}" --no-focus \
+      --env "FLEET_ROLE=$(printf '%s' "$tier" | tr 'A-Z' 'a-z')" --env "FLEET_NAME=$name" --env "FLEET_TEAM=$team" \
+      --env "FLEET_WORKTREE=$worktree" --env "FLEET_STATE_DIR=$FLEET_STATE_DIR" ${env_args[@]+"${env_args[@]}"} | jq -r .result.pane.pane_id)"
+  fi
+  [ -n "$pane" ] && [ "$pane" != null ] || die "could not open a new pane for $name"
   split_new=1
 fi
 
@@ -107,6 +115,7 @@ if $restart && [ "$new_status" = Working ]; then
 fi
 set_args=(status="$new_status" pane="$pane")
 pv="$(plugin_version)"; [ -z "$pv" ] || set_args+=(plugin_version="$pv")
+[ -z "$new_ws" ] || [ "$new_ws" = null ] || set_args+=(workspace="$new_ws")
 if [ -n "$transcript" ]; then
   old_t="$(get transcript)"; [ -z "$old_t" ] || "$registry" append "$name" transcripts "$old_t" >/dev/null
   set_args+=(transcript="$transcript")

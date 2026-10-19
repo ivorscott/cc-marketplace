@@ -152,7 +152,7 @@ send() { hd agent prompt "$ref" "$text" >/dev/null 2>&1; }
 send || { warn "not delivered to $target: herdr agent prompt failed"; verdict false "herdr rejected the send" 1; }
 $confirm || verdict true "" 0
 
-secs="$(cfg_int tell_confirm_secs 15)"; poll="${FLEET_TELL_POLL:-1}"
+secs="$(const_int TELL_CONFIRM_SECS 15)"; poll="${FLEET_TELL_POLL:-1}"
 # brief_seen: the brief's id in the transcript after the send (a user line or a queued_command attachment);
 # with no transcript known, the id on screen. Nothing else confirms a brief.
 brief_seen() {
