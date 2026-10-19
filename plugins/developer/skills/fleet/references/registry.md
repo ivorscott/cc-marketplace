@@ -142,7 +142,7 @@ Linear only. With one machine, or any other tracker, `issue`, `claimed_by` and `
 
 `machine` is the machine key (first 8 hex characters of its id; `FLEET_MACHINE` overrides it).
 The tracker label is `<label_prefix><key>`, e.g. `fleet:3f9a2c1e`, and its description reads
-`<name or hostname> · <OS> · machine id <full id> · first claim <YYYY-MM-DD>` plus a
+`<name or hostname> · <OS> · machine id sha256:<first 12 hex of sha256(id)> · first claim <YYYY-MM-DD>` (the full id never leaves the machine; an older label that holds it is rewritten by `linear.sh migrate`) plus a
 `heartbeat=<ISO>` line that `linear.sh heartbeat` rewrites on every tick (liveness lives only
 there; no claim, lease or heartbeat comment exists). A heartbeat older than `lease_hours` with no PR
 activity in that time can be taken over with `linear.sh takeover` (`claim.sh expired` is the check).

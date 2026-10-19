@@ -74,7 +74,7 @@ plus the first 8 hex characters of the machine's own id. No tracker lookup, noth
 
 - `$F/machine-id.sh label` is this machine's label, `$F/machine-id.sh key` its key, and
   `$F/machine-id.sh description` the text for the label's description (name or hostname, OS, the
-  full machine id and the date of the first claim). `machine_name = "Mac 1"` in `config.toml` is a
+  hash of the machine id, `sha256:<12 hex>`, never the id itself, and the date of the first claim). `machine_name = "Mac 1"` in `config.toml` is a
   display name only: it appears in the status footer.
 - **Migration.** When `machine_legacy_label` is set (for example `"fleet:mac1"`), find the open
   issues that carry it, ensure this machine's label exists (as in **Claim**), and add this machine's

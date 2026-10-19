@@ -499,6 +499,7 @@ eq "watch: below min_free_gb the notification says boot refuses" "$(grep -c 'fle
 mkcase() { # mkcase <name> → a case dir with the base tools only
   local d="$T/mid-$1" t; mkdir -p "$d/bin" "$d/cfg"
   for t in jq sed head tr cut cat date dirname mkdir od; do ln -s "$(command -v "$t")" "$d/bin/$t"; done
+  for t in shasum sha256sum openssl; do if command -v "$t" >/dev/null 2>&1; then ln -s "$(command -v "$t")" "$d/bin/$t"; fi; done
   printf '%s\n' "$d"
 }
 shim() { printf '#!/bin/sh\n%s\n' "$3" >"$1/bin/$2"; chmod +x "$1/bin/$2"; } # shim <dir> <name> <sh body>
@@ -520,8 +521,8 @@ eq "machine-id: FLEET_MACHINE replaces the key" "$(MID_FM=zz mid "$d" key)" zz
 echo 'label_prefix = "ops/"' >"$d/cfg/config.toml"
 eq "machine-id: label_prefix from config" "$(mid "$d" label)" ops/abcdef01
 eq "machine-id: FLEET_LABEL_PREFIX beats config" "$(FLEET_LABEL_PREFIX=x- mid "$d" label)" x-abcdef01
-eq "machine-id: description names host, OS, full id and date" "$(mid "$d" description --date 2026-01-02)" \
-  "myhost · macOS · machine id ABCDEF01-2345-6789-ABCD-EF0123456789 · first claim 2026-01-02"
+eq "machine-id: description names host, OS, the hashed id and date" "$(mid "$d" description --date 2026-01-02)" \
+  "myhost · macOS · machine id sha256:$(printf '%s' ABCDEF01-2345-6789-ABCD-EF0123456789 | shasum -a 256 | cut -c1-12) · first claim 2026-01-02"
 eq "machine-id: description defaults the date to today" "$(mid "$d" description | grep -c 'first claim [0-9]\{4\}-[0-9][0-9]-[0-9][0-9]$')" 1
 echo 'machine_name = "Mac 1"' >"$d/cfg/config.toml"
 eq "machine-id: machine_name replaces the hostname in the description" "$(mid "$d" description --date 2026-01-02 | sed 's/ · machine id.*//')" "Mac 1 · macOS"
@@ -1380,6 +1381,9 @@ export LINEAR_DB="$T/linear.json" LINEAR_LOG="$T/linear.log" LINEAR_ARGV_LOG="$T
 printf '%s\n' "$LINEAR_STUB_KEY" >"$FLEET_CONFIG_DIR/linear_api_key"; chmod 600 "$FLEET_CONFIG_DIR/linear_api_key"
 cp "$FLEET_CONFIG_DIR/config.toml" "$T/config.b.bak"; printf 'claim_settle_secs = 0\n' >>"$FLEET_CONFIG_DIR/config.toml"
 : >"$NETLOG"
+# A fixture machine id: these tests never use this machine's real id (a stored id wins over the OS one).
+FIXID="AAAAAAAA-1111-4222-8333-444455556666"; printf '%s\n' "$FIXID" >"$FLEET_STATE_DIR/machine-id"
+IDRE='[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}|[0-9A-Fa-f]{32}'
 dbreset() { # two issues, a team, a state; labels: the fleet group and a foreign machine's label with a stale heartbeat
   cat >"$LINEAR_DB" <<'J'
 {"team": "T1", "states": {"In Progress": "S1"}, "next": 100,
@@ -1476,8 +1480,52 @@ eq "migrate: deletes our claim comment" "$("$LIN" migrate | jq -r .deleted)" 1
 eq "migrate: the other machine's claim comment and a human comment remain" "$(jq -c '[.issues[] | select(.identifier == "DEV-1") | .comments[].id]' "$LINEAR_DB")" '["C2","C3"]'
 : >"$LINEAR_LOG"; eq "migrate: a second run deletes nothing" "$("$LIN" migrate | jq -r .deleted):$(nmut)" "0:0"
 
+# -- N3: the full machine id never leaves the machine; only its hash is published
+MID="$SCRIPTS/machine-id.sh"
+want="$(printf '%s' "$FIXID" | shasum -a 256 | cut -c1-12)"
+eq "machine-id hash: first 12 hex of sha256 of the id" "$("$MID" hash "$FIXID")" "$want"
+eq "machine-id hash: stable" "$("$MID" hash "$FIXID")$("$MID" hash "$FIXID")" "$want$want"
+eq "machine-id hash: 12 hex characters" "$("$MID" hash "$FIXID" | grep -Ec '^[0-9a-f]{12}$')" 1
+eq "machine-id description: publishes sha256:<hash>" "$("$MID" description | grep -c "machine id sha256:$want · first claim")" 1
+eq "machine-id description: no UUID-shaped or 32-hex id" "$("$MID" description | grep -Ec "$IDRE" || true)" 0
+eq "machine-id description: the full id is not in it" "$("$MID" description | grep -c "$FIXID" || true)" 0
+eq "machine-id id: the local command still prints the full id" "$("$MID" id)" "$FIXID"
+# without any sha256 tool nothing is published (never the full id as a fallback)
+nh="$T/nohash/bin"; mkdir -p "$nh"; for t in jq sed head tr cut cat date dirname mkdir od; do ln -sf "$(command -v "$t")" "$nh/$t"; done
+nhout="$(env PATH="$nh" FLEET_STATE_DIR="$FLEET_STATE_DIR" FLEET_CONFIG_DIR="$FLEET_CONFIG_DIR" "$BASH" "$MID" description 2>"$T/nh.err")"; nhrc=$?
+eq "N3: no sha256 tool: description fails and prints nothing" "$nhrc:$nhout" "1:"
+check "N3: and says why" grep -q 'no sha256 tool' "$T/nh.err"
+dbreset; "$LIN" claim DEV-1 >/dev/null 2>&1
+eq "N3: no label description the code wrote holds a full machine id" "$(jq -r '.labels[].description' "$LINEAR_DB" | grep -Ec "$IDRE" || true)" 0
+eq "N3: the claim's label description has the hash" "$(jq -r --arg n "$ml" '.labels[] | select(.name == $n) | .description' "$LINEAR_DB" | grep -c "machine id sha256:$want")" 1
+eq "N3: the full id is in no request the code sent" "$(grep -c "$FIXID" "$LINEAR_ARGV_LOG" || true)" 0
+# a label published by an older version holds the full id: rewrite it, keep the other text and the heartbeat line
+legacy_db() {
+  dbreset
+  jq --arg n "$ml" --arg d "$(printf 'my box · macOS · machine id %s · first claim 2026-01-02\nheartbeat=2026-10-18T07:00:00Z\nextra note' "$FIXID")" \
+    '.labels += [{id: "L9", name: $n, description: $d, parent: {id: "L1", name: "fleet"}}]' "$LINEAR_DB" >"$T/db.tmp" && mv "$T/db.tmp" "$LINEAR_DB"
+  : >"$LINEAR_LOG"; : >"$LINEAR_ARGV_LOG"
+}
+legacy_db
+"$LIN" migrate --dry-run >"$T/n3.out"
+eq "N3: migrate --dry-run reports would_rewrite" "$(jq -r .would_rewrite "$T/n3.out")" true
+eq "N3: migrate --dry-run mutates nothing" "$(nmut)" 0
+"$LIN" claim DEV-3 --dry-run >/dev/null 2>"$T/n3.err"
+check "N3: claim --dry-run reports would_rewrite" grep -q would_rewrite "$T/n3.err"
+eq "N3: claim --dry-run mutates nothing" "$(nmut)" 0
+eq "N3: the description is untouched by the dry runs" "$(jq -r '.labels[] | select(.id == "L9") | .description' "$LINEAR_DB" | grep -c "$FIXID")" 1
+: >"$LINEAR_LOG"; "$LIN" migrate >"$T/n3.out"
+eq "N3: migrate rewrites the label" "$(jq -r .rewrote_label "$T/n3.out")" true
+eq "N3: as one label update, a write" "$(grep -c '^mutation IssueLabelUpdate' "$LINEAR_LOG")$(nmut)" 11
+eq "N3: the rewritten description keeps every other line and the heartbeat" "$(jq -r '.labels[] | select(.id == "L9") | .description' "$LINEAR_DB" | paste -sd'|' -)" "my box · macOS · machine id sha256:$want · first claim 2026-01-02|heartbeat=2026-10-18T07:00:00Z|extra note"
+: >"$LINEAR_LOG"; eq "N3: a second migrate rewrites nothing" "$("$LIN" migrate | jq -r .rewrote_label):$(nmut)" "false:0"
+legacy_db; "$LIN" claim DEV-3 >/dev/null 2>&1
+eq "N3: claim (ensure_label) rewrites it too, keeping the heartbeat and other text" "$(jq -r '.labels[] | select(.id == "L9") | .description' "$LINEAR_DB" | paste -sd'|' -)" "my box · macOS · machine id sha256:$want · first claim 2026-01-02|heartbeat=2026-10-18T07:00:00Z|extra note"
+eq "N3: and the full id is in no request" "$(grep -c "$FIXID" "$LINEAR_ARGV_LOG" || true)" 0
+eq "N3: and no description in the database holds one" "$(jq -r '.labels[].description' "$LINEAR_DB" | grep -Ec "$IDRE" || true)" 0
+
 # -- tick: one heartbeat mutation however many issues are claimed; no claim comments
-export FLEET_STATE_DIR="$T/bstate" FLEET_REGISTRY="$T/bstate/fleet.json" FLEET_INBOX="$T/bstate/escalations.jsonl"; mkdir -p "$FLEET_STATE_DIR"
+export FLEET_STATE_DIR="$T/bstate" FLEET_REGISTRY="$T/bstate/fleet.json" FLEET_INBOX="$T/bstate/escalations.jsonl"; mkdir -p "$FLEET_STATE_DIR"; printf '%s\n' "$FIXID" >"$FLEET_STATE_DIR/machine-id"
 brow() { "$REG" add "$(jq -cn --arg n "$1" --arg t "${1%%/*}" --arg i "$2" --arg r "$T/ra" '{name: $n, team: $t, repo: $r, tier: "Worker", status: "Idle", herdr_ref: "x", pane: "p", issue: $i}')"; }
 dbreset; "$LIN" claim DEV-1 >/dev/null 2>&1; brow bt1/builder DEV-1
 "$SCRIPTS/tick.sh" >/dev/null 2>&1; : >"$LINEAR_LOG"
