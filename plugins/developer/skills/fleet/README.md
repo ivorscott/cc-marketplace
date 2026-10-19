@@ -147,27 +147,9 @@ The Orchestrator and agents call these directly (from `scripts/`). You can call 
 
 ## Configuration
 
-`~/.config/fleet/config.toml` holds machine-wide settings. Every key is optional.
+`~/.config/fleet/config.toml` holds machine-wide settings. Every key is optional, and [`config.example.toml`](config.example.toml) is the only list of them: it has every key with its default and a line of what it does (a test keeps the scripts and that file in step). A key that is not in it, or whose value is the wrong kind, is ignored with one warning per key. The caps are `max_teams` (live teams, default 3; Parked teams do not count), `teams_per_repo` (default 1) and `repos` (repos that should always have a team; with it set, only teams on a listed repo take a slot); `min_free_gb` and `warn_free_gb` guard the disk; `lease_hours`, `label_prefix`, `machines` and `linear_writes` (off | `test:<TEAM>` | on, default off) are the claim settings; `tracker_allow`, `forge_allow`, `chat_channel`, `chat_allow` and `permission_mode` are the agents' permissions. Internal timings (the tell confirm wait, the claim settle wait, the respawn budget, the background-task age, the compact threshold) are constants; the tests change them with `FLEET_TELL_CONFIRM_SECS`, `FLEET_CLAIM_SETTLE_SECS`, `FLEET_RESPAWN_MAX`, `FLEET_RESPAWN_WINDOW_HOURS`, `FLEET_BG_TASK_MAX_HOURS` and `FLEET_COMPACT_ABOVE_PCT`. Hard rules are not settings: the credential scrub always runs.
 
-```toml
-max_agents = 4   # live agents across all teams
-max_envs = 3     # test clusters at once
-min_free_gb = 40   # boot refuses below this much free disk (0 = off; FLEET_FORCE=1 overrides)
-warn_free_gb = 75  # status marks LOW and watch notifies below this
-
-# Several machines on one Linear workspace: each claims issues with the label <label_prefix><machine key>.
-# Claims need Linear. With another tracker, run the fleet on one machine and leave these unset.
-label_prefix = "fleet:"
-lease_hours = 2   # a claim's lease; a lapsed lease with no open PR can be taken over
-linear_writes = "off"   # off (default) | "test:FT" (writes only on issues of Linear team FT) | "on". Off: no heartbeat, claim, takeover or migrate
-machine_name = "Mac 1"   # display name, optional
-machine_legacy_label = "fleet:mac1"   # only while migrating an older label
-
-# Permissions added to every Claude agent at boot. Templates never name a tracker or a
-# code host; put yours here. Values are Claude Code permission rules.
-tracker_allow = ["mcp__claude_ai_Linear__get_issue", "mcp__claude_ai_Linear__list_comments", "mcp__claude_ai_Linear__list_issue_labels"]
-forge_allow = ["Bash(gh pr view:*)", "Bash(gh pr checks:*)", "Bash(gh pr create:*)"]
-```
+Claims need Linear. With another tracker, run the fleet on one machine and leave the claim keys unset. Permissions in `tracker_allow` and `forge_allow` are added to every Claude agent at boot (Claude Code permission rules); templates name no tracker or code host.
 
 Only the Orchestrator claims, labels and comments, so the write tools (Linear's label, issue and
 comment tools) go in the Orchestrator's own Claude Code settings, not in `tracker_allow`, which
@@ -202,6 +184,10 @@ repo-specific rule, use that repo's `.claude/settings.json` instead.
 `retire.sh --summary` finds PRs in agent summaries written as `PR #12` (GitHub style) or
 `MR !12` (GitLab style) and tags each one with the origin remote's `host` and `project`. The
 Orchestrator then checks it with the matching CLI.
+
+## Parking a team
+
+`scripts/park.sh <team>` closes a team's panes and keeps everything else (rows, worktrees, branches, plans, reports and the Linear claim; nothing is written to Linear). The rows become `Parked`; tick skips them (no nudge, respawn or next issue, never Stalled or Zombie), the team still covers its repo for `repo_without_team`, and it does not count against `max_teams`. It refuses at once, changing nothing, when herdr does not answer or when a worktree has uncommitted changes or commits that are on no remote. `park.sh <team> --after-merge` parks nothing now; tick parks the team when its PR merges, instead of the Orchestrator running `next.sh`. `scripts/unpark.sh <team>` starts the agents again from their rows with the same resume brief a respawn gets (the lead first, in a new workspace); it costs no respawn budget and refuses at once when `max_teams` or `teams_per_repo` is full. `scripts/focus.sh <team>` parks every other live team after its PR merges (`--now`: at once); `focus.sh --clear` unparks only the teams focus parked. `status` shows one line per parked team and one for the focus.
 
 ## Running the loop from launchd
 
