@@ -21,7 +21,6 @@ restarted, compacted or replaced agent picks up from the row, not from memory.
 | `repo`, `cwd`, `worktree`, `branch` | where it works; `worktree` and `branch` are set for writers only |
 | `machine`, `workspace`, `pane`, `herdr_ref` | where it runs; `herdr_ref` is the herdr agent name |
 | `issue`, `claimed_by`, `scope` | the tracker issue, the machine key that claimed it, and the declared file scope `{repo, paths[]}` (empty paths = whole repo); set by `boot.sh --issue/--claimed-by/--scope` |
-| `lease_expires`, `takeover_of` | the claim's lease (UTC, renewed with `registry.sh set`) and, after a takeover, the key of the machine it replaced |
 | `assignment` | the task it owes (the hook) |
 | `status` | Booting, Working, Needs input, Stalled, Zombie, Idle, Done, Retired |
 | `escalation`, `escalations[]` | `escalation` is derived: the highest severity among open entries, `""` when none. Each entry is `{id, severity, message, at}` (`id` is `<at compact>-<seq>`, seq the 1-based array position; entries filed before ids existed get the same derived id on read) plus `resolved_at` and `resolution` once `registry.sh resolve` closes it; `(name, id)` identifies one. Open entries survive `done`; `retire` closes them with resolution "closed at retire". A non-array `escalations` reads as empty and non-object elements are skipped |
@@ -145,28 +144,16 @@ Linear only. With one machine, or any other tracker, `issue`, `claimed_by` and `
 
 `machine` is the machine key (first 8 hex characters of its id; `FLEET_MACHINE` overrides it).
 The tracker label is `<label_prefix><key>`, e.g. `fleet:3f9a2c1e`, and its description reads
-`<name or hostname> · <OS> · machine id <full id> · first claim <YYYY-MM-DD>`. A claim comment is
-two lines plus an optional third, written by `scripts/claim.sh line`:
-
-```
-fleet-claim: machine=3f9a2c1e name="Mac 1" team=build-dev317 at=2026-10-18T09:00:00Z lease=2026-10-18T11:00:00Z
-scope: platform: deploy/local, scripts/local.sh
-takeover: from=9b1d4e07 team=build-dev298 comment=<old comment id> at=2026-10-18T09:00:00Z previous-lease=2026-10-18T08:00:00Z reason=expired
-```
-
-`lease=` is renewed (`claim.sh renew`) on every Orchestrator pass. The `takeover:` line exists
-only on a takeover; it is the log, and `comment=` names the claim comment it voids
-(`claim.sh parse` returns it as `takeover_of_comment`). A lease older than `lease_hours` with no PR
-activity in that time can be taken over; `boot.sh --takeover-of` checks it.
+`<name or hostname> · <OS> · machine id <full id> · first claim <YYYY-MM-DD>` plus a
+`heartbeat=<ISO>` line that `linear.sh heartbeat` rewrites on every tick (liveness lives only
+there; no claim, lease or heartbeat comment exists). A heartbeat older than `lease_hours` with no PR
+activity in that time can be taken over with `linear.sh takeover` (`claim.sh expired` is the check).
 
 `status.sh --all --json` is a bare array. Registry rows keep their fields and add `source: "registry"`;
-claims from other machines are rows with `source: "tracker"`, `status` `Claimed`
-(`Claimed (lease lapsed)`, or `SAME KEY?`), `machine`, `machine_name`, `issue`, `lease_expires`,
-`claim_comment` and `scope`.
+claims from other machines (`linear.sh peers`) are rows with `source: "tracker"`, `status` `Claimed`
+(`Claimed (heartbeat lapsed)`, `Claimed (no heartbeat)`), `machine`, `issue`, `heartbeat` and
+`heartbeat_age`.
 
 **Cloned machine id.** A cloned VM or restored disk copies the machine id, and two machines then
 share one key. Set `FLEET_MACHINE=<unique>` or delete the stored `machine-id` file on the clone.
-`status --all` flags a claim with this key and no local team as `SAME KEY?`; detection is best effort.
-
-The registry is local to one machine, so overlap with another machine's claim comes from
-`boot.sh --peer-claim 'KEY/team=repo: paths'`, filled in from the claim comments the Orchestrator read.
+Nothing detects it for you. Other machines' scope is not known (the label plus the heartbeat is the lock); `boot.sh` warns only about overlap with teams on this machine.
