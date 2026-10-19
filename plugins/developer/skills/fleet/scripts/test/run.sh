@@ -357,7 +357,7 @@ check "boot without file: no env dir" test ! -e "$FLEET_STATE_DIR/env/build-plai
 # No env anywhere: status header and retire JSON are the 3.0.1 ones
 : >"$HERDR_LOG"; "$SCRIPTS/boot.sh" build plainst "$T/plain" task >/dev/null 2>&1
 saved="$(cat "$FLEET_REGISTRY")"; jq 'del(.envs)' <<<"$saved" >"$FLEET_REGISTRY"
-eq "no envs: status header is the 3.0.1 one" "$("$SCRIPTS/status.sh" --team build-plainst 2>/dev/null | sed -n 2p | tr -s ' ')" "AGENT TIER STATUS ESC HERDR ASSIGNMENT"
+eq "no envs: status header is the 3.0.1 one" "$("$SCRIPTS/status.sh" --verbose --team build-plainst 2>/dev/null | sed -n 2p | tr -s ' ')" "AGENT TIER STATUS ESC HERDR ASSIGNMENT"
 "$SCRIPTS/retire.sh" build-plainst >"$T/r0.json" 2>"$T/r0.err"
 eq "no envs: retire prints no env line" "$(cat "$T/r0.err" "$T/r0.json" | grep -ci 'environment\|env\.sh\|nothing to do')" 0
 eq "no envs: retire JSON keys are the 3.0.1 ones" "$(jq -c 'keys' "$T/r0.json")" '["kept_worktrees","retired"]'
@@ -365,7 +365,7 @@ printf '%s' "$saved" >"$FLEET_REGISTRY"
 
 # status column, then retire cleans the env up
 "$ENV" up build-envt >/dev/null 2>&1
-eq "status shows slot and state" "$("$SCRIPTS/status.sh" --team build-envt 2>/dev/null | awk 'NR==3 {print $5}')" slot-0-Up
+eq "status shows slot and state" "$("$SCRIPTS/status.sh" --verbose --team build-envt 2>/dev/null | awk 'NR==3 {print $5}')" slot-0-Up
 : >"$STUB_LOG"; "$SCRIPTS/retire.sh" build-envt >"$T/retire.json" 2>/dev/null
 eq "retire runs the stub down" "$(calls down)" 1
 eq "retire frees the slot" "$("$REG" env-get build-envt | jq -r .state)" Down
@@ -522,8 +522,8 @@ check "unreadable df is warned about" grep -q 'cannot read free disk' "$T/b.err"
 cp "$T/config.bak" "$FLEET_CONFIG_DIR/config.toml"
 
 # status shows free disk
-eq "status: first line shows free disk" "$(DF_GB=100 "$SCRIPTS/status.sh" --team build-nope 2>/dev/null | head -1)" 'disk: 100 GiB free (warn below 75, boot refuses below 40)'
-eq "status: LOW below warn_free_gb" "$(DF_GB=60 "$SCRIPTS/status.sh" --team build-nope 2>/dev/null | head -1 | grep -c ' LOW$')" 1
+eq "status: first line shows free disk" "$(DF_GB=100 "$SCRIPTS/status.sh" --verbose --team build-nope 2>/dev/null | head -1)" 'disk: 100 GiB free (warn below 75, boot refuses below 40)'
+eq "status: LOW below warn_free_gb" "$(DF_GB=60 "$SCRIPTS/status.sh" --verbose --team build-nope 2>/dev/null | head -1 | grep -c ' LOW$')" 1
 eq "status --json stays a bare array" "$(DF_GB=60 "$SCRIPTS/status.sh" --team build-nope --json 2>/dev/null | jq -r type)" array
 
 # Machine identity (machine-id.sh): run with a PATH of symlinks plus per-case shims, so a
@@ -616,12 +616,12 @@ shim "$d" uname 'echo Plan9'; eq "machine-id: anything else maps to unknown OS" 
 
 # status: the machine footer, the conditional ISSUE column
 cp "$FLEET_CONFIG_DIR/config.toml" "$T/config.bak2"
-eq "status: last line is the machine footer" "$(DF_GB=100 "$SCRIPTS/status.sh" --team build-nope 2>/dev/null | tail -1)" "machine: fleet:test"
+eq "status: last line is the machine footer" "$(DF_GB=100 "$SCRIPTS/status.sh" --verbose --team build-nope 2>/dev/null | tail -1)" "machine: fleet:test"
 echo 'machine_name = "Mac 1"' >>"$FLEET_CONFIG_DIR/config.toml"
-eq "status: the footer shows machine_name" "$(DF_GB=100 "$SCRIPTS/status.sh" --team build-nope 2>/dev/null | tail -1)" "machine: fleet:test (Mac 1)"
-eq "status: the disk line is still first" "$(DF_GB=100 "$SCRIPTS/status.sh" --team build-nope 2>/dev/null | head -1)" 'disk: 100 GiB free (warn below 75, boot refuses below 40)'
+eq "status: the footer shows machine_name" "$(DF_GB=100 "$SCRIPTS/status.sh" --verbose --team build-nope 2>/dev/null | tail -1)" "machine: fleet:test (Mac 1)"
+eq "status: the disk line is still first" "$(DF_GB=100 "$SCRIPTS/status.sh" --verbose --team build-nope 2>/dev/null | head -1)" 'disk: 100 GiB free (warn below 75, boot refuses below 40)'
 eq "status --json has no machine footer" "$(DF_GB=100 "$SCRIPTS/status.sh" --team build-nope --json 2>/dev/null | grep -c machine:)" 0
-eq "status: no ISSUE column without an issue" "$(DF_GB=100 "$SCRIPTS/status.sh" --team build-plain 2>/dev/null | grep -c ISSUE)" 0
+eq "status: no ISSUE column without an issue" "$(DF_GB=100 "$SCRIPTS/status.sh" --verbose --team build-plain 2>/dev/null | grep -c ISSUE)" 0
 cp "$T/config.bak2" "$FLEET_CONFIG_DIR/config.toml"
 
 # boot: refusal of an issue another machine holds
@@ -670,7 +670,7 @@ bt build ovj "$T/plain" t; eq "boot: no --scope never warns" "$(grep -c overlaps
 bt --scope ': src' build ovk "$T/plain" t
 eq "boot: the scope repo defaults to the repo-dir name" "$("$REG" get build-ovk/builder | jq -r .scope.repo)" plain
 bt --issue DEV-12 build iss1 "$T/plain" t
-eq "status: the ISSUE column appears once a row has an issue" "$(DF_GB=100 "$SCRIPTS/status.sh" --team build-iss1 2>/dev/null | sed -n 2p | grep -c ISSUE)" 1
+eq "status: the ISSUE column appears once a row has an issue" "$(DF_GB=100 "$SCRIPTS/status.sh" --verbose --team build-iss1 2>/dev/null | sed -n 2p | grep -c ISSUE)" 1
 
 # claim.sh: lease arithmetic, the heartbeat parse, expiry
 CL="$SCRIPTS/claim.sh"
@@ -715,7 +715,7 @@ cat "$CF" | DF_GB=100 "$SCRIPTS/status.sh" --all --json --claims - --team build-
 eq "status --claims without --all dies" "$("$SCRIPTS/status.sh" --claims "$CF" >/dev/null 2>&1; echo $?)" 1
 eq "status --all: an unreadable claims file dies" "$(DF_GB=100 "$SCRIPTS/status.sh" --all --claims "$T/none.json" >/dev/null 2>&1; echo $?)" 1
 echo '{}' >"$T/bad.json"; eq "status --all: claims that are not an array die" "$(DF_GB=100 "$SCRIPTS/status.sh" --all --claims "$T/bad.json" >/dev/null 2>&1; echo $?)" 1
-eq "status without --all has no MACHINE column" "$(DF_GB=100 "$SCRIPTS/status.sh" --team build-own1 2>/dev/null | grep -c MACHINE)" 0
+eq "status without --all has no MACHINE column" "$(DF_GB=100 "$SCRIPTS/status.sh" --verbose --team build-own1 2>/dev/null | grep -c MACHINE)" 0
 
 # chat.sh: settings and format only, never the network
 CH="$SCRIPTS/chat.sh"
@@ -2427,7 +2427,7 @@ a1="$("$SCRIPTS/tick.sh" 2>/dev/null)"
 eq "api error: the row shows Needs input" "$("$REG" get build-apx/builder | jq -r .status)" "Needs input"
 eq "api error: with the reason on the row" "$("$REG" get build-apx/builder | jq -r .status_detail)" "login expired"
 echo idle >"$AS/build-apx-builder"
-check "api error: and in the status table" bash -c "'$SCRIPTS/status.sh' | grep -q 'Needs input (login expired)'"
+check "api error: and in the status table" bash -c "'$SCRIPTS/status.sh' --verbose | grep -q 'Needs input (login expired)'"
 eq "api error: needs_input is reported once, with the reason" "$(printf '%s' "$a1" | jq -c '[.[] | select(.type == "needs_input") | [.name, .detail]]')" '[["build-apx/builder","login expired"]]'
 eq "api error: no stall nudge" "$(grep -c 'went idle without running' "$HERDR_LOG" || true)" 0
 eq "api error: one continue" "$(grep -c '^agent prompt build-apx-builder continue' "$HERDR_LOG" || true)" 1
