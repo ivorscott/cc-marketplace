@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # One Orchestrator tick: everything that changed since the last tick, as one JSON array.
 # A quiet tick prints nothing and exits 0; the Orchestrator's whole reply to it is one line.
-# Supersedes watch.sh for the Orchestrator loop (watch.sh stays for humans).
+# Run by loop-tick.sh from launchd (schedule.sh); the Orchestrator calls it itself only when no schedule is installed.
 #
 #   tick.sh [--team T]
 #
