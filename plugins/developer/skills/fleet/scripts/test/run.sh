@@ -129,6 +129,7 @@ C
 eq "config_list: one-line array" "$(cl tracker_allow)" '["mcp__jira__get_issue","Bash(jira issue view:*)"]'
 eq "config_list: multi-line array, trailing comma" "$(cl forge_allow)" '["Bash(glab mr view:*)","Bash(glab mr create:*)"]'
 eq "config_list: non-strings ignored" "$(cl bad_allow)" '[]'
+sed -i.bak '/^bad_allow/d' "$FLEET_CONFIG_DIR/config.toml"; rm -f "$FLEET_CONFIG_DIR/config.toml.bak"
 
 # Ports
 "$ENV" up build-a >/dev/null 2>&1; eq "first team gets slot 0 (8080/8443)" "$(slot build-a)" "0 8080 8443"
@@ -477,7 +478,7 @@ check "single-agent retire archives under <team>-<role>" test -f "$T/archive/bui
 check "single-agent retire leaves the other worktree" test -d "$T/wt-build-one-tester"
 
 # boot refuses below min_free_gb
-cp "$FLEET_CONFIG_DIR/config.toml" "$T/config.bak"; echo 'max_teams = 100' >>"$FLEET_CONFIG_DIR/config.toml"
+cp "$FLEET_CONFIG_DIR/config.toml" "$T/config.bak"; printf 'max_teams = 100\nteams_per_repo = 100\n' >>"$FLEET_CONFIG_DIR/config.toml"
 eq "min_free_gb defaults to 40" "$(bash -c ". $SCRIPTS/common.sh; min_free_gb")" 40
 eq "warn_free_gb defaults to 75" "$(bash -c ". $SCRIPTS/common.sh; warn_free_gb")" 75
 : >"$HERDR_LOG"; FLEET_FORCE= DF_GB=10 "$SCRIPTS/boot.sh" build disk1 "$T/plain" task >"$T/b.out" 2>"$T/b.err"; rc=$?
@@ -2255,7 +2256,7 @@ n2="$(nstart build-rsf-builder)"
 for i in 4 5; do PANE_GONE=1 "$SCRIPTS/tick.sh" >/dev/null 2>&1; echo gone >"$AS/build-rsf-builder"; done
 check "respawn failing: the builder was tried (twice per attempt: start retries once)" test "$n2" -eq 4
 eq "respawn failing: and not again after respawn_max attempts" "$(nstart build-rsf-builder)" "$n2"
-eq "respawn failing: every pane it split is closed again" "$(grep -c '^pane close' "$HERDR_LOG")" "$(grep -c '^pane split' "$HERDR_LOG")"
+eq "respawn failing: every pane it split is closed again" "$(grep -c '^pane close' "$HERDR_LOG")" "$(grep -c '^pane split\|^workspace create' "$HERDR_LOG")"
 eq "respawn failing: one P1 and no more" "$("$REG" escalations --open --team build-rsf | jq -c '[.[] | select(.name == "build-rsf/builder") | [.severity, .message]]')" '[["P1","build-rsf/builder could not be respawned in 6h"]]'
 rm -f "$FLEET_CONFIG_DIR/config.toml"; unset FLEET_NOW
 # Done and Retired rows are never respawned
@@ -2579,7 +2580,7 @@ eq "config: the example file itself parses clean" "$(grep -c 'unknown key\|is no
 : >"$FLEET_CONFIG_DIR/config.toml"
 eq "config: a timing is a constant, FLEET_* overrides it" "$(FLEET_RESPAWN_MAX=7 bash -c ". '$SCRIPTS/common.sh'; const_int RESPAWN_MAX 1")" 7
 eq "config: and a junk override falls back to the default" "$(FLEET_RESPAWN_MAX=x bash -c ". '$SCRIPTS/common.sh'; const_int RESPAWN_MAX 1")" 1
-eq "config: a timing in config.toml no longer applies" "$(printf 'respawn_max = 9\n' >"$FLEET_CONFIG_DIR/config.toml"; bash -c ". '$SCRIPTS/common.sh'; const_int RESPAWN_MAX 1")" 1
+eq "config: a timing in config.toml no longer applies" "$(printf 'respawn_max = 9\n' >"$FLEET_CONFIG_DIR/config.toml"; env -u FLEET_RESPAWN_MAX bash -c ". '$SCRIPTS/common.sh'; const_int RESPAWN_MAX 1")" 1
 : >"$FLEET_CONFIG_DIR/config.toml"
 
 # -- bash 3.2 / BSD: no bash 4 features in the new scripts, and the scripts run under the system bash
