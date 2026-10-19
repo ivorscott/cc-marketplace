@@ -282,7 +282,7 @@ tracker runs the fleet on one machine, and those parts are skipped.
   user), which is a follow-up. Without it claims are unavailable (`linear.sh` exits 3), not fatal.
 - Agents get an allowlist of herdr subcommands, not `herdr:*`: workers `agent get|read|list|wait`,
   leads also `agent prompt|send-keys`; the Bash guard holds `agent read|prompt|send-keys` to the
-  agent's own team: the exact herdr names of its rows in the registry.
+  agent's own team: the exact herdr names of its rows in the registry. `herdr pane read` is denied to agents. `linear.sh` refuses a fleet agent (`FLEET_ROLE` set) and its endpoint and transport are fixed in the code (the tests alone override them), so an agent cannot have the key piped to a program of its own. The guards compare the key's name and path without regard to case (macOS volumes ignore it). Known gaps: a relative path after a `cd`, a symlink made by the agent, and a PR that never names its issue key (takeover's search) are not caught; this is a guardrail, not a boundary.
 
 ### Cloned machine id
 

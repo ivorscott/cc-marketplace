@@ -25,9 +25,12 @@ case "$tool" in
     globs="$(printf '%s' "$input" | jq -r --arg t "$tool" '[if $t == "Glob" then .tool_input.pattern else empty end, .tool_input.glob] | map(strings) | .[]')" ;;
 esac
 [ -n "$path" ] || [ -n "$pats" ] || exit 0
-# A Grep or Glob with no path searches the cwd.
-case "$tool" in Grep | Glob) [ -n "$path" ] || path="$PWD" ;; esac
-case "$path" in /*) ;; *) path="$PWD/$path" ;; esac
+# A Grep or Glob with no path searches the cwd: the hook input's own cwd when it has one, else this process's.
+cwd="$(printf '%s' "$input" | jq -r '.cwd // empty')"; [ -n "$cwd" ] || cwd="$PWD"
+case "$tool" in Grep | Glob) [ -n "$path" ] || path="$cwd" ;; esac
+case "$path" in /*) ;; *) path="$cwd/$path" ;; esac
+# Names and paths are compared without regard to case: APFS (macOS) ignores it, so ~/.config/FLEET/LINEAR_API_KEY is the key.
+lc() { printf '%s' "$1" | tr 'A-Z' 'a-z'; }
 
 deny() { jq -n --arg r "$1" '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: $r}}'; exit 0; }
 
@@ -69,32 +72,33 @@ rp="$(resolve "$path")"
 kdir="${FLEET_CONFIG_DIR:-${XDG_CONFIG_HOME:-${HOME:-/nonexistent}/.config}/fleet}"
 case "$kdir" in /*) ;; *) kdir="$PWD/$kdir" ;; esac
 keypath="$(resolve "$kdir")/linear_api_key"
+keyl="$(lc "$keypath")"; rpl="$(lc "$rp")"
 for cand in "$path" "$rp"; do
-  case "${cand##*/}" in
+  case "$(lc "${cand##*/}")" in
     linear_api_key | linear_api_key.*) deny "fleet scope guard: $path is the Linear key; only the Orchestrator reads it." ;;
   esac
 done
-[ "$rp" != "$keypath" ] || deny "fleet scope guard: $path leads to the Linear key; only the Orchestrator reads it."
+[ "$rpl" != "$keyl" ] || deny "fleet scope guard: $path leads to the Linear key; only the Orchestrator reads it."
 case "$tool" in
   Grep | Glob)
     # A pattern or glob that names the key file, by name or as a path that resolves to it.
     while IFS= read -r pt; do
       [ -n "$pt" ] || continue
-      case "$pt" in *linear_api_key*) deny "fleet scope guard: the $tool argument names the Linear key; only the Orchestrator reads it." ;; esac
-      case "$pt" in /*) [ "$(resolve "$pt")" != "$keypath" ] || deny "fleet scope guard: the $tool argument leads to the Linear key; only the Orchestrator reads it." ;; esac
+      case "$(lc "$pt")" in *linear_api_key*) deny "fleet scope guard: the $tool argument names the Linear key; only the Orchestrator reads it." ;; esac
+      case "$pt" in /*) [ "$(lc "$(resolve "$pt")")" != "$keyl" ] || deny "fleet scope guard: the $tool argument leads to the Linear key; only the Orchestrator reads it." ;; esac
     done <<<"$pats"
     # A search rooted at the key's directory, or above it (the cwd when no path is given: HOME, say), would read
     # the file as part of the tree.
-    case "$keypath" in "$rp"/*) deny "fleet scope guard: searching $path would read the Linear key; search a narrower directory." ;; esac
+    case "$keyl" in "$rpl"/*) deny "fleet scope guard: searching $path would read the Linear key; search a narrower directory." ;; esac
     # A path glob that can reach the key's directory: its fixed part (up to the first wildcard), taken from the
     # search root when relative, is that directory or above it; or it spells .config/fleet.
     while IFS= read -r g; do
       [ -n "$g" ] || continue
-      case "$g" in *.config/fleet | *.config/fleet/* | *.config/fleet[*?[{]*) deny "fleet scope guard: the $tool pattern $g reaches the Linear key's directory." ;; esac
+      case "$(lc "$g")" in *.config/fleet | *.config/fleet/* | *.config/fleet[*?[{]*) deny "fleet scope guard: the $tool pattern $g reaches the Linear key's directory." ;; esac
       fixed="$g"; case "$g" in *[*?[{]*) fixed="${g%%[*?[{]*}"; case "$fixed" in */*) fixed="${fixed%/*}" ;; *) fixed="" ;; esac ;; esac
       case "$fixed" in /*) ;; "") fixed="$rp" ;; *) fixed="$rp/$fixed" ;; esac
       fr="$(resolve "$fixed")"
-      case "$keypath" in "$fr"/*) deny "fleet scope guard: the $tool pattern $g can reach the Linear key; search a narrower directory." ;; esac
+      case "$keyl" in "$(lc "$fr")"/*) deny "fleet scope guard: the $tool pattern $g can reach the Linear key; search a narrower directory." ;; esac
     done <<<"$globs"
     ;;
 esac

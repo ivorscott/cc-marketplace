@@ -40,6 +40,10 @@
 # mutation and, in read-only mode (holder, peers, has-key and every --dry-run), refuses all of
 # them. A read-only subcommand cannot mutate even by mistake.
 #
+# Known gap, accepted (DEV-368): the PR search finds a PR by the issue key in its title or body. A PR on
+# boot's fleet/<team>/<role> branch whose title and body never name the key is not found, and a takeover goes
+# ahead. House rules make every fleet PR body link its issue, which is what the search relies on.
+#
 # Takeover needs the holder's heartbeat older than lease_hours (config.toml, default 2) AND no open PR. It
 # looks the PR up itself (gh, read-only, in the current repo or --repo; same-repo PRs only): any open PR on
 # fleet/<slug>[-/...] or on the issue's Linear branch, and any open PR whose title or body names the issue
@@ -63,8 +67,11 @@
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
 
-FLEET_CURL="${FLEET_CURL:-curl}"
-LINEAR_URL="${LINEAR_URL:-https://api.linear.app/graphql}"
+# The Orchestrator's script: a fleet agent (FLEET_ROLE set) never runs it, and the transport is fixed outside the
+# tests, so an agent cannot point FLEET_CURL or LINEAR_URL at a program of its own and have the key piped to it.
+[ -z "${FLEET_ROLE:-}" ] || die "linear.sh is the Orchestrator's; a fleet agent may not run it"
+if [ "${FLEET_TEST:-}" = 1 ]; then FLEET_CURL="${FLEET_CURL:-curl}"; LINEAR_URL="${LINEAR_URL:-https://api.linear.app/graphql}"
+else FLEET_CURL=curl; LINEAR_URL="https://api.linear.app/graphql"; fi
 READONLY=0
 KEY=""
 WMODE="$(linear_writes)"
@@ -336,8 +343,8 @@ case "$cmd" in
   peers)
     READONLY=1
     mine="$(machine_label)"
-    q_open_issues_labelled "$(label_prefix)" startsWith | jq -c --arg p "$(label_prefix)" --arg m "$mine" '
-      [.[] | . as $i | .labels.nodes[] | select((.name | startswith($p)) and .name != $m)
+    q_open_issues_labelled "$(label_prefix)" startsWith | jq -c --arg p "$(label_prefix)" --arg m "$mine" --arg l "$(cfg_str machine_legacy_label '')" '
+      [.[] | . as $i | .labels.nodes[] | select((.name | startswith($p)) and .name != $m and ($l == "" or .name != $l))
         | {machine: (.name | ltrimstr($p)), label: .name, issue: $i.identifier, heartbeat: ([(.description // "") | match("(^|\n)heartbeat=([^\n ]+)").captures[1].string] | first // null)}]' ;;
 
   claim)

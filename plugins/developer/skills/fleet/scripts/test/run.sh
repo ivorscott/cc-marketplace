@@ -290,6 +290,7 @@ check "boot: env dir exists but no kubeconfig file yet" test -d "$FLEET_STATE_DI
 eq "boot: no cluster created" "$(calls up)" 0
 check "boot: tester allow has env.sh up with the scripts path" grep -q "env.sh up" <(grep '^agent start build-envt-tester' "$HERDR_LOG")
 eq "boot: the Linear key is dropped in each claude pane before its agent starts" "$(awk '/^pane run .*unset LINEAR_API_KEY/ {u++} /^agent start/ {if (u <= a) bad++; a++} END {print a + 0, bad + 0}' "$HERDR_LOG")" "$(grep -c '^agent start' "$HERDR_LOG") 0"
+eq "boot: the key unset is typed for every kind of agent, not only claude" "$(grep -c '\[ "\$kind" != "claude" \] || hd pane run' "$SCRIPTS/boot.sh" || true)" 0
 eq "boot: no unsubstituted {{scripts}}" "$(grep -c '{{scripts}}' "$HERDR_LOG")" 0
 check "boot: tester allow has the team-scoped kubectl context" grep -q -- "kubectl --context fleet-build-envt get" <(grep '^agent start build-envt-tester' "$HERDR_LOG")
 eq "boot: no unsubstituted {{team}} or {{worktree}} in an allow list" "$(grep '^agent start' "$HERDR_LOG" | grep -c '{{team}}\|{{worktree}}')" 0
@@ -1079,6 +1080,9 @@ eq "next: a failed claim sends nothing" "$(grep -c '^agent prompt' "$HERDR_LOG")
 printf '#!/usr/bin/env bash\nexit 3\n' >"$T/sc/linear.sh"
 "$T/sc/next.sh" tn DEV-22 >/dev/null 2>&1; eq "next: no Linear key (exit 3) proceeds unclaimed" "$?" 0
 eq "next: with no Linear key the claim step is skipped (exit 3)" "$("$SCRIPTS/next.sh" tn DEV-23 >/dev/null 2>&1; echo $?)" 0
+printf 'machines = 2\n' >>"$FLEET_CONFIG_DIR/config.toml"
+"$T/sc/next.sh" tn DEV-24 >/dev/null 2>&1; eq "next: no Linear key and machines > 1 refuses (NH3)" "$?" 1
+sed -i.bak '/^machines/d' "$FLEET_CONFIG_DIR/config.toml"; rm -f "$FLEET_CONFIG_DIR/config.toml.bak"
 rm -rf "$T/sc"
 
 # -- tick
@@ -1495,6 +1499,7 @@ eq "claim: and the foreign issue is unchanged" "$(labels_of DEV-2)" "fleet:other
 "$LIN" claim DEV-1 >/dev/null 2>&1; eq "claim: claiming our own issue again is fine" "$?" 0
 cp "$FLEET_CONFIG_DIR/config.toml" "$T/config.legacy.bak"; echo 'machine_legacy_label = "fleet:other"' >>"$FLEET_CONFIG_DIR/config.toml"
 eq "holder: an issue with the legacy label has no foreign holder" "$("$LIN" holder DEV-2 | jq -c '.holder')" null
+eq "peers: this machine's legacy label is not another machine" "$("$LIN" peers | jq -c 'length')" 0
 "$LIN" claim DEV-2 >/dev/null 2>"$T/legacy.err"; eq "claim: this machine's legacy label is ours, not a foreign holder" "$?:$(grep -c 'is claimed by' "$T/legacy.err")" "0:0"
 cp "$T/config.legacy.bak" "$FLEET_CONFIG_DIR/config.toml"
 eq "claim: and does not create a second label" "$(jq --arg n "$ml" '[.labels[] | select(.name == $n)] | length' "$LINEAR_DB")" 1
@@ -1779,6 +1784,12 @@ printf 'machines = 2\n' >>"$FLEET_CONFIG_DIR/config.toml"
 bt --issue DEV-90 --claimed-by test build wo1 "$T/plain" t
 eq "writes off: boot --issue refuses when machines > 1, key or not" "$BTRC" 1
 check "writes off: and says why" grep -q 'linear_writes = off' "$T/bt.err"
+# NH3: next applies boot's rule: claims unavailable and machines > 1 refuses, the team keeps its issue
+before="$("$REG" get bt1/builder | jq -r .issue)"; : >"$HERDR_LOG"
+"$SCRIPTS/next.sh" bt1 DEV-6 >/dev/null 2>"$T/nx.err"; rc=$?
+eq "writes off, machines > 1: next refuses (exit 1)" "$rc" 1
+check "writes off, machines > 1: and says claims cannot be made" grep -q 'machines > 1' "$T/nx.err"
+eq "writes off, machines > 1: the team keeps its issue and nothing is sent" "$("$REG" get bt1/builder | jq -r .issue):$(grep -c '^agent prompt' "$HERDR_LOG")" "$before:0"
 setw on
 # a Done row keeps its claim: with writes on, a team waiting on a merge still gets the heartbeat
 for n in 1 2 3 4 5; do "$REG" retire bt$n/builder >/dev/null 2>&1; done
@@ -1929,6 +1940,21 @@ done
 # LOW: the own team is the exact herdr names of its rows in the registry, not a name prefix
 eq "bash guard: a name with the team's prefix that is not a row of the team is denied" "$(bg "herdr agent prompt build-ft-ghost hi" lead)" deny
 eq "bash guard: a Retired row of the team is not a target" "$(bg "herdr agent prompt build-ft-old hi" lead)" deny
+eq "bash guard: herdr pane read is denied (another pane's screen)" "$(bg "herdr pane read p1")" deny
+# NH1: APFS ignores case, so the key by another case is the key
+eq "guard (NH1): Read of the key in other case is denied" "$(gin Read "$FLEET_CONFIG_DIR/$(printf '%s' "$kf" | tr a-z A-Z)" | FLEET_ROLE=lead "$GUARD" | dec)" deny
+eq "guard (NH1): the key's directory in other case is denied" "$(gin Read "$(printf '%s' "$FLEET_CONFIG_DIR" | tr a-z A-Z)/$kf" | FLEET_ROLE=worker FLEET_WORKTREE="$T/wtg" "$GUARD" | dec)" deny
+eq "guard (NH1): Grep rooted at the key's directory in other case is denied" "$(gg Grep "$(jq -nc --arg p "$(printf '%s' "$FLEET_CONFIG_DIR" | tr a-z A-Z)" '{pattern: ".", path: $p}')" | FLEET_ROLE=lead "$GUARD" | dec)" deny
+eq "guard (NH1): Glob naming the key in other case is denied" "$(gg Glob '{"pattern": "**/Linear_Api_Key"}' | FLEET_ROLE=lead "$GUARD" | dec)" deny
+eq "guard: the hook input's cwd decides a Grep with no path" "$(jq -nc --arg c "$FLEET_CONFIG_DIR" '{tool_name: "Grep", cwd: $c, tool_input: {pattern: "x"}}' | (cd "$T/wtg" && FLEET_ROLE=lead "$GUARD") | dec)" deny
+# NH2: linear.sh is not for agents, and its transport is fixed outside the tests
+printf '#!/usr/bin/env bash\ncat >"$CAPTURE"\necho "{}"\n' >"$T/capture.sh"; chmod +x "$T/capture.sh"; : >"$T/captured"
+FLEET_ROLE=worker CAPTURE="$T/captured" FLEET_CURL="$T/capture.sh" LINEAR_API_KEY=KEYFIXTURE-nh2 "$SCRIPTS/linear.sh" whoami >/dev/null 2>"$T/nh2.err"; rc=$?
+eq "NH2: linear.sh refuses a fleet agent" "$rc:$(grep -c 'may not run it' "$T/nh2.err")" "1:1"
+eq "NH2: and nothing reached the agent's own transport" "$(wc -c <"$T/captured" | tr -d ' ')" 0
+env -u FLEET_TEST CAPTURE="$T/captured" FLEET_CURL="$T/capture.sh" LINEAR_URL=http://127.0.0.1:9/x LINEAR_API_KEY=KEYFIXTURE-nh2 FLEET_STATE_DIR="$T/nh2state" "$SCRIPTS/linear.sh" whoami >/dev/null 2>&1
+eq "NH2: outside FLEET_TEST FLEET_CURL is ignored (the key never reaches a program of the caller's)" "$(grep -c KEYFIXTURE "$T/captured" || true)" 0
+eq "NH2: outside FLEET_TEST the endpoint and transport are fixed in the code" "$(grep -c '^else FLEET_CURL=curl; LINEAR_URL="https://api.linear.app/graphql"; fi' "$SCRIPTS/linear.sh")" 1
 eq "bash guard: an unreadable registry denies every target" "$(jq -nc '{tool_name: "Bash", tool_input: {command: "herdr agent read build-ft-tester"}}' | FLEET_STATE_DIR="$T/nostate" FLEET_ROLE=worker FLEET_TEAM=build-ft "$BG" | dec)" deny
 eq "bash guard: the Orchestrator is never restricted" "$(jq -nc '{tool_name: "Bash", tool_input: {command: "herdr pane run p1 ls"}}' | env -u FLEET_ROLE "$BG" | dec)" allow
 check "boot: workers get no blanket Bash(herdr:*)" bash -c "! grep -q 'Bash(herdr:\*)' '$SCRIPTS/boot.sh'"

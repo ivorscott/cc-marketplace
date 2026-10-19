@@ -3,8 +3,9 @@
 #
 #   next.sh <team> <issue> [--brief TEXT]
 #
-#   1. claim the issue, when scripts/linear.sh exists and answers (not shipped yet: skipped);
-#      a claim that fails aborts before any row changes
+#   1. claim the issue through linear.sh; a claim that fails aborts before any row changes. When claims are
+#      unavailable (no key, or linear_writes off) the team moves unclaimed, as boot does, except with
+#      `machines` > 1 in config.toml: then nothing could stop another machine taking the issue, and next refuses
 #   2. registry.sh reassign: every row of the team gets the issue, a clean outcome/PR/sign-off,
 #      its open escalations closed ("closed at next") and status Working
 #   3. workers get /clear and the row's `transcript` is re-pointed at the new session file
@@ -40,7 +41,8 @@ if [ -x "$FLEET_SCRIPTS/linear.sh" ]; then
   rc=0; "$FLEET_SCRIPTS/linear.sh" claim "$issue" || rc=$?
   case "$rc" in
     0) ;;
-    3) warn "claims unavailable; moving $team to $issue unclaimed" ;;
+    3) if [ "$(cfg_int machines 1)" -gt 1 ]; then die "claims are unavailable (no Linear key, or linear_writes off) and machines > 1 in config.toml, so $issue cannot be claimed. $team keeps its current issue"; fi
+       warn "claims unavailable; moving $team to $issue unclaimed" ;;
     *) die "could not claim $issue; $team keeps its current issue" ;;
   esac
 fi

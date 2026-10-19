@@ -108,6 +108,8 @@ while IFS= read -r seg; do
     case "$group $sub" in
       "pane run" | "pane send-text" | "pane send-keys")
         deny "fleet bash guard: herdr $group $sub types into a pane, which fleet agents may not do." ;;
+      "pane read")
+        deny "fleet bash guard: herdr pane read shows another pane's screen; use herdr agent read on an agent of your own team." ;;
       "agent prompt" | "agent send-keys" | "agent read")
         if [ "$sub" != read ] && [ "${FLEET_ROLE:-}" != lead ]; then
           deny "fleet bash guard: only a lead may herdr agent $sub, and only to its own team."
