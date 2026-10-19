@@ -36,6 +36,7 @@ done
 
 rows="$("$registry" list --team "$team" | jq -c '[.[] | select(.status != "Retired" and .tier != "Orchestrator")]')"
 [ "$(printf '%s' "$rows" | jq length)" != 0 ] || die "no live rows for team '$team'"
+[ "$(printf '%s' "$rows" | jq '[.[] | select(.status == "Parked")] | length')" = 0 ] || die "team '$team' is parked; unpark.sh $team first, or leave it parked"
 
 if [ -x "$FLEET_SCRIPTS/linear.sh" ]; then
   rc=0; "$FLEET_SCRIPTS/linear.sh" claim "$issue" || rc=$?
@@ -75,7 +76,7 @@ clear_session() {
   [ -z "$dir" ] || before="$(ls "$dir"/*.jsonl 2>/dev/null || true)"
   send "$name" /clear --no-confirm || return 0
   [ -n "$dir" ] || return 0
-  secs="$(cfg_int tell_confirm_secs 15)"
+  secs="$(const_int TELL_CONFIRM_SECS 15)"
   while :; do
     for f in $(ls -t "$dir"/*.jsonl 2>/dev/null || true); do
       printf '%s\n' "$before" | grep -qxF "$f" || { best="$f"; break; }
@@ -99,7 +100,7 @@ done < <(printf '%s' "$rows" | jq -r '.[].name')
 
 if [ -n "$lead" ]; then
   ref="$(printf '%s' "$rows" | jq -r --arg n "$lead" '.[] | select(.name == $n) | .herdr_ref')"
-  pct="$(context_pct "$(printf '%s' "$rows" | jq -r --arg n "$lead" '.[] | select(.name == $n) | .transcript // ""')" "$ref")"; above="$(cfg_int compact_above_pct 50)"
+  pct="$(context_pct "$(printf '%s' "$rows" | jq -r --arg n "$lead" '.[] | select(.name == $n) | .transcript // ""')" "$ref")"; above="$(const_int COMPACT_ABOVE_PCT 50)"
   if [ -z "$pct" ] || [ "$pct" -gt "$above" ]; then
     send "$lead" /compact --no-confirm || true
     hd agent wait "$ref" --until idle --timeout 120000 >/dev/null 2>&1 || true

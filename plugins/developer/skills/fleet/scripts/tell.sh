@@ -104,7 +104,7 @@ send() { hd agent prompt "$ref" "$text" >/dev/null 2>&1; }
 send || { warn "not delivered to $target: herdr agent prompt failed"; verdict false "herdr rejected the send" 1; }
 $confirm || verdict true "" 0
 
-secs="$(cfg_int tell_confirm_secs 15)"; poll="${FLEET_TELL_POLL:-1}"
+secs="$(const_int TELL_CONFIRM_SECS 15)"; poll="${FLEET_TELL_POLL:-1}"
 arrived() { # structured signals first: transcript user line, herdr state; then the screen
   local s q
   if [ -n "$transcript" ] && [ -r "$transcript" ] &&

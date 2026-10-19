@@ -373,7 +373,7 @@ case "$cmd" in
       exit 0
     fi
     m_issue_update "$iid" "$ids" "$sid"
-    sleep "$(cfg_int claim_settle_secs 5)"
+    sleep "$(const_int CLAIM_SETTLE_SECS 5)"
     after="$(q_issue "$issue")"
     if printf '%s' "$after" | jq -e --arg m "$mine" 'any(.labels.nodes[]; .name == $m)' >/dev/null; then
       say --arg i "$issue" --arg m "$mine" '{claimed: true, issue: $i, label: $m}'
@@ -424,7 +424,7 @@ case "$cmd" in
     keep="$(printf '%s' "$iss" | jq -c --arg p "$(label_prefix)" '[.labels.nodes[] | select(.name | startswith($p) | not) | .id]')"
     m_issue_update "$iid" "$(jq -cn --argjson k "$keep" --arg l "$lid" '$k + [$l] | unique')" "$sid"
     # Settle and re-read, as claim does: when two machines take over at once, the last writer's label stays.
-    sleep "$(cfg_int claim_settle_secs 5)"
+    sleep "$(const_int CLAIM_SETTLE_SECS 5)"
     after="$(q_issue "$issue")"
     if ! printf '%s' "$after" | jq -e --arg m "$mine" 'any(.labels.nodes[]; .name == $m)' >/dev/null; then
       who="$(other_fleet_labels "$after" | head -n 1)"

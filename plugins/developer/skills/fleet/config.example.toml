@@ -1,0 +1,45 @@
+# ~/.config/fleet/config.toml. Every key is optional; the values below are the defaults.
+# This file is the only list of keys: a key that is not here is ignored with one warning, and a test keeps
+# the scripts and this file in step. A line starting "# key = value" is a key with no default worth setting.
+# Internal timings (the tell confirm wait, the claim settle wait, the respawn budget, ...) are constants, not
+# keys; the tests change them with FLEET_* environment variables.
+
+# Capacity
+max_teams = 3        # live teams at once; a Parked team does not count
+teams_per_repo = 1   # live teams on one repo
+max_envs = 3         # team test clusters at once
+min_free_gb = 40     # boot refuses below this much free disk (0 = off; FLEET_FORCE=1 overrides)
+warn_free_gb = 75    # status shows the disk line, and tick reports it, below this
+# repos = ["/path/to/app", "/path/to/api"]   # repos that should always have a team (repo_without_team); with this set, only teams on these repos count against max_teams
+
+# Several machines on one Linear workspace: each claims issues with the label <label_prefix><machine key>.
+# machines = 2
+label_prefix = "fleet:"
+lease_hours = 2      # a claim's lease; a lapsed lease with no open PR can be taken over
+linear_writes = "off"   # off | "test:FT" (only issues of Linear team FT) | "on"; off means no heartbeat, claim, takeover or migrate
+# machine_name = "Mac 1"            # display name
+# machine_legacy_label = "fleet:mac1"   # only while migrating an older label
+
+# Agents
+permission_mode = "auto"   # the Claude Code permission mode every agent starts in (FLEET_PERMISSION_MODE for one boot)
+# Permissions added to every Claude agent at boot (Claude Code permission rules). Templates name no tracker or code host.
+# tracker_allow = ["mcp__claude_ai_Linear__get_issue", "mcp__claude_ai_Linear__list_comments"]
+# forge_allow = ["Bash(gh pr view:*)", "Bash(gh pr checks:*)", "Bash(gh pr create:*)"]
+# no_pr_ci = ["repo-without-ci"]   # repos whose PRs have no CI: no checks counts as green
+
+# Registry
+archive_after_days = 0   # a Retired row with its lessons written moves to fleet-archive.json after this many days
+
+# The loop (schedule.sh) and alerts
+tick_secs = 300
+# schedule_label = "fleet.tick"
+# orchestrator_ref = "herdr-agent-name"   # the Orchestrator's agent when its registry row is missing
+# alert_cmd = "/path/to/script"           # run with the alert text as its one argument
+
+# Chat (coordination only, never the lock)
+# chat_channel = "#fleet"
+# chat_allow = ["mcp__claude_ai_Slack__slack_send_message"]
+
+# Context window per model, in tokens (default 200000).
+[context_window]
+# "claude-opus-5-5" = 200000

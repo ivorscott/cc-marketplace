@@ -153,6 +153,10 @@ printf '%s' "$out" | jq -r --argjson all "$all" --arg mykey "$mykey" --arg mynam
     + (if $all then [mcell, (.heartbeat_age // "-")] else [] end)
     + [.herdr_ref, ((.assignment // "")[0:50])] | @tsv)' |
   column -t -s $'\t'
+# Parked teams (park.sh) are not in the table: one compact line each, and one line for the focus.
+"$registry" list ${team:+--team "$team"} --parked | jq -r '[.[] | select(.tier != "Orchestrator")] | group_by(.team)[]
+  | "parked: \(.[0].team) (\(.[0].parked_reason // "park"), since \((.[0].parked_at // "?")[0:10]))\(if (.[0].issue // "") != "" then ", " + .[0].issue else "" end)"'
+[ ! -f "$FLEET_STATE_DIR/focus" ] || printf 'focus: %s\n' "$(cat "$FLEET_STATE_DIR/focus")"
 open_esc="$("$registry" escalations --open --not-retired ${team:+--team "$team"})"
 if [ "$(printf '%s' "$open_esc" | jq length)" != 0 ]; then
   echo "open escalations:"
