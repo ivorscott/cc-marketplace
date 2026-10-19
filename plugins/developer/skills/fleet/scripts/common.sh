@@ -229,6 +229,39 @@ resume_brief() {
   contract "$name" "$ex"
 }
 
+# notify <title> <body> [sound] [alert]: the one notification path. The herdr notification shows when herdr is
+# reachable; with a 4th argument "alert" the optional config `alert_cmd` also runs, with the body as its one
+# argument (a script that sends an iMessage via osascript, or a Pushover or ntfy curl: see the README). A failure of either is logged on stderr, never
+# hidden, and never fails the caller.
+notify() {
+  local err cmd
+  if { [ "${HERDR_ENV:-}" = "1" ] || [ -n "${FLEET_SESSION:-}" ]; } && command -v herdr >/dev/null 2>&1; then
+    if ! err="$(hd notification show "$1" --body "$2" --sound "${3:-done}" 2>&1 >/dev/null)"; then
+      warn "notification failed: $1: $(printf '%s' "$err" | head -1)"
+    fi
+  fi
+  if [ "${4:-}" = alert ]; then
+    cmd="$(cfg_str alert_cmd '')"
+    if [ -n "$cmd" ] && ! err="$(/bin/sh -c "$cmd \"\$1\"" fleet-alert "$2" 2>&1 >/dev/null)"; then
+      warn "alert_cmd failed: $(printf '%s' "$err" | head -1)"
+    fi
+  fi
+  return 0
+}
+
+# api_error_detail <transcript>: "login expired" or "API error" when the newest assistant line of the
+# transcript is an API error message (isApiErrorMessage), else nothing. Lines are parsed one at a time;
+# a bad line is skipped. UNVERIFIED: the line shape (.type == "assistant", .isApiErrorMessage, the text
+# in .message.content[].text) is what Claude Code writes today (DEV-368).
+api_error_detail() {
+  [ -n "$1" ] && [ -f "$1" ] || return 0
+  tail -n 40 "$1" 2>/dev/null | jq -Rr 'fromjson? // empty | select(type == "object" and .type == "assistant")
+      | if .isApiErrorMessage == true then
+          ([.message.content? | if type == "array" then .[] | select(type == "object") | .text? // empty elif type == "string" then . else empty end] | join(" ")) as $t
+          | (if ($t | test("login|log in|authenticat|expired|401|unauthorized"; "i")) then "login expired" else "API error" end)
+        else "" end' 2>/dev/null | tail -n 1 || true
+}
+
 # --- the event log: one append-only JSON line per thing that happened ---------------------------------
 # ev_log <type> [team=T] [name=N] [issue=I] [pr=URL] [sha=S] [detail=SHORT REASON]
 # {at, type, team, name, issue, pr, sha, detail}; empty values are null. detail is a short reason (cut

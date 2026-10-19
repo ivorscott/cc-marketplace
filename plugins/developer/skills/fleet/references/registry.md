@@ -39,8 +39,8 @@ restarted, compacted or replaced agent picks up from the row, not from memory.
 
 `registry.sh escalate` also appends one JSON line `{at, id, name, team, severity, message}` to
 `escalations.jsonl` in the state dir (`FLEET_INBOX` overrides). It is append-only and never
-rotated; resolving does not write to it. `scripts/escalation-wait.sh` reads it with a persisted
-cursor (`escalations.cursor`) so no arrival is missed between two arms.
+rotated; resolving does not write to it. The launchd job (`schedule.sh`) watches the file (`WatchPaths`), so a
+new line starts a tick within seconds.
 
 ## Schema check and the archive
 

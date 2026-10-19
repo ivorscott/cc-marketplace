@@ -72,15 +72,6 @@ update() {
 
 exists() { jq -e --arg n "$1" '.agents[$n] != null' "$FLEET_REGISTRY" >/dev/null || die "no agent '$1' in the registry"; }
 
-notify() {
-  [ "${HERDR_ENV:-}" = "1" ] || [ -n "${FLEET_SESSION:-}" ] || return 0
-  command -v herdr >/dev/null 2>&1 || return 0
-  local err
-  if ! err="$(hd notification show "$1" --body "$2" --sound "${3:-done}" 2>&1 >/dev/null)"; then
-    warn "notification failed: $1: $(printf '%s' "$err" | head -1)"
-  fi
-}
-
 LIVE='(.status != "Done" and .status != "Retired")'
 OPEN_ESC='([escs[] | select(.resolved_at == null)] | length > 0)'
 # .escalation is derived from the open entries: the highest open severity, "" when none is open.
@@ -169,7 +160,7 @@ case "$cmd" in
         | derive | .updated_at = $t)'
     # update() holds the lock until this process exits, so the new entry is still the last one.
     id="$(jq -r --arg n "$name" '.agents[$n].escalations | last | .id' "$FLEET_REGISTRY")"
-    # The inbox is what escalation-wait.sh delivers to the Orchestrator; the registry row stays the source of truth.
+    # The launchd job watches the inbox file, so a new line starts a tick; the registry row stays the source of truth.
     line="$(jq -nc --arg at "$at" --arg id "$id" --arg n "$name" --arg tm "$(jq -r --arg n "$name" '.agents[$n].team // ""' "$FLEET_REGISTRY")" --arg s "$sev" --arg m "$msg" \
       '{at: $at, id: $id, name: $n, team: $tm, severity: $s, message: $m}')"
     { printf '%s\n' "$line" >>"$FLEET_INBOX"; } 2>/dev/null || warn "cannot write the escalation inbox $FLEET_INBOX"

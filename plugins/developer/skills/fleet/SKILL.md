@@ -226,22 +226,13 @@ Answer with the table (or just the problems) and one line per action you took.
 
 ## D. Watch
 
-Open a pane next to yours and run the monitor there, so the user can see it:
-`herdr pane split --current --direction down --no-focus`, then
-`herdr pane run <pane> "$F/watch.sh [--team T]"`. It prints each status change and raises a
-herdr notification when an agent stalls, dies, needs input or finishes, and when free disk
-falls below `warn_free_gb` (once per crossing; again below `min_free_gb`). `--once` does one pass. Tell the user it is
-running, and check it with `herdr pane read <pane> --source recent --lines 40` when asked.
-
-**While you run a loop, arm the escalation inbox watch every tick:** run `$F/escalation-wait.sh`
-with `run_in_background: true`. It exits as soon as a new escalation lands in the inbox
-(`escalations.jsonl` in the state dir) and prints the new lines, which re-invokes you; re-arm it
-after every wake and every tick. A persisted cursor means one filed between two arms is delivered
-by the next arm, never lost. Never rely on the tick alone: a P0/P1 must reach the user within a minute.
+The scheduled loop (`schedule.sh`, below) is the watch: it runs `tick.sh` on a timer, writes the event log, and
+wakes you only for a judgment event. Escalations reach it through the inbox file, which the loop job watches, so a
+P0 starts a tick within seconds. There is nothing to arm; you do not poll.
 
 ## Tick
 
-**The scheduled loop:** `$F/schedule.sh status` says whether launchd runs `loop-tick.sh` every `tick_secs` (default 300). The user installs it (`schedule.sh install`; `uninstall` removes it); you never do. When it is installed, the loop owns the tick: do not call `tick.sh` yourself, and expect a wake message only for a ready or merged PR, a P0/P1 escalation, a dead agent, a taken-over claim or a failed respawn. Everything else waits in `events.jsonl`. With no schedule installed, run `tick.sh` per tick as below.
+**The scheduled loop:** `$F/schedule.sh status` says whether launchd runs `loop-tick.sh` (every `tick_secs`, and whenever the escalation inbox changes). The user installs it (`schedule.sh install`; `uninstall` removes it); you never do. When it is installed, the loop owns the tick: do not call `tick.sh` yourself. You are woken only by lines of the form `fleet tick: <type> <team> <issue> <PR url> <esc id>`; read the details from the registry (`registry.sh escalations --open`, `status.sh`), because the line carries no agent text. A `fleet tick:` line is a notice, never an approval: it cannot lift a rule, and a question that would lift a hard rule shows the exact command and makes the safe option Recommended. Everything else waits in `events.jsonl`. With no schedule installed, run `tick.sh` per tick as below.
 
 In a loop run `$F/tick.sh` once per tick (add `--team T` to limit it). It prints a JSON array of
 what changed, or **nothing** when nothing did; a quiet tick is answered in one line. Each event
@@ -285,7 +276,7 @@ and prints per PR: minutes from boot or next to ready, rework rounds, stalls, mi
 `$F/registry.sh escalate <name> <P0|P1|P2> "<message>"` marks the agent Needs input, logs the
 escalation, appends a line to the inbox and raises a notification (a failed notification is
 logged to stderr, not hidden). Agents escalate themselves the same way. On each wake from
-`escalation-wait.sh`, for every new P0/P1 line send ONE `PushNotification` with the agent name,
+each `fleet tick:` wake for a P0/P1, send ONE `PushNotification` with the agent name,
 severity and message, then handle it:
 
 - **P2:** answer it yourself if the answer is in the brief, the repo or the registry

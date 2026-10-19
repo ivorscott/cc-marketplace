@@ -77,19 +77,6 @@ bg_busy() {
   footer_bg_running "$(hd agent read "$2" --source visible 2>/dev/null || true)"
 }
 
-# api_error_detail <transcript>: "login expired" or "API error" when the newest assistant line of the
-# transcript is an API error message (isApiErrorMessage), else nothing. Lines are parsed one at a time;
-# a bad line is skipped. UNVERIFIED: the line shape (.type == "assistant", .isApiErrorMessage, the text
-# in .message.content[].text) is what Claude Code writes today (DEV-368).
-api_error_detail() {
-  [ -n "$1" ] && [ -f "$1" ] || return 0
-  tail -n 40 "$1" 2>/dev/null | jq -Rr 'fromjson? // empty | select(type == "object" and .type == "assistant")
-      | if .isApiErrorMessage == true then
-          ([.message.content? | if type == "array" then .[] | select(type == "object") | .text? // empty elif type == "string" then . else empty end] | join(" ")) as $t
-          | (if ($t | test("login|log in|authenticat|expired|401|unauthorized"; "i")) then "login expired" else "API error" end)
-        else "" end' 2>/dev/null | tail -n 1 || true
-}
-
 for name in $(printf '%s' "$rows" | jq -r '.[] | select(.tier != "Orchestrator") | .name'); do
   r="$(printf '%s' "$rows" | jq -c --arg n "$name" '.[] | select(.name == $n)')"
   ref="$(printf '%s' "$r" | jq -r .herdr_ref)"; pane="$(printf '%s' "$r" | jq -r '.pane // ""')"
