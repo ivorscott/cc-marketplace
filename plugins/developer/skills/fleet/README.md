@@ -286,6 +286,16 @@ tracker runs the fleet on one machine, and those parts are skipped.
 - Agents get an allowlist of herdr subcommands, not `herdr:*`: workers `agent get|read|list|wait`,
   leads also `agent prompt|send-keys`; the Bash guard holds `agent read|prompt|send-keys` to the
   agent's own team: the exact herdr names of its rows in the registry. `herdr pane read` is denied to agents. `linear.sh` refuses a fleet agent (`FLEET_ROLE` set) and its endpoint and transport are fixed in the code (the tests alone override them), so an agent cannot have the key piped to a program of its own. The guards compare the key's name and path without regard to case (macOS volumes ignore it). Known gaps: a relative path after a `cd`, a symlink made by the agent, and a PR that never names its issue key (takeover's search) are not caught; this is a guardrail, not a boundary.
+- Every agent pane's shell is scrubbed before its agent starts: `LINEAR_API_KEY`, `AWS_PROFILE`,
+  `AWS_DEFAULT_PROFILE`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN` and any
+  names in `scrub_env` (config.toml) are unset, the AWS shared files point at `/dev/null`, and
+  `KUBECONFIG` is `/dev/null` unless the team has its own. It is always on. The Bash guard also denies
+  package installers (`brew|npm|pip|go|gem|cargo|apt|yarn|pnpm install/add <package>`, unless
+  config.toml has `installs = "allow"`; lockfile installs such as `npm ci` pass), `gh pr merge`, a
+  force push without `--force-with-lease`, and any push to the default branch. These guards catch
+  mistakes; they are not a security boundary (see above). Agents run with permission checks on:
+  `bypassPermissions` is refused. UNVERIFIED: that a real pane's shell passes the scrubbed
+  environment to `claude`.
 
 ### Cloned machine id
 

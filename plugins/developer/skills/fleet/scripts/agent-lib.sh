@@ -52,12 +52,26 @@ alive() { # the pane runs something other than its shell (gotcha: idle can mean 
     jq -e '.result.process_info | .foreground_process_group_id != .shell_pid' >/dev/null
 }
 
+# scrub_cmd: the line typed into an agent's pane shell before the agent starts. herdr starts the canonical
+# `claude`, so `env -u` cannot prefix it: the shell drops the variables first, and the harness and every Bash
+# call it makes start without them. The Linear key, the AWS credentials and profile, and anything named in
+# config scrub_env are unset; the AWS shared files point at /dev/null; KUBECONFIG is /dev/null unless the
+# pane got the team's own (.../env/<team>/kubeconfig). Always on: there is no switch to turn it off.
+scrub_cmd() {
+  local extra
+  extra="$(config_list scrub_env | jq -r '.[] | select(test("^[A-Za-z_][A-Za-z0-9_]*$"))' 2>/dev/null | tr '\n' ' ')"
+  printf 'unset LINEAR_API_KEY AWS_PROFILE AWS_DEFAULT_PROFILE AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN %s; ' "$extra"
+  printf 'export AWS_SHARED_CREDENTIALS_FILE=/dev/null AWS_CONFIG_FILE=/dev/null; '
+  # shellcheck disable=SC2016 # expanded by the pane's shell, not here
+  printf '%s' 'case "${KUBECONFIG:-}" in */env/*/kubeconfig) ;; *) export KUBECONFIG=/dev/null ;; esac'
+}
+
 start_agent_once() { # start_agent_once <agent> <kind> <pane> <model> <tier> <worktree> <allow-json> → prints status
   local agent="$1" kind="$2" pane="$3" args=() out code tries=0
-  # herdr starts the canonical `claude` executable, so `env -u` cannot prefix it. The pane's shell
-  # drops the Linear key first, so the harness and every Bash call it makes start without it.
-  # Every kind of agent, not only claude: a codex pane would otherwise keep the key. A failure is a warning.
-  hd pane run "$pane" 'unset LINEAR_API_KEY' >/dev/null 2>&1 || warn "could not type the key unset into pane $pane; $agent may inherit LINEAR_API_KEY"
+  # herdr starts the canonical `claude` executable, so `env -u` cannot prefix it: the pane's shell scrubs the key
+  # and the cloud credentials first (scrub_cmd), so the harness and every Bash call it makes start without them.
+  # Every kind of agent, not only claude: a codex pane would otherwise keep them. A failure is a warning.
+  hd pane run "$pane" "$(scrub_cmd)" >/dev/null 2>&1 || warn "could not scrub the environment of pane $pane; $agent may inherit credentials"
   if [ "$kind" = "claude" ]; then
     while IFS= read -r -d '' a; do args+=("$a"); done < <(claude_args "$4" "$5" "$6" "${7:-[]}")
   fi
