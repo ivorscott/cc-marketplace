@@ -8,7 +8,7 @@
 #       stdin: a label description; prints the ISO time of its heartbeat=<ISO> line (nothing when absent)
 #   claim.sh expired --lease ISO [--now ISO]
 #       exit 0 when now is past the lease, exit 1 with the reason on stderr otherwise. Whether a PR is
-#       still open is linear.sh takeover's check, not this one.
+#       still open belongs to the takeover command, not to this script.
 #
 # H defaults to lease_hours in config.toml (default 2). --now replaces the clock (tests).
 set -euo pipefail
