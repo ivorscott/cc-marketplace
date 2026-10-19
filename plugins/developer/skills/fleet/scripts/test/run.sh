@@ -1823,8 +1823,10 @@ check "key file: and the message says mode 600" grep -q 'mode 600' "$T/nk.err"
 eq "key file: the API was not called" "$(wc -l <"$LINEAR_LOG" | tr -d ' ')" 0
 rm -f "$FLEET_CONFIG_DIR/linear_api_key"
 # LINEAR_API_KEY in the shell works without a file
-dbreset; LINEAR_API_KEY="$LINEAR_STUB_KEY" "$LIN" holder DEV-1 >/dev/null 2>&1; eq "LINEAR_API_KEY works without a key file" "$?" 0
-LINEAR_API_KEY="wrong-key" "$LIN" holder DEV-1 >/dev/null 2>"$T/nk.err"; eq "a rejected key fails (exit 1), not exit 3" "$?" 1
+# (LINEAR_API_KEY from the environment is not exercised here: with it set, linear.sh ignores FLEET_CURL and would use the real API.)
+dbreset; printf '%s\n' "$LINEAR_STUB_KEY" >"$FLEET_CONFIG_DIR/linear_api_key"; chmod 600 "$FLEET_CONFIG_DIR/linear_api_key"; "$LIN" holder DEV-1 >/dev/null 2>&1; eq "a key file in the config dir works" "$?" 0
+printf 'wrong-key\n' >"$FLEET_CONFIG_DIR/linear_api_key"; "$LIN" holder DEV-1 >/dev/null 2>"$T/nk.err"; eq "a rejected key fails (exit 1), not exit 3" "$?" 1
+rm -f "$FLEET_CONFIG_DIR/linear_api_key"
 
 # -- boot without a key: machines unset proceeds with a warning, machines > 1 refuses
 bt --issue DEV-80 --claimed-by test build nk1 "$T/plain" t
@@ -2022,7 +2024,22 @@ FLEET_ROLE=worker CAPTURE="$T/captured" FLEET_CURL="$T/capture.sh" LINEAR_API_KE
 eq "NH2: linear.sh refuses a fleet agent" "$rc:$(grep -c 'may not run it' "$T/nh2.err")" "1:1"
 eq "NH2: and nothing reached the agent's own transport" "$(wc -c <"$T/captured" | tr -d ' ')" 0
 # (No test runs linear.sh outside FLEET_TEST with a key: with the real curl that would post to api.linear.app.)
-eq "NH2: curl is called with -q first (no ~/.curlrc)" "$(dbreset; LINEAR_API_KEY="$LINEAR_STUB_KEY" "$LIN" holder DEV-1 >/dev/null 2>&1; awk '{print $1}' "$LINEAR_ARGV_LOG" | sort -u)" "-q"
+printf '%s\n' "$LINEAR_STUB_KEY" >"$FLEET_CONFIG_DIR/linear_api_key"; chmod 600 "$FLEET_CONFIG_DIR/linear_api_key"
+eq "NH2: curl is called with -q first (no ~/.curlrc)" "$(dbreset; "$LIN" holder DEV-1 >/dev/null 2>&1; awk '{print $1}' "$LINEAR_ARGV_LOG" | sort -u)" "-q"
+# The key-override bypass: FLEET_TEST=1 with a scratch state dir and a capture program, but the key at the real layout
+# path under a "real home" (a temp dir the guard treats as live). The override is refused and the capture gets nothing.
+RH="$T/realhome"; RHC="$RH/.config/fleet"; mkdir -p "$RHC"; printf 'KEYFIXTURE-live\n' >"$RHC/$kf"; chmod 600 "$RHC/$kf"
+: >"$T/captured"
+env FLEET_REAL_HOME="$RH" FLEET_TEST=1 FLEET_STATE_DIR="$T/scratch-state" FLEET_CONFIG_DIR="$RHC" CAPTURE="$T/captured" FLEET_CURL="$T/capture.sh" "$SCRIPTS/linear.sh" whoami >/dev/null 2>"$T/ko.err"; rc=$?
+eq "key override: FLEET_CURL with the key at the live path is refused" "$rc:$(grep -c 'refusing, nothing was sent' "$T/ko.err")" "1:1"
+eq "key override: and the capture program received nothing" "$(wc -c <"$T/captured" | tr -d ' ')" 0
+: >"$T/captured"; env FLEET_REAL_HOME="$RH" FLEET_TEST=1 FLEET_STATE_DIR="$T/scratch-state" FLEET_CONFIG_DIR="$(printf '%s' "$RHC" | tr a-z A-Z)" CAPTURE="$T/captured" FLEET_CURL="$T/capture.sh" "$SCRIPTS/linear.sh" whoami >/dev/null 2>&1
+eq "key override: the live path in other case is refused too" "$(wc -c <"$T/captured" | tr -d ' ')" 0
+: >"$T/captured"; env FLEET_REAL_HOME="$RH" FLEET_TEST=1 FLEET_STATE_DIR="$T/scratch-state" FLEET_CONFIG_DIR="$T/config" LINEAR_API_KEY=KEYFIXTURE-env CAPTURE="$T/captured" FLEET_CURL="$T/capture.sh" "$SCRIPTS/linear.sh" whoami >/dev/null 2>&1
+eq "key override: a key from LINEAR_API_KEY refuses the override" "$(wc -c <"$T/captured" | tr -d ' ')" 0
+: >"$T/captured"; env FLEET_REAL_HOME="$RH" FLEET_TEST=1 FLEET_STATE_DIR="$T/scratch-state" FLEET_CONFIG_DIR="$T/config" CAPTURE="$T/captured" FLEET_CURL="$T/capture.sh" "$SCRIPTS/linear.sh" whoami >/dev/null 2>&1
+eq "key override: with a test key outside the live path the override is honoured (the capture got the fixture key)" "$(grep -c KEYFIXTURE "$T/captured")" 1
+rm -f "$FLEET_CONFIG_DIR/linear_api_key"
 check "NH2: outside the tests curl comes from a fixed list of absolute paths, not the caller's PATH" bash -c "grep -q 'for _c in /usr/bin/curl ' '$SCRIPTS/linear.sh'"
 eq "bash guard: an unreadable registry denies every target" "$(jq -nc '{tool_name: "Bash", tool_input: {command: "herdr agent read build-ft-tester"}}' | FLEET_STATE_DIR="$T/nostate" FLEET_ROLE=worker FLEET_TEAM=build-ft "$BG" | dec)" deny
 eq "bash guard: the Orchestrator is never restricted" "$(jq -nc '{tool_name: "Bash", tool_input: {command: "herdr pane run p1 ls"}}' | env -u FLEET_ROLE "$BG" | dec)" allow

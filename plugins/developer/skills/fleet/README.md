@@ -301,9 +301,10 @@ is frozen for B: what they deny today stays denied, and the bypass classes below
 in 4.1. Anything that newly exposes the key is a blocker; the items that touch the key are marked (key).
 
 - **Environment is an agent's own (key):** `FLEET_ROLE` is a convention, so `FLEET_ROLE= linear.sh ...` runs the script
-  as the Orchestrator would. With the role blank, `FLEET_TEST=1 FLEET_STATE_DIR=/tmp/x FLEET_CURL=<program>` still pipes
-  the key to that program: the test gate checks the state dir, not the config dir or the key source, and its live-path
-  test is textual and case-sensitive (`$HOME/.LOCAL/state/fleet` passes).
+  as the Orchestrator would, with the key it can read. (Closed: the key-override bypass. `linear.sh` honours `FLEET_CURL`
+  and `LINEAR_URL` only when `FLEET_TEST=1`, the state dir is not the live one, `LINEAR_API_KEY` is not set and the key
+  file is not under the real `~/.config/fleet`, resolved from the real home and compared in lower case; otherwise it
+  refuses and sends nothing.)
 - **Built at run time (key):** a path or name assembled by variables, `eval`, aliases, encodings, `g''rep`-style quote
   splitting beyond what the three scans undo, or an interpreter (`python -c`, `perl -e`, `node -e`). `sh -c` and `bash -c`
   strings are scanned as text, not parsed.

@@ -72,11 +72,39 @@ set -euo pipefail
 [ -z "${FLEET_ROLE:-}" ] || die "linear.sh is the Orchestrator's; a fleet agent may not run it"
 # Outside the tests curl is an absolute path from a fixed list (the caller's PATH is only a last resort) and runs
 # with -q as its first argument (no ~/.curlrc, which could set a proxy or a trace file). FLEET_CURL and LINEAR_URL
-# are honoured only under FLEET_TEST=1, which common.sh refuses when FLEET_STATE_DIR is the live default.
+# are honoured only when ALL hold: FLEET_TEST=1; the state dir is not the live one; LINEAR_API_KEY is not set (the key
+# is not from the environment); and the key file is not under the real ~/.config/fleet. The live paths are worked out
+# from the real home (FLEET_REAL_HOME, else HOME, as common.sh does), physically resolved and compared in lower case.
+# When FLEET_TEST=1 asks for an override that fails one of these, linear.sh refuses (exit 1) rather than sending the key
+# anywhere: a transport of the caller's never sees a real key, and the tests never reach the network by accident.
 # RESIDUAL, accepted (DEV-368): FLEET_ROLE is an environment convention. An agent can blank it (`FLEET_ROLE= ...`)
 # and run this script as the Orchestrator would, and the key file is readable by any process of the same user in
 # any case. The guards catch mistakes; they are not a security boundary (README). Keychain follow-up: Ivor.
-if [ "${FLEET_TEST:-}" = 1 ]; then FLEET_CURL="${FLEET_CURL:-curl}"; LINEAR_URL="${LINEAR_URL:-https://api.linear.app/graphql}"; CURL_Q=-q
+lcase() { printf '%s' "$1" | LC_ALL=C tr ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz; }
+physical() { # physical <path>: the nearest existing parent made physical, the rest appended, a symlink followed (10 hops)
+  local p="$1" d rest hops=0 t
+  while :; do
+    d="$(dirname "$p")"; rest="$(basename "$p")"
+    while [ ! -d "$d" ] && [ "$d" != / ]; do rest="$(basename "$d")/$rest"; d="$(dirname "$d")"; done
+    p="$(cd "$d" && pwd -P)/$rest"
+    if [ -L "$p" ] && [ "$hops" -lt 10 ]; then t="$(readlink "$p")"; case "$t" in /*) p="$t" ;; *) p="$(dirname "$p")/$t" ;; esac; hops=$((hops + 1)); else break; fi
+  done
+  printf '%s\n' "$p"
+}
+override_ok() { # the FLEET_CURL / LINEAR_URL override is safe: nothing it sees is the live state or the live key
+  local home live_state live_cfg st kf
+  [ "${FLEET_TEST:-}" = 1 ] && [ -z "${LINEAR_API_KEY:-}" ] || return 1
+  home="$(physical "${FLEET_REAL_HOME:-${HOME:-/nonexistent}}")"
+  live_state="$(lcase "$home/.local/state/fleet")"; live_cfg="$(lcase "$home/.config/fleet")"
+  st="$(lcase "$(physical "$FLEET_STATE_DIR")")"; kf="$(lcase "$(physical "$FLEET_CONFIG_DIR/linear_api_key")")"
+  case "$st/" in "$live_state/"*) return 1 ;; esac
+  case "$kf" in "$live_cfg/"*) return 1 ;; esac
+  return 0
+}
+if [ "${FLEET_TEST:-}" = 1 ] && { [ -n "${FLEET_CURL:-}" ] || [ -n "${LINEAR_URL:-}" ]; }; then
+  override_ok || die "FLEET_TEST=1 with FLEET_CURL or LINEAR_URL, but the key or the state dir is the live one (or LINEAR_API_KEY is set); refusing, nothing was sent"
+fi
+if [ "${FLEET_TEST:-}" = 1 ] && override_ok; then FLEET_CURL="${FLEET_CURL:-curl}"; LINEAR_URL="${LINEAR_URL:-https://api.linear.app/graphql}"; CURL_Q=-q
 else
   FLEET_CURL=""; for _c in /usr/bin/curl /opt/homebrew/bin/curl /usr/local/bin/curl /bin/curl; do [ -x "$_c" ] && { FLEET_CURL="$_c"; break; }; done
   [ -n "$FLEET_CURL" ] || FLEET_CURL="$(command -v curl || true)"
