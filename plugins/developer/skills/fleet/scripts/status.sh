@@ -25,7 +25,9 @@
 #   Done         the agent ran `registry.sh done` (the done contract) — never inferred
 #   Idle         herdr says idle/done and the agent declared it is waiting (status=Idle),
 #                or it is a lead whose team still has live workers
-#   Stalled      herdr says idle/done, but the agent neither finished nor declared waiting
+#   Stalled      herdr says idle/done, but the agent neither finished nor declared waiting, and it has no
+#                background task running (a started task with no notification yet, or "N shell(s)" /
+#                "N monitor(s)" in the pane footer when there is no transcript, counts as Working)
 #   Zombie       the agent is gone: herdr can't find it, or its pane is back at the shell
 #                (herdr can still report a dead pane as idle, so the process is checked)
 set -euo pipefail
@@ -63,6 +65,17 @@ team_has_live_workers() {
     '[.[] | select(.team == $t and .tier == "Worker" and .status != "Done" and .status != "Retired")] | length > 0' >/dev/null
 }
 
+# bg_busy <row json> <herdr ref>: the agent has a background task running, so idle is not Stalled. The
+# transcript says first (started minus notified tasks, aged out after bg_task_max_hours); the pane footer
+# ("1 shell still running", "1 shell, 3 monitors") only when there is no readable transcript. herdr has no
+# field for it.
+bg_busy() {
+  local tr n
+  tr="$(printf '%s' "$1" | jq -r '.transcript // ""')"
+  if [ -n "$tr" ] && [ -r "$tr" ]; then n="$(transcript_bg_running "$tr")"; [ "${n:-0}" -gt 0 ]; return; fi
+  footer_bg_running "$(hd agent read "$2" --source visible 2>/dev/null || true)"
+}
+
 for name in $(printf '%s' "$rows" | jq -r '.[] | select(.tier != "Orchestrator") | .name'); do
   r="$(printf '%s' "$rows" | jq -c --arg n "$name" '.[] | select(.name == $n)')"
   ref="$(printf '%s' "$r" | jq -r .herdr_ref)"; pane="$(printf '%s' "$r" | jq -r '.pane // ""')"
@@ -85,6 +98,7 @@ for name in $(printf '%s' "$rows" | jq -r '.[] | select(.tier != "Orchestrator")
         if [ -n "$esc" ] && [ "$old" = "Needs input" ]; then new="Needs input"
         elif [ "$old" = "Idle" ]; then new="Idle"
         elif [ "$tier" = "Lead" ] && team_has_live_workers "$tm"; then new="Idle"
+        elif bg_busy "$r" "$ref"; then new="Working"
         else new="Stalled"; fi ;;
       *) new="$old" ;;
     esac

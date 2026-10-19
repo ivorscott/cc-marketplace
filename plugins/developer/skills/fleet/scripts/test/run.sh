@@ -14,9 +14,12 @@ check() { # check <desc> <cmd...>
 eq() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1 (got '$2', want '$3')"; fi; }
 
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
-export FLEET_STATE_DIR="$T/state" FLEET_CONFIG_DIR="$T/config" FLEET_REGISTRY="$T/state/fleet.json" FLEET_WORKTREES="$T/state/worktrees"
+# The suite never touches the live fleet: FLEET_TEST=1 makes common.sh refuse a registry, state dir or inbox under the
+# live default, computed from the real HOME captured here, before HOME is overridden below.
+export FLEET_REAL_HOME="$HOME" FLEET_TEST=1
+export FLEET_STATE_DIR="$T/state" FLEET_CONFIG_DIR="$T/config" FLEET_REGISTRY="$T/state/fleet.json" FLEET_INBOX="$T/state/escalations.jsonl" FLEET_WORKTREES="$T/state/worktrees"
 export FLEET_SESSION=test FLEET_MACHINE=test HOME="$T/home"; mkdir -p "$HOME" "$FLEET_CONFIG_DIR" "$T/bin"
-unset FLEET_WORKTREE KUBECONFIG
+unset FLEET_WORKTREE KUBECONFIG FLEET_ROLE FLEET_NAME FLEET_TEAM
 REG="$SCRIPTS/registry.sh"; ENV="$SCRIPTS/env.sh"
 
 # Docker is always a stub: FLEET_DOCKER points at it, and a docker shim first on PATH records
@@ -984,6 +987,7 @@ S
 cat >"$T/gh-shim" <<'S'
 #!/usr/bin/env bash
 echo "$*" >>"$GH_LOG"
+[ -z "${GH_SLEEP:-}" ] || sleep "$GH_SLEEP"
 if [ "$2" = list ]; then # gh pr list --head <branch> ...
   b="${4//\//-}"; [ ! -e "$GH_DIR/list.$b.fail" ] || { echo "HTTP 502" >&2; exit 1; }
   cat "$GH_DIR/list.$b.json" 2>/dev/null || echo '[]'; exit 0
@@ -1291,6 +1295,127 @@ check "registry.md documents signoff and pr" grep -q 'signoff' "$SKA/references/
 check "tester brief runs signoff" grep -q 'signoff {{name}}' "$SKA/templates/build.json"
 check "orchestrator agent runs tick.sh" grep -q 'tick.sh' "$SKA/../../agents/orchestrator.md"
 check "watch.sh header says tick.sh supersedes it" grep -q 'tick.sh' "$SCRIPTS/watch.sh"
+
+# ---- DEV-368 A review fixes: F5 tick lock, F3 registry guards, F8 live-path guard, A2, A3, F7, background work ------------
+_afs="$FLEET_STATE_DIR"; _afr="$FLEET_REGISTRY"; _afi="$FLEET_INBOX"
+LIVE="$FLEET_REAL_HOME/.local/state/fleet"
+# F8: with FLEET_TEST=1 a script that sources common.sh refuses the live default for each of the three paths
+for v in FLEET_REGISTRY FLEET_STATE_DIR FLEET_INBOX; do
+  case $v in FLEET_REGISTRY) val="$LIVE/fleet.json" ;; FLEET_STATE_DIR) val="$LIVE" ;; *) val="$LIVE/escalations.jsonl" ;; esac
+  out="$(env "$v=$val" "$SCRIPTS/registry.sh" path 2>"$T/f8.err")"; rc=$?
+  eq "F8: $v at the live default is refused before any write ($rc)" "$rc:$out" "1:"
+  check "F8: and says why ($v)" grep -q 'under the live fleet state' "$T/f8.err"
+done
+eq "F8: this suite runs with all three paths under its temp dir" "$(case "$FLEET_REGISTRY|$FLEET_STATE_DIR|$FLEET_INBOX" in "$T"/*"|$T"/*"|$T"/*) echo yes ;; esac)" yes
+eq "F8: FLEET_ROLE and FLEET_NAME are not inherited by the suite" "${FLEET_ROLE:-}${FLEET_NAME:-}" ""
+
+export FLEET_STATE_DIR="$T/afix" FLEET_REGISTRY="$T/afix/fleet.json" FLEET_INBOX="$T/afix/escalations.jsonl"; mkdir -p "$FLEET_STATE_DIR"
+fxrow() { "$REG" add "$(jq -cn --arg n "$1" --arg t "${1%%/*}" --arg tier "$2" --arg ref "$3" --arg st "${4:-Idle}" --arg r "$T/ra" --arg tr "${5:-}" \
+  '{name: $n, team: $t, repo: $r, tier: $tier, status: $st, herdr_ref: $ref, pane: "p"} + (if $tr != "" then {transcript: $tr} else {} end)')"; }
+fxrow fx/builder Worker fx-b; fxrow fx/tester Worker fx-t
+
+# -- F5: one tick at a time
+LOCK="$FLEET_STATE_DIR/tick.lock"
+mkdir "$LOCK"; echo "$$" >"$LOCK/pid"; date +%s >"$LOCK/started"
+out="$("$SCRIPTS/tick.sh" 2>"$T/lk.err")"; rc=$?
+eq "tick lock: held by a live, recent tick: exit 0 and nothing printed" "$rc:$out" "0:"
+check "tick lock: it says tick_skipped on stderr" grep -q tick_skipped "$T/lk.err"
+check "tick lock: and leaves the holder's lock alone" test -d "$LOCK"
+rm -rf "$LOCK"
+mkdir "$LOCK"; echo 999999 >"$LOCK/pid"; date +%s >"$LOCK/started"
+out="$("$SCRIPTS/tick.sh" 2>"$T/lk.err")"; rc=$?
+eq "tick lock: a lock whose pid is gone is recovered" "$rc" 0
+check "tick lock: with a warning" grep -q 'stale tick lock' "$T/lk.err"
+check "tick lock: and the lock is released afterwards" test ! -d "$LOCK"
+mkdir "$LOCK"; echo "$$" >"$LOCK/pid"; echo 1000 >"$LOCK/started"
+"$SCRIPTS/tick.sh" >/dev/null 2>"$T/lk.err"; check "tick lock: a lock older than tick_lock_stale_secs is broken even if its pid lives" grep -q 'stale tick lock' "$T/lk.err"
+# two overlapping ticks report an event once
+"$REG" signoff fx/tester https://github.com/o/r/pull/41 "${H1:0:7}" >/dev/null; ghset 41 OPEN MERGEABLE "$GREEN" "$H1" ok
+GH_SLEEP=1 "$SCRIPTS/tick.sh" >"$T/ov1.out" 2>"$T/ov1.err" &
+sleep 0.4
+GH_SLEEP=1 "$SCRIPTS/tick.sh" >"$T/ov2.out" 2>"$T/ov2.err"
+wait
+eq "tick lock: two overlapping ticks report pr_ready exactly once" "$(evc "$(cat "$T/ov1.out" "$T/ov2.out")" pr_ready)" 1
+eq "tick lock: the second one skipped" "$(cat "$T/ov1.err" "$T/ov2.err" | grep -c tick_skipped)" 1
+check "tick lock: nothing is left behind" test ! -d "$LOCK"
+
+# -- F3: rows writable by an agent
+before="$(cat "$FLEET_REGISTRY")"
+FLEET_ROLE=worker FLEET_NAME=fx/builder "$REG" set fx/builder signoff=x >/dev/null 2>&1; eq "F3: an agent may not set signoff" "$?" 1
+FLEET_ROLE=worker FLEET_NAME=fx/builder "$REG" set fx/builder pr=https://github.com/o/r/pull/1 >/dev/null 2>&1; eq "F3: nor pr, nor other keys outside the allowlist" "$?" 1
+check "F3: the registry is untouched by the refusals" test "$(cat "$FLEET_REGISTRY")" = "$before"
+"$REG" set fx/builder signoff=x >/dev/null 2>&1; eq "F3: even the Orchestrator cannot make signoff a string (the reproduced DoS)" "$?" 1
+"$REG" set fx/builder pr=notaurl >/dev/null 2>&1; eq "F3: nor pr a non-URL" "$?" 1
+check "F3: still untouched" test "$(cat "$FLEET_REGISTRY")" = "$before"
+FLEET_ROLE=worker FLEET_NAME=fx/builder "$REG" set fx/builder summary="did it" status=Working >/dev/null 2>&1; eq "F3: an agent may set status and summary" "$?" 0
+FLEET_ROLE=worker FLEET_NAME=fx/builder "$REG" signoff fx/builder https://github.com/o/r/pull/43 abc1234 >/dev/null 2>&1; eq "F3: a builder's signoff is refused" "$?" 1
+FLEET_ROLE=worker FLEET_NAME=fx/tester "$REG" signoff fx/builder https://github.com/o/r/pull/43 abc1234 >/dev/null 2>&1; eq "F3: a tester may not sign off another row" "$?" 1
+FLEET_ROLE=worker FLEET_NAME=fx/tester "$REG" signoff fx/tester https://github.com/o/r/pull/43 ABCDEF1 >/dev/null 2>&1; eq "F3: the tester signs off for itself" "$?" 0
+eq "F3: the sha is stored lowercase" "$("$REG" get fx/tester | jq -r .signoff.sha)" abcdef1
+eq "F3: the Orchestrator (no FLEET_ROLE) may record a signoff" "$("$REG" signoff fx/tester https://github.com/o/r/pull/41 "${H1:0:7}" >/dev/null 2>&1; echo $?)" 0
+# a hand-written signoff on a builder row is ignored by the tick; a malformed row never stops it
+rm -f "$FLEET_STATE_DIR/tick.state.json"
+jq --arg h "${H1:0:7}" '.agents["fx/builder"] += {pr: "https://github.com/o/r/pull/45", signoff: {pr: "https://github.com/o/r/pull/45", sha: $h, at: "2026-10-19T10:00:00Z"}}' "$FLEET_REGISTRY" >"$T/r.tmp" && mv "$T/r.tmp" "$FLEET_REGISTRY"
+ghset 45 OPEN MERGEABLE "$GREEN" "$H1" ok
+out="$("$SCRIPTS/tick.sh" 2>"$T/tk.err")"
+eq "F3: a signoff on a non-tester row is ignored by the tick" "$(printf '%s' "$out" | jq -s '[.[][]? | select(.type == "pr_ready" and (.url | endswith("/45")))] | length')" 0
+jq '.agents["fx/bad"] = {name: "fx/bad", team: "fx", tier: "Worker", status: "Idle", herdr_ref: "fx-x", pane: "p", pr: 5, repo: 7, signoff: "x"}' "$FLEET_REGISTRY" >"$T/r.tmp" && mv "$T/r.tmp" "$FLEET_REGISTRY"
+rm -f "$FLEET_STATE_DIR/tick.state.json"
+out="$("$SCRIPTS/tick.sh" 2>"$T/tk.err")"; rc=$?
+eq "F3: a hand-corrupted row does not stop the tick" "$rc" 0
+check "F3: and it is named in a warning" grep -q 'malformed row' "$T/tk.err"
+eq "F3: and the good tester row still gets its pr_ready" "$(evc "$out" pr_ready)" 1
+jq 'del(.agents["fx/bad"])' "$FLEET_REGISTRY" >"$T/r.tmp" && mv "$T/r.tmp" "$FLEET_REGISTRY"
+
+# -- A2: the project directory name maps every non-alphanumeric character to "-"
+eq "A2: transcript_dir_for maps / . _ and spaces" "$(. "$SCRIPTS/common.sh"; transcript_dir_for "/a_b.c/d e-f" | sed "s#^$(projects_dir)/##")" "-a-b-c-d-e-f"
+
+# -- A3: the screen signal needs text that appears after the send
+AR="$AS/fx-b.read"; rm -f "${AS:?}"/*
+printf '● did something\n> repeated message text for A3\n\n────────\n❯ \n────────\n' >"$AR"
+out="$(PROMPT_NOSTATE=1 PROMPT_ECHO=1 "$SCRIPTS/tell.sh" fx/builder "repeated message text for A3" 2>/dev/null)"; rc=$?
+eq "A3: a text sent twice confirms on its second copy" "$rc:$(printf '%s' "$out" | jq -r .delivered)" "0:true"
+rm -f "${AS:?}"/*; printf '● did something\n> repeated message text for A3\n\n────────\n❯ \n────────\n' >"$AR"
+out="$(PROMPT_NOSTATE=1 "$SCRIPTS/tell.sh" fx/builder "repeated message text for A3" 2>/dev/null)"; rc=$?
+eq "A3: a copy that was already on screen is not delivery" "$rc:$(printf '%s' "$out" | jq -r .delivered)" "1:false"
+rm -f "${AS:?}"/*
+out="$(PROMPT_NOSTATE=1 "$SCRIPTS/tell.sh" fx/builder "   " 2>/dev/null)"; rc=$?
+eq "A3: an all-space text has no needle, so the screen cannot confirm it" "$rc:$(printf '%s' "$out" | jq -r .delivered)" "1:false"
+out="$("$SCRIPTS/tell.sh" fx/builder "   " 2>/dev/null)"; eq "A3: but herdr's state change still does" "$?:$(printf '%s' "$out" | jq -r .delivered)" "0:true"
+
+# -- F7: tick's gh temp file comes from mktemp
+check "F7: tick.sh uses mktemp for the gh error file" grep -q 'ghtmp="$(mktemp)"' "$SCRIPTS/tick.sh"
+eq "F7: and no fixed /tmp name remains" "$(grep -c 'fleet-tick-gh' "$SCRIPTS/tick.sh" || true)" 0
+
+# -- Amendment 2 item 2: an agent with a background task running is not Stalled
+rm -f "${AS:?}"/*
+TRB="$HOME/.claude/projects/fx"; mkdir -p "$TRB"
+export FLEET_NOW=2026-10-19T12:00:00Z
+bgfix() { # bgfix <file> <start timestamp> <tool name> <result text> [notification task id]
+  { jq -nc --arg t "$2" --arg n "$3" '{type: "assistant", timestamp: $t, message: {content: [{type: "tool_use", id: "toolu_1", name: $n, input: {command: "x", run_in_background: ($n == "Bash")}}]}}'
+    jq -nc --arg x "$4" '{type: "user", message: {content: [{type: "tool_result", tool_use_id: "toolu_1", content: $x}]}}'
+    [ -z "${5:-}" ] || jq -nc --arg i "$5" '{type: "user", message: {content: ("<task-notification><task-id>" + $i + "</task-id><status>completed</status></task-notification>")}}'
+  } >"$1"
+}
+bgstatus() { "$SCRIPTS/status.sh" --team fxbg --json 2>/dev/null | jq -r --arg n "$1" '.[] | select(.name == $n) | .status'; }
+bgfix "$TRB/running.jsonl" 2026-10-19T11:00:00Z Bash "Command running in background with ID: bgjob1. Output is being written to: /x"
+bgfix "$TRB/done.jsonl" 2026-10-19T11:00:00Z Bash "Command running in background with ID: bgjob1. Output is being written to: /x" bgjob1
+bgfix "$TRB/mon.jsonl" 2026-10-19T11:00:00Z Monitor "Monitor started · task mon1" 
+bgfix "$TRB/old.jsonl" 2026-10-19T03:00:00Z Bash "Command running in background with ID: bgjob1. Output is being written to: /x"
+fxrow fxbg/a Worker bg-a Working "$TRB/running.jsonl"; fxrow fxbg/b Worker bg-b Working "$TRB/done.jsonl"
+fxrow fxbg/c Worker bg-c Working "$TRB/mon.jsonl"; fxrow fxbg/d Worker bg-d Working "$TRB/old.jsonl"
+fxrow fxbg/e Worker bg-e Working; fxrow fxbg/f Worker bg-f Working
+printf 'working on it\n  1 shell still running\n' >"$AS/bg-e.read"; printf 'idle prompt\n' >"$AS/bg-f.read"
+out="$(for n in a b c d e f; do echo "$n=$(bgstatus fxbg/$n)"; done | paste -sd' ' -)"
+eq "background work: a started task with no notification is not Stalled" "$(printf '%s' "$out" | tr ' ' '\n' | grep '^a=')" "a=Working"
+eq "background work: the same task with its notification is Stalled (no done step)" "$(printf '%s' "$out" | tr ' ' '\n' | grep '^b=')" "b=Stalled"
+eq "background work: an unmatched Monitor start is not Stalled" "$(printf '%s' "$out" | tr ' ' '\n' | grep '^c=')" "c=Working"
+eq "background work: a task older than bg_task_max_hours is aged out, so Stalled" "$(printf '%s' "$out" | tr ' ' '\n' | grep '^d=')" "d=Stalled"
+eq "background work: with no transcript the pane footer counts" "$(printf '%s' "$out" | tr ' ' '\n' | grep '^e=')" "e=Working"
+eq "background work: and no footer, no transcript is Stalled" "$(printf '%s' "$out" | tr ' ' '\n' | grep '^f=')" "f=Stalled"
+unset FLEET_NOW
+
+export FLEET_STATE_DIR="$_afs" FLEET_REGISTRY="$_afr" FLEET_INBOX="$_afi"
 
 # version and docs
 SK="$SCRIPTS/.."; PLUGIN="$SK/../.."

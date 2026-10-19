@@ -76,12 +76,23 @@ transcript() {
 }
 screen() { hd agent read "$ref" --source recent-unwrapped 2>/dev/null | tail -n 60 || true; }
 needle="$(printf '%s' "$text" | head -1 | cut -c1-40)"
-echoed() { transcript "$1" | grep -qF -- "$needle"; }
+# An empty (or all-space) needle can't be told apart on screen: then only (a) and (b) count.
+[ -n "${needle//[[:space:]]/}" ] || needle=""
+# The screen signal (c) is about text that appears AFTER the send: more copies of the needle in the
+# transcript region than before, or the region's last lines changed and now hold it. So a text sent
+# twice can still confirm, and a copy already on screen cannot.
+echo_count() { if [ -z "$needle" ]; then echo 0; else transcript "$1" | grep -cF -- "$needle" || true; fi; }
+echo_tail() { transcript "$1" | tail -n 3; }
+echoed_new() { # echoed_new <screen>
+  [ -n "$needle" ] || return 1
+  [ "$(echo_count "$1")" -gt "$n0" ] && return 0
+  [ "$(echo_tail "$1")" != "$tail0" ] && echo_tail "$1" | grep -qF -- "$needle"
+}
 
 before_state="$(agent_state)"; before_seq="$(agent_seq)"
 needle40="$(jq -rn --arg t "$text" '$t[0:40]')"
 lines0=0; [ -r "$transcript" ] && lines0="$(wc -l <"$transcript" | tr -d ' ')"
-seen_before=false; echoed "$(screen)" && seen_before=true
+before_screen="$(screen)"; n0="$(echo_count "$before_screen")"; tail0="$(echo_tail "$before_screen")"
 
 send() { hd agent prompt "$ref" "$text" >/dev/null 2>&1; }
 send || { warn "not delivered to $target: herdr agent prompt failed"; verdict false "herdr rejected the send" 1; }
@@ -98,7 +109,7 @@ arrived() { # structured signals first: transcript user line, herdr state; then 
   s="$(agent_state)"; q="$(agent_seq)"
   case "$s" in working | blocked) [ "$before_state" = "$s" ] || return 0 ;; esac
   case "$before_seq" in "" | *[!0-9]*) ;; *) case "$q" in "" | *[!0-9]*) ;; *) [ "$q" -gt "$before_seq" ] && return 0 ;; esac ;; esac
-  $seen_before || ! echoed "$(screen)" || return 0
+  ! echoed_new "$(screen)" || return 0
   return 1
 }
 wait_for() { # wait_for <polls>

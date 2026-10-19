@@ -9,6 +9,19 @@ FLEET_INBOX="${FLEET_INBOX:-$FLEET_STATE_DIR/escalations.jsonl}"
 FLEET_SCRIPTS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FLEET_SKILL_DIR="$(dirname "$FLEET_SCRIPTS")"
 
+# Tests never touch the live fleet. With FLEET_TEST=1, any script that sources this file dies when the
+# registry, the state dir or the escalation inbox resolves to the live default, computed from the real
+# HOME (FLEET_REAL_HOME, captured by the suite before it overrides HOME).
+if [ "${FLEET_TEST:-}" = 1 ]; then
+  _live="${FLEET_REAL_HOME:-$HOME}/.local/state/fleet"
+  for _v in "$FLEET_REGISTRY" "$FLEET_STATE_DIR" "$FLEET_INBOX"; do
+    case "$_v" in
+      "$_live" | "$_live"/*) printf 'fleet: FLEET_TEST=1 but %s is under the live fleet state (%s); refusing\n' "$_v" "$_live" >&2; exit 1 ;;
+    esac
+  done
+  unset _live _v
+fi
+
 die() { printf 'fleet: %s\n' "$*" >&2; exit 1; }
 warn() { printf 'fleet: warning: %s\n' "$*" >&2; }
 now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
@@ -26,6 +39,12 @@ ESC_DEFS='def norm: if (.escalations | type) != "array" then .escalations = [] e
     then . + {resolved_at: $t, resolution: $res} else . end);
   def row_ok: type == "object" and (.name | type == "string")
     and ((has("discovered") | not) or (.discovered | type == "array"))
+    and ((has("herdr_ref") | not) or (.herdr_ref | type == "string"))
+    and ((has("repo") | not) or (.repo | type == "string"))
+    and ((has("pr") | not) or (.pr | type == "string" and (. == "" or startswith("https://"))))
+    and ((has("signoff") | not) or (.signoff | type == "object" and (.sha | type == "string" and test("^[0-9a-f]{7,40}$"))
+         and ((has("pr") | not) or (.pr | type == "string"))))
+    and ((has("transcript") | not) or (.transcript | type == "string"))
     and ((has("escalations") | not) or ((.escalations | type == "array") and all(.escalations[];
       type == "object" and (.severity | IN("P0", "P1", "P2")) and (.message | type == "string") and (.at | type == "string")
       and ((has("id") | not) or (.id | type == "string")))));
@@ -196,10 +215,11 @@ forge_pr_json() {
 }
 
 # Claude Code transcripts. projects_dir is where Claude keeps them (tests point HOME at a fixture
-# tree); transcript_dir_for <cwd> is the project directory for a working directory (cwd with "/"
-# and "." replaced by "-"). Scripts read them only through these helpers.
+# tree); transcript_dir_for <cwd> is the project directory for a working directory (every character
+# of the cwd that is not a letter or digit becomes "-"). Observed for "/" and "."; UNVERIFIED for other
+# characters such as "_" (no existing project directory has one in its name, which is consistent). Scripts read them only through these helpers.
 projects_dir() { printf '%s\n' "${CLAUDE_PROJECTS_DIR:-$HOME/.claude/projects}"; }
-transcript_dir_for() { printf '%s/%s\n' "$(projects_dir)" "$(printf '%s' "$1" | tr '/.' '--')"; }
+transcript_dir_for() { printf '%s/%s\n' "$(projects_dir)" "$(printf '%s' "$1" | sed 's/[^A-Za-z0-9]/-/g')"; }
 new_uuid() {
   if command -v uuidgen >/dev/null 2>&1; then uuidgen | tr 'A-Z' 'a-z'
   elif [ -r /proc/sys/kernel/random/uuid ]; then cat /proc/sys/kernel/random/uuid
@@ -230,3 +250,35 @@ transcript_context_pct() {
   model="$(printf '%s' "$last" | jq -r '.message.model // ""' 2>/dev/null)"
   printf '%s\n' $((tokens * 100 / $(context_window "$model")))
 }
+
+# transcript_bg_running <transcript file>: how many background tasks the agent has running: tool_use blocks
+# with input.run_in_background == true, or named Monitor, whose task id (in the matching tool_result text:
+# "...running in background with ID: <id>" or "Monitor started ... task <id>") has no later
+# <task-notification><task-id><id></task-id> line, and that started less than bg_task_max_hours (default 6)
+# ago (a task killed without a notification would otherwise count until the session ends). Observed shape of
+# Claude Code transcripts, not a documented contract: UNVERIFIED for stability. Unreadable: 0.
+transcript_bg_running() {
+  [ -r "$1" ] || { echo 0; return 0; }
+  local maxs now_e; maxs=$(($(cfg_int bg_task_max_hours 6) * 3600))
+  now_e="$(jq -rn --arg t "${FLEET_NOW:-$(now)}" '$t | fromdateiso8601')"
+  jq -nRr --argjson now "$now_e" --argjson max "$maxs" '
+    def ep: (. // "" | tostring | sub("\\.[0-9]+Z$"; "Z") | (try fromdateiso8601 catch null));
+    def body: if type == "string" then . elif type == "array" then
+        [.[]? | if type == "string" then . else (.text? // (if (.content | type) == "string" then .content else ([.content[]? | .text? // ""] | join("")) end) // "") end] | join(" ")
+      else "" end;
+    [inputs | fromjson? | select(type == "object")] as $L
+    | ([$L[] | select(.type == "assistant") | .timestamp as $t | (.message.content // [])[]?
+        | select(type == "object" and .type == "tool_use" and ((.input.run_in_background? == true) or .name == "Monitor"))
+        | {tool: .id, at: ($t | ep)}]) as $starts
+    | ([$L[] | select(.type == "user") | (.message.content // [])[]? | select(type == "object" and .type == "tool_result")
+        | {tool: .tool_use_id, text: (.content | body)}]) as $results
+    | ([$L[] | select(.type == "user") | (.message.content | body) | select(contains("<task-notification>"))
+        | scan("<task-id>([A-Za-z0-9_-]+)</task-id>") | .[0]] | unique) as $ended
+    | [$starts[] | . as $s | ($results | map(select(.tool == $s.tool)) | first | .text // "") as $x
+        | ($x | (try capture("running in background with ID: (?<id>[A-Za-z0-9_-]+)").id catch null)
+            // (try capture("Monitor started[^\n]*?task (?<id>[A-Za-z0-9_-]+)").id catch null)) as $id
+        | select($id != null and (($ended | index($id)) == null) and ($s.at == null or ($now - $s.at) <= $max))] | length' "$1" 2>/dev/null || echo 0
+}
+
+# footer_bg_running <screen text>: the pane footer says "N shell(s)" or "N monitor(s)" still running.
+footer_bg_running() { printf '%s\n' "$1" | tail -n 8 | grep -Eq '[0-9]+ (shell|monitor)s?([ ,.]|$)'; }

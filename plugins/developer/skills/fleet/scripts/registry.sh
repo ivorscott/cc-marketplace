@@ -54,6 +54,11 @@ update() {
       | [$n[0].agents | to_entries[] | select((.value | row_ok | not) and (($old[.key]) == null or ($old[.key] | row_ok)))
         | .key] | join(", ")')"
     if [ -n "$bad" ]; then rm -f "$tmp"; die "registry write refused: would leave malformed row(s): $bad; $FLEET_REGISTRY left unchanged"; fi
+    # A transcript path (new or changed) must be under Claude's projects directory.
+    bad="$(jq -nr --slurpfile o "$FLEET_REGISTRY" --slurpfile n "$tmp" --arg pd "$(projects_dir)/" '($o[0].agents // {}) as $old
+      | [$n[0].agents | to_entries[] | select((.value.transcript // "") != "" and (.value.transcript != ($old[.key].transcript // ""))
+          and ((.value.transcript | tostring | startswith($pd)) | not)) | .key] | join(", ")')"
+    if [ -n "$bad" ]; then rm -f "$tmp"; die "registry write refused: transcript of $bad is not under $(projects_dir)/; $FLEET_REGISTRY left unchanged"; fi
     stale="$(jq -r "$ESC_DEFS"'[.agents | to_entries[] | select(.value | row_ok | not) | .key] | join(", ")' "$tmp")"
     [ -z "$stale" ] || warn "malformed row(s) already in the registry: $stale (a repairing write: escalate, resolve or retire)"
     mv "$tmp" "$FLEET_REGISTRY"
@@ -97,6 +102,11 @@ case "$cmd" in
     for kv in "$@"; do
       k="${kv%%=*}"; v="${kv#*=}"
       case "$k" in escalation|escalations) die "cannot set $k: use 'resolve <name> <id|at>' to close an escalation" ;; esac
+      # An agent (FLEET_ROLE set in its pane) may set only these keys of its row; the Orchestrator and the
+      # scripts (FLEET_ROLE unset) may set any other, and the schema check still applies to the result.
+      if [ -n "${FLEET_ROLE:-}" ]; then
+        case "$k" in status | summary | nudged_at | branch | worktree) ;; *) die "cannot set $k from an agent: agents may set only status, summary, nudged_at, branch and worktree" ;; esac
+      fi
       args+=(--arg "k$i" "$k" --arg "v$i" "$v"); prog="$prog | .[\$k$i] = \$v$i"; i=$((i + 1))
     done
     update "${args[@]}" --arg t "$(now)" ".agents[\$n] = ($prog | .updated_at = \$t)"
@@ -244,7 +254,14 @@ case "$cmd" in
   signoff)
     name="${1:?usage: signoff <name> <pr-url|N> <sha>}"; pr="${2:?usage: signoff <name> <pr-url|N> <sha>}"; sha="${3:?usage: signoff <name> <pr-url|N> <sha>}"
     exists "$name"
+    # Only the tester signs off, and only for itself: an agent's FLEET_NAME must end in /tester and be the row
+    # named. (FLEET_NAME and FLEET_ROLE are conventions an agent could set: this guards against mistakes,
+    # not against an adversary.) The Orchestrator and scripts (FLEET_ROLE unset) may record a sign-off.
+    if [ -n "${FLEET_ROLE:-}" ] && [ "${FLEET_ROLE:-}" != tester ]; then
+      case "${FLEET_NAME:-}" in */tester) [ "${FLEET_NAME:-}" = "$name" ] || die "signoff: $name is not you (${FLEET_NAME:-unknown})" ;; *) die "signoff is the tester's: ${FLEET_NAME:-this agent} may not sign off" ;; esac
+    fi
     printf '%s' "$sha" | grep -Eq '^[0-9a-fA-F]{7,40}$' || die "sha must be 7-40 hex characters: $sha"
+    sha="$(printf '%s' "$sha" | tr 'A-F' 'a-f')"
     [ "$(jq -r --arg n "$name" '.agents[$n].status' "$FLEET_REGISTRY")" != "Retired" ] || die "$name is Retired; cannot sign off"
     case "$pr" in
       https://*/*) ;;

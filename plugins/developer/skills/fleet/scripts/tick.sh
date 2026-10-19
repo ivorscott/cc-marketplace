@@ -20,6 +20,8 @@
 #   disk, disk_ok   free disk crossed below warn_free_gb, and recovered
 #   claim_takeover  reserved (claims land in a later slice)
 # Once a week (ISO week, in the state file) tick also runs `registry.sh archive`.
+# One tick at a time: tick.lock (mkdir; pid and start time inside). A tick that finds a live, recent lock
+# exits 0 quietly; a stale one (dead pid, or older than tick_lock_stale_secs, default 900) is broken.
 # PR state is read with `gh pr view` / `gh pr list` (FLEET_GH), read-only. A gh failure for one PR is logged on
 # stderr and skips that PR for this tick; no gh on PATH is one warning and no PR events.
 set -euo pipefail
@@ -34,6 +36,32 @@ while [ $# -gt 0 ]; do
     *) die "unknown option: $1" ;;
   esac
 done
+
+# --- one tick at a time -------------------------------------------------------------------------------
+# An mkdir lock (no flock on macOS) around the whole tick, from the state read to the state write, with the
+# holder's pid and start time inside. Held by a live, recent tick: this one exits 0, quietly (tick_skipped
+# on stderr). Stale (pid gone, or older than tick_lock_stale_secs, default 900): broken with a warning.
+lockdir="$FLEET_STATE_DIR/tick.lock"
+mkdir -p "$FLEET_STATE_DIR"
+if ! mkdir "$lockdir" 2>/dev/null; then
+  holder_pid="$(cat "$lockdir/pid" 2>/dev/null || true)"; holder_at="$(cat "$lockdir/started" 2>/dev/null || true)"
+  stale=false
+  now_e="$(date +%s)"
+  stale_secs="$(cfg_int tick_lock_stale_secs 900)"
+  if [ -n "$holder_pid" ] && ! kill -0 "$holder_pid" 2>/dev/null; then stale=true; fi
+  case "$holder_at" in "" | *[!0-9]*) ;; *) [ $((now_e - holder_at)) -gt "$stale_secs" ] && stale=true ;; esac
+  if $stale; then
+    warn "breaking a stale tick lock (pid ${holder_pid:-unknown}, started ${holder_at:-unknown})"
+    rm -rf "$lockdir"
+    mkdir "$lockdir" 2>/dev/null || { printf 'fleet: tick_skipped: another tick took the lock\n' >&2; exit 0; }
+  else
+    printf 'fleet: tick_skipped: another tick holds %s (pid %s)\n' "$lockdir" "${holder_pid:-unknown}" >&2; exit 0
+  fi
+fi
+printf '%s\n' "$$" >"$lockdir/pid"; date +%s >"$lockdir/started"
+ghtmp=""
+cleanup() { rm -rf "$lockdir"; if [ -n "$ghtmp" ]; then rm -f "$ghtmp"; fi; }
+trap cleanup EXIT
 
 state="$(tick_state)"
 events="[]"
@@ -87,21 +115,29 @@ if command -v "$FLEET_GH" >/dev/null 2>&1; then
 fi
 
 # --- pull requests ----------------------------------------------------------------------------
-prs="$("$registry" list ${team:+--team "$team"} | jq -c '
-  [.[] | select(.status != "Retired" and (.pr // "") != "")]
-  | group_by(.pr) | map({pr: .[0].pr, team: .[0].team, name: .[0].name, repo: (.[0].repo // ""),
-      signoff: ([.[] | select(.signoff != null) | .signoff.sha] | first // null)})')"
+# A malformed row (pr, repo or signoff of the wrong type) is skipped with a warning; it never aborts the tick.
+# Only a tester row of the PR's own team can sign a PR off.
+all_rows="$("$registry" list ${team:+--team "$team"})"
+badrows="$(printf '%s' "$all_rows" | jq -r '[.[] | select(type == "object") | select(((.pr // "") | type) != "string" or ((.repo // "") | type) != "string"
+  or (.signoff != null and ((.signoff | type) != "object" or ((.signoff.sha // "") | type) != "string")) ) | (.name // "?" | tostring)] | join(", ")')"
+[ -z "$badrows" ] || warn "skipping malformed row(s) for PR checks: $badrows"
+prs="$(printf '%s' "$all_rows" | jq -c '
+  [.[] | select(type == "object") | select(((.pr // "") | type) == "string" and ((.repo // "") | type) == "string"
+      and (.signoff == null or ((.signoff | type) == "object" and ((.signoff.sha // "") | type) == "string")))
+    | select(.status != "Retired" and (.pr // "") != "")]
+  | group_by(.pr) | map(. as $g | {pr: .[0].pr, team: .[0].team, name: .[0].name, repo: (.[0].repo // ""),
+      signoff: ([$g[] | select((.signoff | objects | .sha) != null and ((.name // "") | endswith("/tester")) and .team == $g[0].team) | .signoff.sha] | first // null)})')"
 if [ "$(printf '%s' "$prs" | jq length)" != 0 ]; then
   if ! command -v "$FLEET_GH" >/dev/null 2>&1; then
     warn "$FLEET_GH not found; no PR events this tick"
   else
     no_ci="$(config_list no_pr_ci)"
+    ghtmp="$(mktemp)"
     while IFS= read -r p; do
       url="$(printf '%s' "$p" | jq -r .pr)"
-      if ! j="$(forge_pr_json "$url" 2>"${TMPDIR:-/tmp}/fleet-tick-gh.$$")"; then
-        warn "gh could not read $url: $(head -1 "${TMPDIR:-/tmp}/fleet-tick-gh.$$")"; rm -f "${TMPDIR:-/tmp}/fleet-tick-gh.$$"; continue
+      if ! j="$(forge_pr_json "$url" 2>"$ghtmp")"; then
+        warn "gh could not read $url: $(head -1 "$ghtmp")"; continue
       fi
-      rm -f "${TMPDIR:-/tmp}/fleet-tick-gh.$$"
       if ! printf '%s' "$j" | jq -e 'type == "object" and (.state | type == "string")' >/dev/null 2>&1; then
         warn "gh returned no PR state for $url"; continue
       fi
@@ -132,6 +168,7 @@ if [ "$(printf '%s' "$prs" | jq length)" != 0 ]; then
         pr_ready) state="$(jq -cn --argjson st "$state" --argjson e "$ev" '$st + {pr_ready_emitted: ((($st.pr_ready_emitted // []) + [$e.url + "@" + $e.sha]) | unique)}')" ;;
       esac
     done < <(printf '%s' "$prs" | jq -c '.[]')
+    rm -f "$ghtmp"; ghtmp=""
   fi
 fi
 
