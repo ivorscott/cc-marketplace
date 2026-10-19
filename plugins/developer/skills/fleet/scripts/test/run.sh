@@ -856,5 +856,7 @@ eq "CI jobs have a 30 minute timeout" "$(grep -c 'timeout-minutes: 30' "$WF")" 2
 eq "CI has no install step" "$(grep -ciE 'brew |apt|apt-get|npm i|pip install' "$WF")" 0
 check "run.sh exits non-zero on a failed assertion" bash -c "tail -n 1 '$HERE/run.sh' | grep -qx '\[ \"\$failn\" = 0 \]'"
 
+eq "redcheck: deliberate failing assertion (DO NOT MERGE)" 1 2
+
 printf '\n%d passed, %d failed\n' "$pass" "$failn"
 [ "$failn" = 0 ]
