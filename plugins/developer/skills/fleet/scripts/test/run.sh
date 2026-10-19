@@ -873,7 +873,7 @@ for bad in '"[]"' '{}' '5'; do
   for c in "$SCRIPTS/status.sh" "$SCRIPTS/status.sh --problems" "$REG list --problems" "$REG escalations --open" "$SCRIPTS/retire.sh --summary bad" "$SCRIPTS/tick.sh"; do
     $c >"$T/bad.out" 2>/dev/null; eq "escalations=$bad: ${c##*/} exits 0" "$?" 0
   done
-  check "escalations=$bad: a row after the bad one is still listed" grep -q 'zlast/row' <(  "$SCRIPTS/status.sh" 2>/dev/null)
+  check "escalations=$bad: a row after the bad one is still listed" grep -q 'zlast/row' <(  "$SCRIPTS/status.sh" --verbose 2>/dev/null)
   "$REG" escalate bad/row P2 "after" >/dev/null 2>&1
   eq "escalations=$bad: escalate normalises to an array" "$("$REG" get bad/row | jq -c '.escalations | map(.message)')" '["after"]'
   "$REG" retire bad >/dev/null 2>&1
@@ -2658,6 +2658,7 @@ eq "tick: no stale_version when the installed version is the same" "$(rm -f "$FL
 
 # -- next: restart every agent with its full brief (a file); no /clear, no /compact
 rm -f "${AS:?}"/*; : >"$HERDR_LOG"; : >"$FLEET_STATE_DIR/events.jsonl"
+"$REG" set build-hb/lead outcome=Shipped >/dev/null # E: issue_done is per row with an outcome, summary or lessons
 before_t="$("$REG" list --team build-hb | jq -c '[.[] | {(.name): .transcript}] | add')"
 out="$("$SCRIPTS/next.sh" build-hb DEV-8 --brief "Start on DEV-8 now" --issue-url https://tracker.example/issue/DEV-8 2>"$T/next.err")"; rc=$?
 eq "next: exits 0" "$rc" 0
@@ -2898,7 +2899,7 @@ eq "unpark: restores the team from its rows" "$rc:$(printf '%s' "$out" | jq -r .
 eq "unpark: every row is Working again, the park fields cleared" "$("$REG" list --team ep-a | jq -c '[.[] | [.status, (.parked_at // ""), (.parked_reason // "")]] | unique')" '[["Working","",""]]'
 eq "unpark: both agents were started again" "$(nstartp)" 2
 eq "unpark: the lead got a new workspace (its pane was closed)" "$(grep -c '^workspace create' "$HERDR_LOG" || true)" 1
-check "unpark: with the shared resume brief" grep -q 'You are being respawned: you were parked' "$HERDR_LOG"
+check "unpark: with the shared resume brief (a brief file, D)" bash -c "grep -q 'You are being respawned: you were parked' <<<\"\$1\"" _ "$(cat "$("$REG" get ep-a/lead | jq -r '.last_brief // "/nonexistent"')" 2>/dev/null)"
 eq "unpark: the respawn budget is not charged" "$(jq '(.respawns // {}) | length' "$FLEET_STATE_DIR/tick.state.json")" 0
 eq "unpark: the event is logged" "$(evn unparked)" 1
 sha5="$(rows_sha)"; "$UNPARK" ep-a >/dev/null 2>&1; rc=$?

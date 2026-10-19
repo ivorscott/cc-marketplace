@@ -91,8 +91,7 @@ cfg_int() {
 # permission prompt and sits idle until someone enables auto.
 permission_mode() {
   local v="${FLEET_PERMISSION_MODE:-}"
-  [ -z "$v" ] && [ -f "$FLEET_CONFIG_DIR/config.toml" ] &&
-    v="$(sed -n 's/^[[:space:]]*permission_mode[[:space:]]*=[[:space:]]*"\([A-Za-z]*\)".*/\1/p' "$FLEET_CONFIG_DIR/config.toml" | head -1)"
+  [ -n "$v" ] || v="$(cfg_str permission_mode auto)"
   check_permission_mode "${v:-auto}"
 }
 # check_permission_mode <mode>: prints the mode, or dies for one that turns permission checks off. No setting

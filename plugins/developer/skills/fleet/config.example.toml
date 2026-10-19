@@ -30,6 +30,10 @@ permission_mode = "auto"   # the Claude Code permission mode every agent starts 
 # Registry
 archive_after_days = 0   # a Retired row with its lessons written moves to fleet-archive.json after this many days
 
+# Briefs and agent panes
+# brief_idle_secs = 60     # tell.sh waits this long for the agent to be idle before a brief
+# scrub_env = ["MY_TOKEN"] # extra variables unset in every agent pane (the key and AWS_* always are)
+
 # The loop (schedule.sh) and alerts
 tick_secs = 300
 # schedule_label = "fleet.tick"
