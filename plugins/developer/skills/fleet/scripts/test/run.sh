@@ -1948,6 +1948,15 @@ eq "bash guard: a Retired row of the team is not a target" "$(bg "herdr agent pr
 for c in 'cat ~/.CONFIG/f*/*' 'cat ~/.Config/fl*/*' 'cd ~/.CONFIG && cat fleet/*' 'grep -r tok ~/.CONFIG' 'find ~/.CONFIG' 'tar cf /tmp/x.tar ~/.CONFIG' 'cp -r ~/.Config /tmp/c' 'cat ~/.CONFIG/FLEET/x' 'rg tok $HOME/.CONFIG'; do
   eq "bash guard (NH1): $c is denied" "$(bgh "$c")" deny
 done
+# command names in other case: APFS runs them
+for c in 'GREP -r tok ~/.config' 'FIND ~/.config' 'TAR cf /tmp/x ~/.config' 'Cp -r ~/.config /tmp/c' 'RG tok ~' 'Ls -R ~/.config' 'RG tok $HOME'; do
+  eq "bash guard (command case): $c is denied" "$(bgh "$c")" deny
+done
+eq "bash guard (command case): HERDR pane run is denied" "$(bg "HERDR pane run p1 ls")" deny
+eq "bash guard (command case): Herdr pane send-text is denied" "$(bg "Herdr pane send-text p1 x" lead)" deny
+eq "bash guard (command case): /opt/homebrew/bin/HERDR pane read is denied" "$(bg "/opt/homebrew/bin/HERDR pane read p1")" deny
+eq "bash guard (command case): Herdr agent read of another team is denied" "$(bg "Herdr agent read build-other-lead")" deny
+eq "bash guard (command case): Herdr agent read of its own team is allowed" "$(bg "Herdr agent read build-ft-tester")" allow
 eq "bash guard (NH1): a similar name is still allowed" "$(bgh 'cat ~/.CONFIG/fleetish/x')" allow
 eq "bash guard: herdr pane read is denied (another pane's screen)" "$(bg "herdr pane read p1")" deny
 # NH1: APFS ignores case, so the key by another case is the key

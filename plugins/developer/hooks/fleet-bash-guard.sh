@@ -14,6 +14,9 @@
 #   and send-keys only for leads: a worker cannot drive anyone. A target that cannot be read off the command
 #   (a variable, a substitution) is denied, and so is any target when the registry cannot be read.
 #
+# Command names are matched without regard to case (APFS: /opt/homebrew/bin/HERDR runs herdr, GREP runs grep).
+# Deliberate evasion of a lexical guard (eval, variables, aliases, encodings, an interpreter such as python -c)
+# is part of the documented residual.
 # A guardrail, not a boundary: a command can build the key's name or path at run time, and the key file is
 # mode 600 for the user the agents run as, so any same-uid process can read it.
 set -u
@@ -63,7 +66,7 @@ if printf '%s' "$flat" | grep -qiE '\.config/+fleet([^a-z0-9_.-]|$)|XDG_CONFIG_H
   deny "fleet bash guard: the command reaches the Linear key's directory (.config/fleet); only the Orchestrator reads it."
 fi
 recursive=false
-if printf '%s' "$flat" | grep -qE '(^|[;&|( ])(grep|egrep|fgrep|zgrep)[^;&|]* (-[a-zA-Z]*[rR]|--recursive|--dereference-recursive)|(^|[;&|( ])(rg|ag|ack|find|fd|tar|zip|rsync|du|tree|ls[^;&|]* -[a-zA-Z]*R|cp[^;&|]* -[a-zA-Z]*[rRa])( |$)'; then recursive=true; fi
+if printf '%s' "$flat" | grep -qiE '(^|[;&|( ])(grep|egrep|fgrep|zgrep)[^;&|]* (-[a-zA-Z]*[rR]|--recursive|--dereference-recursive)|(^|[;&|( ])(rg|ag|ack|find|fd|tar|zip|rsync|du|tree|ls[^;&|]* -[a-zA-Z]*R|cp[^;&|]* -[a-zA-Z]*[rRa])( |$)'; then recursive=true; fi
 prev=""
 set -f # the words are looked at, never expanded: ~/.config/* stays a pattern
 for w in $(printf '%s' "$flat" | tr ';&|()<>' '       '); do
@@ -91,7 +94,7 @@ done
 set +f
 
 # --- herdr ---------------------------------------------------------------------------------------------------
-case "$cmd" in *herdr*) ;; *) exit 0 ;; esac
+case "$(printf '%s' "$cmd" | tr 'A-Z' 'a-z')" in *herdr*) ;; *) exit 0 ;; esac
 team="${FLEET_TEAM:-}"
 reg="${FLEET_STATE_DIR:-${XDG_STATE_HOME:-$home/.local/state}/fleet}/fleet.json"
 # The herdr names of the team's agents, one per line, read from the registry; empty when it cannot be read.
@@ -102,7 +105,7 @@ while IFS= read -r seg; do
   read -r -a w <<<"${seg//[\"\'\`]/ }"
   i=0
   while [ "$i" -lt "${#w[@]}" ]; do
-    case "${w[$i]##*/}" in herdr) ;; *) i=$((i + 1)); continue ;; esac
+    case "$(printf '%s' "${w[$i]##*/}" | tr 'A-Z' 'a-z')" in herdr) ;; *) i=$((i + 1)); continue ;; esac
     i=$((i + 1))
     while [ "$i" -lt "${#w[@]}" ]; do # herdr's own options before the group
       case "${w[$i]}" in --session | --socket) i=$((i + 2)) ;; --*) i=$((i + 1)) ;; *) break ;; esac
