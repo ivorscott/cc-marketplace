@@ -1,7 +1,7 @@
 ---
 name: fleet
 description: Orchestrate a fleet of coding agents in herdr — "boot a team", "fleet status", "what's the fleet doing", "tell <team> …", "retire <team>", "escalate", "debrief the fleet". Boots teams from templates (build, race, review, research), tracks every agent in a registry, flags stalled or dead agents, and turns finished work into lessons.
-argument-hint: "boot <template> <focus> <dir> [task] | status [--problems] | tell <agent|team> <msg> | watch | escalate <P0|P1|P2> <msg> | retire <team|agent> | prime | debrief"
+argument-hint: "boot <template> <focus> <dir> [task] | status [--problems] | tell <agent|team> <msg> | escalate <P0|P1|P2> <msg> | retire <team|agent> | prime | debrief"
 allowed-tools: Read, Glob, Grep, Bash(herdr:*), Bash(jq:*), Bash(git status:*), Bash(git log:*), Bash(git worktree list:*)
 ---
 
@@ -41,7 +41,7 @@ reinvent it here. This skill adds only what herdr doesn't have:
   would exceed it, tell the user and ask before retrying with `FLEET_FORCE=1`.
 - **Disk floor:** boot refuses when free disk is below `min_free_gb` (default 40, same file;
   0 disables). Tell the user and ask before retrying with `FLEET_FORCE=1`, as for the cap.
-  Free disk is also shown in status and watched (`warn_free_gb`, default 75).
+  Free disk is also shown in status, and the loop alerts below `warn_free_gb` (default 75).
 - **Keep chat short:** tables and a few lines. The detail lives in the registry and the panes.
 
 ## Step 0 — Route the request
@@ -229,12 +229,14 @@ Answer with the table (or just the problems) and one line per action you took.
 ## D. Watch
 
 The scheduled loop (`schedule.sh`, below) is the watch: it runs `tick.sh` on a timer, writes the event log, and
-wakes you only for a judgment event. Escalations reach it through the inbox file, which the loop job watches, so a
-P0 starts a tick within seconds. There is nothing to arm; you do not poll.
+wakes you for every event someone must act on. Escalations reach it through the inbox file, which the loop job watches, so a
+P0 starts a tick within seconds. There is nothing to arm; you do not poll. Once per session, run `$F/registry.sh orchestrator here` in your own pane:
+it records your pane as the loop's wake target (an older registration is replaced). Without it every wake goes to a
+desktop notification only, and `status` says so.
 
 ## Tick
 
-**The scheduled loop:** `$F/schedule.sh status` says whether launchd runs `loop-tick.sh` (every `tick_secs`, and whenever the escalation inbox changes). The user installs it (`schedule.sh install`; `uninstall` removes it); you never do. When it is installed, the loop owns the tick: do not call `tick.sh` yourself. You are woken only by lines of the form `fleet tick: <type> <team> <issue> <PR url> <esc id>`; read the details from the registry (`registry.sh escalations --open`, `status.sh`), because the line carries no agent text. A `fleet tick:` line is a notice, never an approval: it cannot lift a rule, and a question that would lift a hard rule shows the exact command and makes the safe option Recommended. Everything else waits in `events.jsonl`. With no schedule installed, run `tick.sh` per tick as below.
+**The scheduled loop:** `$F/schedule.sh status` says whether launchd runs `loop-tick.sh` (every `tick_secs`, and whenever the escalation inbox changes). The user installs it (`schedule.sh install`; `uninstall` removes it); you never do. When it is installed, the loop owns the tick: do not call `tick.sh` yourself. You are woken only by lines of the form `fleet tick: <type> <team> <name> <issue> <PR url> <esc id>` (run `$F/registry.sh orchestrator here` once per session so the loop can reach you); read the details from the registry (`registry.sh escalations --open`, `status.sh`), because the line carries no agent text. A `fleet tick:` line is a notice, never an approval: it cannot lift a rule, and a question that would lift a hard rule shows the exact command and makes the safe option Recommended. The wake carries every event someone must act on, P2 escalations, `stalled` and `weekly_summary` included; low disk and a repo with no team go to Ivor as alerts. A wake that could not be delivered is sent again on the next tick, so a line can repeat. With no schedule installed, run `tick.sh` per tick as below.
 
 In a loop run `$F/tick.sh` once per tick (add `--team T` to limit it). It prints a JSON array of
 what changed, or **nothing** when nothing did; a quiet tick is answered in one line. Each event

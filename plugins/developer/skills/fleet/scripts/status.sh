@@ -162,3 +162,8 @@ fi
 if $all && [ -z "$claims_file" ]; then echo "peer claims: not provided"; fi
 # Which machine this is, so rows from two machines are never confused.
 printf 'machine: %s%s\n' "$(machine_label)" "${myname:+ ($myname)}"
+# The launchd loop is installed (its launcher exists) but has no Orchestrator to wake: say so in one line.
+if [ -x "$FLEET_STATE_DIR/bin/fleet-tick" ] && [ -z "$(cfg_str orchestrator_ref "")" ] &&
+  [ -z "$("$registry" get orchestrator 2>/dev/null | jq -r '.herdr_ref // ""' 2>/dev/null)" ]; then
+  echo "loop: no Orchestrator registered; wakes go to notifications only (run registry.sh orchestrator here in its pane)"
+fi

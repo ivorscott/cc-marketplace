@@ -96,7 +96,7 @@ permission_mode() {
   printf '%s\n' "${v:-auto}"
 }
 
-# min_free_gb (boot refuses below it, default 40; 0 disables) and warn_free_gb (watch notifies below it, default 75).
+# min_free_gb (boot refuses below it, default 40; 0 disables) and warn_free_gb (status marks LOW and the loop alerts below it, default 75).
 min_free_gb() { cfg_int min_free_gb 40; }
 warn_free_gb() { cfg_int warn_free_gb 75; }
 

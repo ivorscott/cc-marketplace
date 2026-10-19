@@ -10,7 +10,8 @@
 # ~/.claude/plugins/installed_plugins.json and runs that version's loop-tick.sh, so an update takes effect on the
 # next tick and a swept old version directory cannot break the job. The job runs every tick_secs (config.toml,
 # default 300), once at load, and whenever the escalation inbox changes (WatchPaths), so a P0 starts a tick within
-# seconds. Output goes to $FLEET_STATE_DIR/loop.log. The plist carries PATH and HOME only, never a key value.
+# seconds. Output goes to $FLEET_STATE_DIR/loop.log. The plist carries PATH and HOME (plus FLEET_STATE_DIR and
+# FLEET_CONFIG_DIR when they are not the defaults), never a key value.
 # install is idempotent. It waits for the RunAtLoad tick (up to FLEET_INSTALL_WAIT seconds, default 90); if that
 # tick fails or never happens it unloads the job and prints the last log line. The loop is healthy when it had a
 # good tick within 2x tick_secs. The user runs install; boot and next never do.
@@ -55,6 +56,22 @@ LAUNCH
   chmod +x "$launcher"
 }
 
+# A state or config root that is not the default goes into the job's environment, so the job runs on the
+# same roots install wrote the launcher, WatchPaths and the wait file into.
+env_extra() {
+  [ "$FLEET_STATE_DIR" = "$HOME/.local/state/fleet" ] ||
+    printf '\n    <key>FLEET_STATE_DIR</key>\n    <string>%s</string>' "$(xml "$FLEET_STATE_DIR")"
+  [ "$FLEET_CONFIG_DIR" = "$HOME/.config/fleet" ] ||
+    printf '\n    <key>FLEET_CONFIG_DIR</key>\n    <string>%s</string>' "$(xml "$FLEET_CONFIG_DIR")"
+}
+
+# One line when the loop has no Orchestrator to wake (registry.sh orchestrator here registers one).
+orch_hint() {
+  [ -n "$(cfg_str orchestrator_ref "")" ] && return 0
+  [ -n "$("$FLEET_SCRIPTS/registry.sh" get orchestrator 2>/dev/null | jq -r '.herdr_ref // ""' 2>/dev/null)" ] && return 0
+  echo "no Orchestrator registered: wakes go to notifications only; run $FLEET_SCRIPTS/registry.sh orchestrator here in the Orchestrator pane"
+}
+
 LSF="$FLEET_STATE_DIR/loop.state.json"
 ls_get() { jq -r "$1" "$LSF" 2>/dev/null || true; }
 render() {
@@ -87,7 +104,7 @@ render() {
     <key>PATH</key>
     <string>$(xml "$(job_path)")</string>
     <key>HOME</key>
-    <string>$(xml "$HOME")</string>
+    <string>$(xml "$HOME")</string>$(env_extra)
   </dict>
 </dict>
 </plist>
@@ -120,6 +137,7 @@ case "${1:-}" in
       exit 1
     fi
     echo "installed: $label every ${secs}s"
+    echo "The Orchestrator registers its pane as the wake target once per session: $FLEET_SCRIPTS/registry.sh orchestrator here"
     ;;
   uninstall)
     "$lctl" bootout "$domain/$label" >/dev/null 2>&1 || true
@@ -136,6 +154,7 @@ case "${1:-}" in
       echo "last good tick: $(date -u -r "$lg" +%Y-%m-%dT%H:%M:%SZ) ($(((nowe - lg) / 60)) min ago)"
       if [ $((nowe - lg)) -le $((2 * secs)) ]; then echo "healthy"; else echo "UNHEALTHY: no good tick within $((2 * secs / 60)) min"; fi
     else echo "UNHEALTHY: no good tick yet"; fi
+    orch_hint
     ;;
   *) sed -n '2,6p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac
