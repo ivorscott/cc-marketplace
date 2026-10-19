@@ -1,7 +1,7 @@
 ---
 name: fleet
 description: Orchestrate a fleet of coding agents in herdr — "boot a team", "fleet status", "what's the fleet doing", "tell <team> …", "retire <team>", "escalate", "debrief the fleet". Boots teams from templates (build, race, review, research), tracks every agent in a registry, flags stalled or dead agents, and turns finished work into lessons.
-argument-hint: "boot <template> <focus> <dir> [task] | status [--problems] | tell <agent|team> <msg> | watch | escalate <P0|P1|P2> <msg> | retire <team|agent> | prime | debrief"
+argument-hint: "boot <template> <focus> <dir> [task] | status [--problems] | tell <agent|team> <msg> | watch | escalate <P0|P1|P2> <msg> | park <team> [--after-merge] | unpark <team> | focus <team> [--now] | focus --clear | retire <team|agent> | prime | debrief"
 allowed-tools: Read, Glob, Grep, Bash(herdr:*), Bash(jq:*), Bash(git status:*), Bash(git log:*), Bash(git worktree list:*)
 ---
 
@@ -37,8 +37,11 @@ reinvent it here. This skill adds only what herdr doesn't have:
   the registry didn't create. The user's own panes are not part of the fleet.
 - **Delegate:** never edit code; ask the lead. Talk to workers only when a lead is dead
   or stalled.
-- **Cap:** respect `max_agents` (default 4, in `~/.config/fleet/config.toml`). If a boot
-  would exceed it, tell the user and ask before retrying with `FLEET_FORCE=1`.
+- **Caps:** respect `max_agents` (default 4, in `~/.config/fleet/config.toml`), `max_teams` (default 3;
+  with `repos` set only teams in a listed repo count, so a tooling repo takes a slot only when listed)
+  and `teams_per_repo` (default 1; a parked team still holds its repo). Parked teams hold no agent or
+  team slot. If a boot or an unpark would exceed a cap, tell the user and offer to park a team, or ask
+  before retrying with `FLEET_FORCE=1`.
 - **Disk floor:** boot refuses when free disk is below `min_free_gb` (default 40, same file;
   0 disables). Tell the user and ask before retrying with `FLEET_FORCE=1`, as for the cap.
   Free disk is also shown in status and watched (`warn_free_gb`, default 75).
@@ -54,6 +57,7 @@ reinvent it here. This skill adds only what herdr doesn't have:
 | `watch`, "keep an eye on it" | **D. Watch** |
 | a loop tick, "run the fleet" | **Tick** |
 | `escalate …` | **E. Escalate** |
+| `park …`, `unpark …`, `focus …`, "pause the build team", "only work on X" | **P. Park** |
 | `retire …`, "stop the race", "shut the team down" | **F. Retire** |
 | `prime`, or you have lost track after a compaction | **G. Prime** |
 | `debrief`, "what did we learn" | **H. Debrief** |
@@ -389,6 +393,23 @@ nothing changes. With it:
 escalation move to `fleet-archive.json` (`archive_after_days`, default 0); the rest stay for the debrief.
 `retire.sh --summary` and `registry.sh get --archived` still find archived rows.
 
+## P. Park
+
+Parking closes a team's panes and keeps everything else: rows, worktrees, branches, plans, reports and
+the tracker claim (no tracker call; the heartbeat goes on, so the claim does not lapse).
+
+- `$F/park.sh <team>` parks now. It refuses at once, changing nothing, when a worktree has uncommitted
+  edits, untracked source files or unpushed commits (ask the team to commit and push, then park again),
+  or when herdr does not answer. `--after-merge` lets the team finish: tick parks it when its PR merges,
+  and that `pr_merged` event says `parked: true`, so run no `next` for it.
+- A parked team is never probed, nudged, respawned or reported Stalled or Zombie; `next.sh` refuses it;
+  status shows it on one `parked:` line.
+- `$F/unpark.sh <team>` starts every agent again from its row with the same resume brief a respawn gets
+  (no respawn budget). It refuses at once when a cap is full: there is no queue.
+- `$F/focus.sh <team> [--now]` parks every other live team (after their merge; `--now` at once) with reason
+  `focus:<team>`; `$F/focus.sh --clear` unparks only those. One focus at a time; status shows it on one line.
+- Events: `parked`, `unparked`, `focus_set`, `focus_cleared` (`events.jsonl`).
+
 ## G. Prime
 
 Read `$F/registry.sh list --live`, `$F/registry.sh escalations --open` and `$F/status.sh --problems`, then summarise which teams
@@ -397,10 +418,12 @@ rebuild state from guesswork.
 
 ## H. Debrief
 
-For each retired team since the last debrief (rows with an `outcome` and no `lessons`):
+For each retired team since the last debrief (rows with an `outcome` and no `lessons`), and each
+`issue_done` event in `events.jsonl` since the last debrief (`next` clears a row's outcome, summary and
+lessons, so `registry.sh reassign` logs them there first, one event per row):
 
-1. Read the team's registry rows (summaries, escalations, discovered work) and, if the panes
-   are still open, the lead's last output.
+1. Read the team's registry rows (summaries, escalations, discovered work), its `issue_done` events and,
+   if the panes are still open, the lead's last output.
 2. Write one or two lessons per agent that would change how the next run goes, with
    `$F/registry.sh set <name> lessons="<text>"`.
 3. Propose, don't apply, a diff to each role's expertise file `<repo>/.claude/experts/<role>.md`

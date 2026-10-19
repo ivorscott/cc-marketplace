@@ -2,6 +2,7 @@
 # Respawn a dead agent (a Zombie row) from its registry row: same role, worktree, branch, model and
 # harness, in its own workspace. tick.sh runs this, within a budget (respawn_max = 1 per
 # respawn_window_hours = 6 per agent, config.toml); a Done or Retired row is never respawned.
+# unpark.sh runs it for every Parked row of a team (no budget: that is tick's).
 #
 #   respawn.sh <team/role>
 #
@@ -11,7 +12,7 @@
 # sent through tell.sh --brief, so a brief that does not arrive marks the row Failed. The row gets a
 # new session id, so its `transcript` path changes (the old one is kept in the row's `transcripts` list). Logs `respawned` to the event log.
 #
-# If the row's pane is gone, a new pane is split from the lead's pane in the same workspace.
+# If the row's pane is gone (or empty: park clears it), a new pane is split from the lead's pane in the same workspace.
 # UNVERIFIED against real herdr: that `herdr agent start <same name>` is accepted for an agent whose
 # pane died (DEV-368).
 set -euo pipefail
@@ -46,7 +47,7 @@ workers="$("$registry" list --team "$team" | jq -r '[.[] | select(.tier == "Work
 brief="$(build_brief --resume "$name" "$ex" "$(render "$brief_tpl" "$name" "$worktree" "$workers")")"
 
 # The pane: reuse the row's, or split a new one beside the lead in the same workspace.
-if ! hd pane process-info --pane "$pane" >/dev/null 2>&1; then
+if [ -z "$pane" ] || ! hd pane process-info --pane "$pane" >/dev/null 2>&1; then
   lead_pane="$("$registry" list --team "$team" | jq -r '[.[] | select(.tier == "Lead") | .pane] | first // ""')"
   [ -n "$lead_pane" ] || die "$name's pane is gone and the team has no lead pane to split from"
   env_args=(); [ -z "$(env_config "$repo")" ] || env_args=(--env "KUBECONFIG=$(env_dir "$team")/kubeconfig")

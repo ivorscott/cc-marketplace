@@ -7,7 +7,7 @@
 #   registry.sh append <name> key value                    add value to the row's list at key (no duplicates)
 #   registry.sh get [--archived] <name>                    --archived also looks in fleet-archive.json
 #   registry.sh list [--team T] [--live] [--problems]
-#   registry.sh count-live                                 agents counted against max_agents
+#   registry.sh count-live                                 agents counted against max_agents (Parked rows are not)
 #   registry.sh done <name> --outcome O --summary TEXT     the done contract (+ notification)
 #   registry.sh escalate <name> P0|P1|P2 TEXT              severity-routed escalation (+ notification + inbox line)
 #   registry.sh escalations [--open] [--team T] [--not-retired]  every escalation, Done and Retired rows included unless --not-retired
@@ -15,7 +15,10 @@
 #   registry.sh note <name> discovered TEXT                file discovered work instead of fixing it
 #   registry.sh retire <name|team> [--outcome O]           also closes the rows' open escalations ("closed at retire")
 #   registry.sh signoff <name> <pr-url|N> <sha>            the tester's sign-off: records the PR and the exact SHA verified
-#   registry.sh reassign <team> <issue>                    move a team to a new issue (next.sh): clears the old outcome, PR and sign-off
+#   registry.sh reassign <team> <issue>                    move a team to a new issue (next.sh): logs issue_done per row (outcome,
+#                                                          summary, lessons), then clears the old outcome, PR and sign-off
+#   registry.sh park <team> <reason>                       park.sh's one write: every row not Retired becomes Parked
+#                                                          (parked_at, parked_reason, parked_from = the status before; pane cleared)
 #   registry.sh unsynced                                   rows changed since the sink last mirrored them
 #   registry.sh synced <name> [name ...]                   mark rows as mirrored
 #   registry.sh env-claim <team> <max> <cluster> [busy-slots]  atomically take the lowest free port slot
@@ -141,7 +144,7 @@ case "$cmd" in
     jq -n --arg t "$team" "${ESC_DEFS}[inputs.agents[] | select((\$t == \"\" or .team == \$t) and $filter)]" "${files[@]}"
     ;;
   count-live)
-    jq "[.agents[] | select($LIVE and .tier != \"Orchestrator\")] | length" "$FLEET_REGISTRY"
+    jq "[.agents[] | select($LIVE and .status != \"Parked\" and .tier != \"Orchestrator\")] | length" "$FLEET_REGISTRY"
     ;;
   done)
     name="${1:?usage: done <name> --outcome O --summary TEXT}"; shift
@@ -293,6 +296,16 @@ case "$cmd" in
     team="${1:?usage: reassign <team> <issue>}"; issue="${2:?usage: reassign <team> <issue>}"
     jq -e --arg t "$team" '[.agents[] | select(.team == $t and .status != "Retired" and .tier != "Orchestrator")] | length > 0' "$FLEET_REGISTRY" >/dev/null ||
       die "no live rows for team '$team'"
+    jq -e --arg t "$team" 'any(.agents[]; .team == $t and .status == "Parked")' "$FLEET_REGISTRY" >/dev/null &&
+      die "team '$team' is parked; unpark it first"
+    # issue_done first, one per row that has something to keep: the lessons survive the clearing below (debrief
+    # reads these events), and a reassign that then fails has lost nothing.
+    while IFS= read -r r; do
+      ev_log issue_done team="$team" name="$(printf '%s' "$r" | jq -r .name)" issue="$(printf '%s' "$r" | jq -r '.issue // ""')" \
+        pr="$(printf '%s' "$r" | jq -r '.pr // ""')" outcome="$(printf '%s' "$r" | jq -r '.outcome // ""')" \
+        summary="$(printf '%s' "$r" | jq -r '.summary // ""')" lessons="$(printf '%s' "$r" | jq -r '.lessons // ""')"
+    done < <(jq -c --arg t "$team" '.agents[] | select(.team == $t and .status != "Retired" and .tier != "Orchestrator"
+      and ((.outcome // "") != "" or (.summary // "") != "" or (.lessons // "") != ""))' "$FLEET_REGISTRY")
     # One update for every row: a half-moved team would be worse than an unmoved one.
     update --arg t "$team" --arg i "$issue" --arg now "$(now)" "$DERIVE"'
       .agents |= with_entries(
@@ -301,6 +314,18 @@ case "$cmd" in
             del(.outcome, .summary, .done_at, .signoff, .pr, .lessons)
             | norm | esc_close("closed at next"; $now)
             | derive | .issue = $i | .status = "Working" | .updated_at = $now)
+        else . end)'
+    ;;
+  park)
+    team="${1:?usage: park <team> <reason>}"; reason="${2:?usage: park <team> <reason>}"
+    jq -e --arg t "$team" 'any(.agents[]; .team == $t and .status != "Retired" and .tier != "Orchestrator")' "$FLEET_REGISTRY" >/dev/null ||
+      die "no live rows for team '$team'"
+    # One update for every row, like reassign. A row already Parked keeps its parked_from.
+    update --arg tm "$team" --arg r "$reason" --arg now "$(now)" '
+      .agents |= with_entries(
+        if .value.team == $tm and .value.status != "Retired" and .value.tier != "Orchestrator" then
+          .value |= ((if .status == "Parked" then . else .parked_from = .status end)
+            | del(.park_after_merge) | .status = "Parked" | .parked_at = $now | .parked_reason = $r | .pane = "" | .updated_at = $now)
         else . end)'
     ;;
   unsynced)
@@ -349,5 +374,5 @@ case "$cmd" in
       'if .envs[$t] then .envs[$t] |= (.state = "Down" | .slot = null | .http_port = null | .https_port = null | .updated_at = $now) else . end'
     ;;
   path) printf '%s\n' "$FLEET_REGISTRY" ;;
-  *) sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+  *) sed -n '2,25p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

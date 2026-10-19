@@ -20,14 +20,16 @@ restarted, compacted or replaced agent picks up from the row, not from memory.
 | `machine`, `workspace`, `pane`, `herdr_ref` | where it runs; `herdr_ref` is the herdr agent name |
 | `issue`, `claimed_by`, `scope` | the tracker issue, the machine key that claimed it, and the declared file scope `{repo, paths[]}` (empty paths = whole repo); set by `boot.sh --issue/--claimed-by/--scope` |
 | `assignment` | the task it owes (the hook) |
-| `status` | Booting, Working, Needs input, Stalled, Zombie, Idle, Done, Retired |
+| `status` | Booting, Working, Needs input, Stalled, Zombie, Idle, Done, Parked, Retired |
+| `parked_at`, `parked_reason`, `parked_from` | set by `park.sh` (`registry.sh park`, one write for the team): when, why (`park`, `after-merge` or `focus:<team>`) and the status before (a row that was Done comes back Done). The pane is cleared. `unpark.sh` empties all three |
+| `park_after_merge` | the reason the team parks with once its PR merges (`park.sh --after-merge`, `focus.sh` without `--now`); `tick.sh` parks it then |
 | `escalation`, `escalations[]` | `escalation` is derived: the highest severity among open entries, `""` when none. Each entry is `{id, severity, message, at}` (`id` is `<at compact>-<seq>`, seq the 1-based array position; entries filed before ids existed get the same derived id on read) plus `resolved_at` and `resolution` once `registry.sh resolve` closes it; `(name, id)` identifies one. Open entries survive `done`; `retire` closes them with resolution "closed at retire". A non-array `escalations` reads as empty and non-object elements are skipped |
 | `transcript` | path of the agent's Claude Code transcript (`<projects>/<cwd slug>/<session id>.jsonl`), set by boot (`--session-id`) and re-pointed by `next.sh` after `/clear` |
 | `transcripts` | earlier transcript paths of the agent (a list), appended by `next.sh` after `/clear` and by `respawn.sh`; `metrics.sh` counts tokens only from these and `transcript` |
 | `status_detail` | "login expired" or "API error" while the newest assistant line of the transcript is an API error (status.sh); empty otherwise |
 | `continued_at` | when tick last sent a `continue` to an agent stopped by an API error (at most one per 30 minutes) |
 | `nudged_at` | set by `tick.sh` when it nudged a Stalled agent; cleared when the agent stops being Stalled |
-| `pr`, `signoff` | `registry.sh signoff <name> <PR URL or N> <sha>` (the tester) sets `pr` and `signoff = {pr, sha, at}`; `tick.sh` reads them. `registry.sh reassign <team> <issue>` (run by `next.sh`) clears `outcome`, `summary`, `done_at`, `pr`, `signoff` and `lessons`, closes open escalations with `resolution: "closed at next"`, and sets `issue` and status Working |
+| `pr`, `signoff` | `registry.sh signoff <name> <PR URL or N> <sha>` (the tester) sets `pr` and `signoff = {pr, sha, at}`; `tick.sh` reads them. `registry.sh reassign <team> <issue>` (run by `next.sh`) first logs `issue_done` for each row that has an outcome, summary or lessons, then clears `outcome`, `summary`, `done_at`, `pr`, `signoff` and `lessons`, closes open escalations with `resolution: "closed at next"`, and sets `issue` and status Working |
 | `escalation`, `escalations[]` | `escalation` is derived: the highest severity among open entries, `""` when none. Each entry is `{severity, message, at}` plus `resolved_at` and `resolution` once `registry.sh resolve` closes it; `(name, at)` identifies one. Open entries survive `done` and `retire` |
 | `discovered[]` | unrelated work the agent filed instead of doing |
 | `expertise_file` | the role's expertise file, if the repo has one |
@@ -71,8 +73,11 @@ mistakes, not against an adversary.
 `events.jsonl` in the state dir (`FLEET_EVENTS` overrides) is append-only, one JSON object per line:
 `{at, type, team, name, issue, pr, sha, detail}` (empty fields are null). Types: `boot`, `brief_delivered`,
 `brief_failed`, `signoff`, `escalation_raised`, `escalation_resolved`, `next`, `pr_opened`, `pr_ready`,
-`pr_merged`, `stalled`, `dead`, `respawned`, `retired`. `detail` is a short reason (cut at 120
-characters), never brief text and never the Linear key. `metrics.sh` reads it.
+`pr_merged`, `stalled`, `dead`, `respawned`, `retired`, `parked` and `unparked` (detail: the reason),
+`focus_set`, `focus_cleared`, and `issue_done`. `detail` is a short reason (cut at 120
+characters), never brief text and never the Linear key. `issue_done` (one per row, logged by
+`registry.sh reassign` before it clears the row) also has `outcome`, `summary` and `lessons`, what the agent
+wrote with `done` and the debrief (cut at 40, 500 and 1000 characters); the debrief reads it. `metrics.sh` reads the log.
 
 ## Tick state
 

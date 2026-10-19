@@ -66,6 +66,9 @@ This skill builds the rest on top of it.
 | `/fleet watch [--team T]` | Opens a monitor pane beside yours that raises a herdr notification whenever an agent stalls, dies, needs input or finishes, or free disk drops below `warn_free_gb` |
 | `/fleet escalate <P0\|P1\|P2> <msg>` | Raises a question by severity (also appended to the escalation inbox, which `escalation-wait.sh` delivers to the Orchestrator within seconds). It stays open until the Orchestrator runs `registry.sh resolve <name> <id|at>`, or the team is retired. The Orchestrator answers P2 itself, brings P1 to you with a recommendation, and stops for P0 and brings it to you immediately (a P0 in a race pauses the race) |
 | `/fleet retire <team\|team/role> [--outcome O]` | Shuts down a whole team or a single agent. Live agents are asked to push their work first, then only the fleet's own panes are closed, worktrees are removed (build outputs ignored, untracked reports copied to `reports/fleet-archive/<team>-<role>/`; one with unpushed commits, untracked source or uncommitted edits is kept and the files or commits named), the team's test cluster and images are deleted, and its open escalations are closed ("closed at retire"). `O` is `Shipped`, `Won race`, `Partial`, `Abandoned` or `Failed` |
+| `/fleet park <team> [--after-merge]` | Closes the team's panes and keeps its rows, worktrees, branches, plans, reports and tracker claim. Refuses at once when a worktree has uncommitted edits, untracked source or unpushed commits. `--after-merge` lets the team finish: it parks when its PR merges, instead of taking the next issue. A parked team holds no `max_agents` or `max_teams` slot and is never nudged, respawned or shown as Stalled or Zombie |
+| `/fleet unpark <team>` | Starts the parked team again from its rows (same roles, worktrees, branches) with the resume brief a respawn gets. Refuses at once when a cap is full; nothing queues |
+| `/fleet focus <team> [--now]` · `/fleet focus --clear` | Parks every other live team (after their merge, or `--now`); `--clear` unparks only the teams the focus parked |
 | `/fleet prime` | Rebuilds the Orchestrator's picture of the fleet from the registry (which teams exist, who is doing what, what needs attention). Use it after a context compaction or in a new session |
 | `/fleet debrief` | For each retired team: records one or two lessons per agent and *proposes* (never applies) diffs to `.claude/experts/<role>.md` and to the template, plus a list of discovered follow-up work |
 
@@ -108,6 +111,7 @@ tries the next one, and escalates P0 if none can be verified. Then retire the lo
 | Stalled | idle without having run its done step |
 | Zombie | the agent process is gone and the pane is back at the shell |
 | Done | ran the done contract |
+| Parked | `park` closed its panes; nothing is probed until `unpark` |
 
 ## Scripts
 
@@ -115,7 +119,7 @@ The Orchestrator and agents call these directly (from `scripts/`). You can call 
 
 | Script | Commands |
 |---|---|
-| `boot.sh` | `boot.sh [--issue ID --claimed-by KEY --labels a,b --scope 'repo: paths'] <template> <focus> <dir> [task…]` boots a team (`FLEET_FORCE=1` goes over the `max_agents` cap and the `min_free_gb` disk floor, never over another machine's claim). A takeover is done with `linear.sh takeover` before boot |
+| `boot.sh` | `boot.sh [--issue ID --claimed-by KEY --labels a,b --scope 'repo: paths'] <template> <focus> <dir> [task…]` boots a team (`FLEET_FORCE=1` goes over the `max_agents`, `max_teams` and `teams_per_repo` caps and the `min_free_gb` disk floor, never over another machine's claim). A takeover is done with `linear.sh takeover` before boot |
 | `claim.sh` | `lease` prints now + `lease_hours` · `hb` reads the `heartbeat=` line of a label description (stdin) · `expired --lease ISO` says whether a lease has lapsed (the open-PR check is `linear.sh takeover`'s). Pure: it never calls a tracker |
 | `linear.sh` | claims and heartbeat on the Linear API: `claim <ISSUE> [--dry-run]` · `heartbeat` (one mutation) · `holder <ISSUE>` and `peers` (read-only) · `takeover <ISSUE> [--repo OWNER/NAME]` (refuses while a PR is open) · `migrate [--dry-run]` · `has-key`. Key in `~/.config/fleet/linear_api_key` (mode 600) or `LINEAR_API_KEY`; none: exit 3. Writes need `linear_writes` (below): off, the default, exits 3 too. Never posts claim or lease comments |
 | `chat.sh` | `channel` and `allow` print `chat_channel` and `chat_allow` · `format <event> …` prints the one-line message. It never posts or reads; the Orchestrator does with its own chat tools |
@@ -126,6 +130,9 @@ The Orchestrator and agents call these directly (from `scripts/`). You can call 
 | `tell.sh` | `tell.sh <team/role> <text> [--no-confirm]` sends and checks delivery; exit 1 not delivered, 2 pane at the shell |
 | `next.sh` | `next.sh <team> <issue> [--brief TEXT]` after a merge: reassign, `/clear` workers, `/compact` a large lead, brief the lead |
 | `respawn.sh` | `respawn.sh <team/role>` starts a Zombie row again from the row (same role, worktree, branch, model; new session id) and sends a resume brief; `tick.sh` calls it within the budget `respawn_max` (1) per `respawn_window_hours` (6) |
+| `park.sh` | `park.sh <team> [--after-merge]` parks a team (see `/fleet park`); waits for a running tick (`tick.lock`), refuses when herdr does not answer |
+| `unpark.sh` | `unpark.sh <team>` brings a parked team back through `respawn.sh` (no respawn budget) |
+| `focus.sh` | `focus.sh <team> [--now]` · `--clear` · no argument prints the focus (`focus.json` in the state dir) |
 | `metrics.sh` | `metrics.sh [--since 7d] [--json]` per PR: minutes to ready, rework rounds, stalls, missed messages, tokens (from `events.jsonl` and the agents' transcripts) |
 | `watch.sh` | `watch.sh [--team T] [--every SECONDS] [--once]` live monitor, polls every 20s by default; notifies on low disk |
 | `escalation-wait.sh` | `escalation-wait.sh [--timeout SECONDS] [--every SECONDS] [--from-start]` prints new inbox lines and exits; default timeout 1500s, polls every 5s |
@@ -152,7 +159,9 @@ The Orchestrator and agents call these directly (from `scripts/`). You can call 
 `~/.config/fleet/config.toml` holds machine-wide settings. Every key is optional.
 
 ```toml
-max_agents = 4   # live agents across all teams
+max_agents = 4   # live agents across all teams (Parked ones don't count)
+max_teams = 3    # live teams; with `repos` set, only teams in a listed repo count
+teams_per_repo = 1   # teams in one repo, Parked ones included (a parked team keeps its repo)
 max_envs = 3     # test clusters at once
 min_free_gb = 40   # boot refuses below this much free disk (0 = off; FLEET_FORCE=1 overrides)
 warn_free_gb = 75  # status marks LOW and watch notifies below this

@@ -475,7 +475,7 @@ check "single-agent retire archives under <team>-<role>" test -f "$T/archive/bui
 check "single-agent retire leaves the other worktree" test -d "$T/wt-build-one-tester"
 
 # boot refuses below min_free_gb
-cp "$FLEET_CONFIG_DIR/config.toml" "$T/config.bak"; echo 'max_agents = 100' >>"$FLEET_CONFIG_DIR/config.toml"
+cp "$FLEET_CONFIG_DIR/config.toml" "$T/config.bak"; printf 'max_agents = 100\nmax_teams = 100\nteams_per_repo = 100\n' >>"$FLEET_CONFIG_DIR/config.toml"
 eq "min_free_gb defaults to 40" "$(bash -c ". $SCRIPTS/common.sh; min_free_gb")" 40
 eq "warn_free_gb defaults to 75" "$(bash -c ". $SCRIPTS/common.sh; warn_free_gb")" 75
 : >"$HERDR_LOG"; FLEET_FORCE= DF_GB=10 "$SCRIPTS/boot.sh" build disk1 "$T/plain" task >"$T/b.out" 2>"$T/b.err"; rc=$?
@@ -2047,6 +2047,211 @@ export FLEET_STATE_DIR="$_rstate" FLEET_REGISTRY="$_rreg"; [ -n "$_rinbox" ] && 
 for k in events.jsonl metrics.sh respawn respawn_max nudge; do check "SKILL.md documents $k" grep -qi -- "$k" "$SCRIPTS/../SKILL.md"; done
 for k in metrics.sh respawn.sh events.jsonl; do check "README documents $k" grep -q -- "$k" "$SCRIPTS/../README.md"; done
 check "registry.md documents the event log and nudged_at" bash -c "grep -q 'events.jsonl' '$SCRIPTS/../references/registry.md' && grep -q 'nudged_at' '$SCRIPTS/../references/registry.md'"
+
+# ---- DEV-368 E: park, unpark, focus (the claim is kept; no tracker call) ---------------------------------
+_estate="$FLEET_STATE_DIR"; _ereg="$FLEET_REGISTRY"; _einbox="${FLEET_INBOX:-}"
+export FLEET_STATE_DIR="$T/estate" FLEET_REGISTRY="$T/estate/fleet.json" FLEET_INBOX="$T/estate/escalations.jsonl"; mkdir -p "$FLEET_STATE_DIR"
+EVF="$FLEET_STATE_DIR/events.jsonl"; unset FLEET_NOW; rm -f "${AS:?}"/*
+PK="$SCRIPTS/park.sh"; UP="$SCRIPTS/unpark.sh"; FO="$SCRIPTS/focus.sh"
+printf 'max_agents = 100\nmax_teams = 100\nteams_per_repo = 100\n' >"$FLEET_CONFIG_DIR/config.toml"
+st() { "$REG" get "$1" | jq -r .status; }
+tstat() { "$REG" list --team "$1" | jq -r '[.[] | .status] | unique | join(",")'; }
+mkrepo "$T/erepo" no; echo 'package main' >"$T/erepo/src.go"; git -C "$T/erepo" add src.go; git -C "$T/erepo" -c user.email=t@t -c user.name=t commit -q -m src
+git init -q --bare "$T/erepo.git"; git -C "$T/erepo" remote add origin "$T/erepo.git"; git -C "$T/erepo" push -q origin main 2>/dev/null
+"$SCRIPTS/boot.sh" --issue DEV-501 build pk "$T/erepo" "park me" >/dev/null 2>&1
+"$REG" done build-pk/tester --outcome Shipped --summary "tests pass" >/dev/null
+nlive0="$("$REG" count-live)"; : >"$HERDR_LOG"; : >"$EVF"
+pout="$("$PK" build-pk 2>"$T/pk.err")"; rc=$?
+eq "park: exits 0" "$rc" 0
+eq "park: prints the team and reason" "$(printf '%s' "$pout" | jq -c '[.team, .parked, .reason]')" '["build-pk",true,"park"]'
+eq "park: every row is Parked" "$(tstat build-pk)" Parked
+eq "park: parked_reason is park" "$("$REG" get build-pk/builder | jq -r .parked_reason)" park
+check "park: parked_at is set" bash -c "[ -n \"\$('$REG' get build-pk/builder | jq -r '.parked_at // empty')\" ]"
+eq "park: parked_from keeps the status before (Working, and Done for the finished tester)" "$("$REG" get build-pk/builder | jq -r .parked_from),$("$REG" get build-pk/tester | jq -r .parked_from)" Working,Done
+eq "park: the team's workspace is closed" "$(grep -c '^workspace close w1' "$HERDR_LOG")" 1
+eq "park: the panes are cleared on the rows" "$("$REG" list --team build-pk | jq -r '[.[] | .pane] | unique | join(",")')" ""
+check "park: the worktrees are kept" test -d "$("$REG" get build-pk/builder | jq -r .worktree)"
+eq "park: the claim is kept (issue and claimed_by on the rows)" "$("$REG" get build-pk/lead | jq -r '.issue')" DEV-501
+eq "park: no tracker call in park, unpark or focus" "$(grep -c 'linear\.sh\|LINEAR' "$PK" "$UP" "$FO" | awk -F: '{s += $2} END {print s}')" 0
+eq "park: capacity is freed (Parked rows are not live agents)" "$("$REG" count-live)" $((nlive0 - 3))
+eq "park: parked is logged" "$(grep '"type":"parked"' "$EVF" | jq -c '[.team, .detail]')" '["build-pk","park"]'
+# runs twice / bad input
+: >"$HERDR_LOG"; at0="$("$REG" get build-pk/lead | jq -r .parked_at)"
+"$PK" build-pk >/dev/null 2>"$T/pk2.err"; rc=$?
+eq "park twice: the second is a no-op (exit 0)" "$rc" 0
+check "park twice: it says the team is already parked" grep -q 'already parked' "$T/pk2.err"
+eq "park twice: no herdr call and parked_at unchanged" "$(wc -l <"$HERDR_LOG" | tr -d ' '):$("$REG" get build-pk/lead | jq -r .parked_at)" "0:$at0"
+"$PK" build-nosuch >/dev/null 2>"$T/pk3.err"; rc=$?
+check "park: an unknown team is refused" bash -c "[ $rc -ne 0 ] && grep -q \"no team 'build-nosuch'\" '$T/pk3.err'"
+"$PK" build-pk --reason whatever >/dev/null 2>&1; check "park: a bad --reason is refused" test $? -ne 0
+FLEET_ROLE=lead "$PK" build-pk >/dev/null 2>&1; check "park: a fleet agent may not park" test $? -ne 0
+
+# status and tick leave a parked team alone
+: >"$HERDR_LOG"; sout="$("$SCRIPTS/status.sh" 2>/dev/null)"
+eq "status: a parked team is not probed" "$(grep -c 'build-pk' "$HERDR_LOG" || true)" 0
+check "status: one line for the parked team" bash -c "printf '%s\n' \"\$1\" | grep -q '^parked: build-pk (park, since .*issue DEV-501'" _ "$sout"
+eq "status: its rows are not in the table" "$(printf '%s\n' "$sout" | grep -c '^build-pk/' || true)" 0
+eq "status --json keeps the rows, Parked" "$("$SCRIPTS/status.sh" --json 2>/dev/null | jq -r '[.[] | select(.team == "build-pk") | .status] | unique | join(",")')" Parked
+for a in build-pk-lead build-pk-planner build-pk-builder build-pk-tester; do echo gone >"$AS/$a"; done
+printf 'repos = ["%s"]\n' "$T/erepo" >>"$FLEET_CONFIG_DIR/config.toml"
+rm -f "$FLEET_STATE_DIR/tick.state.json"; : >"$HERDR_LOG"
+q1="$("$SCRIPTS/tick.sh" 2>/dev/null)"; q2="$("$SCRIPTS/tick.sh" 2>/dev/null)"
+eq "tick: a parked team is never dead, stalled or needs_input" "$(printf '%s%s' "$q1" "$q2" | jq -s '[.[][]? | select(.team == "build-pk")] | length')" 0
+eq "tick: a parked team is not nudged or respawned" "$(grep -c '^agent prompt build-pk\|^agent start build-pk' "$HERDR_LOG" || true)" 0
+eq "tick: its rows stay Parked (never Stalled or Zombie)" "$(tstat build-pk)" Parked
+eq "tick: a parked team covers its repo (no repo_without_team)" "$(evc "$q1" repo_without_team)" 0
+eq "tick: a parked team is quiet" "$q2" ""
+
+# a dirty worktree, unpushed commits, herdr down: refused at once, rows unchanged
+"$SCRIPTS/boot.sh" build dk "$T/erepo" "dirty" >/dev/null 2>&1
+DKW="$("$REG" get build-dk/builder | jq -r .worktree)"; echo '// edit' >>"$DKW/src.go"
+: >"$HERDR_LOG"; "$PK" build-dk >/dev/null 2>"$T/dk.err"; rc=$?
+check "park: a dirty worktree is refused" test "$rc" -ne 0
+check "park: the refusal names the agent and what is there" grep -q 'build-dk/builder: uncommitted edits' "$T/dk.err"
+eq "park refused: no pane closed, rows unchanged" "$(grep -c '^workspace close\|^pane close' "$HERDR_LOG" || true):$(tstat build-dk)" "0:Working"
+echo 'package x' >"$DKW/new.go"; "$PK" build-dk >/dev/null 2>"$T/dk.err"
+check "park: untracked source files are refused, and named" grep -q 'build-dk/builder: uncommitted edits, untracked files (new.go)' "$T/dk.err"
+git -C "$DKW" checkout -q -- .; rm -f "$DKW/new.go"
+DKT="$("$REG" get build-dk/tester | jq -r .worktree)"; git -C "$DKT" -c user.email=t@t -c user.name=t commit -q --allow-empty -m local
+"$PK" build-dk >/dev/null 2>"$T/dk.err"; rc=$?
+check "park: unpushed commits are refused" bash -c "[ $rc -ne 0 ] && grep -q 'build-dk/tester: 1 unpushed commit' '$T/dk.err'"
+git -C "$DKT" reset -q --hard origin/main
+AGENT_LIST_FAIL=1 "$PK" build-dk >/dev/null 2>"$T/dk.err"; rc=$?
+check "park: herdr down fails cleanly" bash -c "[ $rc -ne 0 ] && grep -q 'herdr does not answer' '$T/dk.err'"
+eq "park: herdr down leaves the rows unchanged" "$(tstat build-dk)" Working
+# overlapping park and tick: one holds tick.lock, the other waits, then gives up without a change
+mkdir "$FLEET_STATE_DIR/tick.lock"; echo 99999 >"$FLEET_STATE_DIR/tick.lock/pid"
+FLEET_LOCK_WAIT_SECS=0 "$PK" build-dk >/dev/null 2>"$T/dk.err"; rc=$?
+check "park during a tick: refused, a tick is running" bash -c "[ $rc -ne 0 ] && grep -q 'a tick is running' '$T/dk.err'"
+eq "park during a tick: rows unchanged, the tick's lock kept" "$(tstat build-dk):$(cat "$FLEET_STATE_DIR/tick.lock/pid")" "Working:99999"
+"$SCRIPTS/tick.sh" >/dev/null 2>"$T/dk.err"; check "a tick during a park (lock held) skips" grep -q 'tick_skipped' "$T/dk.err"
+rm -rf "$FLEET_STATE_DIR/tick.lock"
+"$PK" build-dk >/dev/null 2>&1; check "park: frees tick.lock when it is done" test ! -e "$FLEET_STATE_DIR/tick.lock"
+
+# unpark: from the rows, with the shared resume brief, within the caps
+printf 'max_agents = %s\n' "$("$REG" count-live)" >"$FLEET_CONFIG_DIR/config.toml"
+: >"$HERDR_LOG"; FLEET_FORCE= "$UP" build-pk >/dev/null 2>"$T/up.err"; rc=$?
+check "unpark: refused at once when max_agents is full" bash -c "[ $rc -ne 0 ] && grep -q 'max_agents=' '$T/up.err'"
+eq "unpark refused: nothing started, rows still Parked" "$(grep -c '^workspace create\|^agent start' "$HERDR_LOG" || true):$(tstat build-pk)" "0:Parked"
+printf 'max_agents = 100\nmax_teams = 1\nteams_per_repo = 100\n' >"$FLEET_CONFIG_DIR/config.toml"
+"$SCRIPTS/boot.sh" build mt "$T/plain" "other" >/dev/null 2>&1
+FLEET_FORCE= "$UP" build-pk >/dev/null 2>"$T/up.err"; check "unpark: refused at once when max_teams is full" grep -q 'max_teams=1' "$T/up.err"
+"$PK" build-mt >/dev/null 2>&1
+printf 'max_agents = 100\nmax_teams = 100\nteams_per_repo = 100\n' >"$FLEET_CONFIG_DIR/config.toml"
+AGENT_LIST_FAIL=1 "$UP" build-pk >/dev/null 2>"$T/up.err"; rc=$?
+check "unpark: herdr down fails cleanly, the team stays parked" bash -c "[ $rc -ne 0 ] && [ \"\$('$REG' list --team build-pk | jq -r '[.[] | .status] | unique | join(\",\")')\" = Parked ]"
+rm -f "${AS:?}"/build-pk-*; : >"$HERDR_LOG"; : >"$EVF"; rsp0="$(jq -c '.respawns // {}' "$FLEET_STATE_DIR/tick.state.json" 2>/dev/null)"
+uout="$(FLEET_FORCE= "$UP" build-pk 2>"$T/up.err")"; rc=$?
+eq "unpark: exits 0" "$rc" 0
+eq "unpark: a new workspace for the team" "$(grep -c '^workspace create .*--label build-pk' "$HERDR_LOG")" 1
+eq "unpark: every agent is started again" "$(grep -c '^agent start build-pk-' "$HERDR_LOG")" 4
+eq "unpark: the lead is started last" "$(grep '^agent start' "$HERDR_LOG" | tail -n 1 | awk '{print $3}')" build-pk-lead
+check "unpark: with the shared resume brief" bash -c "grep -q 'You are being unparked' '$HERDR_LOG' && grep -q 'Assignment: park me' '$HERDR_LOG'"
+check "unpark: a row that was Done is told so" grep -q 'Your part was already done (Shipped: tests pass); wait for your lead' "$HERDR_LOG"
+eq "unpark: the rows are back (the Done tester stays Done)" "$(st build-pk/lead),$(st build-pk/builder),$(st build-pk/tester)" Working,Working,Done
+eq "unpark: the park fields are cleared" "$("$REG" list --team build-pk | jq -r '[.[] | (.parked_reason // ""), (.parked_from // "")] | unique | join(",")')" ""
+eq "unpark: the rows get the new workspace and panes" "$("$REG" get build-pk/lead | jq -r '[.workspace, .pane] | join(",")'):$("$REG" list --team build-pk | jq '[.[] | select(.pane == "")] | length')" "w1,p0:0"
+eq "unpark: no respawn budget is spent" "$(jq -c '.respawns // {}' "$FLEET_STATE_DIR/tick.state.json" 2>/dev/null)" "$rsp0"
+eq "unpark: unparked is logged" "$(grep -c '"type":"unparked"' "$EVF")" 1
+"$UP" build-pk >/dev/null 2>"$T/up2.err"; rc=$?
+check "unpark twice: the second is a no-op" bash -c "[ $rc -eq 0 ] && grep -q 'is not parked' '$T/up2.err'"
+"$UP" build-nosuch >/dev/null 2>&1; check "unpark: an unknown team is refused" test $? -ne 0
+"$SCRIPTS/next.sh" build-mt DEV-9 >/dev/null 2>"$T/nx.err"; check "next refuses a parked team" bash -c "grep -q 'is parked; unpark it first' '$T/nx.err'"
+
+# --after-merge: the team parks when its PR is merged, instead of next
+mkrepo "$T/erepo2" no; "$SCRIPTS/boot.sh" build am "$T/erepo2" "after merge" >/dev/null 2>&1
+"$PK" build-am --after-merge >/dev/null 2>&1
+eq "park --after-merge: the team keeps working" "$(tstat build-am)" Working
+eq "park --after-merge: its rows are marked" "$("$REG" get build-am/builder | jq -r .park_after_merge)" after-merge
+check "status: a team that parks after its merge has a line" bash -c "'$SCRIPTS/status.sh' 2>/dev/null | grep -q '^parks after merge: build-am (after-merge)'"
+"$REG" set build-am/builder pr=https://github.com/o/r/pull/77 >/dev/null; ghset 77 OPEN MERGEABLE "$GREEN" "$H1" ok
+rm -f "$FLEET_STATE_DIR/tick.state.json"; "$SCRIPTS/tick.sh" >/dev/null 2>&1
+eq "after merge: not parked while the PR is open" "$(tstat build-am)" Working
+ghset 77 MERGED UNKNOWN "$GREEN" "$H1" ok; m1="$("$SCRIPTS/tick.sh" 2>/dev/null)"
+eq "after merge: tick parks the team when its PR merges" "$(tstat build-am)" Parked
+eq "after merge: with reason after-merge" "$("$REG" get build-am/lead | jq -r .parked_reason)" after-merge
+eq "after merge: pr_merged says parked, so no next" "$(printf '%s' "$m1" | jq -c '[.[] | select(.type == "pr_merged") | [.team, .parked]]')" '[["build-am",true]]'
+check "after merge: and the tick's lock is free again" test ! -e "$FLEET_STATE_DIR/tick.lock"
+
+# focus: park every other live team; --clear unparks only those
+for t in fa fb fc; do mkrepo "$T/f$t" no; "$SCRIPTS/boot.sh" build "$t" "$T/f$t" "focus $t" >/dev/null 2>&1; done
+"$PK" build-fc >/dev/null 2>&1   # parked by hand before the focus: it must stay parked after --clear
+: >"$EVF"; fout="$("$FO" build-fa --now 2>"$T/fo.err")"; rc=$?
+eq "focus --now: exits 0" "$rc" 0
+eq "focus --now: the other live teams are parked for the focus" "$("$REG" get build-fb/lead | jq -r .parked_reason),$("$REG" get build-pk/lead | jq -r .parked_reason),$("$REG" get build-dk/lead | jq -r .parked_reason)" "focus:build-fa,focus:build-fa,park"
+eq "focus --now: the focused team keeps working" "$(tstat build-fa)" Working
+eq "focus --now: a team parked before keeps its own reason" "$("$REG" get build-fc/lead | jq -r .parked_reason)" park
+eq "focus: recorded in focus.json" "$(jq -r .team "$FLEET_STATE_DIR/focus.json")" build-fa
+check "status: the focus is one line" bash -c "'$SCRIPTS/status.sh' 2>/dev/null | grep -q '^focus: build-fa (since '"
+eq "focus: focus_set is logged" "$(grep -c '"type":"focus_set"' "$EVF")" 1
+"$FO" build-fa >/dev/null 2>"$T/fo2.err"; check "focus twice on the same team: a no-op" bash -c "[ $? -eq 0 ] && grep -q 'already on build-fa' '$T/fo2.err'"
+"$FO" build-fb >/dev/null 2>"$T/fo3.err"; check "focus on another team while one is set: refused" bash -c "grep -q 'focus is on build-fa' '$T/fo3.err'"
+"$FO" build-nosuch >/dev/null 2>&1; check "focus: an unknown team is refused" test $? -ne 0
+cout="$("$FO" --clear 2>"$T/fo.err")"; rc=$?
+eq "focus --clear: exits 0" "$rc" 0
+eq "focus --clear: unparks only the teams the focus parked" "$(tstat build-fb),$(tstat build-pk | sed 's/,Done//; s/Done,//'),$(tstat build-fc),$(tstat build-dk)" "Working,Working,Parked,Parked"
+eq "focus --clear: focus.json is gone" "$(test -e "$FLEET_STATE_DIR/focus.json" && echo yes || echo no)" no
+eq "focus --clear: focus_cleared is logged" "$(grep -c '"type":"focus_cleared"' "$EVF")" 1
+"$FO" --clear >/dev/null 2>"$T/fo.err"; check "focus --clear twice: a no-op" bash -c "[ $? -eq 0 ] && grep -q 'no focus to clear' '$T/fo.err'"
+"$FO" build-dk >/dev/null 2>"$T/fo.err"; check "focus on a parked team: refused" bash -c "[ $? -ne 0 ] && grep -q 'build-dk is parked; unpark it' '$T/fo.err'"
+# the default: the others park after their merge; --clear drops the marks it set
+"$FO" build-fa >/dev/null 2>&1
+eq "focus (default): the others are marked to park after their merge" "$("$REG" get build-fb/lead | jq -r .park_after_merge):$(tstat build-fb)" "focus:build-fa:Working"
+"$FO" --clear >/dev/null 2>&1
+eq "focus --clear: drops the after-merge marks it set" "$("$REG" get build-fb/lead | jq -r '.park_after_merge // ""')" ""
+FLEET_ROLE=lead "$FO" build-fa >/dev/null 2>&1; check "focus: a fleet agent may not focus" test $? -ne 0
+
+# bash 3.2 and BSD tools: park, unpark and focus run under /bin/bash
+"$UP" build-dk >/dev/null 2>&1
+eq "bash 3.2: park" "$(/bin/bash "$PK" build-dk 2>/dev/null | jq -r .parked)" true
+eq "bash 3.2: unpark" "$(/bin/bash "$UP" build-dk 2>/dev/null | jq -r .unparked)" true
+eq "bash 3.2: focus and --clear" "$(/bin/bash "$FO" build-dk --now 2>/dev/null | jq -r .focus):$(/bin/bash "$FO" --clear 2>/dev/null | jq -r .cleared)" "build-dk:build-dk"
+for f in park.sh unpark.sh focus.sh worktree-lib.sh; do check "bash -n (3.2) $f" /bin/bash -n "$SCRIPTS/$f"; done
+
+# ---- DEV-368 E: caps (max_teams, repos, one team per repo) ------------------------------------------------
+export FLEET_STATE_DIR="$T/cstate" FLEET_REGISTRY="$T/cstate/fleet.json" FLEET_INBOX="$T/cstate/escalations.jsonl"; mkdir -p "$FLEET_STATE_DIR"
+rm -f "${AS:?}"/*; for r in ca cb cc tool; do mkrepo "$T/c$r" no; done
+cboot() { FLEET_FORCE= "$SCRIPTS/boot.sh" build "$1" "$2" "caps" >/dev/null 2>"$T/cb.err"; }
+printf 'max_agents = 100\n' >"$FLEET_CONFIG_DIR/config.toml"
+eq "caps: max_teams defaults to 3, teams_per_repo to 1" "$(bash -c ". $SCRIPTS/common.sh; cfg_int max_teams 3; cfg_int teams_per_repo 1" | tr '\n' ,)" "3,1,"
+cboot c1 "$T/cca"; eq "caps: a first team boots" "$?" 0
+cboot c2 "$T/cca"; rc=$?
+check "caps: a second team in the same repo is refused (one team per repo)" bash -c "[ $rc -ne 0 ] && grep -q 'already has a team (build-c1); teams_per_repo=1' '$T/cb.err'"
+"$SCRIPTS/park.sh" build-c1 >/dev/null 2>&1
+cboot c2 "$T/cca"; check "caps: a parked team still covers its repo" bash -c "[ $? -ne 0 ] && grep -q 'teams_per_repo=1' '$T/cb.err'"
+printf 'max_agents = 100\nteams_per_repo = 2\n' >"$FLEET_CONFIG_DIR/config.toml"
+cboot c2 "$T/cca"; eq "caps: teams_per_repo = 2 allows a second team" "$?" 0
+cboot c3 "$T/ccb"; eq "caps: a third team boots" "$?" 0
+cboot c4 "$T/ccc"; eq "caps: a parked team holds no team slot (c1 parked, three live)" "$?" 0
+cboot c5 "$T/ctool"; rc=$?
+check "caps: a fourth live team is refused at max_teams = 3" bash -c "[ $rc -ne 0 ] && grep -q 'would be team 4; max_teams=3' '$T/cb.err'"
+eq "caps: and the refusal makes no herdr call" "$(grep -c 'build-c5' "$HERDR_LOG" || true)" 0
+printf 'max_agents = 100\nteams_per_repo = 2\nrepos = ["cca", "ccb", "%s"]\n' "$T/ccc" >"$FLEET_CONFIG_DIR/config.toml"
+cboot c5 "$T/ctool"; eq "caps: a team in an unlisted (tooling) repo takes no slot when repos is set" "$?" 0
+"$SCRIPTS/retire.sh" build-c5 >/dev/null 2>&1; mkrepo "$T/ccd" no
+printf 'max_agents = 100\nteams_per_repo = 2\nrepos = ["cca", "ccb", "ccc", "ccd"]\n' >"$FLEET_CONFIG_DIR/config.toml"
+cboot c6 "$T/ccd"; check "caps: a listed repo takes a slot (max_teams counts listed repos by name)" bash -c "[ $? -ne 0 ] && grep -q 'max_teams=3' '$T/cb.err'"
+printf 'max_agents = %s\nmax_teams = 100\nteams_per_repo = 100\n' "$("$REG" count-live)" >"$FLEET_CONFIG_DIR/config.toml"
+cboot c7 "$T/ccd"; check "caps: max_agents still applies (Parked rows not counted)" bash -c "[ $? -ne 0 ] && grep -q 'needs 4 agents; [0-9]* live, max_agents=' '$T/cb.err'"
+FLEET_FORCE=1 "$SCRIPTS/boot.sh" build c8 "$T/ccd" caps >/dev/null 2>&1; eq "caps: FLEET_FORCE=1 skips them" "$?" 0
+"$SCRIPTS/boot.sh" build c8 "$T/ccd" caps >/dev/null 2>"$T/cb.err"; check "boot: a live team name is refused" grep -q 'already live' "$T/cb.err"
+"$SCRIPTS/boot.sh" build c1 "$T/cca" caps >/dev/null 2>"$T/cb.err"; check "boot: a parked team name says so" grep -q 'build-c1 is parked; unpark it or retire it first' "$T/cb.err"
+
+# ---- DEV-368 E: lessons survive next (issue_done before the row is cleared) --------------------------------
+EVF="$FLEET_STATE_DIR/events.jsonl"; : >"$EVF"
+"$REG" set build-c3/builder issue=DEV-600 >/dev/null; "$REG" set build-c3/lead issue=DEV-600 >/dev/null
+"$REG" done build-c3/builder --outcome Shipped --summary "PR #12 merged" >/dev/null 2>&1
+"$REG" set build-c3/builder lessons="run the suite before the push" pr=https://github.com/o/r/pull/12 >/dev/null
+"$REG" reassign build-c3 DEV-601 >/dev/null
+eq "issue_done: one per row with something to keep" "$(grep -c '"type":"issue_done"' "$EVF")" 1
+eq "issue_done: the old issue, PR, outcome, summary and lessons" "$(grep '"type":"issue_done"' "$EVF" | jq -c '[.name, .issue, .pr, .outcome, .summary, .lessons]')" \
+  '["build-c3/builder","DEV-600","https://github.com/o/r/pull/12","Shipped","PR #12 merged","run the suite before the push"]'
+eq "issue_done: the row is cleared afterwards" "$("$REG" get build-c3/builder | jq -c '[.issue, .outcome, .lessons, .pr]')" '["DEV-601",null,null,null]'
+eq "issue_done: other events keep their eight fields" "$( . "$SCRIPTS/common.sh"; ev_log next team=t outcome=x lessons=y; tail -n 1 "$EVF" | jq -c 'keys | length')" 8
+"$REG" reassign build-c1 DEV-602 >/dev/null 2>"$T/ra.err"; check "reassign refuses a parked team" grep -q 'is parked; unpark it first' "$T/ra.err"
+check "SKILL.md: debrief reads issue_done" grep -q 'issue_done' "$SCRIPTS/../SKILL.md"
+export FLEET_STATE_DIR="$_estate" FLEET_REGISTRY="$_ereg"; [ -n "$_einbox" ] && export FLEET_INBOX="$_einbox" || unset FLEET_INBOX
+rm -f "$FLEET_CONFIG_DIR/config.toml"
 
 # version and docs
 SK="$SCRIPTS/.."; PLUGIN="$SK/../.."

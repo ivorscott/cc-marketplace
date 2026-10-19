@@ -35,6 +35,7 @@ done
 
 rows="$("$registry" list --team "$team" | jq -c '[.[] | select(.status != "Retired" and .tier != "Orchestrator")]')"
 [ "$(printf '%s' "$rows" | jq length)" != 0 ] || die "no live rows for team '$team'"
+! printf '%s' "$rows" | jq -e 'any(.[]; .status == "Parked")' >/dev/null || die "$team is parked; unpark it first (unpark.sh $team)"
 
 if [ -x "$FLEET_SCRIPTS/linear.sh" ]; then
   rc=0; "$FLEET_SCRIPTS/linear.sh" claim "$issue" || rc=$?

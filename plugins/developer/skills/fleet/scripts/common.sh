@@ -106,6 +106,32 @@ lease_hours() { cfg_int lease_hours 2; }
 # stays in the live registry before `registry.sh archive` moves it to fleet-archive.json (default 0 = at once).
 archive_after_days() { cfg_int archive_after_days 0; }
 
+# caps_check <team> <repo> <agents>: dies naming the cap that starting <agents> more agents of <team> in <repo>
+# would break (boot, unpark). Parked, Done and Retired rows never count, nor does <team>'s own.
+#   max_agents      agents of other teams, plus <agents>
+#   max_teams       teams with such an agent, plus this one (default 3). With `repos` set, only teams in a listed
+#                   repo take a slot, so a tooling repo counts only when it is listed.
+#   teams_per_repo  teams in the same repo, Parked ones included: a parked team still covers its repo (default 1)
+# FLEET_FORCE=1 skips all three.
+caps_check() {
+  [ "${FLEET_FORCE:-}" != 1 ] || return 0
+  local team="$1" repo="$2" need="$3" rows n cap
+  rows="$("$FLEET_SCRIPTS/registry.sh" list | jq -c --arg t "$team" '[.[] | select(.tier != "Orchestrator" and .team != $t and .status != "Retired")]')"
+  n="$(printf '%s' "$rows" | jq '[.[] | select(.status != "Done" and .status != "Parked")] | length')"; cap="$(max_agents)"
+  [ $((n + need)) -le "$cap" ] ||
+    die "$team needs $need agents; $n live, max_agents=$cap (park or retire a team, raise max_agents in $FLEET_CONFIG_DIR/config.toml, or set FLEET_FORCE=1)"
+  n="$(printf '%s' "$rows" | jq --argjson r "$(config_list repos)" --arg me "$repo" '
+    def listed($x): ($r | length) == 0 or any($r[]; . == $x or (split("/") | last) == ($x | split("/") | last));
+    if listed($me) then [.[] | select(.status != "Done" and .status != "Parked" and listed(.repo // "")) | .team] | unique | length else -1 end')"
+  cap="$(cfg_int max_teams 3)"
+  [ "$n" -lt 0 ] || [ $((n + 1)) -le "$cap" ] ||
+    die "$team would be team $((n + 1)); max_teams=$cap (park or retire a team, raise max_teams, or set FLEET_FORCE=1)"
+  n="$(printf '%s' "$rows" | jq -r --arg me "$repo" '[.[] | select(.status != "Done" and .repo == $me) | .team] | unique | join(", ")')"
+  cap="$(cfg_int teams_per_repo 1)"
+  [ -z "$n" ] || [ $(($(printf '%s' "$n" | tr ',' '\n' | grep -c .) + 1)) -le "$cap" ] ||
+    die "$repo already has a team ($n); teams_per_repo=$cap (parked teams count: they keep their repo)"
+}
+
 # free_gb: whole GiB free on the volume holding the fleet worktrees (the nearest existing
 # ancestor of $FLEET_WORKTREES). Prints nothing and returns 1 when df can't tell.
 free_gb() {
@@ -199,10 +225,11 @@ build_brief() {
   printf '%s%s' "$3" "$(contract "$1" "$2")"
 }
 
-# resume_brief <name> <expertise-file> <role brief>: what a respawned agent needs to carry on: its role
-# brief, its assignment, the last report file of its role, `git status` and `git log` of its branch,
+# resume_brief <name> <expertise-file> <role brief>: what a respawned or unparked agent needs to carry on: its
+# role brief, its assignment, the last report file of its role, `git status` and `git log` of its branch,
 # and its open escalations (no screen text: it would come back as a user turn). A lead also gets
-# the plan path (the planner's summary) and the team's rows.
+# the plan path (the planner's summary) and the team's rows. respawn.sh and unpark.sh share it; a Parked row
+# reads "your team was parked", and one that was Done when parked is told to wait for its lead.
 resume_brief() {
   local name="$1" ex="$2" role_brief="$3" row dir role team report="" gs="" gl="" esc="" plan="" rows=""
   row="$("$FLEET_SCRIPTS/registry.sh" get "$name")" || return 1
@@ -218,8 +245,15 @@ resume_brief() {
     plan="$("$FLEET_SCRIPTS/registry.sh" list --team "$team" | jq -r '[.[] | select(.name | endswith("/planner")) | .summary // ""] | first // ""')"
     rows="$("$FLEET_SCRIPTS/registry.sh" list --team "$team" | jq -r '.[] | "- \(.name): \(.status)\(if (.summary // "") != "" then " (\(.summary))" else "" end)"')"
   fi
-  printf '%s\n\nYou are being respawned: your previous session died. Carry on from where the record below says you were; do not start over.\nAssignment: %s\n' \
-    "$role_brief" "$(printf '%s' "$row" | jq -r '.assignment // ""')"
+  if [ "$(printf '%s' "$row" | jq -r .status)" = Parked ]; then
+    printf '%s\n\nYou are being unparked: your team was parked and its sessions closed. Carry on from where the record below says you were; do not start over.\nAssignment: %s\n' \
+      "$role_brief" "$(printf '%s' "$row" | jq -r '.assignment // ""')"
+    [ "$(printf '%s' "$row" | jq -r '.parked_from // ""')" != Done ] ||
+      printf 'Your part was already done (%s); wait for your lead.\n' "$(printf '%s' "$row" | jq -r '[.outcome // "", .summary // ""] | map(select(. != "")) | join(": ")')"
+  else
+    printf '%s\n\nYou are being respawned: your previous session died. Carry on from where the record below says you were; do not start over.\nAssignment: %s\n' \
+      "$role_brief" "$(printf '%s' "$row" | jq -r '.assignment // ""')"
+  fi
   [ -z "$report" ] || printf 'Your last report file: %s\n' "$report"
   [ -z "$gl" ] || printf '\ngit log -5 --oneline:\n%s\n' "$gl"
   printf '\ngit status --short:\n%s\n' "${gs:-(clean)}"
@@ -234,20 +268,26 @@ resume_brief() {
 # {at, type, team, name, issue, pr, sha, detail}; empty values are null. detail is a short reason (cut
 # at 120 characters), never brief text and never the Linear key; any other key is ignored. One `>>`
 # write. A write that fails is a warning, never a failure of the caller.
+# issue_done also takes outcome=, summary= and lessons= (what the agent itself wrote with done and debrief;
+# cut at 40, 500 and 1000 characters), added only when given.
 events_file() { printf '%s\n' "${FLEET_EVENTS:-$FLEET_STATE_DIR/events.jsonl}"; }
 ev_log() {
   local type="$1" kv k v line f; shift
-  local a_team="" a_name="" a_issue="" a_pr="" a_sha="" a_detail=""
+  local a_team="" a_name="" a_issue="" a_pr="" a_sha="" a_detail="" a_outcome="" a_summary="" a_lessons=""
   for kv in "$@"; do
     k="${kv%%=*}"; v="${kv#*=}"
     case "$k" in
       team) a_team="$v" ;; name) a_name="$v" ;; issue) a_issue="$v" ;; pr) a_pr="$v" ;; sha) a_sha="$v" ;;
       detail) a_detail="${v:0:120}" ;;
+      outcome) [ "$type" != issue_done ] || a_outcome="${v:0:40}" ;;
+      summary) [ "$type" != issue_done ] || a_summary="${v:0:500}" ;;
+      lessons) [ "$type" != issue_done ] || a_lessons="${v:0:1000}" ;;
     esac
   done
   line="$(jq -nc --arg at "${FLEET_NOW:-$(now)}" --arg type "$type" --arg team "$a_team" --arg name "$a_name" --arg issue "$a_issue" \
-    --arg pr "$a_pr" --arg sha "$a_sha" --arg detail "$a_detail" \
-    '{at: $at, type: $type, team: $team, name: $name, issue: $issue, pr: $pr, sha: $sha, detail: $detail} | with_entries(if .value == "" then .value = null else . end)')" || return 0
+    --arg pr "$a_pr" --arg sha "$a_sha" --arg detail "$a_detail" --arg o "$a_outcome" --arg s "$a_summary" --arg l "$a_lessons" \
+    '{at: $at, type: $type, team: $team, name: $name, issue: $issue, pr: $pr, sha: $sha, detail: $detail} | with_entries(if .value == "" then .value = null else . end)
+     + ({outcome: $o, summary: $s, lessons: $l} | with_entries(select(.value != "")))')" || return 0
   f="$(events_file)"
   { mkdir -p "$(dirname "$f")" && printf '%s\n' "$line" >>"$f"; } 2>/dev/null || warn "cannot write the event log $f"
   return 0
@@ -276,6 +316,26 @@ tick_state_write() { # tick_state_write <json>
   local f tmp; f="$(tick_state_file)"; mkdir -p "$(dirname "$f")"
   tmp="$(mktemp "$f.XXXXXX")"; printf '%s\n' "$1" >"$tmp" && mv "$tmp" "$f"
 }
+
+# tick_lock_take: take tick.sh's lock (the same mkdir directory, pid inside), so park, unpark and focus never run
+# while a tick does: a tick in the middle of a park would see the closed panes as Zombies. A held lock is waited
+# for, up to FLEET_LOCK_WAIT_SECS (default 30), then it returns 1 and nothing has changed. The lock is freed when
+# the caller exits. FLEET_TICK_LOCK_HELD=1 means the caller's parent (tick.sh, focus.sh) already holds it.
+tick_lock_take() {
+  [ "${FLEET_TICK_LOCK_HELD:-}" != 1 ] || return 0
+  local d="$FLEET_STATE_DIR/tick.lock" i=0 max; max=$((${FLEET_LOCK_WAIT_SECS:-30} * 10))
+  mkdir -p "$FLEET_STATE_DIR"
+  until mkdir "$d" 2>/dev/null; do
+    i=$((i + 1)); [ "$i" -le "$max" ] || return 1
+    sleep 0.1
+  done
+  printf '%s\n' "$$" >"$d/pid"; date +%s >"$d/started"
+  trap 'rm -rf "$FLEET_STATE_DIR/tick.lock"' EXIT; trap 'exit 130' INT; trap 'exit 143' TERM HUP
+  export FLEET_TICK_LOCK_HELD=1
+}
+
+# focus_file: the focus focus.sh set ({team, at}); absent when there is none.
+focus_file() { printf '%s\n' "$FLEET_STATE_DIR/focus.json"; }
 
 # forge_pr_json <pr url>: read-only PR state as JSON. Fails (stderr says why) when gh can't tell.
 forge_pr_json() {

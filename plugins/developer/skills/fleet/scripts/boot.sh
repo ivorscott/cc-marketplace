@@ -34,7 +34,7 @@
 # machines > 1, where it refuses: claims cannot be checked.
 #
 # Env: FLEET_SESSION (named herdr session, for isolated runs), FLEET_FORCE=1 (ignore
-# max_agents and min_free_gb), FLEET_MACHINE (replaces this machine's key, see machine-id.sh),
+# max_agents, max_teams, teams_per_repo and min_free_gb), FLEET_MACHINE (replaces this machine's key, see machine-id.sh),
 # FLEET_LABEL_PREFIX (claim label prefix, default "fleet:").
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
@@ -76,7 +76,10 @@ machine="$(machine_key)"
 nworkers="$(jq '.workers | length' "$tpl")"
 
 # One team name, one live team.
-[ "$("$registry" list --team "$team" --live | jq length)" = "0" ] || die "team $team is already live; retire it first"
+if [ "$("$registry" list --team "$team" --live | jq length)" != "0" ]; then
+  "$registry" list --team "$team" --live | jq -e 'any(.[]; .status == "Parked")' >/dev/null && die "team $team is parked; unpark it or retire it first"
+  die "team $team is already live; retire it first"
+fi
 
 # Claim: refuse an issue another machine holds, warn about overlapping scope.
 trim() { local v="$1"; v="${v#"${v%%[![:space:]]*}"}"; printf '%s' "${v%"${v##*[![:space:]]}"}"; }
@@ -123,11 +126,8 @@ if [ -n "$scope_arg" ]; then
     while IFS= read -r msg; do warn "$msg"; done
 fi
 
-# Concurrency cap.
-live="$("$registry" count-live)"; cap="$(max_agents)"
-if [ "${FLEET_FORCE:-}" != "1" ] && [ $((live + 1 + nworkers)) -gt "$cap" ]; then
-  die "booting $team needs $((1 + nworkers)) agents; $live live, max_agents=$cap (set FLEET_FORCE=1 or raise max_agents in $FLEET_CONFIG_DIR/config.toml)"
-fi
+# Caps: max_agents, max_teams and teams_per_repo (common.sh caps_check; Parked teams hold no agent or team slot).
+caps_check "$team" "$repo" $((1 + nworkers))
 
 # Disk floor.
 floor="$(min_free_gb)"

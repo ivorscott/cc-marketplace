@@ -11,6 +11,10 @@
 # Open escalations are listed after the table, Done agents included, Retired agents not (retire
 # closes theirs): an escalation stays open until the Orchestrator runs `registry.sh resolve`.
 #
+# Parked teams (park.sh) are never probed and never become Stalled or Zombie; the table leaves their rows out
+# and prints one line per parked team (reason, since when, issue, PR), plus a team that parks after its merge.
+# A focus (focus.sh) is one line. --json keeps every row, Parked ones with status Parked.
+#
 # --all adds the other machines: one row per claim in the JSON that `linear.sh peers` printed
 # (--claims FILE, or - for stdin). Peers are never probed; their rows show Claimed, the issue and
 # the age of their last heartbeat ("lapsed" past lease_hours, "no heartbeat" when the label has
@@ -90,7 +94,7 @@ api_error_detail() {
         else "" end' 2>/dev/null | tail -n 1 || true
 }
 
-for name in $(printf '%s' "$rows" | jq -r '.[] | select(.tier != "Orchestrator") | .name'); do
+for name in $(printf '%s' "$rows" | jq -r '.[] | select(.tier != "Orchestrator" and .status != "Parked") | .name'); do
   r="$(printf '%s' "$rows" | jq -c --arg n "$name" '.[] | select(.name == $n)')"
   ref="$(printf '%s' "$r" | jq -r .herdr_ref)"; pane="$(printf '%s' "$r" | jq -r '.pane // ""')"
   tier="$(printf '%s' "$r" | jq -r .tier)"; tm="$(printf '%s' "$r" | jq -r .team)"
@@ -153,6 +157,7 @@ disk_line
 # The ENV column appears only once the registry has a team environment; before that the
 # output is exactly the 3.0.1 table.
 printf '%s' "$out" | jq -r --argjson all "$all" --arg mykey "$mykey" --arg myname "$myname" --argjson envs "$("$registry" list --envs)" '
+  map(select(.status != "Parked")) |
   ($envs | length > 0) as $showenv |
   def envcell: ($envs[.team] // null) as $e
     | if $e == null or $e.state == "Down" then "-" elif $e.slot != null then "slot-\($e.slot)-\($e.state)" else $e.state end;
@@ -166,6 +171,18 @@ printf '%s' "$out" | jq -r --argjson all "$all" --arg mykey "$mykey" --arg mynam
     + (if $all then [mcell, (.heartbeat_age // "-")] else [] end)
     + [.herdr_ref, ((.assignment // "")[0:50])] | @tsv)' |
   column -t -s $'\t'
+# One line per parked team, and per team that parks once its PR merges.
+printf '%s' "$out" | jq -r '
+  (map(select(.status == "Parked")) | group_by(.team)[]
+    | "parked: \(.[0].team) (\(.[0].parked_reason // "park"), since \((.[0].parked_at // "?")[0:16] | sub("T"; " ")))"
+      + ([.[] | .issue // empty] | first | if . then ", issue \(.)" else "" end)
+      + ([.[] | .pr // empty] | first | if . then ", PR \(.)" else "" end)),
+  (map(select(.status != "Parked" and (.park_after_merge // "") != "")) | group_by(.team)[]
+    | "parks after merge: \(.[0].team) (\(.[0].park_after_merge))")'
+fjson="$(cat "$(focus_file)" 2>/dev/null || true)"
+if [ -n "$fjson" ] && printf '%s' "$fjson" | jq -e '.team | type == "string"' >/dev/null 2>&1; then
+  printf '%s' "$fjson" | jq -r '"focus: \(.team) (since \((.at // "?")[0:16] | sub("T"; " ")); focus.sh --clear unparks the teams it parked)"'
+fi
 open_esc="$("$registry" escalations --open --not-retired ${team:+--team "$team"})"
 if [ "$(printf '%s' "$open_esc" | jq length)" != 0 ]; then
   echo "open escalations:"

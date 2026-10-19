@@ -20,7 +20,9 @@
 #   pr_ready        the row's PR is open, mergeable, checks green (or none exist and the repo is in
 #                   no_pr_ci in config.toml), the tester's signed-off SHA is the PR head, and the
 #                   body has no "DO NOT MERGE", "merge order" or "before/after". Once per (PR, head SHA).
-#   pr_merged       the row's PR was merged; the Orchestrator answers with next.sh. Once per PR.
+#   pr_merged       the row's PR was merged; the Orchestrator answers with next.sh. Once per PR. A team marked
+#                   park_after_merge (park.sh --after-merge, focus.sh) is parked here instead, and the event has
+#                   parked: true (park_refused: true when it could not park; tick tries again every tick).
 #   repo_without_team  a repo in config.toml `repos` with no live team, when it becomes so
 #   disk, disk_ok   free disk crossed below warn_free_gb, and recovered
 #   claim_takeover  a team's issue now carries another machine's label (once per team, issue and holder)
@@ -29,6 +31,9 @@
 # With a key and linear_writes allowing it, every tick makes ONE heartbeat mutation (linear.sh heartbeat);
 # with a key, one read per claimed issue (holder), Done rows included. Tick never runs linear.sh migrate.
 # Once a week (ISO week, in the state file) tick also runs `registry.sh archive`.
+# Parked teams (park.sh): status.sh never probes them, so they get no nudge, dead, needs_input or respawn; PR
+# discovery skips them; their events carry parked: true; their rows still cover their repo (repo_without_team)
+# and their claims (the heartbeat goes on).
 # One tick at a time: tick.lock (mkdir; pid and start time inside). A tick that finds a live, recent lock
 # exits 0 quietly; a stale one (dead pid, or older than tick_lock_stale_secs, default 900) is broken.
 # PR state is read with `gh pr view` / `gh pr list` (FLEET_GH), read-only. A gh failure for one PR is logged on
@@ -219,7 +224,7 @@ if command -v "$FLEET_GH" >/dev/null 2>&1; then
       add_events "$(jq -cn --arg t "$bteam" --arg n "$bname" --arg u "$purl" --argjson told "$told" '[{type: "pr_opened", team: $t, name: $n, url: $u, lead_told: $told}]')"
       st_upd --arg u "$purl" '$st + {pr_opened_emitted: ((($st.pr_opened_emitted // []) + [$u]) | unique)}'
     fi
-  done < <("$registry" list ${team:+--team "$team"} | jq -c '.[] | select(.tier == "Worker" and .status != "Retired" and (.pr // "") == "" and ((.branch // "") | startswith("fleet/")))')
+  done < <("$registry" list ${team:+--team "$team"} | jq -c '.[] | select(.tier == "Worker" and .status != "Retired" and .status != "Parked" and (.pr // "") == "" and ((.branch // "") | startswith("fleet/")))')
 fi
 
 # --- pull requests ----------------------------------------------------------------------------
@@ -235,6 +240,9 @@ prs="$(printf '%s' "$all_rows" | jq -c '
     | select(.status != "Retired" and (.pr // "") != "")]
   | group_by(.pr) | map(. as $g | {pr: .[0].pr, team: .[0].team, name: .[0].name, repo: (.[0].repo // ""),
       signoff: ([$g[] | select((.signoff | objects | .sha) != null and ((.name // "") | endswith("/tester")) and .team == $g[0].team) | .signoff.sha] | first // null)})')"
+# Per team: parked, and the reason it parks with once its PR merges (park.sh --after-merge, focus.sh).
+parkst="$(printf '%s' "$all_rows" | jq -c '[.[] | select(type == "object" and .status != "Retired" and (.team | type) == "string")] | group_by(.team)
+  | map({(.[0].team): {parked: any(.[]; .status == "Parked"), after: ([.[] | .park_after_merge // empty | strings | select(. != "")] | first // "")}}) | add // {}')"
 if [ "$(printf '%s' "$prs" | jq length)" != 0 ]; then
   if ! command -v "$FLEET_GH" >/dev/null 2>&1; then
     warn "$FLEET_GH not found; no PR events this tick"
@@ -269,7 +277,19 @@ if [ "$(printf '%s' "$prs" | jq length)" != 0 ]; then
                and (($stf[0].pr_ready_emitted // []) | index($p.pr + "@" + $head)) == null
           then {type: "pr_ready", team: $p.team, name: $p.name, url: $p.pr, sha: $head, ci: $ci}
           else null end')"
+      # A team marked to park after its merge parks now, instead of the Orchestrator running next; one that
+      # cannot (a dirty worktree) is tried again every tick while the merged PR is on its rows.
+      pteam="$(printf '%s' "$p" | jq -r .team)"; tp="$(printf '%s' "$parkst" | jq -c --arg t "$pteam" '.[$t] // {parked: false, after: ""}')"
+      if [ "$(printf '%s' "$j" | jq -r .state)" = MERGED ] && printf '%s' "$tp" | jq -e '(.parked | not) and .after != ""' >/dev/null; then
+        if FLEET_TICK_LOCK_HELD=1 "$FLEET_SCRIPTS/park.sh" "$pteam" --reason "$(printf '%s' "$tp" | jq -r .after)" >/dev/null 2>"$ghtmp"; then
+          tp="$(printf '%s' "$tp" | jq -c '.parked = true')"; parkst="$(printf '%s' "$parkst" | jq -c --arg t "$pteam" '.[$t].parked = true')"
+        else
+          warn "could not park $pteam after its merge: $(grep -v '^fleet: warning' "$ghtmp" | head -n 1)"; tp="$(printf '%s' "$tp" | jq -c '.park_refused = true')"
+        fi
+      fi
       [ "$ev" != "null" ] || continue
+      # A parked team's events say so: the Orchestrator runs no next for it (next.sh refuses a parked team).
+      ev="$(printf '%s' "$ev" | jq -c --argjson tp "$tp" '. + (if $tp.parked then {parked: true} elif $tp.park_refused then {park_refused: true} else {} end)')"
       add_events "[$ev]"
       case "$(printf '%s' "$ev" | jq -r .type)" in
         pr_merged) st_upd --arg u "$url" '$st + {pr_merged_emitted: ((($st.pr_merged_emitted // []) + [$u]) | unique)}' ;;
