@@ -5,12 +5,14 @@
 #
 # --since takes Nd (days), Nh (hours) or Nm (minutes); default 7d. One row per PR seen in the window:
 #   ready_minutes   from the team's last `boot`/`next` before the PR's first `pr_ready` to that event
-#   rework_rounds   distinct head SHAs among the PR's `pr_ready` and `signoff` events, minus one
+#   rework_rounds   distinct head SHAs among the PR's `pr_ready` and `signoff` events, minus one (SHAs are
+#                   lowercased, and a short SHA counts as the full one it is a prefix of)
 #   stalls          `stalled` events for the team between its start and the PR's end
 #   missed_messages `brief_failed` events for the team in the window
 #   tokens          input + cache read + cache creation + output tokens of every assistant turn in
-#                   the team's transcripts (all session files in the directories of the team's rows'
-#                   `transcript` paths, live and archived) between the PR's start and its merge (or now)
+#                   the team's transcripts (only the session files on the team's rows, live and archived:
+#                   each `transcript` and the earlier ones in `transcripts`) between the PR's start and
+#                   its merge (or now); lines are parsed one at a time and unparsable ones skipped
 # Reads $FLEET_STATE_DIR/events.jsonl (FLEET_EVENTS overrides) and the registry; writes nothing.
 # UNVERIFIED: the transcript line shape (`.timestamp`, `.type == "assistant"`, `.message.usage`).
 set -euo pipefail
@@ -50,22 +52,24 @@ prs="$(printf '%s' "$events" | jq -c --argjson now "$now_epoch" '
     | {pr: $pr, team: $team, issue: ([$ev[] | select(.team == $team and .issue != null) | .issue] | last // null),
        started_at: $start_at, ready_at: ($ready.at // null), merged_at: ($merged.at // null), end_at: $end_at,
        ready_minutes: (if $ready == null then null else ((($ready.at | ep) - ($start_at | ep)) / 60 | floor) end),
-       rework_rounds: ([$mine[] | select((.type == "pr_ready" or .type == "signoff") and .sha != null) | .sha] | unique | length | (if . > 0 then . - 1 else 0 end)),
+       rework_rounds: ([$mine[] | select((.type == "pr_ready" or .type == "signoff") and .sha != null) | .sha | ascii_downcase] | unique
+         | . as $all | [.[] | . as $s | select([$all[] | select(. != $s and startswith($s))] | length == 0)]
+         | length | (if . > 0 then . - 1 else 0 end)),
        stalls: ([$ev[] | select(.type == "stalled" and .team == $team and .at >= $start_at and .at <= $end_at)] | length),
        missed_messages: ([$ev[] | select(.type == "brief_failed" and .team == $team)] | length)})')"
 
 # tokens per PR from the team's transcripts
 tokens_for() { # tokens_for <team> <from ISO> <to ISO>
-  local dirs d files=()
-  dirs="$("$FLEET_SCRIPTS/registry.sh" list --team "$1" --with-archived 2>/dev/null | jq -r '.[] | .transcript // empty | sub("/[^/]*$"; "")' | sort -u)" || dirs=""
-  while IFS= read -r d; do
-    [ -d "$d" ] || continue
-    while IFS= read -r t; do files+=("$t"); done < <(ls "$d"/*.jsonl 2>/dev/null || true)
-  done <<<"$dirs"
+  local list t files=()
+  list="$("$FLEET_SCRIPTS/registry.sh" list --team "$1" --with-archived 2>/dev/null | jq -r '.[] | ((.transcript // empty), (.transcripts // [] | if type == "array" then .[] else empty end)) | select(type == "string")' | sort -u)" || list=""
+  while IFS= read -r t; do
+    [ -f "$t" ] && files+=("$t")
+  done <<<"$list"
   [ "${#files[@]}" -gt 0 ] || { echo 0; return 0; }
-  cat "${files[@]}" 2>/dev/null | jq -rn --arg a "$2" --arg b "$3" '
+  for t in "${files[@]}"; do cat "$t"; echo; done 2>/dev/null | jq -Rn --arg a "$2" --arg b "$3" '
     def ep: sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601;
-    [inputs | select(.type == "assistant" and (.timestamp | type == "string") and (.message.usage | type == "object"))
+    [inputs | (fromjson? // empty) | select(type == "object")
+      | select(.type == "assistant" and (.timestamp | type == "string") and (.message.usage | type == "object"))
       | select((.timestamp | ep) >= ($a | ep) and (.timestamp | ep) <= ($b | ep))
       | .message.usage | (.input_tokens // 0) + (.cache_read_input_tokens // 0) + (.cache_creation_input_tokens // 0) + (.output_tokens // 0)]
     | add // 0' 2>/dev/null || echo 0

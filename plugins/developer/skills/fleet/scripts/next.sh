@@ -69,7 +69,7 @@ context_pct() {
 # clear_session <row name>: /clear a worker, then point its row's transcript at the new session file
 # (the files in its project dir that did not exist before the clear; the newest wins).
 clear_session() {
-  local name="$1" cwd dir before="" f best="" t=0 secs poll="${FLEET_TELL_POLL:-1}"
+  local name="$1" old cwd dir before="" f best="" t=0 secs poll="${FLEET_TELL_POLL:-1}"
   cwd="$(printf '%s' "$rows" | jq -r --arg n "$name" '.[] | select(.name == $n) | .cwd // ""')"
   dir=""; [ -z "$cwd" ] || dir="$(transcript_dir_for "$cwd")"
   [ -z "$dir" ] || before="$(ls "$dir"/*.jsonl 2>/dev/null || true)"
@@ -84,7 +84,10 @@ clear_session() {
     [ "$t" -ge "$secs" ] && break
     sleep "$poll"; t=$((t + 1))
   done
-  if [ -n "$best" ]; then "$registry" set "$name" transcript="$best" >/dev/null
+  if [ -n "$best" ]; then
+    old="$(printf '%s' "$rows" | jq -r --arg n "$name" '.[] | select(.name == $n) | .transcript // ""')"
+    [ -z "$old" ] || "$registry" append "$name" transcripts "$old" >/dev/null
+    "$registry" set "$name" transcript="$best" >/dev/null
   else warn "no new transcript for $name after /clear; its transcript path may be stale"; fi
 }
 
