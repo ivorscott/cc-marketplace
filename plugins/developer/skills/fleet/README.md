@@ -292,6 +292,41 @@ machines then share one key and the label and arbitration cannot tell them apart
 clone its own key: set `FLEET_MACHINE=<unique>`, or delete `$FLEET_STATE_DIR/machine-id` and, for
 the OS-derived sources, regenerate the OS id. Nothing detects a cloned id for you.
 
+## Guard residuals (4.1)
+
+The scope guard (`hooks/fleet-scope-guard.sh`) and the Bash guard (`hooks/fleet-bash-guard.sh`) catch mistakes; they are
+not a security boundary. Agents run as the same user as the Orchestrator, so a mode-600 key file is readable by any
+process of that user whatever the guards say (a Keychain item or a separate OS user is the follow-up). The guards' scope
+is frozen for B: what they deny today stays denied, and the bypass classes below are known and accepted, to be taken up
+in 4.1. Anything that newly exposes the key is a blocker; the items that touch the key are marked (key).
+
+- **Environment is an agent's own (key):** `FLEET_ROLE` is a convention, so `FLEET_ROLE= linear.sh ...` runs the script
+  as the Orchestrator would. With the role blank, `FLEET_TEST=1 FLEET_STATE_DIR=/tmp/x FLEET_CURL=<program>` still pipes
+  the key to that program: the test gate checks the state dir, not the config dir or the key source, and its live-path
+  test is textual and case-sensitive (`$HOME/.LOCAL/state/fleet` passes).
+- **Built at run time (key):** a path or name assembled by variables, `eval`, aliases, encodings, `g''rep`-style quote
+  splitting beyond what the three scans undo, or an interpreter (`python -c`, `perl -e`, `node -e`). `sh -c` and `bash -c`
+  strings are scanned as text, not parsed.
+- **Relative paths and links (key):** a relative path after a `cd` (`cd ~/.config && cat fleet/*` is denied; a two-step
+  `d=~/.config; cat $d/fleet/*` is not), a symlink the agent makes itself (`ln -s ~/.config /tmp/c; cat /tmp/c/fl*/*`),
+  and a copy of the key under another name.
+- **Quote and separator edge cases:** a `;`, `|` or `(` inside a quoted `grep` argument splits the segment, so
+  `grep -E 'a|b' -r x ~` is allowed; a backslash-newline continuation (`grep \` then `-r x ~` on the next line) resets the
+  scan; `/bin/\Find ~` and `GREP\ -r x ~` are cheap evasion variants; a mixed-case tool inside a wrapper's quoted string
+  (`watch "Grep -r x ~"`, `$(which Grep) -r x ~`) is matched in lower case only.
+- **Tool list:** GNU's abbreviated `--recurs` and the long `--directories=recurse` are not recognised, nor `bsdtar` or
+  `scp -r`. Prose over-denial is by design: an unquoted `echo Tree ~` and quoted prose that mentions `grep -r` and `~`
+  are denied (agents quote their prose); so is `ls -ltr ~; echo Find`.
+- **herdr:** `herdr --machine m1 pane run ...` and `--remote h ...` are allowed (an option that takes a value is skipped as
+  a flag); `\herdr ...` is allowed (a leading backslash is not stripped in the herdr rules); a tab after `;` is not a
+  command start; quote-split names (`H""ERDR`).
+- **Takeover:** a PR on boot's `fleet/<team>/<role>` branch whose title and body never name the issue key is not found by
+  `linear.sh takeover`'s search; house rules make every fleet PR body link its issue.
+- **Hook timing:** a hook that exceeds its timeout does not block; every case measured is well under it (0.25 s at the
+  worst), but an enormous input could still reach it.
+- **Not guard gaps, by design:** claims are not released at retire, next or a Failed row, so the machine-wide heartbeat keeps an
+  abandoned issue locked while this machine runs any team; the viewer cache saves one `Viewer` read per tick only.
+
 ## Files
 
 | Path | Purpose |
