@@ -2218,8 +2218,8 @@ check "registry.md documents the event log and nudged_at" bash -c "grep -q 'even
 
 # version and docs
 SK="$SCRIPTS/.."; PLUGIN="$SK/../.."
-eq "plugin.json version" "$(jq -r .version "$PLUGIN/.claude-plugin/plugin.json")" 3.9.0
-eq "marketplace.json developer version" "$(jq -r '.plugins[] | select(.name == "developer") | .version' "$PLUGIN/../../.claude-plugin/marketplace.json")" 3.9.0
+eq "plugin.json version" "$(jq -r .version "$PLUGIN/.claude-plugin/plugin.json")" 3.10.0
+eq "marketplace.json developer version" "$(jq -r '.plugins[] | select(.name == "developer") | .version' "$PLUGIN/../../.claude-plugin/marketplace.json")" 3.10.0
 eq "plugin.json and marketplace.json versions match" "$(jq -r .version "$PLUGIN/.claude-plugin/plugin.json")" "$(jq -r '.plugins[] | select(.name == "developer") | .version' "$PLUGIN/../../.claude-plugin/marketplace.json")"
 for k in min_free_gb warn_free_gb fleet-archive; do
   check "SKILL.md mentions $k" grep -q "$k" "$SK/SKILL.md"; check "README mentions $k" grep -q "$k" "$SK/README.md"
