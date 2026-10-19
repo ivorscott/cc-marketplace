@@ -1959,6 +1959,18 @@ done
 for c in 'ls -R ~' 'sudo find ~' 'xargs grep -r x ~' 'Grep -rn tok ~' 'RSYNC -a ~/.config /tmp' 'DU ~' 'TREE ~' 'ZIP x ~'; do
   eq "bash guard (command word): $c is denied" "$(bgh "$c")" deny
 done
+# a recursive tool anywhere in the command, after wrappers, keywords and grouping (no command-position parsing)
+for c in 'timeout 5 grep -r x ~' 'nice -n 5 grep -r x ~' 'env -i grep -r x ~' 'sudo -u me grep -r x ~' 'xargs -0 grep -r x ~' 'command -p grep -r x ~' \
+  'time -p find ~' 'if grep -r x ~; then echo y; fi' '! grep -r x ~' '{ grep -r x ~; }' 'for d in ~; do grep -r x $d; done' 'while true; do find ~; done' \
+  'stdbuf -oL grep -r x ~' 'caffeinate -i find ~' 'watch find ~' 'ionice find ~' 'TIMEOUT 5 GREP -r x ~' 'sudo FIND ~' 'cat x | RG tok ~' 'xargs -0 TREE ~' '/usr/bin/GREP -r x ~'; do
+  eq "bash guard (any word): $c is denied" "$(bgh "$c")" deny
+done
+for c in 'timeout 5 ls -l ~' 'nice -n 5 ls -ltr ~' 'echo Find ~' 'grep -n foo ~; ls -l ~' "grep -n 'a;b' f"; do
+  eq "bash guard (any word): $c is allowed" "$(bgh "$c")" allow
+done
+manyseg="$(for i in $(seq 1 2000); do printf 'ls -l x;'; done)"
+t0=$(date +%s); bg "$manyseg" >/dev/null; t1=$(date +%s)
+eq "bash guard: 2000 segments stay within 2 seconds (no fork per segment)" "$((t1 - t0 <= 2))" 1
 longcmd="$(for i in 1 2 3 4 5 6 7 8 9 10; do printf 'herdr agent read build-ft-tester; '; done)"
 t0=$(date +%s); bg "$longcmd" >/dev/null; t1=$(date +%s)
 eq "bash guard: a long command naming herdr ten times stays within 2 seconds" "$((t1 - t0 <= 2))" 1
