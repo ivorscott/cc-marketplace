@@ -11,6 +11,10 @@
 #   dead            status.sh says Zombie, on the transition; the row is also respawned (respawn.sh) within
 #                   a budget, and the second death inside the window escalates P1 instead
 #   needs_input     an agent stopped by an API error (expired login); status_detail on its row says which
+#   brief_failed    a brief never arrived (the row stays Failed): tick re-sent its pointer once and that did
+#                   not arrive either. Once per (agent, brief file)
+#   stale_version   an agent runs an older plugin version than the one installed (its row's plugin_version);
+#                   it is restarted at the next `next.sh`, never mid-task. Once per (agent, installed version)
 #   weekly_summary  the ISO week changed (the Orchestrator writes reports/fleet-metrics-<date>.md from
 #                   metrics.sh and sends one line); the first tick ever only records the week
 #   escalation      an open escalation not yet reported (keyed by agent name and escalation id)
@@ -170,6 +174,23 @@ elif rows="$("$FLEET_SCRIPTS/status.sh" ${targs[@]+"${targs[@]}"} --json 2>/dev/
         and ((($stf[0].needs_input_emitted // []) | index($k)) == null))
       | {type: "needs_input", team, name, detail: .status_detail}]')"
   st_upd --argjson rows "$rows" '$st + {needs_input_emitted: [$rows[] | select(.status == "Needs input" and (.status_detail // "") != "") | .name + "|" + .status_detail]}'
+  # A brief that did not arrive: the row stays Failed (status.sh). Re-send the pointer to the same brief file
+  # once; if that does not arrive either, one brief_failed event (a wake).
+  while IFS=$'\t' read -r fname fbrief fresent; do
+    [ -n "$fname" ] || continue
+    if [ -z "$fresent" ] && [ -n "$fbrief" ] && [ -f "$fbrief" ]; then
+      "$registry" set "$fname" brief_resent="$now_iso" >/dev/null 2>&1 || true
+      if "$FLEET_SCRIPTS/tell.sh" "$fname" - --brief-file "$fbrief" >/dev/null 2>&1; then
+        "$registry" set "$fname" status=Working brief_resent= >/dev/null 2>&1 || true
+        continue
+      fi
+    fi
+    if [ "$(jq --arg k "$fname|$fbrief" '(.brief_failed_emitted // []) | index($k) == null' "$STATE_FILE")" = true ]; then
+      add_events "$(jq -cn --arg n "$fname" --arg f "$fbrief" '[{type: "brief_failed", team: ($n | split("/")[0]), name: $n, detail: $f}]')"
+      st_upd --arg k "$fname|$fbrief" '$st + {brief_failed_emitted: ((($st.brief_failed_emitted // []) + [$k]) | unique)}'
+    fi
+  done < <(printf '%s' "$rows" | jq -r '.[] | select(.tier != "Orchestrator" and .status == "Failed" and (.brief_failed_at // "") != "")
+    | [.name, (.last_brief // ""), (.brief_resent // "")] | @tsv')
   rwin="$(cfg_int respawn_window_hours 6)"; rmax="$(cfg_int respawn_max 1)"
   while IFS= read -r zname; do
     [ -n "$zname" ] || continue
@@ -199,6 +220,21 @@ elif rows="$("$FLEET_SCRIPTS/status.sh" ${targs[@]+"${targs[@]}"} --json 2>/dev/
   st_upd --argjson rows "$rows" '$st + {status: (($st.status // {}) + ([$rows[] | {(.name): .status}] | add // {}))}'
 else
   warn "status.sh failed; no stalled/dead events this tick"
+fi
+
+# --- stale plugin version ------------------------------------------------------------------------------
+# A row booted (or restarted) by an older plugin than the one installed now. The fix is a restart at the next
+# `next.sh` (never mid-task), so this only reports it, once per (agent, installed version).
+iv="$(installed_version)"
+if [ -n "$iv" ]; then
+  while IFS=$'\t' read -r vname vteam pv; do
+    [ -n "$vname" ] && [ -n "$pv" ] || continue
+    version_gt "$iv" "$pv" || continue
+    if [ "$(jq --arg k "$vname|$iv" '(.stale_emitted // []) | index($k) == null' "$STATE_FILE")" = true ]; then
+      add_events "$(jq -cn --arg n "$vname" --arg t "$vteam" --arg p "$pv" --arg i "$iv" '[{type: "stale_version", team: $t, name: $n, detail: ("runs " + $p + ", installed " + $i + "; restarted at the next next.sh")}]')"
+      st_upd --arg k "$vname|$iv" '$st + {stale_emitted: ((($st.stale_emitted // []) + [$k]) | unique)}'
+    fi
+  done < <("$registry" list --live ${team:+--team "$team"} | jq -r '.[] | select(.tier != "Orchestrator") | [.name, .team, (.plugin_version // "")] | @tsv')
 fi
 
 # --- escalations ------------------------------------------------------------------------------
@@ -335,14 +371,15 @@ while IFS=$'\t' read -r etype eteam ename eurl esha; do
   [ -n "$etype" ] || continue
   [ "$eurl" != - ] || eurl=""; [ "$esha" != - ] || esha=""; [ "$eteam" != - ] || eteam=""
   ev_log "$etype" team="$eteam" name="$ename" pr="$eurl" sha="$esha"
-done < <(jq -r '.[] | select(.type | IN("pr_opened", "pr_ready", "pr_merged", "stalled", "dead", "needs_input")) | [.type, (.team // "-" | if . == "" then "-" else . end), .name, (.url // "-"), (.sha // "-")] | @tsv' "$EVENTS_FILE")
+done < <(jq -r '.[] | select(.type | IN("pr_opened", "pr_ready", "pr_merged", "stalled", "dead", "needs_input", "stale_version")) | [.type, (.team // "-" | if . == "" then "-" else . end), .name, (.url // "-"), (.sha // "-")] | @tsv' "$EVENTS_FILE")
 
 # The state is rebuilt from what is live, so it cannot grow without bound: reported-once keys survive only while
 # the thing they describe (a PR on a row, an open escalation, a claimed issue, a recent respawn) still exists.
 live_prs="$("$registry" list | jq -c '[.[] | select(.status != "Retired") | .pr // empty]')"
 live_esc="$("$registry" escalations --open | jq -c '[.[] | .name + "|" + .id]')"
 live_claims="$("$registry" list --live | jq -c '[.[] | select((.issue // "") != "") | .team + "|" + .issue]')"
-st_upd --argjson prs "$live_prs" --argjson esc "$live_esc" --argjson cl "$live_claims" --argjson now "$now_epoch" --argjson w "$(cfg_int respawn_window_hours 6)" '
+live_names="$("$registry" list --live | jq -c '[.[] | .name]')"
+st_upd --argjson prs "$live_prs" --argjson esc "$live_esc" --argjson cl "$live_claims" --argjson live_names "$live_names" --argjson now "$now_epoch" --argjson w "$(cfg_int respawn_window_hours 6)" '
   def inrecent: map(select(. > $now - $w * 3600));
   $st
   + (if .pr_ready_emitted then {pr_ready_emitted: [.pr_ready_emitted[] | select(split("@")[0] as $u | $prs | index($u))]} else {} end)
@@ -350,6 +387,8 @@ st_upd --argjson prs "$live_prs" --argjson esc "$live_esc" --argjson cl "$live_c
   + (if .pr_opened_emitted then {pr_opened_emitted: [.pr_opened_emitted[] | select(. as $u | $prs | index($u))]} else {} end)
   + (if .escalations_emitted then {escalations_emitted: [.escalations_emitted[] | select(. as $k | $esc | index($k))]} else {} end)
   + (if .takeover_emitted then {takeover_emitted: [.takeover_emitted[] | select(split("|")[0:2] | join("|") as $k | $cl | index($k))]} else {} end)
+  + (if .stale_emitted then {stale_emitted: [.stale_emitted[] | select(split("|")[0] as $n | $live_names | index($n))]} else {} end)
+  + (if .brief_failed_emitted then {brief_failed_emitted: [.brief_failed_emitted[] | select(split("|")[0] as $n | $live_names | index($n))]} else {} end)
   + (if .respawns then {respawns: (.respawns | with_entries(.value |= inrecent) | with_entries(select(.value | length > 0)))} else {} end)'
 tick_state_write "$(cat "$STATE_FILE")"
 [ "$(jq length "$EVENTS_FILE")" = 0 ] || cat "$EVENTS_FILE"

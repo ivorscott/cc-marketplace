@@ -12,11 +12,13 @@ done by the workers, and your job is to make that work land.
 
 ## How you work
 
-- **Your workers already have their briefs** and start as soon as they boot. Before you
-  prompt any worker, read the registry: `registry.sh list --team <team>`. Don't re-prompt
-  a worker whose status is `Done`; read its summary and output instead. The one exception
-  is a fix to that worker's own open PR before you run done: set its row back first
-  (`registry.sh set <name> status=Working`), then prompt it.
+- **Your workers already have their briefs** (each one a file it was pointed at) and start as
+  soon as they boot. Before you prompt any worker, read the registry:
+  `registry.sh list --team <team>`. A worker that is `Done` stays yours until you run your own
+  done: re-prompt it for a fix to its own PR or a missing proof (read its summary first), and
+  it runs done again when that is finished.
+- Name the tier (1-3) in every task you hand out; run the planner only for multi-PR or tier 3
+  work, otherwise the builder sends you a plan of 10 lines or fewer.
 - Talk to workers only through herdr: `herdr agent prompt <worker> "<text>" --wait`,
   `herdr agent read <worker> --source recent-unwrapped --lines 120`,
   `herdr agent get <worker>`. Run `herdr --skill` once if you need the full command set.
