@@ -290,7 +290,6 @@ check "boot: env dir exists but no kubeconfig file yet" test -d "$FLEET_STATE_DI
 eq "boot: no cluster created" "$(calls up)" 0
 check "boot: tester allow has env.sh up with the scripts path" grep -q "env.sh up" <(grep '^agent start build-envt-tester' "$HERDR_LOG")
 eq "boot: the Linear key is dropped in each claude pane before its agent starts" "$(awk '/^pane run .*unset LINEAR_API_KEY/ {u++} /^agent start/ {if (u <= a) bad++; a++} END {print a + 0, bad + 0}' "$HERDR_LOG")" "$(grep -c '^agent start' "$HERDR_LOG") 0"
-eq "boot: the key unset is typed for every kind of agent, not only claude" "$(grep -c '\[ "\$kind" != "claude" \] || hd pane run' "$SCRIPTS/boot.sh" || true)" 0
 eq "boot: no unsubstituted {{scripts}}" "$(grep -c '{{scripts}}' "$HERDR_LOG")" 0
 check "boot: tester allow has the team-scoped kubectl context" grep -q -- "kubectl --context fleet-build-envt get" <(grep '^agent start build-envt-tester' "$HERDR_LOG")
 eq "boot: no unsubstituted {{team}} or {{worktree}} in an allow list" "$(grep '^agent start' "$HERDR_LOG" | grep -c '{{team}}\|{{worktree}}')" 0
@@ -314,6 +313,11 @@ cp "$FLEET_CONFIG_DIR/config.toml" "$T/config.perm.bak"; printf 'permission_mode
 : >"$HERDR_LOG"; "$SCRIPTS/boot.sh" build envc "$T/repo" task >/dev/null 2>&1
 eq "boot: config.toml permission_mode is used" "$(grep '^agent start' "$HERDR_LOG" | grep -c -- '--permission-mode manual')" "$(grep -c '^agent start' "$HERDR_LOG")"
 cp "$T/config.perm.bak" "$FLEET_CONFIG_DIR/config.toml"
+# every kind of agent gets the unset, not only claude (a codex pane would keep the key)
+printf '#!/bin/sh\nexit 0\n' >"$T/bin/codex"; chmod +x "$T/bin/codex"
+jq '.workers |= map(if .role == "builder" then . + {kind: "codex"} else . end)' "$SCRIPTS/../templates/build.json" >"$T/codex-tpl.json"
+: >"$HERDR_LOG"; "$SCRIPTS/boot.sh" "$T/codex-tpl.json" cdx "$T/repo" task >/dev/null 2>&1
+eq "boot: a codex agent's pane gets the key unset before its agent starts (every start has its unset first)" "$(awk '/^pane run .*unset LINEAR_API_KEY/ {u++} /^agent start/ {if (u <= a) bad++; a++} /^agent start build-cdx-builder --kind codex/ {c = 1} END {print c + 0, bad + 0}' "$HERDR_LOG")" "1 0"
 # A start eaten by a still-starting shell is retried once, not left a Zombie
 : >"$HERDR_LOG"; export DEAD_ONCE="$T/dead_once"; : >"$DEAD_ONCE"
 "$SCRIPTS/boot.sh" build envr "$T/repo" task >"$T/envr.out" 2>&1
@@ -1940,6 +1944,11 @@ done
 # LOW: the own team is the exact herdr names of its rows in the registry, not a name prefix
 eq "bash guard: a name with the team's prefix that is not a row of the team is denied" "$(bg "herdr agent prompt build-ft-ghost hi" lead)" deny
 eq "bash guard: a Retired row of the team is not a target" "$(bg "herdr agent prompt build-ft-old hi" lead)" deny
+# NH1 in the bash guard: the parent-directory checks ignore case too
+for c in 'cat ~/.CONFIG/f*/*' 'cat ~/.Config/fl*/*' 'cd ~/.CONFIG && cat fleet/*' 'grep -r tok ~/.CONFIG' 'find ~/.CONFIG' 'tar cf /tmp/x.tar ~/.CONFIG' 'cp -r ~/.Config /tmp/c' 'cat ~/.CONFIG/FLEET/x' 'rg tok $HOME/.CONFIG'; do
+  eq "bash guard (NH1): $c is denied" "$(bgh "$c")" deny
+done
+eq "bash guard (NH1): a similar name is still allowed" "$(bgh 'cat ~/.CONFIG/fleetish/x')" allow
 eq "bash guard: herdr pane read is denied (another pane's screen)" "$(bg "herdr pane read p1")" deny
 # NH1: APFS ignores case, so the key by another case is the key
 eq "guard (NH1): Read of the key in other case is denied" "$(gin Read "$FLEET_CONFIG_DIR/$(printf '%s' "$kf" | tr a-z A-Z)" | FLEET_ROLE=lead "$GUARD" | dec)" deny
@@ -1954,7 +1963,8 @@ eq "NH2: linear.sh refuses a fleet agent" "$rc:$(grep -c 'may not run it' "$T/nh
 eq "NH2: and nothing reached the agent's own transport" "$(wc -c <"$T/captured" | tr -d ' ')" 0
 env -u FLEET_TEST CAPTURE="$T/captured" FLEET_CURL="$T/capture.sh" LINEAR_URL=http://127.0.0.1:9/x LINEAR_API_KEY=KEYFIXTURE-nh2 FLEET_STATE_DIR="$T/nh2state" "$SCRIPTS/linear.sh" whoami >/dev/null 2>&1
 eq "NH2: outside FLEET_TEST FLEET_CURL is ignored (the key never reaches a program of the caller's)" "$(grep -c KEYFIXTURE "$T/captured" || true)" 0
-eq "NH2: outside FLEET_TEST the endpoint and transport are fixed in the code" "$(grep -c '^else FLEET_CURL=curl; LINEAR_URL="https://api.linear.app/graphql"; fi' "$SCRIPTS/linear.sh")" 1
+eq "NH2: curl is called with -q first (no ~/.curlrc)" "$(dbreset; LINEAR_API_KEY="$LINEAR_STUB_KEY" "$LIN" holder DEV-1 >/dev/null 2>&1; awk '{print $1}' "$LINEAR_ARGV_LOG" | sort -u)" "-q"
+check "NH2: outside the tests curl comes from a fixed list of absolute paths, not the caller's PATH" bash -c "grep -q 'for _c in /usr/bin/curl ' '$SCRIPTS/linear.sh'"
 eq "bash guard: an unreadable registry denies every target" "$(jq -nc '{tool_name: "Bash", tool_input: {command: "herdr agent read build-ft-tester"}}' | FLEET_STATE_DIR="$T/nostate" FLEET_ROLE=worker FLEET_TEAM=build-ft "$BG" | dec)" deny
 eq "bash guard: the Orchestrator is never restricted" "$(jq -nc '{tool_name: "Bash", tool_input: {command: "herdr pane run p1 ls"}}' | env -u FLEET_ROLE "$BG" | dec)" allow
 check "boot: workers get no blanket Bash(herdr:*)" bash -c "! grep -q 'Bash(herdr:\*)' '$SCRIPTS/boot.sh'"

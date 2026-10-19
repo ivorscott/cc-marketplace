@@ -29,11 +29,14 @@ if printf '%s' "$cmd" | grep -qi 'linear_api_key'; then
   deny "fleet bash guard: the command names the Linear key; only the Orchestrator reads it."
 fi
 
+
 # --- the key's directory ------------------------------------------------------------------------------------
 home="${HOME:-/nonexistent}"
 xdg="${XDG_CONFIG_HOME:-$home/.config}"
 kdir="${FLEET_CONFIG_DIR:-$xdg/fleet}"
 kreal="$(cd "$kdir" 2>/dev/null && pwd -P || printf '%s' "$kdir")"
+# Every path below is compared in lower case: APFS (macOS) ignores case, so ~/.CONFIG/Fleet is the key's directory.
+kreal="$(printf '%s' "$kreal" | tr 'A-Z' 'a-z')"
 # lexnorm <absolute path>: collapse ".", ".." and repeated slashes, without touching the filesystem.
 lexnorm() {
   local acc="" seg IFS=/
@@ -42,7 +45,7 @@ lexnorm() {
     case "$seg" in "" | .) ;; ..) acc="${acc%/*}" ;; *) acc="$acc/$seg" ;; esac
   done
   set +f
-  printf '%s\n' "${acc:-/}"
+  printf '%s\n' "${acc:-/}" | tr 'A-Z' 'a-z'
 }
 # at_or_above <dir>: the key's directory is <dir> or lies below it (as written or resolved).
 at_or_above() {

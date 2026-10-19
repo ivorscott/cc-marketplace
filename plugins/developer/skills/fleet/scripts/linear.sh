@@ -70,8 +70,19 @@ set -euo pipefail
 # The Orchestrator's script: a fleet agent (FLEET_ROLE set) never runs it, and the transport is fixed outside the
 # tests, so an agent cannot point FLEET_CURL or LINEAR_URL at a program of its own and have the key piped to it.
 [ -z "${FLEET_ROLE:-}" ] || die "linear.sh is the Orchestrator's; a fleet agent may not run it"
-if [ "${FLEET_TEST:-}" = 1 ]; then FLEET_CURL="${FLEET_CURL:-curl}"; LINEAR_URL="${LINEAR_URL:-https://api.linear.app/graphql}"
-else FLEET_CURL=curl; LINEAR_URL="https://api.linear.app/graphql"; fi
+# Outside the tests curl is an absolute path from a fixed list (the caller's PATH is only a last resort) and runs
+# with -q as its first argument (no ~/.curlrc, which could set a proxy or a trace file). FLEET_CURL and LINEAR_URL
+# are honoured only under FLEET_TEST=1, which common.sh refuses when FLEET_STATE_DIR is the live default.
+# RESIDUAL, accepted (DEV-368): FLEET_ROLE is an environment convention. An agent can blank it (`FLEET_ROLE= ...`)
+# and run this script as the Orchestrator would, and the key file is readable by any process of the same user in
+# any case. The guards catch mistakes; they are not a security boundary (README). Keychain follow-up: Ivor.
+if [ "${FLEET_TEST:-}" = 1 ]; then FLEET_CURL="${FLEET_CURL:-curl}"; LINEAR_URL="${LINEAR_URL:-https://api.linear.app/graphql}"; CURL_Q=-q
+else
+  FLEET_CURL=""; for _c in /usr/bin/curl /opt/homebrew/bin/curl /usr/local/bin/curl /bin/curl; do [ -x "$_c" ] && { FLEET_CURL="$_c"; break; }; done
+  [ -n "$FLEET_CURL" ] || FLEET_CURL="$(command -v curl || true)"
+  [ -n "$FLEET_CURL" ] || die "no curl found"
+  LINEAR_URL="https://api.linear.app/graphql"; CURL_Q=-q
+fi
 READONLY=0
 KEY=""
 WMODE="$(linear_writes)"
@@ -108,7 +119,7 @@ gql() { # gql <operation name> <query> <variables json> → the response, errors
   load_key
   body="$(jq -nc --arg o "$1" --arg q "$2" --argjson v "${3:-{\}}" '{operationName: $o, query: $q, variables: $v}')"
   resp="$(printf 'header = "Authorization: %s"\n' "$KEY" |
-    "$FLEET_CURL" -sS -K - -X POST -H 'Content-Type: application/json' -d "$body" "$LINEAR_URL")" || die "Linear request failed"
+    "$FLEET_CURL" ${CURL_Q:+"$CURL_Q"} -sS -K - -X POST -H 'Content-Type: application/json' -d "$body" "$LINEAR_URL")" || die "Linear request failed"
   printf '%s' "$resp" | jq -e 'type == "object"' >/dev/null 2>&1 || die "Linear returned no JSON"
   err="$(printf '%s' "$resp" | jq -r '.errors[0].message // empty')"
   [ -z "$err" ] || die "Linear: $err"

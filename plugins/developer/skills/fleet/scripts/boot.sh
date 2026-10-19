@@ -202,7 +202,8 @@ start_agent_once() { # start_agent_once <agent> <kind> <pane> <model> <tier> <wo
   # herdr starts the canonical `claude` executable, so `env -u` cannot prefix it. The pane's shell
   # drops the Linear key first, so the harness and every Bash call it makes start without it.
   # Every kind of agent, not only claude: a codex pane would otherwise keep the key. A failure is a warning.
-  hd pane run "$pane" 'unset LINEAR_API_KEY' >/dev/null 2>&1 || warn "could not type the key unset into pane $pane; $agent may inherit LINEAR_API_KEY"
+  # A failed unset leaves the key in the pane: the agent is not started there (a Zombie, retried once by start_agent).
+  hd pane run "$pane" 'unset LINEAR_API_KEY' >/dev/null 2>&1 || { warn "could not type the key unset into pane $pane; not starting $agent there"; printf 'Zombie'; return 0; }
   if [ "$kind" = "claude" ]; then
     while IFS= read -r -d '' a; do args+=("$a"); done < <(claude_args "$4" "$5" "$6" "${7:-[]}")
   fi

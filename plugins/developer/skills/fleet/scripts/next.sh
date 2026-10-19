@@ -37,8 +37,9 @@ done
 rows="$("$registry" list --team "$team" | jq -c '[.[] | select(.status != "Retired" and .tier != "Orchestrator")]')"
 [ "$(printf '%s' "$rows" | jq length)" != 0 ] || die "no live rows for team '$team'"
 
-if [ -x "$FLEET_SCRIPTS/linear.sh" ]; then
-  rc=0; "$FLEET_SCRIPTS/linear.sh" claim "$issue" || rc=$?
+# A linear.sh that is missing or not executable counts as claims unavailable (3), so the machines rule still applies.
+rc=3; if [ -x "$FLEET_SCRIPTS/linear.sh" ]; then rc=0; "$FLEET_SCRIPTS/linear.sh" claim "$issue" || rc=$?; fi
+if true; then
   case "$rc" in
     0) ;;
     3) if [ "$(cfg_int machines 1)" -gt 1 ]; then die "claims are unavailable (no Linear key, or linear_writes off) and machines > 1 in config.toml, so $issue cannot be claimed. $team keeps its current issue"; fi
