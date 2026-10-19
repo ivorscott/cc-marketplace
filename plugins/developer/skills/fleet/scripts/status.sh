@@ -27,6 +27,8 @@
 #   Stalled      herdr says idle/done, but the agent neither finished nor declared waiting, and it has no
 #                background task running (a started task with no notification yet, or "N shell(s)" /
 #                "N monitor(s)" in the pane footer when there is no transcript, counts as Working)
+#   Needs input  also: the newest assistant line of its transcript is an API error (isApiErrorMessage);
+#                `status_detail` on the row says "login expired" or "API error" (and the status shows it)
 #   Zombie       the agent is gone: herdr can't find it, or its pane is back at the shell
 #                (herdr can still report a dead pane as idle, so the process is checked)
 set -euo pipefail
@@ -75,6 +77,19 @@ bg_busy() {
   footer_bg_running "$(hd agent read "$2" --source visible 2>/dev/null || true)"
 }
 
+# api_error_detail <transcript>: "login expired" or "API error" when the newest assistant line of the
+# transcript is an API error message (isApiErrorMessage), else nothing. Lines are parsed one at a time;
+# a bad line is skipped. UNVERIFIED: the line shape (.type == "assistant", .isApiErrorMessage, the text
+# in .message.content[].text) is what Claude Code writes today (DEV-368).
+api_error_detail() {
+  [ -n "$1" ] && [ -f "$1" ] || return 0
+  tail -n 40 "$1" 2>/dev/null | jq -Rr 'fromjson? // empty | select(type == "object" and .type == "assistant")
+      | if .isApiErrorMessage == true then
+          ([.message.content? | if type == "array" then .[] | select(type == "object") | .text? // empty elif type == "string" then . else empty end] | join(" ")) as $t
+          | (if ($t | test("login|log in|authenticat|expired|401|unauthorized"; "i")) then "login expired" else "API error" end)
+        else "" end' 2>/dev/null | tail -n 1 || true
+}
+
 for name in $(printf '%s' "$rows" | jq -r '.[] | select(.tier != "Orchestrator") | .name'); do
   r="$(printf '%s' "$rows" | jq -c --arg n "$name" '.[] | select(.name == $n)')"
   ref="$(printf '%s' "$r" | jq -r .herdr_ref)"; pane="$(printf '%s' "$r" | jq -r '.pane // ""')"
@@ -88,7 +103,13 @@ for name in $(printf '%s' "$rows" | jq -r '.[] | select(.tier != "Orchestrator")
       jq -e '.result.process_info | .foreground_process_group_id != .shell_pid' >/dev/null || pane_alive=false
   fi
 
+  detail=""
+  if [ "$herdr_state" != "gone" ] && $pane_alive && [ "$herdr_state" != "working" ]; then
+    detail="$(api_error_detail "$(printf '%s' "$r" | jq -r '.transcript // ""')")"
+  fi
+
   if [ "$herdr_state" = "gone" ] || ! $pane_alive; then new="Zombie"
+  elif [ -n "$detail" ]; then new="Needs input"
   else
     case "$herdr_state" in
       working) new="Working" ;;
@@ -103,6 +124,7 @@ for name in $(printf '%s' "$rows" | jq -r '.[] | select(.tier != "Orchestrator")
     esac
   fi
   [ "$new" != "$old" ] && "$registry" set "$name" status="$new" >/dev/null
+  [ "$detail" = "$(printf '%s' "$r" | jq -r '.status_detail // ""')" ] || "$registry" set "$name" status_detail="$detail" >/dev/null
 done
 
 filter='.'; $problems && filter='[.[] | select(.status == "Stalled" or .status == "Zombie" or .status == "Needs input" or (.escalation // "") != "")]'
@@ -139,7 +161,7 @@ printf '%s' "$out" | jq -r --argjson all "$all" --arg mykey "$mykey" --arg mynam
     elif .machine == $mykey and $myname != "" then " (\($myname))" else "" end);
   (["AGENT", "TIER", "STATUS", "ESC"] + (if $showenv then ["ENV"] else [] end) + (if $showissue then ["ISSUE"] else [] end)
     + (if $all then ["MACHINE", "HEARTBEAT"] else [] end) + ["HERDR", "ASSIGNMENT"] | @tsv),
-  (sort_by(.team, .tier)[] | [.name, .tier, .status, (if (.escalation // "") == "" then "-" else .escalation end)]
+  (sort_by(.team, .tier)[] | [.name, .tier, (.status + (if (.status_detail // "") != "" then " (\(.status_detail))" else "" end)), (if (.escalation // "") == "" then "-" else .escalation end)]
     + (if $showenv then [envcell] else [] end) + (if $showissue then [(.issue // "-")] else [] end)
     + (if $all then [mcell, (.heartbeat_age // "-")] else [] end)
     + [.herdr_ref, ((.assignment // "")[0:50])] | @tsv)' |

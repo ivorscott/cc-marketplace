@@ -248,7 +248,8 @@ has `type`, `team`, `name` and, where a PR exists, the full `url`. Act on each:
 - `pr_ready`: send ONE `PushNotification` with the full PR URL (it is emitted once per PR and head SHA).
 - `pr_merged`: run `$F/next.sh <team> <next issue> [--brief TEXT]`. It reassigns every row, sends workers
   `/clear`, compacts the lead when its context is large, and briefs the lead.
-- `dead`: tick already respawned the agent (`respawn.sh`) unless it died twice inside `respawn_window_hours` (default 6; `respawn_max`, default 1), in which case it filed a P1 escalation instead. Done and Retired rows are never respawned.
+- `needs_input`: the agent stopped on an API error (usually an expired login). The row shows `Needs input (login expired)` or `(API error)`; it is never nudged as stalled, and tick sends it one `continue` per 30 minutes, which works once the user has run /login. Tell the user.
+- `dead`: the row has been a Zombie on two ticks in a row (and `herdr agent list` works; when herdr itself is down tick skips classification and respawn), so tick already respawned the agent (`respawn.sh`) unless it died twice inside `respawn_window_hours` (default 6; `respawn_max`, default 1), in which case it filed a P1 escalation instead. Done and Retired rows are never respawned.
 - `stalled`: the agent was nudged a tick ago ("run your done step or say what is missing") and is still stalled; there is one nudge per stall, flagged by `nudged_at` on the row.
 - `weekly_summary`: once per ISO week: run `$F/metrics.sh --since 7d`, write `reports/fleet-metrics-<date>.md` from it, and send Ivor one line.
 - `pr_opened`: a builder opened a PR without running done; tick recorded it on the row and told the lead.

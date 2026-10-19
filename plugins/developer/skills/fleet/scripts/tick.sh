@@ -10,6 +10,7 @@
 #   stalled         still Stalled a tick after the nudge (a newly Stalled agent gets one nudge, no event)
 #   dead            status.sh says Zombie, on the transition; the row is also respawned (respawn.sh) within
 #                   a budget, and the second death inside the window escalates P1 instead
+#   needs_input     an agent stopped by an API error (expired login); status_detail on its row says which
 #   weekly_summary  the ISO week changed (the Orchestrator writes reports/fleet-metrics-<date>.md from
 #                   metrics.sh and sends one line); the first tick ever only records the week
 #   escalation      an open escalation not yet reported (keyed by agent name and escalation id)
@@ -47,34 +48,29 @@ done
 
 # --- one tick at a time -------------------------------------------------------------------------------
 # An mkdir lock (no flock on macOS) around the whole tick, from the state read to the state write, with the
-# holder's pid and start time inside. Held by a live, recent tick: this one exits 0, quietly (tick_skipped
-# on stderr). Stale (pid gone, or older than tick_lock_stale_secs, default 900): broken with a warning.
+# holder's pid and start time inside. Held: this tick exits 0, quietly (tick_skipped on stderr). The trap frees
+# the lock on exit and on INT/TERM/HUP, so there is no stale-lock breaking; only SIGKILL or a power cut leaves
+# one behind, and then the message names the directory to remove.
 lockdir="$FLEET_STATE_DIR/tick.lock"
 mkdir -p "$FLEET_STATE_DIR"
 if ! mkdir "$lockdir" 2>/dev/null; then
-  holder_pid="$(cat "$lockdir/pid" 2>/dev/null || true)"; holder_at="$(cat "$lockdir/started" 2>/dev/null || true)"
-  stale=false
-  now_e="$(date +%s)"
-  stale_secs="$(cfg_int tick_lock_stale_secs 900)"
-  if [ -n "$holder_pid" ] && ! kill -0 "$holder_pid" 2>/dev/null; then stale=true; fi
-  case "$holder_at" in "" | *[!0-9]*) ;; *) [ $((now_e - holder_at)) -gt "$stale_secs" ] && stale=true ;; esac
-  if $stale; then
-    warn "breaking a stale tick lock (pid ${holder_pid:-unknown}, started ${holder_at:-unknown})"
-    rm -rf "$lockdir"
-    mkdir "$lockdir" 2>/dev/null || { printf 'fleet: tick_skipped: another tick took the lock\n' >&2; exit 0; }
-  else
-    printf 'fleet: tick_skipped: another tick holds %s (pid %s)\n' "$lockdir" "${holder_pid:-unknown}" >&2; exit 0
-  fi
+  printf 'fleet: tick_skipped: another tick holds %s (pid %s); remove it if no tick is running\n' "$lockdir" "$(cat "$lockdir/pid" 2>/dev/null || echo unknown)" >&2; exit 0
 fi
 printf '%s\n' "$$" >"$lockdir/pid"; date +%s >"$lockdir/started"
 ghtmp=""
-cleanup() { rm -rf "$lockdir"; if [ -n "$ghtmp" ]; then rm -f "$ghtmp"; fi; }
-trap cleanup EXIT
-
 FLEET_TICK_ID="$(now)-$$"; export FLEET_TICK_ID # one tick, one Linear viewer read (linear.sh caches by it)
-state="$(tick_state)"
-events="[]"
-add_events() { events="$(jq -cn --argjson a "$events" --argjson b "$1" '$a + $b')"; }
+
+# State and events live in files, never in argv (ARG_MAX). st_upd <jq args> '<program using $st>'
+# replaces the state with the program's result.
+STATE_FILE="$(mktemp "${TMPDIR:-/tmp}/fleet-tick-state.XXXXXX")"; EVENTS_FILE="$(mktemp "${TMPDIR:-/tmp}/fleet-tick-events.XXXXXX")"
+cleanup() { rm -rf "$lockdir"; rm -f "$STATE_FILE" "$STATE_FILE.new" "$EVENTS_FILE" "$EVENTS_FILE.new"; if [ -n "$ghtmp" ]; then rm -f "$ghtmp"; fi; }
+trap cleanup EXIT; trap 'exit 130' INT; trap 'exit 143' TERM HUP
+tick_state >"$STATE_FILE"; echo '[]' >"$EVENTS_FILE"
+st_upd() {
+  local n=$# prog; prog="${!n}"; set -- "${@:1:$((n - 1))}"
+  jq -c "$@" ". as \$st | $prog" "$STATE_FILE" >"$STATE_FILE.new" && mv "$STATE_FILE.new" "$STATE_FILE"
+}
+add_events() { jq -c --argjson b "$1" '. + $b' "$EVENTS_FILE" >"$EVENTS_FILE.new" && mv "$EVENTS_FILE.new" "$EVENTS_FILE"; }
 
 # --- claims: heartbeat, takeover -------------------------------------------------------
 # One heartbeat mutation per tick, however many issues are claimed (linear.sh heartbeat), and only when
@@ -86,17 +82,17 @@ heartbeat() {
   local rows_n; rows_n="$(printf '%s' "$claim_rows" | jq length)"
   if "$FLEET_SCRIPTS/linear.sh" has-key >/dev/null 2>&1; then
     if [ "$(linear_writes)" = off ]; then
-      if [ "$rows_n" != 0 ] && [ "$(printf '%s' "$state" | jq -r '.claims_readonly_emitted // false')" != true ]; then
+      if [ "$rows_n" != 0 ] && [ "$(jq -r '.claims_readonly_emitted // false' "$STATE_FILE")" != true ]; then
         add_events '[{"type": "claims_readonly", "team": "", "name": "", "detail": "linear_writes = off; no heartbeat is written, takeover checks still read"}]'
-        state="$(jq -cn --argjson st "$state" '$st + {claims_readonly_emitted: true}')"
+        st_upd '$st + {claims_readonly_emitted: true}'
       fi
     else
       [ "$rows_n" = 0 ] ||
         "$FLEET_SCRIPTS/linear.sh" heartbeat >/dev/null 2>&1 || warn "linear.sh heartbeat failed"
     fi
-  elif [ "$rows_n" != 0 ] && [ "$(printf '%s' "$state" | jq -r '.claims_unavailable_emitted // false')" != true ]; then
+  elif [ "$rows_n" != 0 ] && [ "$(jq -r '.claims_unavailable_emitted // false' "$STATE_FILE")" != true ]; then
     add_events '[{"type": "claims_unavailable", "team": "", "name": "", "detail": "no Linear key; heartbeat and takeover checks are off"}]'
-    state="$(jq -cn --argjson st "$state" '$st + {claims_unavailable_emitted: true}')"
+    st_upd '$st + {claims_unavailable_emitted: true}'
   fi
 }
 # A team of ours whose issue now carries another machine's label was taken over: report it once.
@@ -108,9 +104,9 @@ claims_taken_over() {
     h="$("$FLEET_SCRIPTS/linear.sh" holder "$i" 2>/dev/null)" || { warn "could not read the holder of $i"; continue; }
     printf '%s' "$h" | jq -e '.holder != null and (.ours | not)' >/dev/null 2>&1 || continue
     h="$(printf '%s' "$h" | jq -r .holder)"
-    if [ "$(printf '%s' "$state" | jq --arg k "$t|$i|$h" '(.takeover_emitted // []) | index($k) == null')" = true ]; then
+    if [ "$(jq --arg k "$t|$i|$h" '(.takeover_emitted // []) | index($k) == null' "$STATE_FILE")" = true ]; then
       add_events "$(jq -cn --arg t "$t" --arg i "$i" --arg h "$h" '[{type: "claim_takeover", team: $t, name: ($t + "/lead"), issue: $i, holder: $h}]')"
-      state="$(jq -cn --argjson st "$state" --arg k "$t|$i|$h" '$st + {takeover_emitted: ((($st.takeover_emitted // []) + [$k]) | unique)}')"
+      st_upd --arg k "$t|$i|$h" '$st + {takeover_emitted: ((($st.takeover_emitted // []) + [$k]) | unique)}'
     fi
   done < <(printf '%s' "$claim_rows" | jq -r '[.[] | [.team, .issue]] | unique[] | @tsv')
 }
@@ -119,14 +115,18 @@ claims_taken_over
 
 # --- stalled / dead -------------------------------------------------------------------------
 # A newly Stalled agent gets ONE nudge through tell.sh (nudged_at on its row) and no event; still
-# Stalled on a later tick: a `stalled` event, once. A Zombie is a `dead` event on the transition and is
-# respawned within a budget (respawn_max = 1 per respawn_window_hours = 6 per agent): every attempt, successful
+# Stalled on a later tick: a `stalled` event, once. A Zombie is a `dead` event on the transition and, if it is still
+# a Zombie on the next tick, is respawned within a budget (respawn_max = 1 per respawn_window_hours = 6 per agent): every attempt, successful
 # or not, spends it; once it is spent, one P1 escalation and no more respawns. Done and Retired rows are never touched.
 now_iso="${FLEET_NOW:-$(now)}"; now_epoch="$(jq -rn --arg t "$now_iso" '$t | fromdateiso8601')"
 targs=(); [ -n "$team" ] && targs=(--team "$team")
-if rows="$("$FLEET_SCRIPTS/status.sh" ${targs[@]+"${targs[@]}"} --json 2>/dev/null)" && printf '%s' "$rows" | jq -e 'type == "array"' >/dev/null 2>&1; then
-  add_events "$(jq -cn --argjson rows "$rows" --argjson st "$state" '
-    [$rows[] | select(.tier != "Orchestrator" and .status == "Zombie" and (($st.status // {})[.name] != .status))
+# One `herdr agent list` first: when herdr itself is down, every row would read as Zombie, so a failed
+# call skips classification and respawn for this tick.
+if ! hd agent list >/dev/null 2>&1; then
+  warn "herdr agent list failed; no classification or respawn this tick"
+elif rows="$("$FLEET_SCRIPTS/status.sh" ${targs[@]+"${targs[@]}"} --json 2>/dev/null)" && printf '%s' "$rows" | jq -e 'type == "array"' >/dev/null 2>&1; then
+  add_events "$(jq -cn --argjson rows "$rows" --slurpfile stf "$STATE_FILE" '
+    [$rows[] | select(.tier != "Orchestrator" and .status == "Zombie" and (($stf[0].status // {})[.name] != .status))
       | {type: "dead", team, name, status} + (if (.pr // "") != "" then {url: .pr} else {} end)]')"
   while IFS= read -r r; do
     [ -n "$r" ] || continue
@@ -135,53 +135,71 @@ if rows="$("$FLEET_SCRIPTS/status.sh" ${targs[@]+"${targs[@]}"} --json 2>/dev/nu
       "$FLEET_SCRIPTS/tell.sh" "$sname" "You went idle without running your done step. Run it now, or say what is missing." >/dev/null 2>&1 ||
         warn "could not nudge $sname"
       "$registry" set "$sname" nudged_at="$now_iso" >/dev/null || true
-    elif [ "$(printf '%s' "$state" | jq --arg n "$sname" '(.stalled_emitted // []) | index($n) == null')" = true ]; then
+    elif [ "$(jq --arg n "$sname" '(.stalled_emitted // []) | index($n) == null' "$STATE_FILE")" = true ]; then
       add_events "$(printf '%s' "$r" | jq -c '[{type: "stalled", team, name, status} + (if (.pr // "") != "" then {url: .pr} else {} end)]')"
-      state="$(jq -cn --argjson st "$state" --arg n "$sname" '$st + {stalled_emitted: ((($st.stalled_emitted // []) + [$n]) | unique)}')"
+      st_upd --arg n "$sname" '$st + {stalled_emitted: ((($st.stalled_emitted // []) + [$n]) | unique)}'
     fi
   done < <(printf '%s' "$rows" | jq -c '.[] | select(.tier != "Orchestrator" and .status == "Stalled")')
   # An agent that is no longer Stalled may be nudged and reported again next time.
   while IFS= read -r sname; do
     [ -n "$sname" ] || continue
     "$registry" set "$sname" nudged_at= >/dev/null || true
-    state="$(jq -cn --argjson st "$state" --arg n "$sname" '$st + {stalled_emitted: (($st.stalled_emitted // []) - [$n])}')"
+    st_upd --arg n "$sname" '$st + {stalled_emitted: (($st.stalled_emitted // []) - [$n])}'
   done < <(printf '%s' "$rows" | jq -r '.[] | select(.tier != "Orchestrator" and .status != "Stalled" and ((.nudged_at // "") != "")) | .name')
+  # An agent stopped by an API error (an expired login) shows Needs input with the reason (status.sh) and
+  # is never nudged for stalling; it gets at most one "continue" every 30 minutes, which works as soon
+  # as the user has run /login.
+  while IFS=$'\t' read -r sname last; do
+    [ -n "$sname" ] || continue
+    if [ -n "$last" ] && [ $((now_epoch - $(jq -rn --arg t "$last" '$t | fromdateiso8601'))) -lt 1800 ]; then continue; fi
+    "$FLEET_SCRIPTS/tell.sh" "$sname" "continue" --no-confirm >/dev/null 2>&1 || warn "could not send continue to $sname"
+    "$registry" set "$sname" continued_at="$now_iso" >/dev/null || true
+  done < <(printf '%s' "$rows" | jq -r '.[] | select(.tier != "Orchestrator" and .status == "Needs input" and (.status_detail // "") != "") | [.name, (.continued_at // "")] | @tsv')
+  # needs_input: an agent stopped by an API error, once per (agent, reason); forgotten when it recovers.
+  add_events "$(jq -cn --argjson rows "$rows" --slurpfile stf "$STATE_FILE" '
+    [$rows[] | (.name + "|" + (.status_detail // "")) as $k
+      | select(.tier != "Orchestrator" and .status == "Needs input" and (.status_detail // "") != ""
+        and ((($stf[0].needs_input_emitted // []) | index($k)) == null))
+      | {type: "needs_input", team, name, detail: .status_detail}]')"
+  st_upd --argjson rows "$rows" '$st + {needs_input_emitted: [$rows[] | select(.status == "Needs input" and (.status_detail // "") != "") | .name + "|" + .status_detail]}'
   rwin="$(cfg_int respawn_window_hours 6)"; rmax="$(cfg_int respawn_max 1)"
   while IFS= read -r zname; do
     [ -n "$zname" ] || continue
-    recent="$(printf '%s' "$state" | jq -c --arg n "$zname" --argjson now "$now_epoch" --argjson w "$rwin" '((.respawns // {})[$n] // []) | map(select(. > $now - $w * 3600))')"
+    # Respawn needs Zombie on two ticks in a row: the state still holds the previous tick's status.
+    [ "$(jq --arg n "$zname" '((.status // {})[$n]) == "Zombie"' "$STATE_FILE")" = true ] || continue
+    recent="$(jq -c --arg n "$zname" --argjson now "$now_epoch" --argjson w "$rwin" '((.respawns // {})[$n] // []) | map(select(. > $now - $w * 3600))' "$STATE_FILE")"
     if [ "$(printf '%s' "$recent" | jq length)" -ge "$rmax" ]; then
       ekey="$zname|$(printf '%s' "$recent" | jq 'max')"
-      if [ "$(printf '%s' "$state" | jq --arg k "$ekey" '(.respawn_escalated // []) | index($k) == null')" = true ]; then
-        if [ "$(printf '%s' "$state" | jq --arg n "$zname" '(.respawn_failed // []) | index($n) != null')" = true ]; then
+      if [ "$(jq --arg k "$ekey" '(.respawn_escalated // []) | index($k) == null' "$STATE_FILE")" = true ]; then
+        if [ "$(jq --arg n "$zname" '(.respawn_failed // []) | index($n) != null' "$STATE_FILE")" = true ]; then
           emsg="$zname could not be respawned in ${rwin}h"
         else emsg="$zname died twice in ${rwin}h"; fi
         "$registry" escalate "$zname" P1 "$emsg" >/dev/null 2>&1 || warn "could not escalate $zname"
-        state="$(jq -cn --argjson st "$state" --arg k "$ekey" '$st + {respawn_escalated: ((($st.respawn_escalated // []) + [$k]) | unique)}')"
+        st_upd --arg k "$ekey" '$st + {respawn_escalated: ((($st.respawn_escalated // []) + [$k]) | unique)}'
       fi
     else
       # The attempt is recorded before respawn.sh runs, so a respawn that always fails still spends the budget.
-      state="$(jq -cn --argjson st "$state" --arg n "$zname" --argjson now "$now_epoch" '$st + {respawns: (($st.respawns // {}) + {($n): ((($st.respawns // {})[$n] // []) + [$now])})}')"
+      st_upd --arg n "$zname" --argjson now "$now_epoch" '$st + {respawns: (($st.respawns // {}) + {($n): ((($st.respawns // {})[$n] // []) + [$now])})}'
       if "$FLEET_SCRIPTS/respawn.sh" "$zname" >/dev/null 2>"$FLEET_STATE_DIR/respawn.err"; then
-        state="$(jq -cn --argjson st "$state" --arg n "$zname" '$st + {respawn_failed: (($st.respawn_failed // []) - [$n])}')"
+        st_upd --arg n "$zname" '$st + {respawn_failed: (($st.respawn_failed // []) - [$n])}'
       else
         warn "could not respawn $zname: $(head -n 1 "$FLEET_STATE_DIR/respawn.err" 2>/dev/null)"
-        state="$(jq -cn --argjson st "$state" --arg n "$zname" '$st + {respawn_failed: ((($st.respawn_failed // []) + [$n]) | unique)}')"
+        st_upd --arg n "$zname" '$st + {respawn_failed: ((($st.respawn_failed // []) + [$n]) | unique)}'
       fi
     fi
   done < <(printf '%s' "$rows" | jq -r '.[] | select(.tier != "Orchestrator" and .status == "Zombie") | .name')
-  state="$(jq -cn --argjson st "$state" --argjson rows "$rows" '$st + {status: (($st.status // {}) + ([$rows[] | {(.name): .status}] | add // {}))}')"
+  st_upd --argjson rows "$rows" '$st + {status: (($st.status // {}) + ([$rows[] | {(.name): .status}] | add // {}))}'
 else
   warn "status.sh failed; no stalled/dead events this tick"
 fi
 
 # --- escalations ------------------------------------------------------------------------------
 esc="$("$registry" escalations --open ${team:+--team "$team"})"
-add_events "$(jq -cn --argjson e "$esc" --argjson st "$state" '
-  [$e[] | select(((.name + "|" + .id) as $k | ($st.escalations_emitted // []) | index($k)) == null)
+add_events "$(jq -cn --argjson e "$esc" --slurpfile stf "$STATE_FILE" '
+  [$e[] | select(((.name + "|" + .id) as $k | ($stf[0].escalations_emitted // []) | index($k)) == null)
     | {type: "escalation", team, name, id, severity, message, at}]')"
-state="$(jq -cn --argjson st "$state" --argjson e "$esc" '
-  $st + {escalations_emitted: ((($st.escalations_emitted // []) + [$e[] | .name + "|" + .id]) | unique)}')"
+st_upd --argjson e "$esc" '
+  $st + {escalations_emitted: ((($st.escalations_emitted // []) + [$e[] | .name + "|" + .id]) | unique)}'
 
 # --- PR discovery: a builder's PR found by its fleet/ branch -------------------------------------
 if command -v "$FLEET_GH" >/dev/null 2>&1; then
@@ -197,9 +215,9 @@ if command -v "$FLEET_GH" >/dev/null 2>&1; then
     "$registry" set "$bname" pr="$purl" >/dev/null || continue
     bteam="$(printf '%s' "$b" | jq -r .team)"; told=true
     "$FLEET_SCRIPTS/tell.sh" "$bteam/lead" "PR $purl is open; start the tester" >/dev/null 2>&1 || { told=false; warn "could not tell $bteam/lead about $purl"; }
-    if [ "$(printf '%s' "$state" | jq --arg u "$purl" '(.pr_opened_emitted // []) | index($u) == null')" = true ]; then
+    if [ "$(jq --arg u "$purl" '(.pr_opened_emitted // []) | index($u) == null' "$STATE_FILE")" = true ]; then
       add_events "$(jq -cn --arg t "$bteam" --arg n "$bname" --arg u "$purl" --argjson told "$told" '[{type: "pr_opened", team: $t, name: $n, url: $u, lead_told: $told}]')"
-      state="$(jq -cn --argjson st "$state" --arg u "$purl" '$st + {pr_opened_emitted: ((($st.pr_opened_emitted // []) + [$u]) | unique)}')"
+      st_upd --arg u "$purl" '$st + {pr_opened_emitted: ((($st.pr_opened_emitted // []) + [$u]) | unique)}'
     fi
   done < <("$registry" list ${team:+--team "$team"} | jq -c '.[] | select(.tier == "Worker" and .status != "Retired" and (.pr // "") == "" and ((.branch // "") | startswith("fleet/")))')
 fi
@@ -231,7 +249,7 @@ if [ "$(printf '%s' "$prs" | jq length)" != 0 ]; then
       if ! printf '%s' "$j" | jq -e 'type == "object" and (.state | type == "string")' >/dev/null 2>&1; then
         warn "gh returned no PR state for $url"; continue
       fi
-      ev="$(jq -cn --argjson p "$p" --argjson g "$j" --argjson st "$state" --argjson noci "$no_ci" '
+      ev="$(jq -cn --argjson p "$p" --argjson g "$j" --slurpfile stf "$STATE_FILE" --argjson noci "$no_ci" '
         ($p.repo | split("/") | last) as $base
         | ($p.pr | sub("^https?://[^/]+/"; "") | sub("/(pull|merge_requests)/.*$"; "")) as $slug
         | (($noci | index($base)) != null or ($noci | index($slug)) != null or ($noci | index($p.repo)) != null) as $nociok
@@ -246,16 +264,16 @@ if [ "$(printf '%s' "$prs" | jq length)" != 0 ]; then
         | ($so != "" and $head != "" and ($head | startswith($so))) as $signed
         | (($g.body // "") | test("DO NOT MERGE|merge order|before/after"; "i")) as $held
         | if $g.state == "MERGED" then
-            (if (($st.pr_merged_emitted // []) | index($p.pr)) == null then {type: "pr_merged", team: $p.team, name: $p.name, url: $p.pr} else null end)
+            (if (($stf[0].pr_merged_emitted // []) | index($p.pr)) == null then {type: "pr_merged", team: $p.team, name: $p.name, url: $p.pr} else null end)
           elif $g.state == "OPEN" and $g.mergeable == "MERGEABLE" and ($ci == "green" or $ci == "none") and $signed and ($held | not)
-               and (($st.pr_ready_emitted // []) | index($p.pr + "@" + $head)) == null
+               and (($stf[0].pr_ready_emitted // []) | index($p.pr + "@" + $head)) == null
           then {type: "pr_ready", team: $p.team, name: $p.name, url: $p.pr, sha: $head, ci: $ci}
           else null end')"
       [ "$ev" != "null" ] || continue
       add_events "[$ev]"
       case "$(printf '%s' "$ev" | jq -r .type)" in
-        pr_merged) state="$(jq -cn --argjson st "$state" --arg u "$url" '$st + {pr_merged_emitted: ((($st.pr_merged_emitted // []) + [$u]) | unique)}')" ;;
-        pr_ready) state="$(jq -cn --argjson st "$state" --argjson e "$ev" '$st + {pr_ready_emitted: ((($st.pr_ready_emitted // []) + [$e.url + "@" + $e.sha]) | unique)}')" ;;
+        pr_merged) st_upd --arg u "$url" '$st + {pr_merged_emitted: ((($st.pr_merged_emitted // []) + [$u]) | unique)}' ;;
+        pr_ready) st_upd --argjson e "$ev" '$st + {pr_ready_emitted: ((($st.pr_ready_emitted // []) + [$e.url + "@" + $e.sha]) | unique)}' ;;
       esac
     done < <(printf '%s' "$prs" | jq -c '.[]')
     rm -f "$ghtmp"; ghtmp=""
@@ -266,41 +284,55 @@ fi
 live="$("$registry" list --live | jq -c '[.[] | select(.tier != "Orchestrator") | .repo // ""]')"
 bare="$(jq -cn --argjson r "$(config_list repos)" --argjson live "$live" '
   [$r[] | . as $x | select(([$live[] | select(. == $x or (split("/") | last) == ($x | split("/") | last))] | length) == 0)]')"
-add_events "$(jq -cn --argjson b "$bare" --argjson st "$state" '
-  [$b[] | select((($st.repo_idle_emitted // []) | index(.)) == null) | {type: "repo_without_team", team: "", name: ., repo: .}]')"
-state="$(jq -cn --argjson st "$state" --argjson b "$bare" '$st + {repo_idle_emitted: $b}')"
+add_events "$(jq -cn --argjson b "$bare" --slurpfile stf "$STATE_FILE" '
+  [$b[] | select((($stf[0].repo_idle_emitted // []) | index(.)) == null) | {type: "repo_without_team", team: "", name: ., repo: .}]')"
+st_upd --argjson b "$bare" '$st + {repo_idle_emitted: $b}'
 
 # --- disk ---------------------------------------------------------------------------------------
 if free="$(free_gb)"; then
-  warn_at="$(warn_free_gb)"; was="$(printf '%s' "$state" | jq -r '.disk // "ok"')"; now_d=ok
+  warn_at="$(warn_free_gb)"; was="$(jq -r '.disk // "ok"' "$STATE_FILE")"; now_d=ok
   [ "$free" -ge "$warn_at" ] || now_d=low
   if [ "$now_d" != "$was" ]; then
     add_events "$(jq -cn --arg t "$([ "$now_d" = low ] && echo disk || echo disk_ok)" --argjson f "$free" --argjson w "$warn_at" \
       '[{type: $t, team: "", name: "disk", free_gb: $f, warn_free_gb: $w}]')"
   fi
-  state="$(jq -cn --argjson st "$state" --arg d "$now_d" '$st + {disk: $d}')"
+  st_upd --arg d "$now_d" '$st + {disk: $d}'
 fi
 
 # --- weekly archive ------------------------------------------------------------------------------
 week="$(date +%G-W%V)"
-if [ "$(printf '%s' "$state" | jq -r '.archive_week // ""')" != "$week" ]; then
+if [ "$(jq -r '.archive_week // ""' "$STATE_FILE")" != "$week" ]; then
   "$registry" archive >/dev/null 2>&1 || warn "weekly archive failed"
-  state="$(jq -cn --argjson st "$state" --arg w "$week" '$st + {archive_week: $w}')"
+  st_upd --arg w "$week" '$st + {archive_week: $w}'
 fi
 
 # --- weekly summary ---------------------------------------------------------------------------------
-sweek="$(date +%G-W%V)"; prev_week="$(printf '%s' "$state" | jq -r '.summary_week // ""')"
+sweek="$(date +%G-W%V)"; prev_week="$(jq -r '.summary_week // ""' "$STATE_FILE")"
 if [ -n "$prev_week" ] && [ "$prev_week" != "$sweek" ]; then
   add_events "$(jq -cn --arg w "$sweek" '[{type: "weekly_summary", team: "", name: "", week: $w, detail: "run metrics.sh --since 7d and write reports/fleet-metrics-<date>.md"}]')"
 fi
-state="$(jq -cn --argjson st "$state" --arg w "$sweek" '$st + {summary_week: $w}')"
+st_upd --arg w "$sweek" '$st + {summary_week: $w}'
 
 # --- the event log ------------------------------------------------------------------------------------
 while IFS=$'\t' read -r etype eteam ename eurl esha; do
   [ -n "$etype" ] || continue
   [ "$eurl" != - ] || eurl=""; [ "$esha" != - ] || esha=""; [ "$eteam" != - ] || eteam=""
   ev_log "$etype" team="$eteam" name="$ename" pr="$eurl" sha="$esha"
-done < <(printf '%s' "$events" | jq -r '.[] | select(.type | IN("pr_opened", "pr_ready", "pr_merged", "stalled", "dead")) | [.type, (.team // "-" | if . == "" then "-" else . end), .name, (.url // "-"), (.sha // "-")] | @tsv')
+done < <(jq -r '.[] | select(.type | IN("pr_opened", "pr_ready", "pr_merged", "stalled", "dead", "needs_input")) | [.type, (.team // "-" | if . == "" then "-" else . end), .name, (.url // "-"), (.sha // "-")] | @tsv' "$EVENTS_FILE")
 
-tick_state_write "$state"
-[ "$(printf '%s' "$events" | jq length)" = 0 ] || printf '%s\n' "$events"
+# The state is rebuilt from what is live, so it cannot grow without bound: reported-once keys survive only while
+# the thing they describe (a PR on a row, an open escalation, a claimed issue, a recent respawn) still exists.
+live_prs="$("$registry" list | jq -c '[.[] | select(.status != "Retired") | .pr // empty]')"
+live_esc="$("$registry" escalations --open | jq -c '[.[] | .name + "|" + .id]')"
+live_claims="$("$registry" list --live | jq -c '[.[] | select((.issue // "") != "") | .team + "|" + .issue]')"
+st_upd --argjson prs "$live_prs" --argjson esc "$live_esc" --argjson cl "$live_claims" --argjson now "$now_epoch" --argjson w "$(cfg_int respawn_window_hours 6)" '
+  def inrecent: map(select(. > $now - $w * 3600));
+  $st
+  + (if .pr_ready_emitted then {pr_ready_emitted: [.pr_ready_emitted[] | select(split("@")[0] as $u | $prs | index($u))]} else {} end)
+  + (if .pr_merged_emitted then {pr_merged_emitted: [.pr_merged_emitted[] | select(. as $u | $prs | index($u))]} else {} end)
+  + (if .pr_opened_emitted then {pr_opened_emitted: [.pr_opened_emitted[] | select(. as $u | $prs | index($u))]} else {} end)
+  + (if .escalations_emitted then {escalations_emitted: [.escalations_emitted[] | select(. as $k | $esc | index($k))]} else {} end)
+  + (if .takeover_emitted then {takeover_emitted: [.takeover_emitted[] | select(split("|")[0:2] | join("|") as $k | $cl | index($k))]} else {} end)
+  + (if .respawns then {respawns: (.respawns | with_entries(.value |= inrecent) | with_entries(select(.value | length > 0)))} else {} end)'
+tick_state_write "$(cat "$STATE_FILE")"
+[ "$(jq length "$EVENTS_FILE")" = 0 ] || cat "$EVENTS_FILE"

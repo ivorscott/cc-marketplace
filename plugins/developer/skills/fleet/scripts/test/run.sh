@@ -264,6 +264,7 @@ case "$1 $2" in
   # A pane started by the shim runs what boot types into it, so its env can be dumped: $AS/<pane>.env.
   "pane run") ( eval "${*:4}"; env ) >"$AS/$3.env" 2>/dev/null; echo '{}' ;;
   "agent start") rm -f "$AS/$3" "$AS/$3.read"; echo '{}' ;;
+  "agent list") [ -z "${AGENT_LIST_FAIL:-}" ] || exit 1; echo '{}' ;;
   "agent get") echo "{\"result\":{\"agent\":{\"agent_status\":\"$(cat "$AS/$3" 2>/dev/null || echo idle)\",\"state_change_seq\":$(cat "$AS/$3.seq" 2>/dev/null || echo 0)}}}" ;;
   "agent wait") [ ! -e "$AS/$3" ] || echo idle >"$AS/$3"; echo '{}' ;;
   "agent prompt")
@@ -1876,10 +1877,12 @@ rm -f "$FLEET_STATE_DIR/tick.state.json"; : >"$EVF"
 OLDT="$("$REG" get build-rsp/builder | jq -r .transcript)"
 nstart() { grep -c "^agent start $1 " "$HERDR_LOG" || true; }
 export FLEET_NOW=2026-10-18T10:00:00Z
-echo gone >"$AS/build-rsp-builder"; : >"$HERDR_LOG"
+echo gone >"$AS/build-rsp-builder"; echo PANETAILMARK >"$AS/build-rsp-builder.read"; : >"$HERDR_LOG"
 d1="$("$SCRIPTS/tick.sh" 2>"$T/rsp.err")"
 eq "respawn: the death is reported" "$(printf '%s' "$d1" | jq -r '[.[] | select(.type == "dead") | .name] | join(",")')" build-rsp/builder
-eq "respawn: the agent is started again" "$(nstart build-rsp-builder)" 1
+eq "respawn: not on the first tick (a Zombie must be seen twice in a row)" "$(nstart build-rsp-builder)" 0
+"$SCRIPTS/tick.sh" >/dev/null 2>&1
+eq "respawn: the agent is started again on the second" "$(nstart build-rsp-builder)" 1
 eq "respawn: with a new session id" "$(grep "^agent start build-rsp-builder " "$HERDR_LOG" | grep -c -- '--session-id')" 1
 check "respawn: the row has a new transcript path" bash -c "[ \"\$('$REG' get build-rsp/builder | jq -r .transcript)\" != '$OLDT' ]"
 eq "respawn: the row is Working" "$("$REG" get build-rsp/builder | jq -r .status)" Working
@@ -1888,11 +1891,12 @@ check "respawn: the resume brief is sent to the agent and says so" bash -c "grep
 check "respawn: and carries the assignment" grep -q 'Assignment: SECRETTASKWORDS respawn me' "$HERDR_LOG"
 check "respawn: and the last report file" grep -q "DEV-1-builder.md" "$HERDR_LOG"
 check "respawn: and git log and git status of the branch" bash -c "grep -q 'git log -5 --oneline' '$HERDR_LOG' && grep -q 'untracked-note.txt' '$HERDR_LOG'"
+eq "respawn: the resume brief carries no pane text" "$(grep -c PANETAILMARK "$HERDR_LOG" || true)" 0
 check "respawn: and the fleet rules" grep -q 'Fleet rules for build-rsp/builder' "$HERDR_LOG"
 eq "respawn: the brief text itself is not in the event log" "$(grep -c 'SECRETTASKWORDS\|Fleet rules' "$EVF" || true)" 0
 # a second death inside the window: P1 escalation, no respawn
 echo gone >"$AS/build-rsp-builder"; : >"$HERDR_LOG"
-"$SCRIPTS/tick.sh" >/dev/null 2>&1
+"$SCRIPTS/tick.sh" >/dev/null 2>&1; "$SCRIPTS/tick.sh" >/dev/null 2>&1
 eq "respawn: a second death inside the window is not respawned" "$(nstart build-rsp-builder)" 0
 eq "respawn: it escalates P1" "$("$REG" escalations --open --team build-rsp | jq -c '[.[] | select(.name == "build-rsp/builder") | [.severity, .message]]')" '[["P1","build-rsp/builder died twice in 6h"]]'
 echo gone >"$AS/build-rsp-builder"; "$SCRIPTS/tick.sh" >/dev/null 2>&1
@@ -1902,7 +1906,7 @@ export FLEET_NOW=2026-10-18T17:00:00Z; echo gone >"$AS/build-rsp-builder"; : >"$
 "$SCRIPTS/tick.sh" >/dev/null 2>&1
 eq "respawn: after the window a new death is respawned" "$(nstart build-rsp-builder)" 1
 # a lead is respawned as a lead
-echo gone >"$AS/build-rsp-lead"; : >"$HERDR_LOG"; "$SCRIPTS/tick.sh" >/dev/null 2>&1
+echo gone >"$AS/build-rsp-lead"; : >"$HERDR_LOG"; "$SCRIPTS/tick.sh" >/dev/null 2>&1; "$SCRIPTS/tick.sh" >/dev/null 2>&1
 eq "respawn: a lead is started again as the lead agent" "$(grep "^agent start build-rsp-lead " "$HERDR_LOG" | grep -c -- '--agent developer:lead')" 1
 check "respawn: a lead's resume brief names the team" grep -q 'The team:' "$HERDR_LOG"
 # a respawn that always fails still spends the budget: tried respawn_max times, then one P1, no pane leak
@@ -1911,9 +1915,9 @@ printf 'respawn_max = 2\n' >"$FLEET_CONFIG_DIR/config.toml"
 for r in build-rsf/lead build-rsf/planner build-rsf/builder build-rsf/tester; do "$REG" set "$r" status=Idle >/dev/null; done
 rm -f "$FLEET_STATE_DIR/tick.state.json"; export FLEET_NOW=2026-10-19T10:00:00Z
 echo gone >"$AS/build-rsf-builder"; : >"$HERDR_LOG"
-for i in 1 2; do PANE_GONE=1 "$SCRIPTS/tick.sh" >/dev/null 2>&1; echo gone >"$AS/build-rsf-builder"; done
+for i in 1 2 3; do PANE_GONE=1 "$SCRIPTS/tick.sh" >/dev/null 2>&1; echo gone >"$AS/build-rsf-builder"; done
 n2="$(nstart build-rsf-builder)"
-for i in 3 4; do PANE_GONE=1 "$SCRIPTS/tick.sh" >/dev/null 2>&1; echo gone >"$AS/build-rsf-builder"; done
+for i in 4 5; do PANE_GONE=1 "$SCRIPTS/tick.sh" >/dev/null 2>&1; echo gone >"$AS/build-rsf-builder"; done
 check "respawn failing: the builder was tried (twice per attempt: start retries once)" test "$n2" -eq 4
 eq "respawn failing: and not again after respawn_max attempts" "$(nstart build-rsf-builder)" "$n2"
 eq "respawn failing: every pane it split is closed again" "$(grep -c '^pane close' "$HERDR_LOG")" "$(grep -c '^pane split' "$HERDR_LOG")"
@@ -1932,6 +1936,69 @@ unset FLEET_NOW
 r2out="$(/bin/bash -c 'set -euo pipefail; . "$1/common.sh"; team=t; task=x; repo=/r; registry=/r; tool_allow="[]"; session_id=""; . "$1/agent-lib.sh"; start_agent_once agentx codex p1 "" Worker /w "[]"' _ "$SCRIPTS" 2>&1)"
 eq "agent-lib: a codex-kind worker starts (empty args, bash 3.2)" "$r2out" Working
 eq "agent-lib: and gets no claude flags" "$(grep -c '^agent start agentx --kind codex --pane p1 --timeout 60000 --$' "$HERDR_LOG")" 1
+
+
+# -- item 8: API errors are Needs input, herdr blips never respawn, bounded state, bash 3.2
+export FLEET_STATE_DIR="$T/apx" FLEET_REGISTRY="$T/apx/fleet.json" FLEET_INBOX="$T/apx/e.jsonl"; mkdir -p "$FLEET_STATE_DIR"; EVF="$FLEET_STATE_DIR/events.jsonl"
+rm -f "${AS:?}"/*; : >"$HERDR_LOG"
+"$SCRIPTS/boot.sh" build apx "$T/repo" "task" >/dev/null 2>&1
+for r in build-apx/lead build-apx/planner build-apx/builder build-apx/tester; do "$REG" set "$r" status=Idle >/dev/null; done
+"$REG" set build-apx/builder status=Working >/dev/null
+APT="$T/apx-transcript.jsonl"
+{
+  echo '{"type":"assistant","timestamp":"2026-10-19T09:00:00Z","message":{"content":[{"type":"text","text":"all fine"}]}}'
+  echo 'this line is not json {'
+  echo '{"type":"assistant","isApiErrorMessage":true,"timestamp":"2026-10-19T10:00:00Z","message":{"content":[{"type":"text","text":"Please run /login · API Error: 401"}]}}'
+} >"$APT"
+"$REG" set build-apx/builder transcript="$APT" >/dev/null; echo idle >"$AS/build-apx-builder"
+export FLEET_NOW=2026-10-19T10:00:00Z; rm -f "$FLEET_STATE_DIR/tick.state.json"; : >"$EVF"; : >"$HERDR_LOG"
+a1="$("$SCRIPTS/tick.sh" 2>/dev/null)"
+eq "api error: the row shows Needs input" "$("$REG" get build-apx/builder | jq -r .status)" "Needs input"
+eq "api error: with the reason on the row" "$("$REG" get build-apx/builder | jq -r .status_detail)" "login expired"
+echo idle >"$AS/build-apx-builder"
+check "api error: and in the status table" bash -c "'$SCRIPTS/status.sh' | grep -q 'Needs input (login expired)'"
+eq "api error: needs_input is reported once, with the reason" "$(printf '%s' "$a1" | jq -c '[.[] | select(.type == "needs_input") | [.name, .detail]]')" '[["build-apx/builder","login expired"]]'
+eq "api error: no stall nudge" "$(grep -c 'went idle without running' "$HERDR_LOG" || true)" 0
+eq "api error: one continue" "$(grep -c '^agent prompt build-apx-builder continue' "$HERDR_LOG" || true)" 1
+export FLEET_NOW=2026-10-19T10:10:00Z; echo idle >"$AS/build-apx-builder"; a2="$("$SCRIPTS/tick.sh" 2>/dev/null)"
+eq "api error: a second needs_input is not reported" "$(evc "$a2" needs_input)" 0
+eq "api error: no second continue within 30 minutes" "$(grep -c '^agent prompt build-apx-builder continue' "$HERDR_LOG" || true)" 1
+export FLEET_NOW=2026-10-19T10:31:00Z; echo idle >"$AS/build-apx-builder"; "$SCRIPTS/tick.sh" >/dev/null 2>&1
+eq "api error: another continue after 30 minutes" "$(grep -c '^agent prompt build-apx-builder continue' "$HERDR_LOG" || true)" 2
+echo '{"type":"assistant","timestamp":"2026-10-19T10:40:00Z","message":{"content":[{"type":"text","text":"back"}]}}' >>"$APT"
+echo idle >"$AS/build-apx-builder"; "$SCRIPTS/tick.sh" >/dev/null 2>&1
+eq "api error: gone once a newer assistant line is fine" "$("$REG" get build-apx/builder | jq -r '.status_detail // ""')" ""
+printf '%s\n' '{"type":"assistant","isApiErrorMessage":true,"message":{"content":[{"type":"text","text":"overloaded"}]}}' >>"$APT"
+echo idle >"$AS/build-apx-builder"; "$SCRIPTS/tick.sh" >/dev/null 2>&1
+eq "api error: any other error is API error" "$("$REG" get build-apx/builder | jq -r .status_detail)" "API error"
+# herdr down: no classification, no respawn, no dead event
+"$REG" set build-apx/tester status=Working >/dev/null; echo gone >"$AS/build-apx-tester"; : >"$HERDR_LOG"
+"$SCRIPTS/tick.sh" >/dev/null 2>&1; : >"$HERDR_LOG"
+h1="$(AGENT_LIST_FAIL=1 "$SCRIPTS/tick.sh" 2>"$T/hd.err")"; AGENT_LIST_FAIL=1 "$SCRIPTS/tick.sh" >/dev/null 2>&1
+eq "herdr down: no dead event" "$(evc "$h1" dead)" 0
+eq "herdr down: no respawn" "$(nstart build-apx-tester)" 0
+check "herdr down: it says so" grep -q 'herdr agent list failed' "$T/hd.err"
+"$SCRIPTS/tick.sh" >/dev/null 2>&1; eq "herdr back: the Zombie seen on the tick before the blip is respawned" "$(nstart build-apx-tester)" 1
+# bounded state: a huge state file never reaches argv, and is pruned to what is live
+jq -cn '{pr_ready_emitted: [range(0; 60000) | "https://github.com/o/r/pull/\(.)@abc1234def5678"], escalations_emitted: [range(0; 20000) | "x/y|2026-\(.)-1"]}' >"$FLEET_STATE_DIR/tick.state.json"
+check "state: 3MB of state is a megabyte over what argv can take" test "$(wc -c <"$FLEET_STATE_DIR/tick.state.json")" -gt 2000000
+"$SCRIPTS/tick.sh" >/dev/null 2>&1; check "state: the tick still runs on it" test $? -eq 0
+eq "state: and only what is live is kept" "$(jq '[(.pr_ready_emitted // []), (.escalations_emitted // [])] | map(length) | add' "$FLEET_STATE_DIR/tick.state.json")" 0
+echo 'garbage {' >"$FLEET_STATE_DIR/tick.state.json"; "$SCRIPTS/tick.sh" >/dev/null 2>&1
+eq "state: a corrupt state file is replaced, not fatal" "$(jq -e 'type == "object"' "$FLEET_STATE_DIR/tick.state.json" >/dev/null && echo ok)" ok
+eq "state: no temp files are left behind" "$(ls "${TMPDIR:-/tmp}" | grep -c '^fleet-tick-' || true)" 0
+# update() frees its temp file; parallel writers all land
+for i in 1 2 3 4 5 6; do "$REG" set build-apx/lead "k$i=v$i" >/dev/null & done; wait
+eq "registry: six parallel writers all land" "$("$REG" get build-apx/lead | jq '[keys[] | select(test("^k[1-6]$"))] | length')" 6
+check "registry: a refused write leaves no temp file" bash -c "! '$REG' set build-apx/lead escalations=notalist >/dev/null 2>&1; true"
+eq "registry: and no temp file or lock" "$(ls "$FLEET_STATE_DIR" | grep -c 'fleet.json\.' || true)" 0
+# two overlapping ticks both finish, and the state is valid
+"$SCRIPTS/tick.sh" >/dev/null 2>&1 & "$SCRIPTS/tick.sh" >/dev/null 2>&1 & wait
+eq "tick: overlapping runs leave a valid state file" "$(jq -e 'type == "object"' "$FLEET_STATE_DIR/tick.state.json" >/dev/null && echo ok)" ok
+# bash 3.2 / BSD tools
+eq "bash 3.2: tick.sh runs under /bin/bash" "$(/bin/bash "$SCRIPTS/tick.sh" >/dev/null 2>&1; echo $?)" 0
+eq "bash 3.2: status.sh runs under /bin/bash" "$(/bin/bash "$SCRIPTS/status.sh" --json >/dev/null 2>&1; echo $?)" 0
+unset FLEET_NOW
 
 # -- metrics from a fixture log and fixture transcripts
 export FLEET_STATE_DIR="$T/mx" FLEET_REGISTRY="$T/mx/fleet.json" FLEET_INBOX="$T/mx/e.jsonl"; mkdir -p "$FLEET_STATE_DIR/tr"; EVF="$FLEET_STATE_DIR/events.jsonl"
