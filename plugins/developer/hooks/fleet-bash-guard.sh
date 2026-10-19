@@ -39,7 +39,7 @@ xdg="${XDG_CONFIG_HOME:-$home/.config}"
 kdir="${FLEET_CONFIG_DIR:-$xdg/fleet}"
 kreal="$(cd "$kdir" 2>/dev/null && pwd -P || printf '%s' "$kdir")"
 # Every path below is compared in lower case: APFS (macOS) ignores case, so ~/.CONFIG/Fleet is the key's directory.
-kreal="$(printf '%s' "$kreal" | tr 'A-Z' 'a-z')"
+kreal="$(printf '%s' "$kreal" | LC_ALL=C tr ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz)"
 # lexnorm <absolute path>: collapse ".", ".." and repeated slashes, without touching the filesystem.
 lexnorm() {
   local acc="" seg IFS=/
@@ -48,7 +48,7 @@ lexnorm() {
     case "$seg" in "" | .) ;; ..) acc="${acc%/*}" ;; *) acc="$acc/$seg" ;; esac
   done
   set +f
-  printf '%s\n' "${acc:-/}" | tr 'A-Z' 'a-z'
+  printf '%s\n' "${acc:-/}" | LC_ALL=C tr ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz
 }
 # at_or_above <dir>: the key's directory is <dir> or lies below it (as written or resolved).
 at_or_above() {
@@ -73,7 +73,7 @@ recursive=false
 # The tool's flags are read from the ORIGINAL words up to the next separator, exactly: ls -r is not ls -R.
 # Being conservative is accepted: `echo grep -r ~` is denied too. No subshell per word or per segment.
 nq="$(printf '%s' "$cmd" | sed -E "s/\"[^\"]*\"/ /g; s/'[^']*'/ /g; s/[;&|(){}<>]/ ; /g")"
-lq="$(printf '%s' "$nq" | tr 'A-Z' 'a-z')"
+lq="$(printf '%s' "$nq" | LC_ALL=C tr ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz)"
 set -f; read -r -a ow <<<"$nq"; read -r -a lw <<<"$lq"; set +f
 re_grep='^-[a-zA-Z]*[rR]'; re_ls='^-[a-zA-Z]*R'; re_cp='^-[a-zA-Z]*[rRa]'
 n="${#lw[@]}"; i=0
@@ -82,7 +82,7 @@ while [ "$i" -lt "$n" ] && ! $recursive; do
   # Case is folded for the first word of a segment and for an all-capitals word (GREP, TREE); elsewhere the word
   # must be lower case, so `echo Tree ~` names no tool. (timeout 5 Grep -r ~ is the accepted residual.)
   ot="${ow[$i]##*/}"
-  if [ "$i" -gt 0 ] && [ "${ow[$((i - 1))]}" != ";" ] && [ "$ot" != "$tool" ] && [[ $ot == *[a-z]* ]]; then tool=""; fi
+  if [ "$i" -gt 0 ] && [ "${ow[$((i - 1))]}" != ";" ] && [ "$ot" != "$tool" ] && [[ $ot == *[[:lower:]]* ]]; then tool=""; fi
   case "$tool" in
     rg | ag | ack | find | fd | tar | zip | rsync | du | tree | gfind | gtar) recursive=true ;;
     grep | egrep | fgrep | zgrep | ggrep) kind=grep ;;

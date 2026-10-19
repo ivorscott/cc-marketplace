@@ -1968,6 +1968,14 @@ done
 for c in 'timeout 5 ls -l ~' 'nice -n 5 ls -ltr ~' 'echo Find ~' 'grep -n foo ~; ls -l ~' "grep -n 'a;b' f"; do
   eq "bash guard (any word): $c is allowed" "$(bgh "$c")" allow
 done
+# the same under bash 3.2 and a UTF-8 locale, where character ranges and tr sets can differ (the CI runner's case)
+bgl() { jq -nc --arg c "$1" '{tool_name: "Bash", tool_input: {command: $c}}' | env -u FLEET_CONFIG_DIR -u XDG_CONFIG_HOME LC_ALL="$2" FLEET_STATE_DIR="$T/gstate" FLEET_ROLE=worker FLEET_TEAM=build-ft /bin/bash "$BG" | dec; }
+for L in C en_US.UTF-8; do
+  for c in 'TIMEOUT 5 GREP -r x ~' 'sudo FIND ~' 'xargs -0 TREE ~' 'cat ~/.CONFIG/f*/*' 'Cp -r ~/.Config /tmp/c'; do
+    eq "bash guard under /bin/bash and LC_ALL=$L: $c is denied" "$(bgl "$c" "$L")" deny
+  done
+  eq "bash guard under /bin/bash and LC_ALL=$L: echo Tree ~ and ls -r ~ are allowed" "$(bgl 'echo Tree ~' "$L")$(bgl 'ls -r ~' "$L")" allowallow
+done
 manyseg="$(for i in $(seq 1 2000); do printf 'ls -l x;'; done)"
 t0=$(date +%s); bg "$manyseg" >/dev/null; t1=$(date +%s)
 eq "bash guard: 2000 segments stay within 2 seconds (no fork per segment)" "$((t1 - t0 <= 2))" 1
