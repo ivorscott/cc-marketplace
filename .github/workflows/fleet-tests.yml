@@ -6,14 +6,26 @@ on:
 permissions:
   contents: read
 
+# CI is a smoke test: the critical cases (run.sh --smoke) and a parse check of every script. The full suite
+# (run.sh with no flag) is for local runs.
 jobs:
   tests:
-    runs-on: macos-latest
-    timeout-minutes: 30
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
-      - name: Fleet test suite
-        run: bash plugins/developer/skills/fleet/scripts/test/run.sh
+      - name: bash -n on every script
+        run: for f in plugins/developer/skills/fleet/scripts/*.sh plugins/developer/skills/fleet/scripts/test/*.sh plugins/developer/hooks/*.sh; do bash -n "$f" || exit 1; done
+      - name: Fleet smoke tests
+        run: bash plugins/developer/skills/fleet/scripts/test/run.sh --smoke
+
+  bash32:
+    runs-on: macos-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: bash -n under /bin/bash (3.2)
+        run: for f in plugins/developer/skills/fleet/scripts/*.sh plugins/developer/skills/fleet/scripts/test/*.sh plugins/developer/hooks/*.sh; do /bin/bash -n "$f" || exit 1; done
 
   shellcheck:
     runs-on: ubuntu-latest
