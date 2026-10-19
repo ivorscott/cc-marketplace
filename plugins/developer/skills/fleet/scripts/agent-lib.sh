@@ -62,7 +62,7 @@ start_agent_once() { # start_agent_once <agent> <kind> <pane> <model> <tier> <wo
   # (rc files, prompt hooks), which can take several seconds in a git worktree. Retry
   # agent_pane_busy for up to 30s instead of failing the agent as a Zombie.
   while :; do
-    out="$(hd agent start "$agent" --kind "$kind" --pane "$pane" --timeout 60000 -- "${args[@]}" 2>&1 || true)"
+    out="$(hd agent start "$agent" --kind "$kind" --pane "$pane" --timeout 60000 -- ${args[@]+"${args[@]}"} 2>&1 || true)"
     code="$(printf '%s' "$out" | jq -r '.error.code // empty' 2>/dev/null || true)"
     [ "$code" = "agent_pane_busy" ] && [ $((tries += 1)) -le 30 ] || break
     sleep 1

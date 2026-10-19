@@ -4,6 +4,7 @@
 #
 #   registry.sh add '<json object with at least .name>'   upsert a row
 #   registry.sh set <name> key=value [key=value ...]      update fields
+#   registry.sh append <name> key value                    add value to the row's list at key (no duplicates)
 #   registry.sh get [--archived] <name>                    --archived also looks in fleet-archive.json
 #   registry.sh list [--team T] [--live] [--problems]
 #   registry.sh count-live                                 agents counted against max_agents
@@ -110,6 +111,12 @@ case "$cmd" in
       args+=(--arg "k$i" "$k" --arg "v$i" "$v"); prog="$prog | .[\$k$i] = \$v$i"; i=$((i + 1))
     done
     update "${args[@]}" --arg t "$(now)" ".agents[\$n] = ($prog | .updated_at = \$t)"
+    ;;
+  append)
+    name="${1:?usage: append <name> key value}"; k="${2:?usage: append <name> key value}"; v="${3:?usage: append <name> key value}"
+    exists "$name"
+    update --arg n "$name" --arg k "$k" --arg v "$v" --arg t "$(now)" \
+      '.agents[$n] |= ((.[$k] = ((((.[$k] // []) | if type == "array" then . else [.] end) + [$v]) | unique)) | .updated_at = $t)'
     ;;
   get)
     files=("$FLEET_REGISTRY")
