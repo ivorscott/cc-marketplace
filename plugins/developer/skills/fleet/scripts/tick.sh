@@ -8,7 +8,10 @@
 # Events (each has type, team, name; url where a PR exists). Each is reported once; what has
 # been reported lives in $FLEET_STATE_DIR/tick.state.json.
 #   stalled, dead   status.sh says Stalled or Zombie, on the transition only
-#   escalation      an open escalation not yet reported (key name|at|severity)
+#   escalation      an open escalation not yet reported (keyed by agent name and escalation id)
+#   pr_opened       a live builder on a fleet/ branch has an open PR the row doesn't know yet
+#                   (gh pr list --head, even when the builder skipped its done step): recorded as
+#                   the row's pr, the lead is told to start the tester. Once per PR.
 #   pr_ready        the row's PR is open, mergeable, checks green (or none exist and the repo is in
 #                   no_pr_ci in config.toml), the tester's signed-off SHA is the PR head, and the
 #                   body has no "DO NOT MERGE", "merge order" or "before/after". Once per (PR, head SHA).
@@ -16,7 +19,8 @@
 #   repo_without_team  a repo in config.toml `repos` with no live team, when it becomes so
 #   disk, disk_ok   free disk crossed below warn_free_gb, and recovered
 #   claim_takeover  reserved (claims land in a later slice)
-# PR state is read with `gh pr view` (FLEET_GH), read-only. A gh failure for one PR is logged on
+# Once a week (ISO week, in the state file) tick also runs `registry.sh archive`.
+# PR state is read with `gh pr view` / `gh pr list` (FLEET_GH), read-only. A gh failure for one PR is logged on
 # stderr and skips that PR for this tick; no gh on PATH is one warning and no PR events.
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
@@ -56,10 +60,31 @@ fi
 # --- escalations ------------------------------------------------------------------------------
 esc="$("$registry" escalations --open ${team:+--team "$team"})"
 add_events "$(jq -cn --argjson e "$esc" --argjson st "$state" '
-  [$e[] | select(((.name + "|" + .at + "|" + .severity) as $k | ($st.escalations_emitted // []) | index($k)) == null)
-    | {type: "escalation", team, name, severity, message, at}]')"
+  [$e[] | select(((.name + "|" + .id) as $k | ($st.escalations_emitted // []) | index($k)) == null)
+    | {type: "escalation", team, name, id, severity, message, at}]')"
 state="$(jq -cn --argjson st "$state" --argjson e "$esc" '
-  $st + {escalations_emitted: ((($st.escalations_emitted // []) + [$e[] | .name + "|" + .at + "|" + .severity]) | unique)}')"
+  $st + {escalations_emitted: ((($st.escalations_emitted // []) + [$e[] | .name + "|" + .id]) | unique)}')"
+
+# --- PR discovery: a builder's PR found by its fleet/ branch -------------------------------------
+if command -v "$FLEET_GH" >/dev/null 2>&1; then
+  while IFS= read -r b; do
+    [ -n "$b" ] || continue
+    bname="$(printf '%s' "$b" | jq -r .name)"; bbranch="$(printf '%s' "$b" | jq -r .branch)"; brepo="$(printf '%s' "$b" | jq -r '.repo // ""')"
+    if [ ! -d "$brepo" ]; then warn "cannot look for $bname's PR: repo '$brepo' is not a directory"; continue; fi
+    if ! found="$(cd "$brepo" && "$FLEET_GH" pr list --head "$bbranch" --json number,url,headRefOid,state 2>/dev/null)"; then
+      warn "gh could not list PRs for $bbranch"; continue
+    fi
+    purl="$(printf '%s' "$found" | jq -r '[.[]? | select(.state == "OPEN")] | first | .url // ""' 2>/dev/null)" || purl=""
+    [ -n "$purl" ] || continue
+    "$registry" set "$bname" pr="$purl" >/dev/null || continue
+    bteam="$(printf '%s' "$b" | jq -r .team)"; told=true
+    "$FLEET_SCRIPTS/tell.sh" "$bteam/lead" "PR $purl is open; start the tester" >/dev/null 2>&1 || { told=false; warn "could not tell $bteam/lead about $purl"; }
+    if [ "$(printf '%s' "$state" | jq --arg u "$purl" '(.pr_opened_emitted // []) | index($u) == null')" = true ]; then
+      add_events "$(jq -cn --arg t "$bteam" --arg n "$bname" --arg u "$purl" --argjson told "$told" '[{type: "pr_opened", team: $t, name: $n, url: $u, lead_told: $told}]')"
+      state="$(jq -cn --argjson st "$state" --arg u "$purl" '$st + {pr_opened_emitted: ((($st.pr_opened_emitted // []) + [$u]) | unique)}')"
+    fi
+  done < <("$registry" list ${team:+--team "$team"} | jq -c '.[] | select(.tier == "Worker" and .status != "Retired" and (.pr // "") == "" and ((.branch // "") | startswith("fleet/")))')
+fi
 
 # --- pull requests ----------------------------------------------------------------------------
 prs="$("$registry" list ${team:+--team "$team"} | jq -c '
@@ -127,6 +152,13 @@ if free="$(free_gb)"; then
       '[{type: $t, team: "", name: "disk", free_gb: $f, warn_free_gb: $w}]')"
   fi
   state="$(jq -cn --argjson st "$state" --arg d "$now_d" '$st + {disk: $d}')"
+fi
+
+# --- weekly archive ------------------------------------------------------------------------------
+week="$(date +%G-W%V)"
+if [ "$(printf '%s' "$state" | jq -r '.archive_week // ""')" != "$week" ]; then
+  "$registry" archive >/dev/null 2>&1 || warn "weekly archive failed"
+  state="$(jq -cn --argjson st "$state" --arg w "$week" '$st + {archive_week: $w}')"
 fi
 
 tick_state_write "$state"

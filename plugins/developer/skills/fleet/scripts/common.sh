@@ -194,3 +194,39 @@ tick_state_write() { # tick_state_write <json>
 forge_pr_json() {
   "$FLEET_GH" pr view "$1" --json state,mergeable,statusCheckRollup,headRefOid,body,url
 }
+
+# Claude Code transcripts. projects_dir is where Claude keeps them (tests point HOME at a fixture
+# tree); transcript_dir_for <cwd> is the project directory for a working directory (cwd with "/"
+# and "." replaced by "-"). Scripts read them only through these helpers.
+projects_dir() { printf '%s\n' "${CLAUDE_PROJECTS_DIR:-$HOME/.claude/projects}"; }
+transcript_dir_for() { printf '%s/%s\n' "$(projects_dir)" "$(printf '%s' "$1" | tr '/.' '--')"; }
+new_uuid() {
+  if command -v uuidgen >/dev/null 2>&1; then uuidgen | tr 'A-Z' 'a-z'
+  elif [ -r /proc/sys/kernel/random/uuid ]; then cat /proc/sys/kernel/random/uuid
+  else od -An -N16 -tx1 /dev/urandom | tr -d ' \n' | sed -E 's/(.{8})(.{4})(.{4})(.{4})(.{12})/\1-\2-\3-\4-\5/'; fi
+}
+
+# context_window <model>: the model's context window in tokens, from the [context_window] table
+# of config.toml (model = N lines, the model name optionally quoted); default 200000.
+# UNVERIFIED: the real window per model (DEV-368).
+context_window() {
+  local v="" f="$FLEET_CONFIG_DIR/config.toml"
+  [ -f "$f" ] && v="$(awk -v m="$1" '
+    /^[[:space:]]*\[/ { on = ($0 ~ /^[[:space:]]*\[context_window\]/); next }
+    on { k = $0; sub(/[[:space:]]*=.*/, "", k); gsub(/^[[:space:]]*"?|"?[[:space:]]*$/, "", k)
+         if (k == m) { v = $0; sub(/^[^=]*=[[:space:]]*/, "", v); sub(/[^0-9].*/, "", v); print v; exit } }' "$f")"
+  printf '%s\n' "${v:-200000}"
+}
+
+# transcript_context_pct <transcript file>: percent of the context window the latest assistant
+# turn used (input + cache read + cache creation tokens). Prints nothing when it can't be read.
+transcript_context_pct() {
+  [ -r "$1" ] || return 0
+  local last model tokens
+  last="$(grep -F '"type":"assistant"' "$1" 2>/dev/null | tail -n 1)" || true
+  [ -n "$last" ] || return 0
+  tokens="$(printf '%s' "$last" | jq -r '.message.usage | if type == "object" then ((.input_tokens // 0) + (.cache_read_input_tokens // 0) + (.cache_creation_input_tokens // 0)) else empty end' 2>/dev/null)" || return 0
+  [ -n "$tokens" ] || return 0
+  model="$(printf '%s' "$last" | jq -r '.message.model // ""' 2>/dev/null)"
+  printf '%s\n' $((tokens * 100 / $(context_window "$model")))
+}

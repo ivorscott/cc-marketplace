@@ -7,13 +7,17 @@
 #      a claim that fails aborts before any row changes
 #   2. registry.sh reassign: every row of the team gets the issue, a clean outcome/PR/sign-off,
 #      its open escalations closed ("closed at next") and status Working
-#   3. workers get /clear; the lead gets /compact when its context is above compact_above_pct
-#      (config.toml, default 50) or when the percentage cannot be read
+#   3. workers get /clear and the row's `transcript` is re-pointed at the new session file
+#      (/clear starts a new transcript with a new session id); the lead gets /compact when its
+#      context is above compact_above_pct (config.toml, default 50) or when it cannot be read
 #   4. the lead gets the brief (--brief TEXT, default "New issue: <issue>.") plus the fleet rules
 # Slash commands are sent with --no-confirm (they change neither state nor transcript); the
 # brief is confirmed. A message that is not delivered marks that row Failed and next exits 1.
-# UNVERIFIED against real herdr output: the context percentage is read from the lead's screen
-# ("NN% context used" or "context left ... NN%") and the patterns are a guess (DEV-368 decision 5).
+# The lead's context percentage comes from its transcript: the latest assistant turn's
+# input + cache tokens against the model's window ([context_window] in config.toml, default
+# 200000). Fallback: the lead's screen ("NN% context used" or "context left ... NN%"). UNVERIFIED:
+# the real window per model, the screen patterns, and the transcript format across Claude Code
+# updates (DEV-368 decision 5, amended).
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
 require_herdr
@@ -48,23 +52,48 @@ send() { # send <row name> <text> [--no-confirm]
   "$FLEET_SCRIPTS/tell.sh" "$@" >/dev/null || { "$registry" set "$1" status=Failed >/dev/null; failed+=("$1"); return 1; }
 }
 
-# context_pct <herdr ref>: percent of context used, from the visible screen; empty when unknown.
+# context_pct <transcript> <herdr ref>: percent of context used, from the transcript, else the
+# visible screen; empty when unknown.
 context_pct() {
-  local s; s="$(hd agent read "$1" --source visible 2>/dev/null | tail -n 15 || true)"
+  local p s; p="$(transcript_context_pct "$1")"
+  if [ -n "$p" ]; then printf '%s\n' "$p"; return 0; fi
+  s="$(hd agent read "$2" --source visible 2>/dev/null | tail -n 15 || true)"
   printf '%s\n' "$s" | awk '
     match($0, /[0-9]+% *(of )?context( used)?/) { t = substr($0, RSTART, RLENGTH); sub(/%.*/, "", t); print t; exit }
     match($0, /[Cc]ontext left[^0-9]*[0-9]+%/) { t = substr($0, RSTART, RLENGTH); gsub(/[^0-9]/, "", t); print 100 - t; exit }'
 }
 
+# clear_session <row name>: /clear a worker, then point its row's transcript at the new session file
+# (the files in its project dir that did not exist before the clear; the newest wins).
+clear_session() {
+  local name="$1" cwd dir before="" f best="" t=0 secs poll="${FLEET_TELL_POLL:-1}"
+  cwd="$(printf '%s' "$rows" | jq -r --arg n "$name" '.[] | select(.name == $n) | .cwd // ""')"
+  dir=""; [ -z "$cwd" ] || dir="$(transcript_dir_for "$cwd")"
+  [ -z "$dir" ] || before="$(ls "$dir"/*.jsonl 2>/dev/null || true)"
+  send "$name" /clear --no-confirm || return 0
+  [ -n "$dir" ] || return 0
+  secs="$(cfg_int tell_confirm_secs 15)"
+  while :; do
+    for f in $(ls -t "$dir"/*.jsonl 2>/dev/null || true); do
+      printf '%s\n' "$before" | grep -qxF "$f" || { best="$f"; break; }
+    done
+    [ -z "$best" ] || break
+    [ "$t" -ge "$secs" ] && break
+    sleep "$poll"; t=$((t + 1))
+  done
+  if [ -n "$best" ]; then "$registry" set "$name" transcript="$best" >/dev/null
+  else warn "no new transcript for $name after /clear; its transcript path may be stale"; fi
+}
+
 lead=""
 while IFS= read -r name; do
   if [ "$(printf '%s' "$rows" | jq -r --arg n "$name" '.[] | select(.name == $n) | .tier')" = "Lead" ]; then lead="$name"; continue; fi
-  send "$name" /clear --no-confirm || true
+  clear_session "$name"
 done < <(printf '%s' "$rows" | jq -r '.[].name')
 
 if [ -n "$lead" ]; then
   ref="$(printf '%s' "$rows" | jq -r --arg n "$lead" '.[] | select(.name == $n) | .herdr_ref')"
-  pct="$(context_pct "$ref")"; above="$(cfg_int compact_above_pct 50)"
+  pct="$(context_pct "$(printf '%s' "$rows" | jq -r --arg n "$lead" '.[] | select(.name == $n) | .transcript // ""')" "$ref")"; above="$(cfg_int compact_above_pct 50)"
   if [ -z "$pct" ] || [ "$pct" -gt "$above" ]; then
     send "$lead" /compact --no-confirm || true
     hd agent wait "$ref" --until idle --timeout 120000 >/dev/null 2>&1 || true

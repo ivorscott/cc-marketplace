@@ -9,15 +9,22 @@
 # is gone: exits 2. --no-confirm only checks that herdr accepted the send (for slash
 # commands, which change neither the agent's state nor the transcript).
 #
-# Delivery is seen when, within tell_confirm_secs (config.toml, default 15), either
-#   (a) the agent's status changes to working or blocked, or
-#   (b) the first 40 characters of the text show up in the transcript part of
+# Delivery is seen when, within tell_confirm_secs (config.toml, default 15), the first of these
+# shows up (structured signals first, screen text last):
+#   (a) the agent's Claude Code transcript (the row's `transcript` file) gains a line after the
+#       send with type "user" whose string .message.content starts with the first 40 characters
+#       of the text;
+#   (b) herdr `agent get` shows .state_change_seq increased, or agent_status went to working or
+#       blocked;
+#   (c) fallback: the first 40 characters appear in the transcript part of
 #       `herdr agent read --source recent-unwrapped`. The input box at the bottom (from the
 #       second-to-last horizontal rule on) is excluded, so Claude's greyed suggested reply
 #       cannot pass for an echoed message.
 # Not seen: press enter once and look again; if the text is not on screen, send it again.
-# UNVERIFIED against real herdr output: the rule and glyph handling encodes what Claude
-# Code's screen is expected to look like (DEV-368).
+# UNVERIFIED: state_change_seq and revision are observed in `agent get` JSON, not documented by
+# herdr (`herdr --skill`), so they are a signal, not a contract; the transcript format may change
+# between Claude Code versions; the screen handling encodes what Claude Code's screen is expected
+# to look like (DEV-368).
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
 require_herdr
@@ -32,13 +39,15 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-ref="$target"; pane=""
+ref="$target"; pane=""; transcript=""
 case "$target" in
   */*)
     row="$("$FLEET_SCRIPTS/registry.sh" get "$target")" || exit 1
     ref="$(printf '%s' "$row" | jq -r '.herdr_ref // ""')"; pane="$(printf '%s' "$row" | jq -r '.pane // ""')"
+    transcript="$(printf '%s' "$row" | jq -r '.transcript // ""')"
     [ -n "$ref" ] || die "$target has no herdr_ref" ;;
-  *) pane="$("$FLEET_SCRIPTS/registry.sh" list | jq -r --arg r "$target" '[.[] | select(.herdr_ref == $r) | .pane // ""] | first // ""')" ;;
+  *) r="$("$FLEET_SCRIPTS/registry.sh" list | jq -c --arg r "$target" '[.[] | select(.herdr_ref == $r)] | first // {}')"
+     pane="$(printf '%s' "$r" | jq -r '.pane // ""')"; transcript="$(printf '%s' "$r" | jq -r '.transcript // ""')" ;;
 esac
 
 verdict() { # verdict <delivered true|false> <reason> <exit code>
@@ -47,6 +56,7 @@ verdict() { # verdict <delivered true|false> <reason> <exit code>
 }
 
 agent_state() { hd agent get "$ref" 2>/dev/null | jq -r '.result.agent.agent_status // "gone"' 2>/dev/null || echo gone; }
+agent_seq() { hd agent get "$ref" 2>/dev/null | jq -r '.result.agent.state_change_seq // ""' 2>/dev/null || true; }
 [ "$(agent_state)" != "gone" ] || { warn "not delivered to $target: agent not found in herdr"; verdict false "agent not found" 2; }
 if [ -n "$pane" ] && ! hd pane process-info --pane "$pane" 2>/dev/null |
   jq -e '.result.process_info | .foreground_process_group_id != .shell_pid' >/dev/null 2>&1; then
@@ -68,7 +78,9 @@ screen() { hd agent read "$ref" --source recent-unwrapped 2>/dev/null | tail -n 
 needle="$(printf '%s' "$text" | head -1 | cut -c1-40)"
 echoed() { transcript "$1" | grep -qF -- "$needle"; }
 
-before_state="$(agent_state)"
+before_state="$(agent_state)"; before_seq="$(agent_seq)"
+needle40="$(jq -rn --arg t "$text" '$t[0:40]')"
+lines0=0; [ -r "$transcript" ] && lines0="$(wc -l <"$transcript" | tr -d ' ')"
 seen_before=false; echoed "$(screen)" && seen_before=true
 
 send() { hd agent prompt "$ref" "$text" >/dev/null 2>&1; }
@@ -76,9 +88,16 @@ send || { warn "not delivered to $target: herdr agent prompt failed"; verdict fa
 $confirm || verdict true "" 0
 
 secs="$(cfg_int tell_confirm_secs 15)"; poll="${FLEET_TELL_POLL:-1}"
-arrived() { # the state changed to working/blocked, or the text is newly in the transcript
-  local s; s="$(agent_state)"
+arrived() { # structured signals first: transcript user line, herdr state; then the screen
+  local s q
+  if [ -n "$transcript" ] && [ -r "$transcript" ] &&
+    tail -n +$((lines0 + 1)) "$transcript" 2>/dev/null | jq -e --arg n "$needle40" \
+      'select(.type == "user" and (.message.content | type == "string") and (.message.content | startswith($n)))' >/dev/null 2>&1; then
+    return 0
+  fi
+  s="$(agent_state)"; q="$(agent_seq)"
   case "$s" in working | blocked) [ "$before_state" = "$s" ] || return 0 ;; esac
+  case "$before_seq" in "" | *[!0-9]*) ;; *) case "$q" in "" | *[!0-9]*) ;; *) [ "$q" -gt "$before_seq" ] && return 0 ;; esac ;; esac
   $seen_before || ! echoed "$(screen)" || return 0
   return 1
 }

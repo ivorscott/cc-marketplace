@@ -270,7 +270,7 @@ case "$cmd" in
         if .value.team == $t and .value.status != "Retired" and .value.tier != "Orchestrator" then
           .value |= (
             del(.outcome, .summary, .done_at, .signoff, .pr, .lessons)
-            | .escalations = [(.escalations // [])[] | if .resolved_at == null then . + {resolved_at: $now, resolution: "closed at next"} else . end]
+            | norm | esc_close("closed at next"; $now)
             | derive | .issue = $i | .status = "Working" | .updated_at = $now)
         else . end)'
     ;;

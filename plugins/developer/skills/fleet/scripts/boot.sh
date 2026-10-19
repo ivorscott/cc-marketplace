@@ -186,6 +186,9 @@ claude_args() { # claude_args <model> <tier> <worktree> <allow-json>
   [ -n "$1" ] && printf '%s\0' --model "$1"
   [ "$2" = "Lead" ] && printf '%s\0' --agent developer:lead
   printf '%s\0' --permission-mode "$(permission_mode)"
+  # --session-id pins the transcript file name, so the row can record where the agent's
+  # transcript is (tell.sh and next.sh read it). boot sets session_id just before each start.
+  [ -z "${session_id:-}" ] || printf '%s\0' --session-id "$session_id"
 }
 
 # Answer Claude's folder-trust dialog, but only for directories this boot owns or was
@@ -288,10 +291,11 @@ row() { # row <name> <tier> <agent> <pane> <kind> <model> <status> <cwd> <worktr
   jq -cn --arg name "$1" --arg tier "$2" --arg ref "$3" --arg pane "$4" --arg harness "$5" --arg model "$6" \
     --arg status "$7" --arg cwd "$8" --arg wt "$9" --arg br "${10}" --arg ex "${11}" \
     --arg team "$team" --arg tpl "$template" --arg repo "$repo" --arg task "$task" --arg m "$machine" --arg ws "$workspace" \
-    --arg issue "$issue" --arg cb "$claimed_by" --argjson scope "$scope_json" --arg lease "$lease_new" --arg toof "$takeover_of" \
+    --arg tr "${row_transcript:-}" --arg issue "$issue" --arg cb "$claimed_by" --argjson scope "$scope_json" --arg lease "$lease_new" --arg toof "$takeover_of" \
     '{name: $name, team: $team, tier: $tier, template: $tpl, harness: $harness, model: $model, repo: $repo,
       machine: $m, status: $status, assignment: $task, herdr_ref: $ref, pane: $pane, workspace: $ws,
       cwd: $cwd, worktree: $wt, branch: $br, expertise_file: $ex}
+    + (if $tr != "" then {transcript: $tr} else {} end)
     + (if $issue != "" then {issue: $issue, claimed_by: $cb} else {} end)
     + (if $lease != "" then {lease_expires: $lease} else {} end)
     + (if $toof != "" then {takeover_of: $toof} else {} end)
@@ -314,6 +318,10 @@ for i in $(seq 0 $((nworkers - 1))); do
   kind="$(get kind)"; kind="${kind:-claude}"
   if ! command -v "$kind" >/dev/null 2>&1; then warn "$kind not on PATH; $(get agent) falls back to claude"; kind=claude; fi
   allow="$(printf '%s' "$w" | jq -c '.allow // []')"
+  session_id=""; row_transcript=""
+  if [ "$kind" = "claude" ]; then
+    session_id="$(new_uuid)"; row_transcript="$(transcript_dir_for "$(get cwd)")/$session_id.jsonl"
+  fi
   status="$(start_agent "$(get agent)" "$kind" "$(get pane)" "$(get model)" Worker "$(get worktree)" "$allow")"
   ex="$(expertise_for "$(get role)")"
   "$registry" add "$(row "$(get name)" Worker "$(get agent)" "$(get pane)" "$kind" "$(get model)" "$status" "$(get cwd)" "$(get worktree)" "$(get branch)" "$ex")"
@@ -326,6 +334,10 @@ done
 # 4. Start the lead last, so its brief can name live workers.
 lead_kind="$(jq -r '.lead.kind // "claude"' "$tpl")"; lead_model="$(jq -r '.lead.model // ""' "$tpl")"
 command -v "$lead_kind" >/dev/null 2>&1 || { warn "$lead_kind not on PATH; the lead falls back to claude"; lead_kind=claude; }
+session_id=""; row_transcript=""
+if [ "$lead_kind" = "claude" ]; then
+  session_id="$(new_uuid)"; row_transcript="$(transcript_dir_for "$repo")/$session_id.jsonl"
+fi
 status="$(start_agent "$lead_agent" "$lead_kind" "$lead_pane" "$lead_model" Lead "" "$(jq -c '.lead.allow // []' "$tpl")")"
 ex="$(expertise_for lead)"
 "$registry" add "$(row "$lead_name" Lead "$lead_agent" "$lead_pane" "$lead_kind" "$lead_model" "$status" "$repo" "" "" "$ex")"

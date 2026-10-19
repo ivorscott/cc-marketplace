@@ -268,16 +268,18 @@ has `type`, `team`, `name` and, where a PR exists, the full `url`. Act on each:
 - `pr_ready`: send ONE `PushNotification` with the full PR URL (it is emitted once per PR and head SHA).
 - `pr_merged`: run `$F/next.sh <team> <next issue> [--brief TEXT]`. It reassigns every row, sends workers
   `/clear`, compacts the lead when its context is large, and briefs the lead.
+- `pr_opened`: a builder opened a PR without running done; tick recorded it on the row and told the lead.
 - `escalation`, `stalled`, `dead`, `repo_without_team`, `disk`, `disk_ok`: as in routes B, E and F.
 
 `$F/tell.sh <team/role> <text>` is how you (and boot and next) send text: it checks the message
-arrived and exits 1 (not delivered) or 2 (pane at the shell or agent gone) when it did not. Never
+arrived (first a new `user` line in the agent's Claude Code transcript, then herdr's `state_change_seq` or status, last the pane text) and exits 1 (not delivered) or 2 (pane at the shell or agent gone) when it did not. Never
 treat an undelivered message as sent. The tester records the PR and the exact SHA it verified with
 `registry.sh signoff <name> <PR URL|N> <sha>`; `tick.sh` only calls a PR ready when that SHA is the PR head.
 
+Boot starts every claude agent with `--session-id` and records the transcript path on its row; `next.sh` re-points it after `/clear` (a new session file) and reads the lead's context from the transcript against `[context_window]` in config.toml (default 200000 tokens). Once a week tick also runs `registry.sh archive`.
+
 Scripts now call the forge: `tick.sh` runs read-only `gh pr view` through `FLEET_GH` (default `gh`).
-A repo whose PRs have no CI is listed in `no_pr_ci = ["repo"]` in config.toml. Real-pane delivery
-checks and the lead's context percentage are UNVERIFIED against live herdr output.
+A repo whose PRs have no CI is listed in `no_pr_ci = ["repo"]` in config.toml. UNVERIFIED: herdr's `state_change_seq` is observed, not documented; the window size per model; the transcript format across Claude Code updates; the pane-text handling.
 
 ## E. Escalate
 

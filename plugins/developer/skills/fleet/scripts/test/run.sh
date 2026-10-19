@@ -258,11 +258,14 @@ case "$1 $2" in
   # Per-agent state in $AS: "agent get" reports it (idle when unset), a prompt makes the agent
   # working unless PROMPT_NOSTATE is set, and `agent read` prints $AS/<agent>.read.
   "agent start") rm -f "$AS/$3" "$AS/$3.read"; echo '{}' ;;
-  "agent get") echo "{\"result\":{\"agent\":{\"agent_status\":\"$(cat "$AS/$3" 2>/dev/null || echo idle)\"}}}" ;;
+  "agent get") echo "{\"result\":{\"agent\":{\"agent_status\":\"$(cat "$AS/$3" 2>/dev/null || echo idle)\",\"state_change_seq\":$(cat "$AS/$3.seq" 2>/dev/null || echo 0)}}}" ;;
   "agent wait") [ ! -e "$AS/$3" ] || echo idle >"$AS/$3"; echo '{}' ;;
   "agent prompt")
     [ -z "${PROMPT_FAIL:-}" ] || exit 1
     [ -n "${PROMPT_NOSTATE:-}" ] || echo working >"$AS/$3"
+    [ -z "${PROMPT_SEQ:-}" ] || echo $(( $(cat "$AS/$3.seq" 2>/dev/null || echo 0) + 1 )) >"$AS/$3.seq"
+    [ -z "${PROMPT_TRANSCRIPT:-}" ] || jq -nc --arg c "$4" '{type: "user", message: {role: "user", content: $c}}' >>"$PROMPT_TRANSCRIPT"
+    [ -z "${PROMPT_NEWSESSION_DIR:-}" ] || [ "$4" != /clear ] || echo '{}' >"$PROMPT_NEWSESSION_DIR/new-$RANDOM$RANDOM.jsonl"
     [ -z "${PROMPT_ECHO:-}" ] || printf '%s\n> %s\n\n────────\n❯ \n────────\n' "$(cat "$AS/$3.read" 2>/dev/null)" "$4" >"$AS/$3.read"
     echo '{}' ;;
   "agent send-keys") [ -z "${ENTER_WORKS:-}" ] || echo working >"$AS/$3"; echo '{}' ;;
@@ -981,6 +984,10 @@ S
 cat >"$T/gh-shim" <<'S'
 #!/usr/bin/env bash
 echo "$*" >>"$GH_LOG"
+if [ "$2" = list ]; then # gh pr list --head <branch> ...
+  b="${4//\//-}"; [ ! -e "$GH_DIR/list.$b.fail" ] || { echo "HTTP 502" >&2; exit 1; }
+  cat "$GH_DIR/list.$b.json" 2>/dev/null || echo '[]'; exit 0
+fi
 n="${3##*/}"
 [ ! -e "$GH_DIR/$n.fail" ] || { echo "HTTP 502: bad gateway" >&2; exit 1; }
 cat "$GH_DIR/$n.json"
@@ -1041,8 +1048,11 @@ eq "boot: a brief that never lands makes boot exit non-zero" "$((rc != 0))" 1
 eq "boot: no row of that team stays Working" "$("$REG" list --team build-nodeliver | jq '[.[] | select(.status == "Working")] | length')" 0
 eq "boot: every row of that team is Failed" "$("$REG" list --team build-nodeliver | jq '[.[] | select(.status == "Failed")] | length')" "$("$REG" list --team build-nodeliver | jq length)"
 check "boot: the error names the failed agents" grep -q 'not delivered to' "$T/nd.err"
-"$SCRIPTS/boot.sh" build delivered "$T/repo" task >/dev/null 2>&1; rc=$?
+: >"$HERDR_LOG"; "$SCRIPTS/boot.sh" build delivered "$T/repo" task >/dev/null 2>&1; rc=$?
 eq "boot: confirmed briefs exit 0" "$rc" 0
+eq "boot: every claude agent starts with --session-id" "$(grep '^agent start' "$HERDR_LOG" | grep -c -- '--session-id [0-9a-f-]\{36\}')" "$(grep -c '^agent start' "$HERDR_LOG")"
+eq "boot: each row records transcript <projects>/<slug>/<session id>.jsonl" "$(grep '^agent start' "$HERDR_LOG" | sed -n 's/.*--session-id \([0-9a-f-]*\).*/\1/p' | sort | tr '\n' ' ')" "$("$REG" list --team build-delivered | jq -r '.[].transcript | split("/") | last | sub("\\.jsonl$"; "")' | sort | tr '\n' ' ')"
+check "boot: the transcript path is under the (fixture) projects dir" bash -c "'$REG' list --team build-delivered | jq -e --arg p \"\$HOME/.claude/projects/\" 'all(.[]; .transcript | startswith(\$p))' >/dev/null"
 eq "boot: confirmed rows are Working" "$("$REG" list --team build-delivered | jq '[.[] | select(.status == "Working")] | length')" "$("$REG" list --team build-delivered | jq length)"
 export FLEET_STATE_DIR="$T/astate" FLEET_REGISTRY="$T/astate/fleet.json" FLEET_INBOX="$T/astate/escalations.jsonl"
 
@@ -1176,7 +1186,101 @@ eq "tick: an agent herdr cannot find is reported dead" "$(printf '%s' "$d1" | jq
 eq "tick: --team limits the events" "$(evc "$("$SCRIPTS/tick.sh" --team nosuch 2>/dev/null)" dead)" 0
 check "tick: bad option fails" bash -c "! '$SCRIPTS/tick.sh' --bogus"
 eq "tick: only gh shim calls were made through FLEET_GH" "$(grep -vc '^pr view https://github.com/o/r/pull/12 --json state,mergeable,statusCheckRollup,headRefOid,body,url$' "$GH_LOG" | tr -d ' ')" 0
+eq "tick: an escalation event carries its id" "$(printf '%s' "$e1" | jq -r '[.[] | select(.type == "escalation") | .id] | first | test("^[0-9TZ]+-[0-9]+$")')" true
 eq "no real gh call was made" "$(wc -l <"$REAL_GH_LOG" | tr -d ' ')" 0
+
+# -- structured delivery: transcript user line, then herdr state, then the screen
+export FLEET_STATE_DIR="$T/a2state" FLEET_REGISTRY="$T/a2state/fleet.json" FLEET_INBOX="$T/a2state/escalations.jsonl"; mkdir -p "$FLEET_STATE_DIR"
+TRD="$HOME/.claude/projects/fixture"; mkdir -p "$TRD"
+arow2() { "$REG" add "$(jq -cn --arg n "$1" --arg t "${1%%/*}" --arg tier "$2" --arg ref "$3" --arg cwd "${4:-}" --arg tr "${5:-}" --arg br "${6:-}" --arg r "$T/ra" \
+  '{name: $n, team: $t, repo: $r, tier: $tier, status: "Idle", herdr_ref: $ref, pane: "p", cwd: $cwd, transcript: $tr, branch: $br}')"; }
+arow2 sd/builder Worker sd-b "" "$TRD/b.jsonl"
+rm -f "$AS"/*; : >"$TRD/b.jsonl"
+out="$(PROMPT_NOSTATE=1 PROMPT_TRANSCRIPT="$TRD/b.jsonl" "$SCRIPTS/tell.sh" sd/builder "ship the transcript line please" 2>/dev/null)"; rc=$?
+eq "tell: a user line in the transcript is delivery" "$rc:$(printf '%s' "$out" | jq -r .delivered)" "0:true"
+jq -nc '{type: "user", message: {content: "an old message that must not count"}}' >>"$TRD/b.jsonl"
+out="$(PROMPT_NOSTATE=1 "$SCRIPTS/tell.sh" sd/builder "an old message that must not count" 2>/dev/null)"; rc=$?
+eq "tell: a matching line from before the send is not delivery" "$rc:$(printf '%s' "$out" | jq -r .delivered)" "1:false"
+jq -nc '{type: "assistant", message: {content: "a reply that starts with the text"}}' >>"$TRD/b.jsonl"
+out="$(PROMPT_NOSTATE=1 "$SCRIPTS/tell.sh" sd/builder "a reply that starts with the text" 2>/dev/null)"; rc=$?
+eq "tell: only type user counts, not assistant" "$rc:$(printf '%s' "$out" | jq -r .delivered)" "1:false"
+rm -f "$AS"/*
+out="$(PROMPT_NOSTATE=1 PROMPT_SEQ=1 "$SCRIPTS/tell.sh" sd/builder "state change seq only" 2>/dev/null)"; rc=$?
+eq "tell: an increased state_change_seq is delivery" "$rc:$(printf '%s' "$out" | jq -r .delivered)" "0:true"
+
+# -- lead context from transcript usage
+LT="$TRD/lead.jsonl"; arow2 sd/lead Lead sd-l "" "$LT"; arow2 sd/w1 Worker sd-w1 "" "$TRD/w1.jsonl"
+usage() { jq -nc --argjson i "$1" --argjson r "$2" --argjson c "$3" --arg m "$4" '{type: "assistant", message: {model: $m, usage: {input_tokens: $i, cache_read_input_tokens: $r, cache_creation_input_tokens: $c, output_tokens: 9}}}'; }
+{ usage 1 1 1 claude-x; usage 10000 130000 10000 claude-x; } >"$LT"
+eq "context_window: default 200000" "$(. "$SCRIPTS/common.sh"; context_window claude-x)" 200000
+eq "context: latest assistant turn / default window" "$(. "$SCRIPTS/common.sh"; transcript_context_pct "$LT")" 75
+printf '[context_window]\n"claude-x" = 400000\nother = 1000\n' >>"$FLEET_CONFIG_DIR/config.toml"
+eq "context_window: read from the [context_window] table" "$(. "$SCRIPTS/common.sh"; context_window claude-x)" 400000
+eq "context: uses the model's window" "$(. "$SCRIPTS/common.sh"; transcript_context_pct "$LT")" 37
+eq "context: an unreadable transcript prints nothing" "$(. "$SCRIPTS/common.sh"; transcript_context_pct "$TRD/nope.jsonl")" ""
+for r in sd/lead sd/w1; do "$REG" done "$r" --outcome Shipped --summary x >/dev/null 2>&1; done
+: >"$HERDR_LOG"; rm -f "$AS"/*; printf 'chat\n80%% context used\n' >"$AS/sd-l.read"
+"$SCRIPTS/next.sh" sd DEV-30 >/dev/null 2>&1
+eq "next: transcript says 37%, so the lead is not compacted even though the screen says 80%" "$(grep -c '^agent prompt sd-l /compact' "$HERDR_LOG")" 0
+usage 100000 100000 20000 claude-x >>"$LT"
+: >"$HERDR_LOG"; "$SCRIPTS/next.sh" sd DEV-31 >/dev/null 2>&1
+eq "next: transcript at 55% compacts the lead" "$(grep -c '^agent prompt sd-l /compact' "$HERDR_LOG")" 1
+sed -i.bak '/context_window/,$d' "$FLEET_CONFIG_DIR/config.toml"; rm -f "$FLEET_CONFIG_DIR/config.toml.bak"
+
+# -- /clear starts a new session file: next re-resolves the row's transcript
+arow2 sc/lead Lead sc-l "/work/sc/lead" ""; arow2 sc/w1 Worker sc-w "/work/sc/w.1" "$HOME/.claude/projects/-work-sc-w-1/old.jsonl"
+SD="$HOME/.claude/projects/-work-sc-w-1"; mkdir -p "$SD"; echo '{}' >"$SD/old.jsonl"
+for r in sc/lead sc/w1; do "$REG" done "$r" --outcome Shipped --summary x >/dev/null 2>&1; done
+rm -f "$AS"/*; printf 'chat\n20%% context used\n' >"$AS/sc-l.read"
+PROMPT_NEWSESSION_DIR="$SD" "$SCRIPTS/next.sh" sc DEV-40 >/dev/null 2>&1
+new="$("$REG" get sc/w1 | jq -r .transcript)"
+check "next: the worker's row points at the new session file" bash -c "[ '$new' != '$SD/old.jsonl' ] && [ -f '$new' ] && case '$new' in '$SD'/*) true ;; *) false ;; esac"
+rm -f "$AS"/*; for r in sc/lead sc/w1; do "$REG" done "$r" --outcome Shipped --summary x >/dev/null 2>&1; done
+"$REG" set sc/w1 transcript="$SD/old.jsonl" >/dev/null
+err="$(FLEET_TELL_POLL=0.01 "$SCRIPTS/next.sh" sc DEV-41 2>&1 >/dev/null)"
+check "next: no new session file after /clear is warned about" grep -q 'no new transcript for sc/w1' <<<"$err"
+eq "next: and the old path is left alone" "$("$REG" get sc/w1 | jq -r .transcript)" "$SD/old.jsonl"
+eq "scripts reach Claude's projects dir only through projects_dir" "$(grep -l 'claude/projects' "$SCRIPTS"/*.sh | xargs -n1 basename | tr '\n' ' ')" "common.sh "
+eq "projects_dir follows HOME" "$(HOME=/nowhere-x . "$SCRIPTS/common.sh"; HOME=/nowhere-x projects_dir)" /nowhere-x/.claude/projects
+
+# -- PR discovery (builder skipped done), id-keyed escalations, weekly archive
+arow2 pd/lead Lead pd-l "" ""; arow2 pd/builder Worker pd-b "" "" "fleet/dev-9-thing"
+: >"$GH_LOG"; : >"$HERDR_LOG"; rm -f "$AS"/*
+out="$("$SCRIPTS/tick.sh" 2>/dev/null)"
+eq "tick: no PR yet → no pr_opened" "$(evc "$out" pr_opened)" 0
+eq "tick: the builder's branch was looked up with gh pr list --head" "$(grep -c '^pr list --head fleet/dev-9-thing --json number,url,headRefOid,state$' "$GH_LOG")" 1
+echo '[{"number":9,"url":"https://github.com/o/r/pull/9","headRefOid":"abc","state":"CLOSED"}]' >"$GH_DIR/list.fleet-dev-9-thing.json"
+eq "tick: a closed PR on the branch is ignored" "$(evc "$("$SCRIPTS/tick.sh" 2>/dev/null)" pr_opened)" 0
+echo '[{"number":9,"url":"https://github.com/o/r/pull/9","headRefOid":"abc","state":"OPEN"}]' >"$GH_DIR/list.fleet-dev-9-thing.json"
+ghset 9 OPEN MERGEABLE "$GREEN" "abc" ok
+o1="$("$SCRIPTS/tick.sh" 2>/dev/null)"; o2="$("$SCRIPTS/tick.sh" 2>/dev/null)"
+eq "tick: an open PR on the branch is reported as pr_opened with its URL" "$(printf '%s' "$o1" | jq -c '[.[] | select(.type == "pr_opened") | .url, .name, .team]')" '["https://github.com/o/r/pull/9","pd/builder","pd"]'
+eq "tick: pr_opened is emitted once" "$(evc "$o2" pr_opened)" 0
+eq "tick: the PR is recorded on the builder's row" "$("$REG" get pd/builder | jq -r .pr)" https://github.com/o/r/pull/9
+check "tick: the lead was told to start the tester" grep -q '^agent prompt pd-l PR https://github.com/o/r/pull/9 is open; start the tester' "$HERDR_LOG"
+touch "$GH_DIR/list.fleet-dev-9-thing.fail"; "$REG" set pd/builder pr= >/dev/null
+err="$("$SCRIPTS/tick.sh" 2>&1 >/dev/null)"
+check "tick: a gh pr list failure is logged, not fatal" grep -q 'gh could not list PRs for fleet/dev-9-thing' <<<"$err"
+rm -f "$GH_DIR/list.fleet-dev-9-thing.fail"
+# escalations are keyed by id: same-second twins are two events
+"$REG" escalate pd/builder P2 "twin a" >/dev/null 2>&1; "$REG" escalate pd/builder P2 "twin b" >/dev/null 2>&1
+tw="$("$SCRIPTS/tick.sh" 2>/dev/null)"
+eq "tick: two escalations on one agent are two events with distinct ids" "$(printf '%s' "$tw" | jq '[.[] | select(.type == "escalation") | .id] | (length == 2 and (unique | length) == 2)')" true
+eq "tick: and neither is repeated" "$(evc "$("$SCRIPTS/tick.sh" 2>/dev/null)" escalation)" 0
+# schema: every write A makes leaves valid rows
+eq "A's writes (signoff, reassign, set pr) leave every row valid" "$(jq "$(. "$SCRIPTS/common.sh"; printf '%s' "$ESC_DEFS")"'[.agents[] | row_ok] | all' "$FLEET_REGISTRY")" true
+# weekly archive
+jq 'del(.archive_week)' "$FLEET_STATE_DIR/tick.state.json" >"$T/ts.tmp" && mv "$T/ts.tmp" "$FLEET_STATE_DIR/tick.state.json"
+"$REG" add '{"name":"wk/old","team":"wk","tier":"Worker","status":"Retired","outcome":"Shipped","lessons":"l","ended":"2020-01-01T00:00:00Z"}'
+"$SCRIPTS/tick.sh" >/dev/null 2>&1
+eq "tick: the first tick of a week archives retired rows with lessons" "$("$REG" list --team wk | jq length)" 0
+eq "tick: and they are in the archive" "$("$REG" get --archived wk/old | jq -r .name)" wk/old
+"$REG" add '{"name":"wk/two","team":"wk","tier":"Worker","status":"Retired","outcome":"Shipped","lessons":"l","ended":"2020-01-01T00:00:00Z"}'
+"$SCRIPTS/tick.sh" >/dev/null 2>&1
+eq "tick: a second tick in the same week does not archive again" "$("$REG" list --team wk | jq length)" 1
+jq '.archive_week = "1999-W01"' "$FLEET_STATE_DIR/tick.state.json" >"$T/ts.tmp" && mv "$T/ts.tmp" "$FLEET_STATE_DIR/tick.state.json"
+"$SCRIPTS/tick.sh" >/dev/null 2>&1
+eq "tick: a new week archives again" "$("$REG" list --team wk | jq length)" 0
 
 export FLEET_STATE_DIR="$_ostate" FLEET_REGISTRY="$_oreg"; [ -n "$_oinbox" ] && export FLEET_INBOX="$_oinbox" || unset FLEET_INBOX
 cp "$T/config.a.bak" "$FLEET_CONFIG_DIR/config.toml"; unset FLEET_TELL_POLL
