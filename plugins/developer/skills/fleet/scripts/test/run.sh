@@ -256,6 +256,7 @@ case "$1 $2" in
   "workspace create") echo '{"result":{"workspace":{"workspace_id":"w1"},"root_pane":{"pane_id":"p0"}}}' ;;
   "pane split") n=$(( $(grep -c '^pane split' "$HERDR_LOG") )); echo "{\"result\":{\"pane\":{\"pane_id\":\"p$n\"}}}" ;;
   "pane process-info")
+    if [ -n "${PANE_GONE:-}" ]; then echo '{"result":{"process_info":{"foreground_process_group_id":1,"shell_pid":1}}}'; exit 1; fi
     if [ -n "${DEAD_ONCE:-}" ] && [ -e "$DEAD_ONCE" ]; then rm -f "$DEAD_ONCE"; echo '{"result":{"process_info":{"foreground_process_group_id":1,"shell_pid":1}}}'
     else echo '{"result":{"process_info":{"foreground_process_group_id":2,"shell_pid":1}}}'; fi ;;
   # Per-agent state in $AS: "agent get" reports it (idle when unset), a prompt makes the agent
@@ -2138,6 +2139,20 @@ eq "respawn: after the window a new death is respawned" "$(nstart build-rsp-buil
 echo gone >"$AS/build-rsp-lead"; : >"$HERDR_LOG"; "$SCRIPTS/tick.sh" >/dev/null 2>&1
 eq "respawn: a lead is started again as the lead agent" "$(grep "^agent start build-rsp-lead " "$HERDR_LOG" | grep -c -- '--agent developer:lead')" 1
 check "respawn: a lead's resume brief names the team" grep -q 'The team:' "$HERDR_LOG"
+# a respawn that always fails still spends the budget: tried respawn_max times, then one P1, no pane leak
+printf 'respawn_max = 2\n' >"$FLEET_CONFIG_DIR/config.toml"
+"$SCRIPTS/boot.sh" build rsf "$T/repo" "task" >/dev/null 2>&1
+for r in build-rsf/lead build-rsf/planner build-rsf/builder build-rsf/tester; do "$REG" set "$r" status=Idle >/dev/null; done
+rm -f "$FLEET_STATE_DIR/tick.state.json"; export FLEET_NOW=2026-10-19T10:00:00Z
+echo gone >"$AS/build-rsf-builder"; : >"$HERDR_LOG"
+for i in 1 2; do PANE_GONE=1 "$SCRIPTS/tick.sh" >/dev/null 2>&1; echo gone >"$AS/build-rsf-builder"; done
+n2="$(nstart build-rsf-builder)"
+for i in 3 4; do PANE_GONE=1 "$SCRIPTS/tick.sh" >/dev/null 2>&1; echo gone >"$AS/build-rsf-builder"; done
+check "respawn failing: the builder was tried (twice per attempt: start retries once)" test "$n2" -eq 4
+eq "respawn failing: and not again after respawn_max attempts" "$(nstart build-rsf-builder)" "$n2"
+eq "respawn failing: every pane it split is closed again" "$(grep -c '^pane close' "$HERDR_LOG")" "$(grep -c '^pane split' "$HERDR_LOG")"
+eq "respawn failing: one P1 and no more" "$("$REG" escalations --open --team build-rsf | jq -c '[.[] | select(.name == "build-rsf/builder") | [.severity, .message]]')" '[["P1","build-rsf/builder could not be respawned in 6h"]]'
+rm -f "$FLEET_CONFIG_DIR/config.toml"; unset FLEET_NOW
 # Done and Retired rows are never respawned
 "$REG" done build-rsp/tester --outcome Shipped --summary x >/dev/null 2>&1; echo gone >"$AS/build-rsp-tester"; : >"$HERDR_LOG"
 "$SCRIPTS/tick.sh" >/dev/null 2>&1; eq "respawn: a Done row is not respawned" "$(nstart build-rsp-tester)" 0
@@ -2145,6 +2160,12 @@ check "respawn: a lead's resume brief names the team" grep -q 'The team:' "$HERD
 eq "respawn: a Retired row is not respawned" "$(nstart build-rsp-planner)" 0
 check "respawn.sh refuses a Done row directly" bash -c "! '$SCRIPTS/respawn.sh' build-rsp/tester"
 unset FLEET_NOW
+
+# -- R2: a non-claude harness has no args; the empty array must not trip `set -u` on bash 3.2
+: >"$HERDR_LOG"
+r2out="$(/bin/bash -c 'set -euo pipefail; . "$1/common.sh"; team=t; task=x; repo=/r; registry=/r; tool_allow="[]"; session_id=""; . "$1/agent-lib.sh"; start_agent_once agentx codex p1 "" Worker /w "[]"' _ "$SCRIPTS" 2>&1)"
+eq "agent-lib: a codex-kind worker starts (empty args, bash 3.2)" "$r2out" Working
+eq "agent-lib: and gets no claude flags" "$(grep -c '^agent start agentx --kind codex --pane p1 --timeout 60000 --$' "$HERDR_LOG")" 1
 
 # -- metrics from a fixture log and fixture transcripts
 export FLEET_STATE_DIR="$T/mx" FLEET_REGISTRY="$T/mx/fleet.json" FLEET_INBOX="$T/mx/e.jsonl"; mkdir -p "$FLEET_STATE_DIR/tr"; EVF="$FLEET_STATE_DIR/events.jsonl"
@@ -2157,7 +2178,8 @@ PR=https://github.com/o/r/pull/50
   echo '{"at":"2026-10-12T10:30:00Z","type":"stalled","team":"mt","name":"mt/builder","issue":null,"pr":null,"sha":null,"detail":null}'
   echo '{"at":"2026-10-12T11:00:00Z","type":"pr_ready","team":"mt","name":"mt/tester","issue":null,"pr":"'$PR'","sha":"aaa1111","detail":null}'
   echo '{"at":"2026-10-12T11:05:00Z","type":"signoff","team":"mt","name":"mt/tester","issue":null,"pr":"'$PR'","sha":"aaa1111","detail":null}'
-  echo '{"at":"2026-10-12T12:00:00Z","type":"pr_ready","team":"mt","name":"mt/tester","issue":null,"pr":"'$PR'","sha":"bbb2222","detail":null}'
+  echo '{"at":"2026-10-12T12:00:00Z","type":"pr_ready","team":"mt","name":"mt/tester","issue":null,"pr":"'$PR'","sha":"BBB2222","detail":null}'
+  echo '{"at":"2026-10-12T12:05:00Z","type":"signoff","team":"mt","name":"mt/tester","issue":null,"pr":"'$PR'","sha":"bbb2222cafe","detail":null}'
   echo '{"at":"2026-10-12T13:00:00Z","type":"pr_merged","team":"mt","name":"mt/tester","issue":null,"pr":"'$PR'","sha":null,"detail":null}'
 } >"$EVF"
 TRD2="$FLEET_STATE_DIR/tr"
@@ -2168,14 +2190,20 @@ TRD2="$FLEET_STATE_DIR/tr"
   echo '{"type":"user","timestamp":"2026-10-12T10:00:00Z","message":{"content":"hi"}}'
 } >"$TRD2/s1.jsonl"
 echo '{"type":"assistant","timestamp":"2026-10-12T14:00:00Z","message":{"usage":{"input_tokens":5000}}}' >"$TRD2/s2.jsonl"
+printf '{"type":"assistant","timestamp":"2026-10-12T10:00:00Z","message":{"usage":{"input_tokens":50\nnot json at all\n' >>"$TRD2/s1.jsonl"
+echo '{"type":"assistant","timestamp":"2026-10-12T10:10:00Z","message":{"usage":{"input_tokens":1000}}}' >>"$TRD2/s1.jsonl"
+echo '{"type":"assistant","timestamp":"2026-10-12T10:20:00Z","message":{"usage":{"input_tokens":700}}}' >"$TRD2/s3.jsonl"   # same dir, on no row
+echo '{"type":"assistant","timestamp":"2026-10-12T10:30:00Z","message":{"usage":{"input_tokens":30}}}' >"$TRD2/s4.jsonl"   # earlier transcript
 "$REG" add "$(jq -cn --arg tr "$TRD2/s1.jsonl" '{name: "mt/builder", team: "mt", tier: "Worker", status: "Done", transcript: $tr}')"
+"$REG" append mt/builder transcripts "$TRD2/s4.jsonl" >/dev/null; "$REG" append mt/builder transcripts "$TRD2/s4.jsonl" >/dev/null
+eq "registry append: a list without duplicates" "$("$REG" get mt/builder | jq -c .transcripts)" "[\"$TRD2/s4.jsonl\"]"
 mj="$("$SCRIPTS/metrics.sh" --since 7d --json)"
 eq "metrics: one row for the PR in the window (the old one is out)" "$(printf '%s' "$mj" | jq length)" 1
 eq "metrics: time from boot to the first pr_ready" "$(printf '%s' "$mj" | jq '.[0].ready_minutes')" 120
 eq "metrics: rework rounds are distinct head SHAs minus one" "$(printf '%s' "$mj" | jq '.[0].rework_rounds')" 1
 eq "metrics: stalls" "$(printf '%s' "$mj" | jq '.[0].stalls')" 1
 eq "metrics: missed messages" "$(printf '%s' "$mj" | jq '.[0].missed_messages')" 1
-eq "metrics: tokens from the transcripts between start and merge only" "$(printf '%s' "$mj" | jq '.[0].tokens')" 2000
+eq "metrics: tokens only from the files on the team rows (a bad line skipped, a stray file in the dir ignored), in the window" "$(printf '%s' "$mj" | jq '.[0].tokens')" 3030
 eq "metrics: the PR and team" "$(printf '%s' "$mj" | jq -c '[.[0].pr, .[0].team, .[0].issue]')" "[\"$PR\",\"mt\",\"DEV-5\"]"
 "$SCRIPTS/metrics.sh" --since 7d >"$T/m.out"; check "metrics: the table has a header and the PR" bash -c "grep -q 'READY_MIN' '$T/m.out' && grep -q 'pull/50' '$T/m.out'"
 eq "metrics: a window with nothing says so" "$("$SCRIPTS/metrics.sh" --since 1d)" "no PRs in the last 1d"

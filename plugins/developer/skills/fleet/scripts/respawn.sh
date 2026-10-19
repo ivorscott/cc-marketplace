@@ -9,7 +9,7 @@
 # `git status` and `git log` of its branch, its open escalations and the old pane's last lines (read
 # BEFORE the new agent starts). A lead also gets the plan path and the team's rows. The brief is
 # sent through tell.sh --brief, so a brief that does not arrive marks the row Failed. The row gets a
-# new session id, so its `transcript` path changes. Logs `respawned` to the event log.
+# new session id, so its `transcript` path changes (the old one is kept in the row's `transcripts` list). Logs `respawned` to the event log.
 #
 # If the row's pane is gone, a new pane is split from the lead's pane in the same workspace.
 # UNVERIFIED against real herdr: that `herdr agent start <same name>` is accepted for an agent whose
@@ -25,7 +25,7 @@ get() { printf '%s' "$row" | jq -r ".$1 // \"\""; }
 status="$(get status)"
 case "$status" in Done | Retired) die "$name is $status; not respawning it" ;; esac
 
-team="$(get team)"; tier="$(get tier)"; agent="$(get herdr_ref)"; pane="$(get pane)"
+team="$(get team)"; tier="$(get tier)"; agent="$(get herdr_ref)"; pane="$(get pane)"; split_new=0
 cwd="$(get cwd)"; worktree="$(get worktree)"; model="$(get model)"; kind="$(get harness)"; kind="${kind:-claude}"
 template="$(get template)"; repo="$(get repo)"; task="$(get assignment)"; ex="$(get expertise_file)"
 role="${name#*/}"
@@ -54,6 +54,7 @@ if ! hd pane process-info --pane "$pane" >/dev/null 2>&1; then
     --env "FLEET_ROLE=$(printf '%s' "$tier" | tr 'A-Z' 'a-z')" --env "FLEET_NAME=$name" --env "FLEET_TEAM=$team" \
     --env "FLEET_WORKTREE=$worktree" --env "FLEET_REGISTRY=$FLEET_REGISTRY" ${env_args[@]+"${env_args[@]}"} | jq -r .result.pane.pane_id)"
   [ -n "$pane" ] && [ "$pane" != null ] || die "could not split a new pane for $name"
+  split_new=1
 fi
 
 session_id=""; transcript=""
@@ -62,10 +63,15 @@ if [ "$kind" = claude ]; then
 fi
 new_status="$(start_agent "$agent" "$kind" "$pane" "$model" "$tier" "$worktree" "$allow")"
 if [ "$new_status" = Zombie ]; then
-  "$registry" set "$name" pane="$pane" >/dev/null
+  # A pane this run split is closed, not left behind; the row keeps its old pane and the next attempt splits again.
+  if [ "$split_new" = 1 ]; then hd pane close "$pane" >/dev/null 2>&1 || warn "could not close pane $pane"; fi
   die "$name did not start again; row stays Zombie"
 fi
-set_args=(status="$new_status" pane="$pane"); [ -z "$transcript" ] || set_args+=(transcript="$transcript")
+set_args=(status="$new_status" pane="$pane")
+if [ -n "$transcript" ]; then
+  old_t="$(get transcript)"; [ -z "$old_t" ] || "$registry" append "$name" transcripts "$old_t" >/dev/null
+  set_args+=(transcript="$transcript")
+fi
 "$registry" set "$name" "${set_args[@]}" >/dev/null
 ev_log respawned team="$team" name="$name" detail="new pane $pane"
 

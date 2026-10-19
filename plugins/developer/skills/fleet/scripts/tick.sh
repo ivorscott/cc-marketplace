@@ -121,8 +121,8 @@ claims_taken_over
 # --- stalled / dead -------------------------------------------------------------------------
 # A newly Stalled agent gets ONE nudge through tell.sh (nudged_at on its row) and no event; still
 # Stalled on a later tick: a `stalled` event, once. A Zombie is a `dead` event on the transition and is
-# respawned within a budget (respawn_max = 1 per respawn_window_hours = 6 per agent): the next death
-# inside the window escalates P1 and does not respawn. Done and Retired rows are never touched.
+# respawned within a budget (respawn_max = 1 per respawn_window_hours = 6 per agent): every attempt, successful
+# or not, spends it; once it is spent, one P1 escalation and no more respawns. Done and Retired rows are never touched.
 now_iso="${FLEET_NOW:-$(now)}"; now_epoch="$(jq -rn --arg t "$now_iso" '$t | fromdateiso8601')"
 targs=(); [ -n "$team" ] && targs=(--team "$team")
 if rows="$("$FLEET_SCRIPTS/status.sh" ${targs[@]+"${targs[@]}"} --json 2>/dev/null)" && printf '%s' "$rows" | jq -e 'type == "array"' >/dev/null 2>&1; then
@@ -154,13 +154,21 @@ if rows="$("$FLEET_SCRIPTS/status.sh" ${targs[@]+"${targs[@]}"} --json 2>/dev/nu
     if [ "$(printf '%s' "$recent" | jq length)" -ge "$rmax" ]; then
       ekey="$zname|$(printf '%s' "$recent" | jq 'max')"
       if [ "$(printf '%s' "$state" | jq --arg k "$ekey" '(.respawn_escalated // []) | index($k) == null')" = true ]; then
-        "$registry" escalate "$zname" P1 "$zname died twice in ${rwin}h" >/dev/null 2>&1 || warn "could not escalate $zname"
+        if [ "$(printf '%s' "$state" | jq --arg n "$zname" '(.respawn_failed // []) | index($n) != null')" = true ]; then
+          emsg="$zname could not be respawned in ${rwin}h"
+        else emsg="$zname died twice in ${rwin}h"; fi
+        "$registry" escalate "$zname" P1 "$emsg" >/dev/null 2>&1 || warn "could not escalate $zname"
         state="$(jq -cn --argjson st "$state" --arg k "$ekey" '$st + {respawn_escalated: ((($st.respawn_escalated // []) + [$k]) | unique)}')"
       fi
-    elif "$FLEET_SCRIPTS/respawn.sh" "$zname" >/dev/null 2>"$FLEET_STATE_DIR/respawn.err"; then
-      state="$(jq -cn --argjson st "$state" --arg n "$zname" --argjson now "$now_epoch" '$st + {respawns: (($st.respawns // {}) + {($n): ((($st.respawns // {})[$n] // []) + [$now])})}')"
     else
-      warn "could not respawn $zname: $(head -n 1 "$FLEET_STATE_DIR/respawn.err" 2>/dev/null)"
+      # The attempt is recorded before respawn.sh runs, so a respawn that always fails still spends the budget.
+      state="$(jq -cn --argjson st "$state" --arg n "$zname" --argjson now "$now_epoch" '$st + {respawns: (($st.respawns // {}) + {($n): ((($st.respawns // {})[$n] // []) + [$now])})}')"
+      if "$FLEET_SCRIPTS/respawn.sh" "$zname" >/dev/null 2>"$FLEET_STATE_DIR/respawn.err"; then
+        state="$(jq -cn --argjson st "$state" --arg n "$zname" '$st + {respawn_failed: (($st.respawn_failed // []) - [$n])}')"
+      else
+        warn "could not respawn $zname: $(head -n 1 "$FLEET_STATE_DIR/respawn.err" 2>/dev/null)"
+        state="$(jq -cn --argjson st "$state" --arg n "$zname" '$st + {respawn_failed: ((($st.respawn_failed // []) + [$n]) | unique)}')"
+      fi
     fi
   done < <(printf '%s' "$rows" | jq -r '.[] | select(.tier != "Orchestrator" and .status == "Zombie") | .name')
   state="$(jq -cn --argjson st "$state" --argjson rows "$rows" '$st + {status: (($st.status // {}) + ([$rows[] | {(.name): .status}] | add // {}))}')"
