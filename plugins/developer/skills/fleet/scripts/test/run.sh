@@ -1306,7 +1306,8 @@ for v in FLEET_REGISTRY FLEET_STATE_DIR FLEET_INBOX; do
   eq "F8: $v at the live default is refused before any write ($rc)" "$rc:$out" "1:"
   check "F8: and says why ($v)" grep -q 'under the live fleet state' "$T/f8.err"
 done
-eq "F8: this suite runs with all three paths under its temp dir" "$(case "$FLEET_REGISTRY|$FLEET_STATE_DIR|$FLEET_INBOX" in "$T"/*"|$T"/*"|$T"/*) echo yes ;; esac)" yes
+under_t() { case "$1" in "$T"/*) return 0 ;; esac; return 1; } # (a case inside $( ) does not parse on bash 3.2)
+eq "F8: this suite runs with all three paths under its temp dir" "$(under_t "$FLEET_REGISTRY" && under_t "$FLEET_STATE_DIR" && under_t "$FLEET_INBOX" && echo yes)" yes
 eq "F8: FLEET_ROLE and FLEET_NAME are not inherited by the suite" "${FLEET_ROLE:-}${FLEET_NAME:-}" ""
 
 export FLEET_STATE_DIR="$T/afix" FLEET_REGISTRY="$T/afix/fleet.json" FLEET_INBOX="$T/afix/escalations.jsonl"; mkdir -p "$FLEET_STATE_DIR"
