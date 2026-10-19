@@ -216,7 +216,7 @@ check "up exports the image tag, label and builder to the repo's up" grep -qx 'e
 eq "up records the image marks in the registry" "$("$REG" env-get build-a | jq -r '[.image_tag, .image_label, .builder] | join("|")')" 'fleet-build-a|fleet.team=build-a|fleet-build-a'
 dkreset; "$ENV" down build-a >"$T/dn.out" 2>"$T/dn.err"; rc=$?
 eq "down with images: exit 0" "$rc" 0
-eq "down removes the tag match and the label match, tries the pinned one" "$(grep '^rmi' "$DOCKER_LOG" | sort | tr '\n' ',')" 'rmi ID2,rmi ID5,rmi app:fleet-build-a,'
+eq "down removes the tag match and the label match, tries the pinned one" "$(grep '^rmi' "$DOCKER_LOG" | LC_ALL=C sort | tr '\n' ',')" 'rmi ID2,rmi ID5,rmi app:fleet-build-a,'
 eq "down never forces an rmi and never prunes" "$(grep -cE '^rmi -|prune' "$DOCKER_LOG")" 0
 eq "down: the only --force is the team's own builder" "$(grep -c -- '--force' "$DOCKER_LOG")" 1
 eq "down leaves foreign and pinned images" "$(cut -f1 "$DKDIR/images.tsv" | tr '\n' ',')" 'ID3,ID4,ID5,ID6,'
