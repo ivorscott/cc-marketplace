@@ -23,6 +23,10 @@
 #   registry.sh env-release <team>                         mark the environment Down, freeing its slot
 #   registry.sh archive                                    move Retired rows to fleet-archive.json (lessons written, no open escalation, ended archive_after_days ago)
 #   registry.sh path
+#
+# Every path comes from FLEET_STATE_DIR (fleet.json, escalations.jsonl, worktrees/, fleet-archive.json); there
+# is no FLEET_REGISTRY or FLEET_INBOX override. Agents (FLEET_ROLE set) are refused add, retire, archive,
+# reassign, resolve and close-stale.
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
 
@@ -30,7 +34,7 @@ mkdir -p "$(dirname "$FLEET_REGISTRY")"
 [ -f "$FLEET_REGISTRY" ] || printf '{"agents":{}}\n' >"$FLEET_REGISTRY"
 
 LOCK="$FLEET_REGISTRY.lock"
-ARCHIVE="${FLEET_ARCHIVE:-$(dirname "$FLEET_REGISTRY")/fleet-archive.json}"
+ARCHIVE="$FLEET_ARCHIVE"
 lock() {
   local i=0
   until mkdir "$LOCK" 2>/dev/null; do
@@ -86,6 +90,12 @@ DERIVE="$ESC_DEFS"'def derive: ([escs[] | select(.resolved_at == null) | .severi
 PROBLEM='(.status == "Stalled" or .status == "Zombie" or .status == "Needs input" or (.escalation // "") != "")'
 
 cmd="${1:-}"; shift || true
+# Agents (FLEET_ROLE set in their pane) can report on themselves (set, done, escalate, note, signoff for the
+# tester) but cannot create, retire, archive, move or resolve: those are the Orchestrator's.
+case "$cmd" in
+  add | retire | archive | reassign | resolve | close-stale)
+    [ -z "${FLEET_ROLE:-}" ] || die "$cmd is the Orchestrator's; an agent (FLEET_ROLE=$FLEET_ROLE) may not run it" ;;
+esac
 case "$cmd" in
   add)
     row="${1:?usage: add '<json>'}"

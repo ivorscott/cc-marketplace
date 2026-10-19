@@ -286,6 +286,12 @@ exits quietly. An agent with a background task running (a started task with no n
 transcript, or "N shell(s)" / "N monitor(s)" in the pane footer when there is no transcript) counts as
 Working, not Stalled; a task older than `bg_task_max_hours` (default 6) is aged out.
 
+`pr_ready` holds a draft PR, and a PR whose body says "stacked on", "merge after" or "merge before" (a stacked
+child must not go ready before its parent). PR discovery reads the builder's branch from its worktree
+(`git branch --show-current`), writes it back to the row, and ignores fork PRs. Every path the scripts use comes
+from `FLEET_STATE_DIR` (there is no `FLEET_REGISTRY`, `FLEET_INBOX` or `FLEET_WORKTREES`); an agent (`FLEET_ROLE`
+set) cannot run `add`, `retire`, `archive`, `reassign`, `resolve` or `close-stale`.
+
 ## E. Escalate
 
 `$F/registry.sh escalate <name> <P0|P1|P2> "<message>"` marks the agent Needs input, logs the

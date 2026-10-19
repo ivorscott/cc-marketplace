@@ -14,7 +14,8 @@
 #                   the row's pr, the lead is told to start the tester. Once per PR.
 #   pr_ready        the row's PR is open, mergeable, checks green (or none exist and the repo is in
 #                   no_pr_ci in config.toml), the tester's signed-off SHA is the PR head, and the
-#                   body has no "DO NOT MERGE", "merge order" or "before/after". Once per (PR, head SHA).
+#                   body has no "DO NOT MERGE", "merge order", "before/after", "merge after/before" or "stacked on",
+#                   and the PR is not a draft (a stacked child must not go ready before its parent). Once per (PR, head SHA).
 #   pr_merged       the row's PR was merged; the Orchestrator answers with next.sh. Once per PR.
 #   repo_without_team  a repo in config.toml `repos` with no live team, when it becomes so
 #   disk, disk_ok   free disk crossed below warn_free_gb, and recovered
@@ -93,16 +94,24 @@ add_events "$(jq -cn --argjson e "$esc" --argjson st "$state" '
 state="$(jq -cn --argjson st "$state" --argjson e "$esc" '
   $st + {escalations_emitted: ((($st.escalations_emitted // []) + [$e[] | .name + "|" + .id]) | unique)}')"
 
-# --- PR discovery: a builder's PR found by its fleet/ branch -------------------------------------
+# --- PR discovery: a builder's PR found by the branch its worktree is on ---------------------------------
+# Boot records fleet/<team>/<role>, but a builder pushes fleet/<slug>: the branch is read from the worktree
+# (git branch --show-current), falling back to the row, and written back to the row. Only same-repository
+# PRs count (gh pr list --head also returns fork PRs, and the repo is public).
 if command -v "$FLEET_GH" >/dev/null 2>&1; then
   while IFS= read -r b; do
     [ -n "$b" ] || continue
-    bname="$(printf '%s' "$b" | jq -r .name)"; bbranch="$(printf '%s' "$b" | jq -r .branch)"; brepo="$(printf '%s' "$b" | jq -r '.repo // ""')"
+    bname="$(printf '%s' "$b" | jq -r .name)"; rowbranch="$(printf '%s' "$b" | jq -r '.branch // ""')"; brepo="$(printf '%s' "$b" | jq -r '.repo // ""')"
+    bwt="$(printf '%s' "$b" | jq -r '.worktree // ""')"; bbranch=""
+    if [ -n "$bwt" ] && [ -d "$bwt" ]; then bbranch="$(git -C "$bwt" branch --show-current 2>/dev/null || true)"; fi
+    [ -n "$bbranch" ] || bbranch="$rowbranch"
+    case "$bbranch" in fleet/*) ;; *) continue ;; esac
+    if [ "$bbranch" != "$rowbranch" ]; then "$registry" set "$bname" branch="$bbranch" >/dev/null || warn "could not write $bname's branch back"; fi
     if [ ! -d "$brepo" ]; then warn "cannot look for $bname's PR: repo '$brepo' is not a directory"; continue; fi
-    if ! found="$(cd "$brepo" && "$FLEET_GH" pr list --head "$bbranch" --json number,url,headRefOid,state 2>/dev/null)"; then
+    if ! found="$(cd "$brepo" && "$FLEET_GH" pr list --head "$bbranch" --json number,url,headRefOid,state,isCrossRepository 2>/dev/null)"; then
       warn "gh could not list PRs for $bbranch"; continue
     fi
-    purl="$(printf '%s' "$found" | jq -r '[.[]? | select(.state == "OPEN")] | first | .url // ""' 2>/dev/null)" || purl=""
+    purl="$(printf '%s' "$found" | jq -r '[.[]? | select(.state == "OPEN" and ((.isCrossRepository // false) | not))] | first | .url // ""' 2>/dev/null)" || purl=""
     [ -n "$purl" ] || continue
     "$registry" set "$bname" pr="$purl" >/dev/null || continue
     bteam="$(printf '%s' "$b" | jq -r .team)"; told=true
@@ -111,7 +120,7 @@ if command -v "$FLEET_GH" >/dev/null 2>&1; then
       add_events "$(jq -cn --arg t "$bteam" --arg n "$bname" --arg u "$purl" --argjson told "$told" '[{type: "pr_opened", team: $t, name: $n, url: $u, lead_told: $told}]')"
       state="$(jq -cn --argjson st "$state" --arg u "$purl" '$st + {pr_opened_emitted: ((($st.pr_opened_emitted // []) + [$u]) | unique)}')"
     fi
-  done < <("$registry" list ${team:+--team "$team"} | jq -c '.[] | select(.tier == "Worker" and .status != "Retired" and (.pr // "") == "" and ((.branch // "") | startswith("fleet/")))')
+  done < <("$registry" list ${team:+--team "$team"} | jq -c '.[] | select(.tier == "Worker" and .status != "Retired" and (.pr // "") == "")')
 fi
 
 # --- pull requests ----------------------------------------------------------------------------
@@ -154,10 +163,11 @@ if [ "$(printf '%s' "$prs" | jq length)" != 0 ]; then
            elif ($cs | index("red")) then "red" elif ($cs | index("pending")) then "pending" else "green" end) as $ci
         | ($p.signoff // "" | ascii_downcase) as $so | ($g.headRefOid // "" | ascii_downcase) as $head
         | ($so != "" and $head != "" and ($head | startswith($so))) as $signed
-        | (($g.body // "") | test("DO NOT MERGE|merge order|before/after"; "i")) as $held
+        | (($g.body // "") | test("DO NOT MERGE|merge order|before/after|merge (after|before)|stacked on"; "i")) as $held
+        | ($g.isDraft // false) as $draft
         | if $g.state == "MERGED" then
             (if (($st.pr_merged_emitted // []) | index($p.pr)) == null then {type: "pr_merged", team: $p.team, name: $p.name, url: $p.pr} else null end)
-          elif $g.state == "OPEN" and $g.mergeable == "MERGEABLE" and ($ci == "green" or $ci == "none") and $signed and ($held | not)
+          elif $g.state == "OPEN" and ($draft | not) and $g.mergeable == "MERGEABLE" and ($ci == "green" or $ci == "none") and $signed and ($held | not)
                and (($st.pr_ready_emitted // []) | index($p.pr + "@" + $head)) == null
           then {type: "pr_ready", team: $p.team, name: $p.name, url: $p.pr, sha: $head, ci: $ci}
           else null end')"

@@ -7,7 +7,7 @@ set -u
 cat >/dev/null 2>&1 || true
 [ -n "${FLEET_NAME:-}" ] || exit 0
 command -v jq >/dev/null 2>&1 || exit 0
-reg="${FLEET_REGISTRY:-${XDG_STATE_HOME:-$HOME/.local/state}/fleet/fleet.json}"
+reg="${FLEET_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/fleet}/fleet.json"
 [ -f "$reg" ] || exit 0
 row="$(jq -c --arg n "$FLEET_NAME" '.agents[$n] // empty' "$reg" 2>/dev/null)"
 [ -n "$row" ] || exit 0

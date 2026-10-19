@@ -256,7 +256,7 @@ start_agent() { # same arguments as start_agent_once
 lead_agent="$(agent_name "$team-lead")"
 lead_name="$team/lead"
 ws_json="$(hd workspace create --cwd "$repo" --label "$team" --no-focus \
-  --env FLEET_ROLE=lead --env "FLEET_NAME=$lead_name" --env "FLEET_TEAM=$team" --env "FLEET_REGISTRY=$FLEET_REGISTRY" ${env_args[@]+"${env_args[@]}"})"
+  --env FLEET_ROLE=lead --env "FLEET_NAME=$lead_name" --env "FLEET_TEAM=$team" --env "FLEET_STATE_DIR=$FLEET_STATE_DIR" ${env_args[@]+"${env_args[@]}"})"
 workspace="$(printf '%s' "$ws_json" | jq -r .result.workspace.workspace_id)"
 lead_pane="$(printf '%s' "$ws_json" | jq -r .result.root_pane.pane_id)"
 [ -n "$workspace" ] && [ "$workspace" != "null" ] || die "workspace create failed: $ws_json"
@@ -277,7 +277,7 @@ for i in $(seq 0 $((nworkers - 1))); do
   if [ -z "$prev" ]; then split=(--pane "$lead_pane" --direction right); else split=(--pane "$prev" --direction down); fi
   pane="$(hd pane split "${split[@]}" --cwd "$cwd" --no-focus \
     --env FLEET_ROLE=worker --env "FLEET_NAME=$name" --env "FLEET_TEAM=$team" \
-    --env "FLEET_WORKTREE=$worktree" --env "FLEET_REGISTRY=$FLEET_REGISTRY" \
+    --env "FLEET_WORKTREE=$worktree" --env "FLEET_STATE_DIR=$FLEET_STATE_DIR" \
     ${env_args[@]+"${env_args[@]}"} | jq -r .result.pane.pane_id)"
   prev="$pane"
   workers_json="$(printf '%s' "$workers_json" | jq -c --argjson w "$w" --arg n "$name" --arg a "$agent" \

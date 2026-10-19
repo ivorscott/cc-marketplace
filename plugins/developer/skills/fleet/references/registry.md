@@ -4,8 +4,10 @@ One JSON file holds one row per agent identity. The identity is `<team>/<role>`,
 outlives any single session. The work an agent owes lives in its row (its "hook"), so a
 restarted, compacted or replaced agent picks up from the row, not from memory.
 
-- **Location:** `${XDG_STATE_HOME:-~/.local/state}/fleet/fleet.json`, overridable with
-  `FLEET_REGISTRY`. It is global, so one Orchestrator can span repositories.
+- **Location:** `fleet.json` in the state dir, `${XDG_STATE_HOME:-~/.local/state}/fleet` unless
+  `FLEET_STATE_DIR` says otherwise. Every other path (the escalation inbox, worktrees, the archive, tick
+  state) comes from the same root; there is no separate override for any of them, so one stray variable
+  cannot send a scratch run to the live registry. It is global, so one Orchestrator can span repositories.
 - **CLI:** `scripts/registry.sh`. Every agent in the fleet uses it, and writes are serialised
   with a lock directory next to the file.
 
@@ -35,7 +37,7 @@ restarted, compacted or replaced agent picks up from the row, not from memory.
 ## Escalation inbox
 
 `registry.sh escalate` also appends one JSON line `{at, id, name, team, severity, message}` to
-`escalations.jsonl` in the state dir (`FLEET_INBOX` overrides). It is append-only and never
+`escalations.jsonl` in the state dir. It is append-only and never
 rotated; resolving does not write to it. `scripts/escalation-wait.sh` reads it with a persisted
 cursor (`escalations.cursor`) so no arrival is missed between two arms.
 

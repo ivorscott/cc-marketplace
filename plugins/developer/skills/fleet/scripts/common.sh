@@ -3,23 +3,25 @@
 
 FLEET_STATE_DIR="${FLEET_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/fleet}"
 FLEET_CONFIG_DIR="${FLEET_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/fleet}"
-FLEET_REGISTRY="${FLEET_REGISTRY:-$FLEET_STATE_DIR/fleet.json}"
-FLEET_WORKTREES="${FLEET_WORKTREES:-$FLEET_STATE_DIR/worktrees}"
-FLEET_INBOX="${FLEET_INBOX:-$FLEET_STATE_DIR/escalations.jsonl}"
+# One state root: every path below comes from FLEET_STATE_DIR. There are no overrides for the registry, the
+# inbox, the worktrees or the archive, so a stray FLEET_REGISTRY in an agent's environment cannot point a
+# scratch run at the live registry. (Set FLEET_STATE_DIR to a scratch directory to work in a sandbox.)
+FLEET_REGISTRY="$FLEET_STATE_DIR/fleet.json"
+FLEET_WORKTREES="$FLEET_STATE_DIR/worktrees"
+FLEET_INBOX="$FLEET_STATE_DIR/escalations.jsonl"
+FLEET_ARCHIVE="$FLEET_STATE_DIR/fleet-archive.json"
 FLEET_SCRIPTS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FLEET_SKILL_DIR="$(dirname "$FLEET_SCRIPTS")"
 
-# Tests never touch the live fleet. With FLEET_TEST=1, any script that sources this file dies when the
-# registry, the state dir or the escalation inbox resolves to the live default, computed from the real
-# HOME (FLEET_REAL_HOME, captured by the suite before it overrides HOME).
+# The suite never touches the live fleet. With FLEET_TEST=1, any script that sources this file dies when
+# FLEET_STATE_DIR (the root of every path) is the live default, computed from the real HOME
+# (FLEET_REAL_HOME, captured by the suite before it overrides HOME).
 if [ "${FLEET_TEST:-}" = 1 ]; then
   _live="${FLEET_REAL_HOME:-$HOME}/.local/state/fleet"
-  for _v in "$FLEET_REGISTRY" "$FLEET_STATE_DIR" "$FLEET_INBOX"; do
-    case "$_v" in
-      "$_live" | "$_live"/*) printf 'fleet: FLEET_TEST=1 but %s is under the live fleet state (%s); refusing\n' "$_v" "$_live" >&2; exit 1 ;;
-    esac
-  done
-  unset _live _v
+  case "$FLEET_STATE_DIR" in
+    "$_live" | "$_live"/*) printf 'fleet: FLEET_TEST=1 but FLEET_STATE_DIR (%s) is the live fleet state (%s); refusing\n' "$FLEET_STATE_DIR" "$_live" >&2; exit 1 ;;
+  esac
+  unset _live
 fi
 
 die() { printf 'fleet: %s\n' "$*" >&2; exit 1; }
@@ -211,7 +213,7 @@ tick_state_write() { # tick_state_write <json>
 
 # forge_pr_json <pr url>: read-only PR state as JSON. Fails (stderr says why) when gh can't tell.
 forge_pr_json() {
-  "$FLEET_GH" pr view "$1" --json state,mergeable,statusCheckRollup,headRefOid,body,url
+  "$FLEET_GH" pr view "$1" --json state,mergeable,statusCheckRollup,headRefOid,body,url,isDraft
 }
 
 # Claude Code transcripts. projects_dir is where Claude keeps them (tests point HOME at a fixture
