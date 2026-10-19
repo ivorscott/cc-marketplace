@@ -260,6 +260,8 @@ case "$1 $2" in
     else echo '{"result":{"process_info":{"foreground_process_group_id":2,"shell_pid":1}}}'; fi ;;
   # Per-agent state in $AS: "agent get" reports it (idle when unset), a prompt makes the agent
   # working unless PROMPT_NOSTATE is set, and `agent read` prints $AS/<agent>.read.
+  # A pane started by the shim runs what boot types into it, so its env can be dumped: $AS/<pane>.env.
+  "pane run") ( eval "${*:4}"; env ) >"$AS/$3.env" 2>/dev/null; echo '{}' ;;
   "agent start") rm -f "$AS/$3" "$AS/$3.read"; echo '{}' ;;
   "agent get") echo "{\"result\":{\"agent\":{\"agent_status\":\"$(cat "$AS/$3" 2>/dev/null || echo idle)\",\"state_change_seq\":$(cat "$AS/$3.seq" 2>/dev/null || echo 0)}}}" ;;
   "agent wait") [ ! -e "$AS/$3" ] || echo idle >"$AS/$3"; echo '{}' ;;
@@ -287,6 +289,7 @@ eq "boot: every pane split gets KUBECONFIG" "$(grep '^pane split' "$HERDR_LOG" |
 check "boot: env dir exists but no kubeconfig file yet" test -d "$FLEET_STATE_DIR/env/build-envt" -a ! -e "$FLEET_STATE_DIR/env/build-envt/kubeconfig"
 eq "boot: no cluster created" "$(calls up)" 0
 check "boot: tester allow has env.sh up with the scripts path" grep -q "env.sh up" <(grep '^agent start build-envt-tester' "$HERDR_LOG")
+eq "boot: the Linear key is dropped in each claude pane before its agent starts" "$(awk '/^pane run .*unset LINEAR_API_KEY/ {u++} /^agent start/ {if (u <= a) bad++; a++} END {print a + 0, bad + 0}' "$HERDR_LOG")" "$(grep -c '^agent start' "$HERDR_LOG") 0"
 eq "boot: no unsubstituted {{scripts}}" "$(grep -c '{{scripts}}' "$HERDR_LOG")" 0
 check "boot: tester allow has the team-scoped kubectl context" grep -q -- "kubectl --context fleet-build-envt get" <(grep '^agent start build-envt-tester' "$HERDR_LOG")
 eq "boot: no unsubstituted {{team}} or {{worktree}} in an allow list" "$(grep '^agent start' "$HERDR_LOG" | grep -c '{{team}}\|{{worktree}}')" 0
@@ -295,6 +298,14 @@ eq "boot: every agent gets forge_allow" "$(grep '^agent start' "$HERDR_LOG" | gr
 # Permission mode: every agent starts in auto unless FLEET_PERMISSION_MODE or config.toml say otherwise
 eq "boot: every agent starts in --permission-mode auto" "$(grep '^agent start' "$HERDR_LOG" | grep -c -- '--permission-mode auto')" "$(grep -c '^agent start' "$HERDR_LOG")"
 eq "boot: nobody starts in acceptEdits by default" "$(grep -c -- '--permission-mode acceptEdits' "$HERDR_LOG")" 0
+: >"$HERDR_LOG"; rm -f "$AS"/*.env; LINEAR_API_KEY=KEYFIXTURE "$SCRIPTS/boot.sh" build envk "$T/repo" task >/dev/null 2>&1
+check "boot: the shim panes did see the exported key's removal (env dumped)" test -n "$(ls "$AS"/*.env 2>/dev/null)"
+eq "boot: no started pane's env carries the Linear key" "$(cat "$AS"/*.env | grep -c 'LINEAR_API_KEY')" 0
+eq "boot: and the key never reached herdr's argv log" "$(grep -c KEYFIXTURE "$HERDR_LOG")" 0
+eq "boot: the lead may prompt and send-keys to its workers" "$(grep '^agent start build-envk-lead' "$HERDR_LOG" | grep -c 'herdr agent prompt:\*.*herdr agent send-keys:\*\|herdr agent send-keys:\*.*herdr agent prompt:\*')" 1
+eq "boot: workers get get|read|list|wait and no prompt or send-keys" "$(grep '^agent start build-envk-[bt]' "$HERDR_LOG" | grep -c 'herdr agent \(prompt\|send-keys\)')" 0
+eq "boot: workers do get herdr agent read" "$(grep '^agent start build-envk-builder' "$HERDR_LOG" | grep -c 'herdr agent read:\*')" 1
+eq "boot: no blanket herdr allow in any agent start" "$(grep '^agent start' "$HERDR_LOG" | grep -c 'Bash(herdr:\*)')" 0
 : >"$HERDR_LOG"; FLEET_PERMISSION_MODE=acceptEdits "$SCRIPTS/boot.sh" build envm "$T/repo" task >/dev/null 2>&1
 agents_per_boot="$(grep -c '^agent start' "$HERDR_LOG")"
 eq "boot: FLEET_PERMISSION_MODE overrides the default" "$(grep '^agent start' "$HERDR_LOG" | grep -c -- '--permission-mode acceptEdits')" "$(grep -c '^agent start' "$HERDR_LOG")"
@@ -302,6 +313,11 @@ cp "$FLEET_CONFIG_DIR/config.toml" "$T/config.perm.bak"; printf 'permission_mode
 : >"$HERDR_LOG"; "$SCRIPTS/boot.sh" build envc "$T/repo" task >/dev/null 2>&1
 eq "boot: config.toml permission_mode is used" "$(grep '^agent start' "$HERDR_LOG" | grep -c -- '--permission-mode manual')" "$(grep -c '^agent start' "$HERDR_LOG")"
 cp "$T/config.perm.bak" "$FLEET_CONFIG_DIR/config.toml"
+# every kind of agent gets the unset, not only claude (a codex pane would keep the key)
+printf '#!/bin/sh\nexit 0\n' >"$T/bin/codex"; chmod +x "$T/bin/codex"
+jq '.workers |= map(if .role == "builder" then . + {kind: "codex"} else . end)' "$SCRIPTS/../templates/build.json" >"$T/codex-tpl.json"
+: >"$HERDR_LOG"; "$SCRIPTS/boot.sh" "$T/codex-tpl.json" cdx "$T/repo" task >/dev/null 2>&1
+eq "boot: a codex agent's pane gets the key unset before its agent starts (every start has its unset first)" "$(awk '/^pane run .*unset LINEAR_API_KEY/ {u++} /^agent start/ {if (u <= a) bad++; a++} /^agent start build-cdx-builder --kind codex/ {c = 1} END {print c + 0, bad + 0}' "$HERDR_LOG")" "1 0"
 # A start eaten by a still-starting shell is retried once, not left a Zombie
 : >"$HERDR_LOG"; export DEAD_ONCE="$T/dead_once"; : >"$DEAD_ONCE"
 "$SCRIPTS/boot.sh" build envr "$T/repo" task >"$T/envr.out" 2>&1
@@ -499,6 +515,7 @@ eq "watch: below min_free_gb the notification says boot refuses" "$(grep -c 'fle
 mkcase() { # mkcase <name> → a case dir with the base tools only
   local d="$T/mid-$1" t; mkdir -p "$d/bin" "$d/cfg"
   for t in jq sed head tr cut cat date dirname mkdir od; do ln -s "$(command -v "$t")" "$d/bin/$t"; done
+  for t in shasum sha256sum openssl; do if command -v "$t" >/dev/null 2>&1; then ln -s "$(command -v "$t")" "$d/bin/$t"; fi; done
   printf '%s\n' "$d"
 }
 shim() { printf '#!/bin/sh\n%s\n' "$3" >"$1/bin/$2"; chmod +x "$1/bin/$2"; } # shim <dir> <name> <sh body>
@@ -520,8 +537,8 @@ eq "machine-id: FLEET_MACHINE replaces the key" "$(MID_FM=zz mid "$d" key)" zz
 echo 'label_prefix = "ops/"' >"$d/cfg/config.toml"
 eq "machine-id: label_prefix from config" "$(mid "$d" label)" ops/abcdef01
 eq "machine-id: FLEET_LABEL_PREFIX beats config" "$(FLEET_LABEL_PREFIX=x- mid "$d" label)" x-abcdef01
-eq "machine-id: description names host, OS, full id and date" "$(mid "$d" description --date 2026-01-02)" \
-  "myhost · macOS · machine id ABCDEF01-2345-6789-ABCD-EF0123456789 · first claim 2026-01-02"
+eq "machine-id: description names host, OS, the hashed id and date" "$(mid "$d" description --date 2026-01-02)" \
+  "myhost · macOS · machine id sha256:$(printf '%s' ABCDEF01-2345-6789-ABCD-EF0123456789 | shasum -a 256 | cut -c1-12) · first claim 2026-01-02"
 eq "machine-id: description defaults the date to today" "$(mid "$d" description | grep -c 'first claim [0-9]\{4\}-[0-9][0-9]-[0-9][0-9]$')" 1
 echo 'machine_name = "Mac 1"' >"$d/cfg/config.toml"
 eq "machine-id: machine_name replaces the hostname in the description" "$(mid "$d" description --date 2026-01-02 | sed 's/ · machine id.*//')" "Mac 1 · macOS"
@@ -633,99 +650,51 @@ bt --scope 'platform: deploy/localstack' build ovf "$T/plain" t; eq "boot: deplo
 bt --scope 'other: deploy/local' build ovg "$T/plain" t; eq "boot: another repo gives no warning" "$(grep -c overlaps "$T/bt.err")" 0
 bt --scope 'platform' build ovd "$T/plain" t
 check "boot: no paths means the whole repo" grep -q 'build-ovd .* overlaps build-ova .* in platform: whole repo' "$T/bt.err"
-bt --scope 'zeta: deploy/local' --peer-claim '9b1d4e07/build-dev315=zeta:deploy/local,scripts/x' build ovh "$T/plain" t
-check "boot: a peer claim overlap names the other machine" grep -q 'build-ovh (fleet:test) overlaps build-dev315 (fleet:9b1d4e07) in zeta: deploy/local' "$T/bt.err"
-bt --scope 'zeta: docs' --peer-claim '9b1d4e07/build-dev315=zeta:deploy/local' build ovi "$T/plain" t
-eq "boot: a disjoint peer claim gives no warning" "$(grep -c overlaps "$T/bt.err")" 0
 bt build ovj "$T/plain" t; eq "boot: no --scope never warns" "$(grep -c overlaps "$T/bt.err")" 0
 bt --scope ': src' build ovk "$T/plain" t
 eq "boot: the scope repo defaults to the repo-dir name" "$("$REG" get build-ovk/builder | jq -r .scope.repo)" plain
 bt --issue DEV-12 build iss1 "$T/plain" t
 eq "status: the ISSUE column appears once a row has an issue" "$(DF_GB=100 "$SCRIPTS/status.sh" --team build-iss1 2>/dev/null | sed -n 2p | grep -c ISSUE)" 1
 
-# claim.sh: the claim comment, parse, renew, lease, expired
+# claim.sh: lease arithmetic, the heartbeat parse, expiry
 CL="$SCRIPTS/claim.sh"
-eq "claim line: exact output" "$("$CL" line --machine 3f9a2c1e --team build-d --at 2026-10-18T09:00:00Z --scope 'platform: deploy/local, scripts/local.sh')" \
-  "$(printf 'fleet-claim: machine=3f9a2c1e team=build-d at=2026-10-18T09:00:00Z lease=2026-10-18T11:00:00Z\nscope: platform: deploy/local, scripts/local.sh')"
-eq "claim line: name and lease-hours" "$("$CL" line --machine 3f9a2c1e --name 'Mac 1' --team build-d --at 2026-10-18T09:00:00Z --lease-hours 3 --scope platform | head -1)" \
-  'fleet-claim: machine=3f9a2c1e name="Mac 1" team=build-d at=2026-10-18T09:00:00Z lease=2026-10-18T12:00:00Z'
-eq "claim line: takeover names the voided comment" "$("$CL" line --machine 3f9a2c1e --team build-d --at 2026-10-18T09:00:00Z --scope platform --takeover-from 9b1d4e07 --takeover-team build-o --takeover-of-comment cmt-1 --previous-lease 2026-10-18T08:00:00Z | tail -1)" \
-  'takeover: from=9b1d4e07 team=build-o comment=cmt-1 at=2026-10-18T09:00:00Z previous-lease=2026-10-18T08:00:00Z reason=expired'
-eq "claim line: a takeover without the comment id dies" "$("$CL" line --machine a --team t --scope p --takeover-from b >/dev/null 2>&1; echo $?)" 1
-BODY1="$("$CL" line --machine 3f9a2c1e --name 'Mac 1' --team build-d --at 2026-10-18T09:00:00Z --scope 'platform: a/b, c')"
-BODY2="$("$CL" line --machine 9b1d4e07 --team build-o --at 2026-10-18T07:00:00Z --scope zeta --takeover-from 11111111 --takeover-team build-p --takeover-of-comment c0 --previous-lease 2026-10-18T06:00:00Z)"
-P="$(jq -cn --arg a "$BODY1" --arg b "$BODY2" '[{id:"c1",issue:"DEV-9",createdAt:"2026-10-18T09:00:01Z",updatedAt:"2026-10-18T09:00:01Z",body:$a},{id:"c2",body:"just a comment"},{id:"c3",body:$b}]' | "$CL" parse)"
-eq "claim parse: skips comments that are not claims" "$(printf '%s' "$P" | jq length)" 2
-eq "claim parse: fields" "$(printf '%s' "$P" | jq -r '.[0] | [.id, .issue, .machine, .name, .team, .at, .lease, .scope.repo, (.scope.paths | join("|")), .created_at] | join(",")')" \
-  "c1,DEV-9,3f9a2c1e,Mac 1,build-d,2026-10-18T09:00:00Z,2026-10-18T11:00:00Z,platform,a/b|c,2026-10-18T09:00:01Z"
-eq "claim parse: takeover_of_comment" "$(printf '%s' "$P" | jq -r '.[1] | [.takeover_from, .takeover_of_comment, .takeover_previous_lease, .scope.repo, (.scope.paths | length)] | join(",")')" "11111111,c0,2026-10-18T06:00:00Z,zeta,0"
-eq "claim parse: no takeover is null" "$(printf '%s' "$P" | jq -r '.[0].takeover_of_comment')" null
-R="$("$CL" renew --now 2026-10-18T10:30:00Z "$BODY2")"
-eq "claim renew: only lease= changes" "$(diff <(printf '%s\n' "$BODY2") <(printf '%s\n' "$R") | grep -c '^[<>]')" 2
-eq "claim renew: new lease is now + lease_hours" "$(printf '%s' "$R" | head -1 | sed 's/.*lease=//')" 2026-10-18T12:30:00Z
-eq "claim renew: keeps the takeover line" "$(printf '%s' "$R" | grep -c '^takeover:')" 1
-eq "claim renew: a non-claim body dies" "$("$CL" renew --now 2026-10-18T10:30:00Z 'hello' >/dev/null 2>&1; echo $?)" 1
 eq "claim lease: now + 2h by default" "$("$CL" lease --now 2026-10-18T10:00:00Z)" 2026-10-18T12:00:00Z
+eq "claim hb: reads the heartbeat line of a description" "$(printf 'host · macOS\nheartbeat=2026-10-18T09:00:00Z\n' | "$CL" hb)" 2026-10-18T09:00:00Z
+eq "claim hb: no heartbeat line prints nothing" "$(printf 'host · macOS\n' | "$CL" hb)" ""
+for sub in line renew parse; do eq "claim $sub: the comment format is gone" "$("$CL" $sub >/dev/null 2>&1; echo $?)" 2; done
 L=2026-10-18T11:00:00Z
 "$CL" expired --lease $L --now 2026-10-18T10:59:59Z 2>"$T/ex.err"; eq "claim expired: a live lease is not takeable" "$?" 1
 check "claim expired: the reason names the lease" grep -q 'lease is live until 2026-10-18T11:00:00Z' "$T/ex.err"
 "$CL" expired --lease $L --now 2026-10-18T11:00:00Z 2>/dev/null; eq "claim expired: the expiry second itself is still live" "$?" 1
 "$CL" expired --lease $L --now 2026-10-18T11:00:01Z; eq "claim expired: lapsed, no activity given" "$?" 0
-"$CL" expired --lease $L --now 2026-10-18T13:30:00Z --last-activity 2026-10-18T12:00:00Z 2>"$T/ex.err"; eq "claim expired: lapsed but recent PR activity" "$?" 1
-check "claim expired: the reason names the activity" grep -q 'PR activity at 2026-10-18T12:00:00Z' "$T/ex.err"
-"$CL" expired --lease $L --now 2026-10-18T13:30:00Z --last-activity 2026-10-18T10:00:00Z; eq "claim expired: lapsed with old activity" "$?" 0
+"$CL" expired --lease $L --now 2026-10-18T13:30:00Z; eq "claim expired: lapsed long ago" "$?" 0
+"$CL" expired --lease $L --now 2026-10-18T13:30:00Z --last-activity 2026-10-18T12:00:00Z 2>/dev/null; eq "claim expired: --last-activity is gone (takeover looks the PR up itself)" "$?" 1
 echo 'lease_hours = 4' >>"$FLEET_CONFIG_DIR/config.toml"
-"$CL" expired --lease $L --now 2026-10-18T13:30:00Z --last-activity 2026-10-18T10:00:00Z 2>/dev/null; eq "claim expired: lease_hours from config widens the activity window" "$?" 1
 eq "claim lease: lease_hours from config" "$("$CL" lease --now 2026-10-18T10:00:00Z)" 2026-10-18T14:00:00Z
 cp "$T/config.bak2" "$FLEET_CONFIG_DIR/config.toml"
 eq "claim expired: a bad time dies" "$("$CL" expired --lease nope >/dev/null 2>&1; echo $?)" 1
 
-# boot: takeover of a lapsed claim
-OLD=2026-10-18T08:00:00Z
-bt --issue DEV-20 --claimed-by test --takeover-of 9b1d4e07 --labels fleet:9b1d4e07 build tk1 "$T/plain" t
-check "boot takeover: a missing lease refuses" grep -q 'DEV-20 is claimed by fleet:9b1d4e07; no --lease-expires given. Not taking over' "$T/bt.err"
-FLEET_NOW=2026-10-18T07:00:00Z bt --issue DEV-20 --claimed-by test --takeover-of 9b1d4e07 --lease-expires $OLD --labels fleet:9b1d4e07 build tk2 "$T/plain" t
-check "boot takeover: a live lease refuses and names it" grep -q 'lease is live until 2026-10-18T08:00:00Z.*Not taking over' "$T/bt.err"
-eq "boot takeover: a refusal adds no rows" "$(rows_of build-tk2)" 0
-FLEET_FORCE=1 FLEET_NOW=2026-10-18T07:00:00Z bt --issue DEV-20 --claimed-by test --takeover-of 9b1d4e07 --lease-expires $OLD --labels fleet:9b1d4e07 build tk3 "$T/plain" t
-eq "boot takeover: FLEET_FORCE=1 does not bypass a live lease" "$BTRC" 1
-FLEET_NOW=2026-10-18T11:00:00Z bt --issue DEV-20 --claimed-by test --takeover-of 9b1d4e07 --lease-expires $OLD --last-activity 2026-10-18T10:30:00Z --labels fleet:9b1d4e07 build tk4 "$T/plain" t
-check "boot takeover: recent PR activity refuses" grep -q 'PR activity at 2026-10-18T10:30:00Z.*Not taking over' "$T/bt.err"
-FLEET_NOW=2026-10-18T11:00:00Z bt --issue DEV-20 --claimed-by test --takeover-of 9b1d4e07 --lease-expires $OLD --last-activity 2026-10-18T08:30:00Z --labels fleet:9b1d4e07,kind:ops build tk5 "$T/plain" t
-eq "boot takeover: an expired lease boots" "$BTRC" 0
-eq "boot takeover: the row records takeover_of and the new lease" "$("$REG" get build-tk5/builder | jq -r '[.issue, .claimed_by, .takeover_of, .lease_expires] | join(",")')" "DEV-20,test,9b1d4e07,2026-10-18T13:00:00Z"
-FLEET_NOW=2026-10-18T11:00:00Z bt --issue DEV-20 --claimed-by test --takeover-of 9b1d4e07 --lease-expires $OLD --labels fleet:5555aaaa build tk6 "$T/plain" t
-check "boot takeover: a label of a third machine refuses" grep -q 'DEV-20 is claimed by fleet:5555aaaa' "$T/bt.err"
-FLEET_NOW=2026-10-18T11:00:00Z bt --issue DEV-20 --claimed-by 9b1d4e07 --takeover-of 5555aaaa --lease-expires $OLD build tk7 "$T/plain" t
-check "boot takeover: --claimed-by must be this machine" grep -q 'DEV-20 is claimed by fleet:9b1d4e07; this machine is fleet:test' "$T/bt.err"
-FLEET_NOW=2026-10-18T11:00:00Z bt --issue DEV-20 --claimed-by test --takeover-of test --lease-expires $OLD build tk8 "$T/plain" t
-check "boot takeover: taking over from this machine refuses" grep -q 'names this machine' "$T/bt.err"
-FLEET_FORCE=1 bt --issue DEV-20 --labels fleet:9b1d4e07 --claimed-by test build tk9 "$T/plain" t
-eq "boot takeover: FLEET_FORCE=1 does not bypass a foreign label without --takeover-of" "$BTRC" 1
-bt --lease-expires $OLD build tk10 "$T/plain" t; eq "boot takeover: --lease-expires without --takeover-of refuses" "$BTRC" 1
-FLEET_LABEL_PREFIX='ops/' FLEET_NOW=2026-10-18T11:00:00Z bt --issue DEV-21 --claimed-by test --takeover-of 9b1d4e07 --lease-expires $OLD --labels ops/9b1d4e07 build tk11 "$T/plain" t
-eq "boot takeover: a custom label_prefix works" "$BTRC" 0
-echo 'machine_legacy_label = "fleet:mac1"' >>"$FLEET_CONFIG_DIR/config.toml"
-FLEET_NOW=2026-10-18T11:00:00Z bt --issue DEV-22 --claimed-by test --takeover-of fleet:mac1 --lease-expires $OLD --labels fleet:test build tk12 "$T/plain" t
-check "boot takeover: the legacy label is this machine, nothing to take over" grep -q 'names this machine' "$T/bt.err"
-cp "$T/config.bak2" "$FLEET_CONFIG_DIR/config.toml"
-eq "boot: a new claim's row carries lease_expires" "$("$REG" get build-own1/builder | jq -r '.lease_expires | type')" string
+# boot: the lease and takeover options are gone (claims are labels; takeover is linear.sh's)
+for o in "--takeover-of x" "--lease-expires 2026-10-18T08:00:00Z" "--last-activity 2026-10-18T08:00:00Z" "--peer-claim a/b=c"; do
+  eq "boot: $o is refused as an unknown option" "$(bt $o build gone1 "$T/plain" t; echo $BTRC)" 1
+done
+eq "boot: a new claim's row carries no lease_expires" "$("$REG" get build-own1/builder | jq -r '.lease_expires // "none"')" none
 
-# status --all
+# status --all: peers from linear.sh peers
 CF="$T/claims.json"
-jq -cn --arg a "$BODY1" --arg b "$("$CL" line --machine test --team build-ghost --at 2026-10-18T09:00:00Z --scope zeta)" --arg c "$("$CL" line --machine test --team build-own1 --at 2026-10-18T09:00:00Z --scope zeta)" \
-  '[{id:"c1",issue:"DEV-9",body:$a},{id:"c4",body:$b},{id:"c5",body:$c}]' | "$CL" parse >"$CF"
+echo '[{"machine":"3f9a2c1e","label":"fleet:3f9a2c1e","issue":"DEV-9","heartbeat":"2026-10-18T09:50:00Z"},
+      {"machine":"9b1d4e07","label":"fleet:9b1d4e07","issue":"DEV-10","heartbeat":null},
+      {"machine":"5555aaaa","label":"fleet:5555aaaa","issue":"DEV-11","heartbeat":"2026-10-18T05:00:00Z"}]' >"$CF"
 FLEET_NOW=2026-10-18T10:00:00Z DF_GB=100 "$SCRIPTS/status.sh" --all --claims "$CF" --team build-own1 >"$T/all.out" 2>"$T/all.err"
-check "status --all: MACHINE and LEASE columns" grep -q 'MACHINE *LEASE' "$T/all.out"
-check "status --all: a tracker row shows the machine with its name and the lease" grep -Eq 'build-d .*Claimed .*DEV-9 .*3f9a2c1e \(Mac 1\) .*2026-10-18T11:00:00Z' "$T/all.out"
+check "status --all: MACHINE and HEARTBEAT columns" grep -q 'MACHINE *HEARTBEAT' "$T/all.out"
+check "status --all: a peer row shows the issue and the heartbeat age" grep -Eq 'fleet:3f9a2c1e .*Claimed .*DEV-9 .*3f9a2c1e .*10m' "$T/all.out"
+check "status --all: a label without a heartbeat is flagged" grep -Eq 'fleet:9b1d4e07 .*Claimed \(no heartbeat\)' "$T/all.out"
+check "status --all: a heartbeat older than lease_hours is lapsed" grep -Eq 'fleet:5555aaaa .*Claimed \(heartbeat lapsed\)' "$T/all.out"
 check "status --all: the local team is a registry row on this machine" grep -Eq '^build-own1/builder .*test' "$T/all.out"
-check "status --all: a claim of this key with no local team is flagged" grep -Eq 'build-ghost .*SAME KEY\?' "$T/all.out"
-check "status --all: the warning names the team and machine-id.sh" grep -q 'claim for build-ghost carries this machine.s key (test) but no local team: cloned machine id? (see machine-id.sh)' "$T/all.err"
-eq "status --all: this machine's own claim for a local team is not duplicated" "$(grep -c 'c5\|build-own1 ' "$T/all.out")" 0
-FLEET_NOW=2026-10-18T12:00:00Z DF_GB=100 "$SCRIPTS/status.sh" --all --claims "$CF" >"$T/all2.out" 2>/dev/null; check "status --all: a lapsed lease is shown" grep -q 'Claimed (lease lapsed)' "$T/all2.out"
+eq "status --all: no lease column, no SAME KEY?" "$(grep -c 'LEASE\|SAME KEY' "$T/all.out")" 0
 eq "status --all: the footer stays last" "$(DF_GB=100 "$SCRIPTS/status.sh" --all --claims "$CF" --team build-nope 2>/dev/null | tail -1)" "machine: fleet:test"
 DF_GB=100 "$SCRIPTS/status.sh" --all --team build-own1 >"$T/all3.out" 2>/dev/null; check "status --all without claims says so" grep -q '^peer claims: not provided' "$T/all3.out"
-eq "status --all --json: bare array with machine and source" "$(DF_GB=100 "$SCRIPTS/status.sh" --all --json --claims "$CF" --team build-own1 2>/dev/null | jq -c '[.[] | [.source, .machine]] | unique')" '[["registry","test"],["tracker","3f9a2c1e"],["tracker","test"]]'
+eq "status --all --json: bare array with machine and source" "$(DF_GB=100 "$SCRIPTS/status.sh" --all --json --claims "$CF" --team build-own1 2>/dev/null | jq -c '[.[] | [.source, .machine]] | unique')" '[["registry","test"],["tracker","3f9a2c1e"],["tracker","5555aaaa"],["tracker","9b1d4e07"]]'
 cat "$CF" | DF_GB=100 "$SCRIPTS/status.sh" --all --json --claims - --team build-own1 2>/dev/null | jq -e 'type == "array"' >/dev/null; eq "status --all: --claims - reads stdin" "$?" 0
 eq "status --claims without --all dies" "$("$SCRIPTS/status.sh" --claims "$CF" >/dev/null 2>&1; echo $?)" 1
 eq "status --all: an unreadable claims file dies" "$(DF_GB=100 "$SCRIPTS/status.sh" --all --claims "$T/none.json" >/dev/null 2>&1; echo $?)" 1
@@ -750,7 +719,7 @@ S
 chmod +x "$T/bin/curl"; export NETLOG="$T/net.log"; : >"$NETLOG"
 "$CH" format claim DEV-1 >/dev/null; "$CH" channel >/dev/null; "$CL" lease >/dev/null
 eq "chat.sh and claim.sh never touch the network" "$(wc -l <"$NETLOG" | tr -d ' ')" 0
-check "no script calls a chat or tracker tool" test -z "$(grep -lE 'slack|curl|linear|gh ' "$CH" "$CL")"
+check "no pure helper calls a chat or tracker tool" test -z "$(grep -lE 'slack|curl|linear|gh ' "$CH" "$CL")"
 eq "boot adds no chat_allow to agent settings" "$(grep -c chat_allow "$SCRIPTS/boot.sh")" 0
 
 # docs
@@ -758,8 +727,9 @@ SKD="$SCRIPTS/.."
 for k in label_prefix machine_name machine_legacy_label claimed-by; do
   check "SKILL.md mentions $k" grep -q -- "$k" "$SKD/SKILL.md"
 done
+for k in linear_writes; do check "fleet README mentions $k" grep -q "$k" "$SKD/README.md"; check "SKILL.md mentions $k" grep -q "$k" "$SKD/SKILL.md"; done
 for k in label_prefix machine_name machine_legacy_label; do check "fleet README mentions $k" grep -q "$k" "$SKD/README.md"; done
-for k in lease_hours chat_channel chat_allow 'status --all' --takeover-of claim.sh chat.sh; do check "SKILL.md documents $k" grep -q -- "$k" "$SKD/SKILL.md"; done
+for k in lease_hours chat_channel chat_allow 'status --all' linear.sh claim.sh chat.sh; do check "SKILL.md documents $k" grep -q -- "$k" "$SKD/SKILL.md"; done
 check "SKILL.md no longer lists the follow-ups as not yet done" test -z "$(grep 'Not yet' "$SKD/SKILL.md")"
 for k in lease_hours chat_channel chat_allow claim.sh chat.sh 'status --all'; do check "README documents $k" grep -q -- "$k" "$SKD/README.md"; done
 check "README tracker_allow example omits save_issue_label" test -z "$(grep -E 'tracker_allow.*save_issue_label' "$SKD/README.md")"
@@ -834,7 +804,7 @@ eq "wait: a second run does not replay it" "$("$EW" --timeout 1 --every 1)" ""
 eq "wait: one filed between arms is delivered by the next" "$("$EW" --timeout 5 --every 1 | jq -r .message)" "between arms"
 eq "wait: --from-start replays the inbox" "$("$EW" --from-start --timeout 1 --every 1 | wc -l | tr -d ' ')" "$(wc -l <"$INBOX" | tr -d ' ')"
 check "wait: rejects an unknown option" bash -c "! '$EW' --bogus"
-for f in registry.sh status.sh watch.sh retire.sh escalation-wait.sh common.sh boot.sh tell.sh tick.sh next.sh; do check "bash -n $f" bash -n "$SCRIPTS/$f"; done
+for f in registry.sh status.sh watch.sh retire.sh escalation-wait.sh common.sh boot.sh tell.sh tick.sh next.sh linear.sh claim.sh; do check "bash -n $f" bash -n "$SCRIPTS/$f"; done
 SKD0="$SCRIPTS/.."
 check "SKILL.md mentions escalation-wait.sh" grep -q 'escalation-wait.sh' "$SKD0/SKILL.md"
 check "SKILL.md documents resolve" grep -q 'registry.sh resolve' "$SKD0/SKILL.md"
@@ -1113,7 +1083,10 @@ eq "next: a failed claim leaves the old issue" "$("$REG" list --team tn | jq -c 
 eq "next: a failed claim sends nothing" "$(grep -c '^agent prompt' "$HERDR_LOG")" 0
 printf '#!/usr/bin/env bash\nexit 3\n' >"$T/sc/linear.sh"
 "$T/sc/next.sh" tn DEV-22 >/dev/null 2>&1; eq "next: no Linear key (exit 3) proceeds unclaimed" "$?" 0
-eq "next: without linear.sh the claim step is skipped" "$("$SCRIPTS/next.sh" tn DEV-23 >/dev/null 2>&1; echo $?)" 0
+eq "next: with no Linear key the claim step is skipped (exit 3)" "$("$SCRIPTS/next.sh" tn DEV-23 >/dev/null 2>&1; echo $?)" 0
+printf 'machines = 2\n' >>"$FLEET_CONFIG_DIR/config.toml"
+"$T/sc/next.sh" tn DEV-24 >/dev/null 2>&1; eq "next: no Linear key and machines > 1 refuses (NH3)" "$?" 1
+sed -i.bak '/^machines/d' "$FLEET_CONFIG_DIR/config.toml"; rm -f "$FLEET_CONFIG_DIR/config.toml.bak"
 rm -rf "$T/sc"
 
 # -- tick
@@ -1469,6 +1442,617 @@ eq "background work: and no footer, no transcript is Stalled" "$(printf '%s' "$o
 unset FLEET_NOW
 
 export FLEET_STATE_DIR="$_afs" FLEET_REGISTRY="$_afr" FLEET_INBOX="$_afi"
+
+# ---- DEV-368 B: Linear claims and heartbeat against a fake API --------------------------------------
+# The key is a fixture under $T; nothing here reads, stats or names the real key file.
+case "$FLEET_CONFIG_DIR" in "$T"/*) ;; *) echo "refusing to run B tests outside $T"; exit 1 ;; esac
+LIN="$SCRIPTS/linear.sh"; STUB="$HERE/linear-stub.sh"
+export LINEAR_DB="$T/linear.json" LINEAR_LOG="$T/linear.log" LINEAR_ARGV_LOG="$T/linear.argv" LINEAR_STUB_KEY="KEYFIXTURE-9f3a77c1" FLEET_CURL="$STUB"
+printf '%s\n' "$LINEAR_STUB_KEY" >"$FLEET_CONFIG_DIR/linear_api_key"; chmod 600 "$FLEET_CONFIG_DIR/linear_api_key"
+cp "$FLEET_CONFIG_DIR/config.toml" "$T/config.b.bak"; printf 'claim_settle_secs = 0\nlinear_writes = "on"\nmachine_name = "test box"\n' >>"$FLEET_CONFIG_DIR/config.toml"
+: >"$NETLOG"
+# A fixture machine id: these tests never use this machine's real id (a stored id wins over the OS one).
+FIXID="AAAAAAAA-1111-4222-8333-444455556666"; printf '%s\n' "$FIXID" >"$FLEET_STATE_DIR/machine-id"
+setw() { cp "$T/config.b.bak" "$FLEET_CONFIG_DIR/config.toml"; printf 'claim_settle_secs = 0\nmachine_name = "test box"\n' >>"$FLEET_CONFIG_DIR/config.toml"; [ -z "${1:-}" ] || printf 'linear_writes = "%s"\n' "$1" >>"$FLEET_CONFIG_DIR/config.toml"; } # setw [off-by-default | value]
+setw on
+IDRE='[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}|[0-9A-Fa-f]{32}'
+dbreset() { # two issues, a team, a state; labels: the fleet group and a foreign machine's label with a stale heartbeat
+  cat >"$LINEAR_DB" <<'J'
+{"team": "T1", "states": {"In Progress": "S1"}, "next": 100,
+ "labels": [{"id": "L1", "name": "fleet", "description": "", "parent": null},
+            {"id": "L2", "name": "fleet:other", "description": "other host\nheartbeat=2026-10-18T06:00:00Z", "parent": {"id": "L1", "name": "fleet"}},
+            {"id": "L3", "name": "bug", "description": "", "parent": null}],
+ "issues": [{"id": "I1", "identifier": "DEV-1", "team": {"id": "T1"}, "state": {"id": "S0", "name": "Todo"}, "labelIds": ["L3"], "comments": []},
+            {"id": "I2", "identifier": "DEV-2", "team": {"id": "T1"}, "state": {"id": "S0", "name": "Todo"}, "labelIds": ["L2"], "comments": []},
+            {"id": "I3", "identifier": "DEV-3", "team": {"id": "T1"}, "state": {"id": "S0", "name": "Todo"}, "labelIds": [], "comments": []}]}
+J
+  : >"$LINEAR_LOG"; : >"$LINEAR_ARGV_LOG"
+}
+nmut() { grep -c '^mutation' "$LINEAR_LOG"; }
+ncomments() { grep -c '^mutation Comment' "$LINEAR_LOG"; }
+labels_of() { jq -r --arg i "$1" '. as $r | .issues[] | select(.identifier == $i) | [.labelIds[] as $l | $r.labels[] | select(.id == $l) | .name] | sort | join(",")' "$LINEAR_DB"; }
+
+# -- reads never mutate, and say so in the log
+dbreset
+"$LIN" holder DEV-2 >"$T/h.out"; "$LIN" holder DEV-1 >/dev/null; "$LIN" peers >"$T/p.out"
+"$LIN" claim DEV-1 --dry-run >"$T/dry.out" 2>/dev/null; "$LIN" migrate --dry-run >"$T/mdry.out"
+eq "read-only: holder, peers and both --dry-runs make no mutation" "$(nmut)" 0
+eq "read-only: they did call the API" "$([ "$(grep -c '^query' "$LINEAR_LOG")" -gt 0 ] && echo yes)" yes
+eq "holder: names the other machine and its heartbeat" "$(jq -c '[.holder, .ours, .heartbeat]' "$T/h.out")" '["fleet:other",false,"2026-10-18T06:00:00Z"]'
+eq "holder: an unclaimed issue has none" "$("$LIN" holder DEV-1 | jq -c '[.holder, .ours]')" '[null,false]'
+eq "peers: the other machine's claim with its heartbeat" "$(jq -c '.' "$T/p.out")" '[{"machine":"other","label":"fleet:other","issue":"DEV-2","heartbeat":"2026-10-18T06:00:00Z"}]'
+eq "claim --dry-run plans the update and changes nothing" "$(jq -c '.would' "$T/dry.out" | head -1)" '"update the issue"'
+eq "claim --dry-run: the issue's labels are untouched" "$(labels_of DEV-1)" bug
+eq "migrate --dry-run lists nothing when there is nothing" "$(jq -c .would_delete "$T/mdry.out")" '[]'
+
+# -- claim
+dbreset; ml="fleet:test"
+out="$("$LIN" claim DEV-1)"; rc=$?
+eq "claim: succeeds and says so" "$rc:$(printf '%s' "$out" | jq -r .claimed)" "0:true"
+eq "claim: the machine label is on the issue, the other labels kept" "$(labels_of DEV-1)" "bug,$ml"
+eq "claim: the issue is In Progress" "$(jq -r '.issues[] | select(.identifier == "DEV-1") | .state.name' "$LINEAR_DB")" "In Progress"
+eq "claim: the machine label was created under the fleet group with a heartbeat description" "$(jq -c --arg n "$ml" '.labels[] | select(.name == $n) | [.parent.name, (.description | test("heartbeat=")), (.description | test("first claim"))]' "$LINEAR_DB")" '["fleet",true,true]'
+eq "claim: no comment was posted" "$(ncomments)" 0
+eq "claim: the machine label is a workspace label (no teamId in the create)" "$(jq -c --arg n "$ml" '[.labels[] | select(.name == $n) | .teamId]' "$LINEAR_DB")" '[null]'
+dbreset; jq '.labels |= map(select(.name == "bug")) | .issues |= map(.labelIds = [])' "$LINEAR_DB" >"$T/db.tmp" && mv "$T/db.tmp" "$LINEAR_DB"
+"$LIN" claim DEV-1 >/dev/null 2>&1
+eq "claim: with no group yet, the group and the machine label are both created without a teamId" "$(jq -c --arg n "$ml" '[.labels[] | select(.name == $n or .name == "fleet") | [.name, .teamId]] | sort' "$LINEAR_DB")" "[[\"fleet\",null],[\"$ml\",null]]"
+dbreset; "$LIN" claim DEV-1 >/dev/null 2>&1
+check "claim: a foreign label refuses (exit 1) and names the holder" bash -c "! '$LIN' claim DEV-2 2>'$T/c.err'; grep -q 'DEV-2 is claimed by fleet:other' '$T/c.err'"
+eq "claim: and the foreign issue is unchanged" "$(labels_of DEV-2)" "fleet:other"
+"$LIN" claim DEV-1 >/dev/null 2>&1; eq "claim: claiming our own issue again is fine" "$?" 0
+cp "$FLEET_CONFIG_DIR/config.toml" "$T/config.legacy.bak"; echo 'machine_legacy_label = "fleet:other"' >>"$FLEET_CONFIG_DIR/config.toml"
+eq "holder: an issue with the legacy label has no foreign holder" "$("$LIN" holder DEV-2 | jq -c '.holder')" null
+eq "peers: this machine's legacy label is not another machine" "$("$LIN" peers | jq -c 'length')" 0
+"$LIN" claim DEV-2 >/dev/null 2>"$T/legacy.err"; eq "claim: this machine's legacy label is ours, not a foreign holder" "$?:$(grep -c 'is claimed by' "$T/legacy.err")" "0:0"
+cp "$T/config.legacy.bak" "$FLEET_CONFIG_DIR/config.toml"
+eq "claim: and does not create a second label" "$(jq --arg n "$ml" '[.labels[] | select(.name == $n)] | length' "$LINEAR_DB")" 1
+# an existing label with an empty description is filled in; a non-empty one is not overwritten
+dbreset; jq --arg n "$ml" '.labels += [{id: "L9", name: $n, description: "", parent: {id: "L1", name: "fleet"}}]' "$LINEAR_DB" >"$T/db.tmp" && mv "$T/db.tmp" "$LINEAR_DB"
+"$LIN" claim DEV-1 >/dev/null 2>&1
+eq "claim: an empty description is filled in" "$(jq -r --arg n "$ml" '.labels[] | select(.name == $n) | .description | test("heartbeat=")' "$LINEAR_DB")" true
+dbreset; jq --arg n "$ml" '.labels += [{id: "L9", name: $n, description: "mine already", parent: {id: "L1", name: "fleet"}}]' "$LINEAR_DB" >"$T/db.tmp" && mv "$T/db.tmp" "$LINEAR_DB"
+"$LIN" claim DEV-1 >/dev/null 2>&1
+eq "claim: a non-empty description is never overwritten (the owner line is added after it)" "$(jq -r --arg n "$ml" '.labels[] | select(.name == $n) | .description' "$LINEAR_DB" | paste -sd'|' -)" "mine already|owner=Fixture Owner"
+# the race: another machine writes after us; the last writer wins and we exit 1
+dbreset; LINEAR_STUB_RACE=fleet:other "$LIN" claim DEV-3 >"$T/race.out" 2>"$T/race.err"; rc=$?
+eq "claim race: the loser exits 1" "$rc" 1
+check "claim race: and names the winner" grep -q 'lost the claim on DEV-3 to fleet:other' "$T/race.err"
+eq "claim race: exactly one machine's label remains" "$(labels_of DEV-3)" "fleet:other"
+dbreset; "$LIN" claim DEV-3 >/dev/null 2>&1; FLEET_MACHINE=otherbox "$LIN" claim DEV-3 >/dev/null 2>&1; rc=$?
+eq "claim race: a second machine arriving after is refused, exactly one holds it" "$rc:$(labels_of DEV-3)" "1:fleet:test"
+
+# -- heartbeat: one mutation, only the description line
+dbreset; "$LIN" claim DEV-1 >/dev/null 2>&1; : >"$LINEAR_LOG"
+jq --arg n "$ml" '.labels |= map(if .name == $n then .description = "my box · macOS\nheartbeat=2026-10-18T07:00:00Z\nextra note" else . end)' "$LINEAR_DB" >"$T/db.tmp" && mv "$T/db.tmp" "$LINEAR_DB"
+FLEET_NOW=2026-10-18T09:30:00Z "$LIN" heartbeat >/dev/null
+eq "heartbeat: exactly one mutation" "$(nmut)" 1
+eq "heartbeat: it is a label update, not a comment" "$(grep -c '^mutation IssueLabelUpdate' "$LINEAR_LOG")" 1
+eq "heartbeat: only the heartbeat line changed, other text kept" "$(jq -r --arg n "$ml" '.labels[] | select(.name == $n) | .description' "$LINEAR_DB" | paste -sd'|' -)" "my box · macOS|owner=Fixture Owner|heartbeat=2026-10-18T09:30:00Z|extra note"
+dbreset; : >"$LINEAR_LOG"; "$LIN" heartbeat >"$T/hb.out"; eq "heartbeat: with no label yet it makes no mutation" "$(nmut)" 0
+# several labels of one name (an older team label beside the workspace one): the workspace label is used
+dbreset; jq --arg n "$ml" '.labels = [{id: "LT", name: "fleet", description: "", parent: null, teamId: "T1"},
+    {id: "LM", name: $n, description: "team copy\nheartbeat=2026-10-18T01:00:00Z", parent: {id: "LT", name: "fleet"}, teamId: "T1"}] + .labels
+  + [{id: "LW", name: $n, description: "workspace copy\nheartbeat=2026-10-18T02:00:00Z", parent: {id: "L1", name: "fleet"}}]' "$LINEAR_DB" >"$T/db.tmp" && mv "$T/db.tmp" "$LINEAR_DB"
+FLEET_NOW=2026-10-18T09:45:00Z "$LIN" heartbeat >/dev/null
+eq "labels: heartbeat writes the workspace label, not the team one listed first" "$(jq -r '.labels[] | select(.id == "LW" or .id == "LM") | .id + "=" + (.description | split("\n") | map(select(startswith("heartbeat="))) | first)' "$LINEAR_DB" | sort | paste -sd' ' -)" "LM=heartbeat=2026-10-18T01:00:00Z LW=heartbeat=2026-10-18T09:45:00Z"
+"$LIN" claim DEV-1 >/dev/null 2>&1; eq "labels: claim puts the workspace label on the issue" "$(jq -r '.issues[] | select(.identifier == "DEV-1") | .labelIds | map(select(. == "LW" or . == "LM")) | join(",")' "$LINEAR_DB")" LW
+dbreset; jq '.labels = [{id: "LT", name: "fleet", description: "", parent: null, teamId: "T1"}] + .labels' "$LINEAR_DB" >"$T/db.tmp" && mv "$T/db.tmp" "$LINEAR_DB"
+"$LIN" claim DEV-1 >/dev/null 2>&1; eq "labels: a new machine label goes under the workspace group, not a team group listed first" "$(jq -r --arg n "$ml" '.labels[] | select(.name == $n) | .parent.id' "$LINEAR_DB")" L1
+
+# -- takeover: a lapsed heartbeat and no open PR; one comment; FLEET_FORCE does not bypass
+GHO="$T/gh-open"; export GH_OPEN_LOG="$T/gh-open.log"; printf '[]' >"$T/gh-none.json"
+# The gh shim answers the branch listing from GH_OPEN_JSON and the title/body search (--search) from GH_SEARCH_JSON.
+cat >"$GHO" <<'S'
+#!/usr/bin/env bash
+echo "$*" >>"$GH_OPEN_LOG"
+[ -z "${GH_OPEN_FAIL:-}" ] || exit 1
+case " $* " in *" --search "*) [ -z "${GH_SEARCH_FAIL:-}" ] || exit 1; cat "${GH_SEARCH_JSON:-$GH_NONE}"; exit 0 ;; esac
+cat "${GH_OPEN_JSON:-/dev/null}"
+S
+chmod +x "$GHO"; export GH_NONE="$T/gh-none.json"
+prs() { printf '%s' "$1" >"$T/gh-open.json"; } # prs <json array of PRs>
+dbreset; jq '.issues |= map(if .identifier == "DEV-2" then .branchName = "ivor/dev-2-thing" else . end)' "$LINEAR_DB" >"$T/db.tmp" && mv "$T/db.tmp" "$LINEAR_DB"
+tk() { FLEET_GH="$GHO" GH_OPEN_JSON="${GH_OPEN_JSON:-$T/gh-none.json}" FLEET_NOW="${TKNOW:-2026-10-18T09:00:00Z}" "$LIN" takeover "$@"; }
+TKNOW=2026-10-18T07:00:00Z tk DEV-2 2>"$T/tk.err"; eq "takeover: a fresh heartbeat is refused" "$?" 1
+check "takeover: the refusal names the lease" grep -q 'lease is live' "$T/tk.err"
+FLEET_FORCE=1 TKNOW=2026-10-18T07:00:00Z tk DEV-2 2>/dev/null; eq "takeover: FLEET_FORCE=1 does not bypass a live heartbeat" "$?" 1
+tk DEV-2 --last-activity 2026-10-18T06:30:00Z 2>/dev/null; eq "takeover: --last-activity is gone" "$?" 1
+prs '[{"url": "https://github.com/o/r/pull/7", "headRefName": "fleet/dev-2-the-slice", "isCrossRepository": false}]'
+: >"$LINEAR_LOG"; GH_OPEN_JSON="$T/gh-open.json" tk DEV-2 2>"$T/tk.err"; eq "takeover: an open PR on fleet/<slug> is refused" "$?" 1
+check "takeover: the refusal names the PR" grep -q 'open PR (https://github.com/o/r/pull/7)' "$T/tk.err"
+eq "takeover: refusals post and write nothing" "$(nmut)" 0
+check "takeover: the PR lookup is a read-only gh pr list" grep -q '^pr list --state open ' "$GH_OPEN_LOG"
+check "takeover: the issue's Linear branch was read (IssueBranch query)" grep -q '^query IssueBranch' "$LINEAR_LOG"
+prs '[{"url": "https://github.com/o/r/pull/8", "headRefName": "ivor/dev-2-thing", "isCrossRepository": false}]'
+GH_OPEN_JSON="$T/gh-open.json" tk DEV-2 2>"$T/tk.err"; eq "takeover: an open PR on Linear's branch is refused" "$?" 1
+check "takeover: and names it" grep -q 'pull/8' "$T/tk.err"
+prs '[{"url": "https://github.com/o/r/pull/9", "headRefName": "fleet/dev-20-other", "isCrossRepository": false}, {"url": "https://github.com/o/r/pull/10", "headRefName": "fleet/dev-2-fork", "isCrossRepository": true}]'
+GH_OPEN_JSON="$T/gh-open.json" tk DEV-2 >/dev/null 2>"$T/tk.err"; eq "takeover: another issue's PR (dev-20) and a fork PR do not hold it" "$?" 0
+dbreset; jq '.issues |= map(if .identifier == "DEV-2" then .branchName = "ivor/dev-2-thing" else . end)' "$LINEAR_DB" >"$T/db.tmp" && mv "$T/db.tmp" "$LINEAR_DB"
+GH_OPEN_FAIL=1 tk DEV-2 2>"$T/tk.err"; eq "takeover: gh failing refuses (a dependency is down)" "$?" 1
+check "takeover: and says it cannot look" grep -q 'cannot look up open PRs' "$T/tk.err"
+FLEET_GH=nosuchgh FLEET_NOW=2026-10-18T09:00:00Z "$LIN" takeover DEV-2 2>"$T/tk.err"; eq "takeover: no gh on PATH refuses too" "$?" 1
+# H2: a PR on boot's fleet/<team>/<role> branch names no issue in its branch; the title/body search finds it
+printf '[{"number": 11, "url": "https://github.com/o/r/pull/11", "headRefName": "fleet/build-dev2/builder", "isCrossRepository": false}]' >"$T/gh-search.json"
+: >"$GH_OPEN_LOG"; : >"$LINEAR_LOG"; GH_SEARCH_JSON="$T/gh-search.json" tk DEV-2 2>"$T/tk.err"; rc=$?
+eq "takeover: an open PR on boot's fleet/<team>/<role> branch that names the issue is refused" "$rc" 1
+check "takeover: and the refusal names that PR" grep -q 'open PR (https://github.com/o/r/pull/11)' "$T/tk.err"
+check "takeover: found by a read-only search of open PRs' titles and bodies for the key" grep -q -- '^pr list --state open --limit 200 --search DEV-2 in:title,body --json number,url,headRefName,isCrossRepository' "$GH_OPEN_LOG"
+eq "takeover: that refusal writes nothing" "$(nmut)" 0
+printf '[{"number": 12, "url": "https://github.com/x/fork/pull/12", "headRefName": "fleet/build-dev2/builder", "isCrossRepository": true}]' >"$T/gh-search-fork.json"
+GH_SEARCH_FAIL=1 tk DEV-2 2>"$T/tk.err"; eq "takeover: the search failing refuses too" "$?:$(grep -c 'cannot look up open PRs' "$T/tk.err")" "1:1"
+GH_SEARCH_JSON="$T/gh-search-fork.json" tk DEV-2 >/dev/null 2>&1; eq "takeover: a cross-repo PR found by the search does not hold it" "$?" 0
+dbreset; jq '.issues |= map(if .identifier == "DEV-2" then .branchName = "ivor/dev-2-thing" else . end)' "$LINEAR_DB" >"$T/db.tmp" && mv "$T/db.tmp" "$LINEAR_DB"
+# two takeovers at once: the stub lets another machine write right after ours; we lose, post nothing, exit 1
+jq '.labels += [{id: "L7", name: "fleet:third", description: "heartbeat=2026-10-18T08:59:00Z", parent: {id: "L1", name: "fleet"}}]' "$LINEAR_DB" >"$T/db.tmp" && mv "$T/db.tmp" "$LINEAR_DB"
+: >"$LINEAR_LOG"; LINEAR_STUB_RACE=fleet:third tk DEV-2 >/dev/null 2>"$T/tk.err"; rc=$?
+eq "takeover race: the loser exits 1 and names the winner" "$rc:$(grep -c 'lost the takeover of DEV-2 to fleet:third' "$T/tk.err")" "1:1"
+eq "takeover race: the loser posts no comment" "$(ncomments)" 0
+eq "takeover race: exactly one machine's label remains" "$(labels_of DEV-2)" fleet:third
+check "takeover race: the issue was re-read after the update" bash -c "grep -A9 '^mutation IssueUpdate' '$LINEAR_LOG' | grep -q '^query Issue$'"
+dbreset; jq '.issues |= map(if .identifier == "DEV-2" then .branchName = "ivor/dev-2-thing" else . end)' "$LINEAR_DB" >"$T/db.tmp" && mv "$T/db.tmp" "$LINEAR_DB"
+eq "takeover: refusals post nothing" "$(ncomments)" 0
+: >"$LINEAR_LOG"
+tk DEV-2 >"$T/tk.out" 2>&1; rc=$?
+eq "takeover: lapsed heartbeat and no open PR is allowed" "$rc" 0
+eq "takeover: exactly one commentCreate" "$(grep -c '^mutation CommentCreate' "$LINEAR_LOG")" 1
+eq "takeover: the label is swapped to ours" "$(labels_of DEV-2)" "$ml"
+eq "takeover: the comment says who and the heartbeat" "$(jq -r '.issues[] | select(.identifier == "DEV-2") | .comments[0].body' "$LINEAR_DB")" "fleet: taken over from fleet:other (heartbeat 2026-10-18T06:00:00Z, no open PR)"
+dbreset; jq '.labels |= map(if .name == "fleet:other" then .description = "no heartbeat here" else . end)' "$LINEAR_DB" >"$T/db.tmp" && mv "$T/db.tmp" "$LINEAR_DB"
+"$LIN" takeover DEV-2 2>/dev/null; eq "takeover: a holder with no heartbeat is refused" "$?" 1
+
+# -- migrate: only our own fleet-claim comments
+dbreset
+jq --arg n "$ml" '.labels += [{id: "L9", name: $n, description: "x", parent: {id: "L1", name: "fleet"}}]
+  | .issues |= map(if .identifier == "DEV-1" then .labelIds += ["L9"] | .comments = [
+      {id: "C1", body: "fleet-claim: machine=test team=build-a at=2026-10-18T09:00:00Z lease=2026-10-18T11:00:00Z\nscope: x"},
+      {id: "C2", body: "fleet-claim: machine=9b1d4e07 team=build-b at=2026-10-18T09:00:00Z lease=2026-10-18T11:00:00Z"},
+      {id: "C3", body: "just a human comment"}] else . end)' "$LINEAR_DB" >"$T/db.tmp" && mv "$T/db.tmp" "$LINEAR_DB"
+: >"$LINEAR_LOG"
+eq "migrate --dry-run lists only our claim comment" "$("$LIN" migrate --dry-run | jq -c '[.would_delete[].id]')" '["C1"]'
+eq "migrate --dry-run deleted nothing" "$(nmut)" 0
+eq "migrate: deletes our claim comment" "$("$LIN" migrate | jq -r .deleted)" 1
+eq "migrate: the other machine's claim comment and a human comment remain" "$(jq -c '[.issues[] | select(.identifier == "DEV-1") | .comments[].id]' "$LINEAR_DB")" '["C2","C3"]'
+: >"$LINEAR_LOG"; eq "migrate: a second run deletes nothing" "$("$LIN" migrate | jq -r .deleted):$(nmut)" "0:0"
+
+# -- N3: the full machine id never leaves the machine; only its hash is published
+MID="$SCRIPTS/machine-id.sh"
+want="$(printf '%s' "$FIXID" | shasum -a 256 | cut -c1-12)"
+eq "machine-id hash: first 12 hex of sha256 of the id" "$("$MID" hash "$FIXID")" "$want"
+eq "machine-id hash: stable" "$("$MID" hash "$FIXID")$("$MID" hash "$FIXID")" "$want$want"
+eq "machine-id hash: 12 hex characters" "$("$MID" hash "$FIXID" | grep -Ec '^[0-9a-f]{12}$')" 1
+eq "machine-id description: publishes sha256:<hash>" "$("$MID" description | grep -c "machine id sha256:$want · first claim")" 1
+eq "machine-id description: no UUID-shaped or 32-hex id (a failure names the field)" "$("$MID" description | sed 's/ · /\n/g' | grep -nE "$IDRE" | cut -d: -f1 | paste -sd, -)" ""
+eq "machine-id description: the full id is not in it" "$("$MID" description | grep -c "$FIXID" || true)" 0
+eq "machine-id id: the local command still prints the full id" "$("$MID" id)" "$FIXID"
+# without any sha256 tool nothing is published (never the full id as a fallback)
+nh="$T/nohash/bin"; mkdir -p "$nh"; for t in jq sed head tr cut cat date dirname mkdir od; do ln -sf "$(command -v "$t")" "$nh/$t"; done
+nhout="$(env PATH="$nh" FLEET_STATE_DIR="$FLEET_STATE_DIR" FLEET_CONFIG_DIR="$FLEET_CONFIG_DIR" "$BASH" "$MID" description 2>"$T/nh.err")"; nhrc=$?
+eq "N3: no sha256 tool: description fails and prints nothing" "$nhrc:$nhout" "1:"
+check "N3: and says why" grep -q 'no sha256 tool' "$T/nh.err"
+# a hash tool that exists but misbehaves must fail closed too: it fails, prints nothing, or echoes the id
+for mode in fail empty echo garbage; do
+  bad="$T/badhash-$mode/bin"; mkdir -p "$bad"; for t in jq sed head tr cut cat date dirname mkdir od; do ln -sf "$(command -v "$t")" "$bad/$t"; done
+  case "$mode" in
+    fail) printf '#!/bin/sh\nexit 1\n' >"$bad/shasum" ;;
+    empty) printf '#!/bin/sh\ncat >/dev/null\n' >"$bad/shasum" ;;
+    echo) printf '#!/bin/sh\ncat\n' >"$bad/shasum" ;;
+    garbage) printf '#!/bin/sh\ncat >/dev/null; echo "ZZZZZZZZZZZZZZZZ  -"\n' >"$bad/shasum" ;;
+  esac
+  chmod +x "$bad/shasum"
+  bout="$(env PATH="$bad" FLEET_STATE_DIR="$FLEET_STATE_DIR" FLEET_CONFIG_DIR="$FLEET_CONFIG_DIR" "$BASH" "$MID" description 2>/dev/null)"; brc=$?
+  eq "N3: a hash tool that $mode: description fails closed (exit 1, nothing printed, never the id)" "$brc:$bout" "1:"
+done
+dbreset; "$LIN" claim DEV-1 >/dev/null 2>&1
+eq "N3: no label description the code wrote holds a full machine id (a failure names the line:field)" "$(jq -r '.labels[].description' "$LINEAR_DB" | sed 's/ · /\n/g' | grep -nE "$IDRE" | cut -d: -f1 | paste -sd, -)" ""
+eq "N3: the claim's label description has the hash" "$(jq -r --arg n "$ml" '.labels[] | select(.name == $n) | .description' "$LINEAR_DB" | grep -c "machine id sha256:$want")" 1
+eq "N3: the full id is in no request the code sent" "$(grep -c "$FIXID" "$LINEAR_ARGV_LOG" || true)" 0
+# a label published by an older version holds the full id: rewrite it, keep the other text and the heartbeat line
+legacy_db() {
+  dbreset
+  jq --arg n "$ml" --arg d "$(printf 'my box · macOS · machine id %s · first claim 2026-01-02\nheartbeat=2026-10-18T07:00:00Z\nextra note' "$FIXID")" \
+    '.labels += [{id: "L9", name: $n, description: $d, parent: {id: "L1", name: "fleet"}}]' "$LINEAR_DB" >"$T/db.tmp" && mv "$T/db.tmp" "$LINEAR_DB"
+  : >"$LINEAR_LOG"; : >"$LINEAR_ARGV_LOG"
+}
+legacy_db
+"$LIN" migrate --dry-run >"$T/n3.out"
+eq "N3: migrate --dry-run reports would_rewrite" "$(jq -r .would_rewrite "$T/n3.out")" true
+eq "N3: migrate --dry-run mutates nothing" "$(nmut)" 0
+"$LIN" claim DEV-3 --dry-run >/dev/null 2>"$T/n3.err"
+check "N3: claim --dry-run reports would_rewrite" grep -q would_rewrite "$T/n3.err"
+eq "N3: claim --dry-run mutates nothing" "$(nmut)" 0
+eq "N3: the description is untouched by the dry runs" "$(jq -r '.labels[] | select(.id == "L9") | .description' "$LINEAR_DB" | grep -c "$FIXID")" 1
+: >"$LINEAR_LOG"; "$LIN" migrate >"$T/n3.out"
+eq "N3: migrate rewrites the label" "$(jq -r .rewrote_label "$T/n3.out")" true
+eq "N3: as one label update, a write" "$(grep -c '^mutation IssueLabelUpdate' "$LINEAR_LOG")$(nmut)" 11
+eq "N3: the rewritten description keeps every other line and the heartbeat" "$(jq -r '.labels[] | select(.id == "L9") | .description' "$LINEAR_DB" | paste -sd'|' -)" "my box · macOS · machine id sha256:$want · first claim 2026-01-02|owner=Fixture Owner|heartbeat=2026-10-18T07:00:00Z|extra note"
+: >"$LINEAR_LOG"; eq "N3: a second migrate rewrites nothing" "$("$LIN" migrate | jq -r .rewrote_label):$(nmut)" "false:0"
+legacy_db; "$LIN" claim DEV-3 >/dev/null 2>&1
+eq "N3: claim (ensure_label) rewrites it too, keeping the heartbeat and other text" "$(jq -r '.labels[] | select(.id == "L9") | .description' "$LINEAR_DB" | paste -sd'|' -)" "my box · macOS · machine id sha256:$want · first claim 2026-01-02|owner=Fixture Owner|heartbeat=2026-10-18T07:00:00Z|extra note"
+eq "N3: and the full id is in no request" "$(grep -c "$FIXID" "$LINEAR_ARGV_LOG" || true)" 0
+eq "N3: and no description in the database holds one" "$(jq -r '.labels[].description' "$LINEAR_DB" | grep -Ec "$IDRE" || true)" 0
+# heartbeat hashes a full machine id an older version left in the description, or writes nothing
+legacy_db; FLEET_NOW=2026-10-18T09:50:00Z "$LIN" heartbeat >/dev/null
+eq "heartbeat: a legacy description is hashed as it is rewritten" "$(jq -r '.labels[] | select(.id == "L9") | .description' "$LINEAR_DB" | grep -c "$FIXID")$(jq -r '.labels[] | select(.id == "L9") | .description' "$LINEAR_DB" | grep -c "machine id sha256:$want · ")$(jq -r '.labels[] | select(.id == "L9") | .description' "$LINEAR_DB" | grep -c '^heartbeat=2026-10-18T09:50:00Z$')" 011
+eq "heartbeat: and the full id is in no request" "$(grep -c "$FIXID" "$LINEAR_ARGV_LOG" || true)" 0
+hf="$T/hashfail/bin"; mkdir -p "$hf"; for t in shasum sha256sum openssl; do printf '#!/bin/sh\nexit 1\n' >"$hf/$t"; chmod +x "$hf/$t"; done
+legacy_db; PATH="$hf:$PATH" "$LIN" heartbeat >/dev/null 2>"$T/hf.err"; rc=$?
+eq "legacy hash fails closed: heartbeat exits non-zero and writes nothing" "$rc:$(nmut)" "1:0"
+check "legacy hash fails closed: and says why" grep -q 'cannot hash a machine id' "$T/hf.err"
+legacy_db; PATH="$hf:$PATH" "$LIN" migrate >/dev/null 2>&1; eq "legacy hash fails closed: migrate writes nothing" "$(nmut)" 0
+eq "legacy hash fails closed: no 'sha256:' with an empty hash anywhere" "$(jq -r '.labels[].description' "$LINEAR_DB" | grep -c 'sha256: \|sha256:$' || true)" 0
+
+# -- owner line: owner=<viewer name> beside the hashed id and the heartbeat line
+dbreset
+eq "whoami: prints the Linear user behind the key" "$("$LIN" whoami | jq -c '[.id, .name]')" '["U1","Fixture Owner"]'
+eq "whoami: is a read (no mutation)" "$(nmut)" 0
+"$LIN" claim DEV-1 >/dev/null 2>&1
+odesc() { jq -r --arg n "$ml" '.labels[] | select(.name == $n) | .description' "$LINEAR_DB"; }
+eq "owner: the new label's description has the hashed id, the owner and the heartbeat, in that order" "$(odesc | sed 's/ · first claim.*//; s/^[^·]* · [^·]* · //; s/^heartbeat=.*/heartbeat=…/' | paste -sd'|' -)" "machine id sha256:$want|owner=Fixture Owner|heartbeat=…"
+jq '.viewer = {name: "New Owner"}' "$LINEAR_DB" >"$T/db.tmp" && mv "$T/db.tmp" "$LINEAR_DB"
+FLEET_NOW=2026-10-19T10:00:00Z "$LIN" heartbeat >/dev/null
+eq "owner: heartbeat refreshes the owner line, keeps the hashed id and updates the heartbeat" "$(odesc | grep -c "machine id sha256:$want")$(odesc | grep -c '^owner=New Owner$')$(odesc | grep -c '^heartbeat=2026-10-19T10:00:00Z$')$(odesc | wc -l | tr -d ' ')" 1113
+jq '.labels |= map(if .name == "'"$ml"'" then .description = "my box · macOS\nheartbeat=2026-10-18T07:00:00Z\nextra note" else . end) | .viewer = {name: "Fixture Owner"}' "$LINEAR_DB" >"$T/db.tmp" && mv "$T/db.tmp" "$LINEAR_DB"
+"$LIN" migrate >/dev/null
+eq "owner: migrate adds a missing owner line and keeps the rest" "$(odesc | paste -sd'|' -)" "my box · macOS|owner=Fixture Owner|heartbeat=2026-10-18T07:00:00Z|extra note"
+: >"$LINEAR_LOG"; "$LIN" migrate >/dev/null; eq "owner: and a second migrate changes nothing" "$(nmut)" 0
+
+# -- test mode: linear_writes = test:FT refuses every write outside team FT, with zero mutations
+dbreset; setw test:FT
+jq '.issues += [{id: "I20", identifier: "DEV-20", team: {id: "T2", key: "FT"}, state: {id: "S0", name: "Todo"}, labelIds: [], comments: []},
+                {id: "I21", identifier: "DEV-21", team: {id: "T2", key: "FT"}, state: {id: "S0", name: "Todo"}, labelIds: ["L2"], comments: []}]' "$LINEAR_DB" >"$T/db.tmp" && mv "$T/db.tmp" "$LINEAR_DB"
+: >"$LINEAR_LOG"
+"$LIN" claim DEV-1 >/dev/null 2>"$T/tt.err"; rc=$?
+eq "test mode: a claim on a non-FT issue is refused" "$rc" 1
+check "test mode: and the refusal names the team" grep -q 'DEV-1 is in team ENG' "$T/tt.err"
+eq "test mode: with zero mutations" "$(nmut)" 0
+eq "test mode: the issue is untouched" "$(labels_of DEV-1)" bug
+"$LIN" claim DEV-3 >/dev/null 2>&1; eq "test mode: a second non-FT claim is refused too" "$?" 1
+eq "test mode: and also makes no mutation" "$(nmut)" 0
+"$LIN" claim DEV-20 >/dev/null 2>&1; eq "test mode: a claim on an FT issue goes through" "$?" 0
+eq "test mode: the label is on the FT issue" "$(labels_of DEV-20)" "$ml"
+eq "test mode: and it did write" "$([ "$(nmut)" -gt 0 ] && echo yes)" yes
+: >"$LINEAR_LOG"
+FLEET_GH="$GHO" FLEET_NOW=2026-10-18T09:00:00Z "$LIN" takeover DEV-2 2>"$T/tt.err"; eq "test mode: a takeover on a non-FT issue is refused even with a lapsed holder" "$?" 1
+eq "test mode: the takeover made no mutation" "$(nmut)" 0
+FLEET_GH="$GHO" GH_OPEN_JSON="$T/gh-none.json" FLEET_NOW=2026-10-18T09:00:00Z "$LIN" takeover DEV-21 >/dev/null 2>&1; eq "test mode: a takeover on an FT issue is allowed" "$?" 0
+eq "test mode: with exactly one comment" "$(ncomments)" 1
+: >"$LINEAR_LOG"; "$LIN" heartbeat >/dev/null; eq "test mode: a heartbeat (own label only) is allowed, one mutation" "$(nmut)" 1
+lid_mine="$(jq -r --arg n "$ml" '.labels[] | select(.name == $n) | .id' "$LINEAR_DB")"
+jq --arg l "$lid_mine" '.issues |= map(if .identifier == "DEV-1" then .labelIds = ["L3", $l] | .comments = [{id: "C1", body: "fleet-claim: machine=test team=x"}] else . end)' "$LINEAR_DB" >"$T/db.tmp" && mv "$T/db.tmp" "$LINEAR_DB"
+: >"$LINEAR_LOG"; "$LIN" migrate >/dev/null 2>"$T/tt.err"; rc=$?
+eq "test mode: migrate refuses to delete a comment on a non-FT issue" "$rc" 1
+eq "test mode: with zero mutations" "$(nmut)" 0
+eq "test mode: the comment is still there" "$(jq '[.issues[] | select(.identifier == "DEV-1") | .comments[]] | length' "$LINEAR_DB")" 1
+: >"$LINEAR_LOG"; "$LIN" holder DEV-1 >/dev/null; "$LIN" peers >/dev/null; "$LIN" whoami >/dev/null; "$LIN" claim DEV-1 --dry-run >/dev/null 2>&1
+eq "test mode: reads and dry runs are unrestricted, and write nothing" "$(nmut)" 0
+check "test mode: the team key is read before any write" bash -c "! grep -q '^mutation' '$LINEAR_LOG'"
+# test mode writes only FT issues and this machine's own label: never the workspace-wide fleet group
+dbreset; jq '.labels |= map(select(.name != "fleet")) | .issues += [{id: "I20", identifier: "DEV-20", team: {id: "T2", key: "FT"}, state: {id: "S0", name: "Todo"}, labelIds: [], comments: []}]' "$LINEAR_DB" >"$T/db.tmp" && mv "$T/db.tmp" "$LINEAR_DB"
+: >"$LINEAR_LOG"; "$LIN" claim DEV-20 >/dev/null 2>"$T/tt.err"; rc=$?
+eq "test mode: with no fleet group, an FT claim does not create the workspace group" "$rc:$(nmut)" "1:0"
+check "test mode: and says it is outside the test scope" grep -q 'IssueLabelCreate on fleet is outside team FT' "$T/tt.err"
+eq "test mode: no label was created" "$(jq '[.labels[] | select(.name == "fleet")] | length' "$LINEAR_DB")" 0
+setw on; eq "writes on: a non-FT claim is allowed" "$(dbreset; "$LIN" claim DEV-1 >/dev/null 2>&1; echo $?)" 0
+
+# -- tick: one heartbeat mutation however many issues are claimed; no claim comments
+export FLEET_STATE_DIR="$T/bstate" FLEET_REGISTRY="$T/bstate/fleet.json" FLEET_INBOX="$T/bstate/escalations.jsonl"; mkdir -p "$FLEET_STATE_DIR"; printf '%s\n' "$FIXID" >"$FLEET_STATE_DIR/machine-id"
+brow() { "$REG" add "$(jq -cn --arg n "$1" --arg t "${1%%/*}" --arg i "$2" --arg r "$T/ra" '{name: $n, team: $t, repo: $r, tier: "Worker", status: "Idle", herdr_ref: "x", pane: "p", issue: $i}')"; }
+dbreset; "$LIN" claim DEV-1 >/dev/null 2>&1; brow bt1/builder DEV-1
+"$SCRIPTS/tick.sh" >/dev/null 2>&1; : >"$LINEAR_LOG"
+out="$("$SCRIPTS/tick.sh" 2>"$T/tick.err")"
+eq "tick: a quiet tick with one claimed issue is quiet" "$out" ""
+eq "tick: exactly one mutation for one claimed issue" "$(nmut)" 1
+eq "tick: and it is the heartbeat" "$(grep -c '^mutation IssueLabelUpdate' "$LINEAR_LOG")" 1
+for n in 2 3 4 5; do brow bt$n/builder DEV-3; done
+: >"$LINEAR_LOG"; "$SCRIPTS/tick.sh" >/dev/null 2>&1
+eq "tick: exactly one mutation for five claimed issues" "$(nmut)" 1
+eq "tick: claim, heartbeat and tick log no comment mutation (AC5)" "$(ncomments)" 0
+eq "tick: the Linear viewer is read once per tick" "$(grep -c '^query Viewer' "$LINEAR_LOG")" 1
+"$SCRIPTS/tick.sh" >/dev/null 2>&1
+eq "tick: and again on the next tick (cached per tick, not across ticks)" "$(grep -c '^query Viewer' "$LINEAR_LOG")" 2
+eq "tick: no unknown operation reached the API" "$(grep -c '^UNKNOWN' "$LINEAR_LOG")" 0
+# a team whose issue now carries another machine's label: one claim_takeover event
+jq '.issues |= map(if .identifier == "DEV-1" then .labelIds = ["L2"] else . end)' "$LINEAR_DB" >"$T/db.tmp" && mv "$T/db.tmp" "$LINEAR_DB"
+t1="$("$SCRIPTS/tick.sh" 2>/dev/null)"; t2="$("$SCRIPTS/tick.sh" 2>/dev/null)"
+eq "tick: a taken-over issue is reported once" "$(printf '%s' "$t1" | jq -c '[.[] | select(.type == "claim_takeover") | .team, .issue, .holder]')" '["bt1","DEV-1","fleet:other"]'
+eq "tick: and not again" "$(printf '%s' "$t2" | jq -s '[.[][]? | select(.type == "claim_takeover")] | length')" 0
+# tick never migrates: no marker, no comment deleted
+eq "tick: no migrate marker (migrate is a release step)" "$(jq -r '.migrated // "none"' "$FLEET_STATE_DIR/tick.state.json")" none
+eq "tick: no comment mutation in the whole tick section" "$(grep -c '^mutation Comment' "$LINEAR_LOG")" 0
+
+# -- linear_writes: off by default. A keyed tick and a keyed next on defaults make ZERO mutations.
+setw; dbreset; : >"$LINEAR_ARGV_LOG"
+for c in "claim DEV-1" heartbeat "takeover DEV-2" migrate; do
+  eq "writes off (default): linear.sh $c exits 3" "$("$LIN" $c >/dev/null 2>"$T/wo.err"; echo $?)" 3
+done
+check "writes off: the message says so" grep -q 'Linear writes are off' "$T/wo.err"
+eq "writes off: no API call was made by the refused writes" "$(wc -l <"$LINEAR_LOG" | tr -d ' ')$(wc -l <"$LINEAR_ARGV_LOG" | tr -d ' ')" 00
+"$LIN" has-key; eq "writes off: has-key is still 0 with a key" "$?" 0
+eq "writes off: reads and dry runs still work" "$("$LIN" holder DEV-1 >/dev/null && "$LIN" peers >/dev/null && "$LIN" claim DEV-1 --dry-run >/dev/null 2>&1 && "$LIN" migrate --dry-run >/dev/null && echo ok)" ok
+eq "writes off: and make no mutation" "$(nmut)" 0
+setw maybe; "$LIN" claim DEV-1 >/dev/null 2>"$T/wo.err"; rc=$?
+eq "writes = a bad value: treated as off (exit 3)" "$rc" 3
+check "writes = a bad value: and it warns" grep -q "treating it as off" "$T/wo.err"
+setw off; "$LIN" heartbeat >/dev/null 2>&1; eq "writes = off written out: exit 3" "$?" 3
+setw; : >"$LINEAR_LOG"; rm -f "$FLEET_STATE_DIR/tick.state.json"
+w1="$("$SCRIPTS/tick.sh" 2>/dev/null)"; w2="$("$SCRIPTS/tick.sh" 2>/dev/null)"
+eq "writes off: a keyed tick makes zero mutations" "$(nmut)" 0
+eq "writes off: it logs claims_readonly once (two ticks)" "$(evc "$w1" claims_readonly)$(evc "$w2" claims_readonly)" 10
+eq "writes off: and not claims_unavailable (there is a key)" "$(evc "$w1" claims_unavailable)" 0
+: >"$LINEAR_LOG"; "$SCRIPTS/next.sh" bt1 DEV-3 >/dev/null 2>"$T/nx.err" || true
+eq "writes off: a keyed next makes zero mutations" "$(nmut)" 0
+check "writes off: next proceeds unclaimed" grep -q 'claims unavailable' "$T/nx.err"
+printf 'machines = 2\n' >>"$FLEET_CONFIG_DIR/config.toml"
+bt --issue DEV-90 --claimed-by test build wo1 "$T/plain" t
+eq "writes off: boot --issue refuses when machines > 1, key or not" "$BTRC" 1
+check "writes off: and says why" grep -q 'linear_writes = off' "$T/bt.err"
+# NH3: next applies boot's rule: claims unavailable and machines > 1 refuses, the team keeps its issue
+before="$("$REG" get bt1/builder | jq -r .issue)"; : >"$HERDR_LOG"
+"$SCRIPTS/next.sh" bt1 DEV-6 >/dev/null 2>"$T/nx.err"; rc=$?
+eq "writes off, machines > 1: next refuses (exit 1)" "$rc" 1
+check "writes off, machines > 1: and says claims cannot be made" grep -q 'machines > 1' "$T/nx.err"
+eq "writes off, machines > 1: the team keeps its issue and nothing is sent" "$("$REG" get bt1/builder | jq -r .issue):$(grep -c '^agent prompt' "$HERDR_LOG")" "$before:0"
+setw on
+# a Done row keeps its claim: with writes on, a team waiting on a merge still gets the heartbeat
+for n in 1 2 3 4 5; do "$REG" retire bt$n/builder >/dev/null 2>&1; done
+dbreset; "$LIN" claim DEV-1 >/dev/null 2>&1; brow bt9/builder DEV-1; "$REG" set bt9/builder status=Done >/dev/null; : >"$LINEAR_LOG"
+"$SCRIPTS/tick.sh" >/dev/null 2>&1
+eq "tick: a Done row's claim is still heartbeated (one mutation)" "$(nmut)" 1
+"$REG" retire bt9/builder >/dev/null 2>&1; : >"$LINEAR_LOG"; "$SCRIPTS/tick.sh" >/dev/null 2>&1
+eq "tick: a Retired row's claim is not" "$(nmut)" 0
+brow bt8/builder DEV-3
+
+# -- no key: exit 3, nothing sent, tick still works and says so once
+rm -f "$FLEET_CONFIG_DIR/linear_api_key"; unset LINEAR_API_KEY; : >"$LINEAR_LOG"; : >"$LINEAR_ARGV_LOG"
+for c in "claim DEV-1" heartbeat "holder DEV-1" peers "takeover DEV-2" migrate "claim DEV-1 --dry-run" "migrate --dry-run"; do
+  eq "no key: linear.sh $c exits 3" "$("$LIN" $c >/dev/null 2>"$T/nk.err"; echo $?)" 3
+done
+check "no key: the message says no Linear key" grep -q 'no Linear key' "$T/nk.err"
+"$LIN" has-key 2>/dev/null; eq "no key: has-key exits 3" "$?" 3
+eq "no key: the API was never called" "$(wc -l <"$LINEAR_LOG" | tr -d ' ')$(wc -l <"$LINEAR_ARGV_LOG" | tr -d ' ')" 00
+rm -f "$FLEET_STATE_DIR/tick.state.json"
+k1="$("$SCRIPTS/tick.sh" 2>"$T/tick.err")"; k2="$("$SCRIPTS/tick.sh" 2>/dev/null)"
+eq "tick: without a key it emits claims_unavailable once" "$(evc "$k1" claims_unavailable)$(evc "$k2" claims_unavailable)" 10
+eq "tick: without a key the API is not called" "$(wc -l <"$LINEAR_LOG" | tr -d ' ')" 0
+# a key file that anyone can read is refused
+printf '%s\n' "$LINEAR_STUB_KEY" >"$FLEET_CONFIG_DIR/linear_api_key"; chmod 644 "$FLEET_CONFIG_DIR/linear_api_key"
+"$LIN" holder DEV-1 >/dev/null 2>"$T/nk.err"; eq "key file: a world-readable key is refused (exit 3)" "$?" 3
+check "key file: and the message says mode 600" grep -q 'mode 600' "$T/nk.err"
+eq "key file: the API was not called" "$(wc -l <"$LINEAR_LOG" | tr -d ' ')" 0
+rm -f "$FLEET_CONFIG_DIR/linear_api_key"
+# LINEAR_API_KEY in the shell works without a file
+# (LINEAR_API_KEY from the environment is not exercised here: with it set, linear.sh ignores FLEET_CURL and would use the real API.)
+dbreset; printf '%s\n' "$LINEAR_STUB_KEY" >"$FLEET_CONFIG_DIR/linear_api_key"; chmod 600 "$FLEET_CONFIG_DIR/linear_api_key"; "$LIN" holder DEV-1 >/dev/null 2>&1; eq "a key file in the config dir works" "$?" 0
+printf 'wrong-key\n' >"$FLEET_CONFIG_DIR/linear_api_key"; "$LIN" holder DEV-1 >/dev/null 2>"$T/nk.err"; eq "a rejected key fails (exit 1), not exit 3" "$?" 1
+rm -f "$FLEET_CONFIG_DIR/linear_api_key"
+
+# -- boot without a key: machines unset proceeds with a warning, machines > 1 refuses
+bt --issue DEV-80 --claimed-by test build nk1 "$T/plain" t
+eq "boot: --issue without a key boots when machines is unset" "$BTRC" 0
+check "boot: and warns" grep -q 'no Linear key' "$T/bt.err"
+printf 'machines = 2\n' >>"$FLEET_CONFIG_DIR/config.toml"
+bt --issue DEV-81 --claimed-by test build nk2 "$T/plain" t
+eq "boot: --issue without a key refuses when machines > 1" "$BTRC" 1
+eq "boot: the refusal adds no rows" "$(rows_of build-nk2)" 0
+bt build nk3 "$T/plain" t; eq "boot: no --issue needs no key even with machines > 1" "$BTRC" 0
+cp "$T/config.b.bak" "$FLEET_CONFIG_DIR/config.toml"; printf 'claim_settle_secs = 0\nlinear_writes = "on"\nmachine_name = "test box"\n' >>"$FLEET_CONFIG_DIR/config.toml"
+# the key never reaches an agent: boot with the key in its own environment and on disk
+printf '%s\n' "$LINEAR_STUB_KEY" >"$FLEET_CONFIG_DIR/linear_api_key"; chmod 600 "$FLEET_CONFIG_DIR/linear_api_key"
+LINEAR_API_KEY="$LINEAR_STUB_KEY" bt --issue DEV-82 --claimed-by test build lk1 "$T/plain" t
+eq "boot: with a key it boots" "$BTRC" 0
+eq "boot: no herdr command line holds the key or its file name" "$(grep -v '^pane run [^ ]* unset LINEAR_API_KEY$' "$HERDR_LOG" | grep -c "KEYFIXTURE\|linear_api_key\|LINEAR_API_KEY")" 0
+rm -f "$FLEET_CONFIG_DIR/linear_api_key"
+
+# -- the key is never in an argv, a log or an output
+dbreset; printf '%s\n' "$LINEAR_STUB_KEY" >"$FLEET_CONFIG_DIR/linear_api_key"; chmod 600 "$FLEET_CONFIG_DIR/linear_api_key"
+{ "$LIN" claim DEV-1; "$LIN" heartbeat; "$LIN" holder DEV-1; "$LIN" peers; "$LIN" migrate; } >"$T/all-out.txt" 2>&1
+eq "key: not in the stub's argv log" "$(grep -c KEYFIXTURE "$LINEAR_ARGV_LOG")" 0
+eq "key: not in any linear.sh output" "$(grep -c KEYFIXTURE "$T/all-out.txt")" 0
+check "key: the stub did receive calls (the argv log is not just empty)" test -s "$LINEAR_ARGV_LOG"
+eq "key: no direct curl call was made (the guard on PATH)" "$(wc -l <"$NETLOG" | tr -d ' ')" 0
+eq "no unknown operation in the whole B run" "$(grep -c '^UNKNOWN' "$LINEAR_LOG")" 0
+rm -f "$FLEET_CONFIG_DIR/linear_api_key"
+
+# -- the scope guard keeps workers off the key file
+GUARD="$SCRIPTS/../../../hooks/fleet-scope-guard.sh"; mkdir -p "$T/wtg"
+kf="linear_api""_key"
+gin() { jq -nc --arg t "$1" --arg p "$2" '{tool_name: $t, tool_input: {file_path: $p}}'; }
+eq "guard: a worker reading the key file is denied" "$(gin Read "$T/anywhere/.config/fleet/$kf" | FLEET_ROLE=worker FLEET_WORKTREE="$T/wtg" "$GUARD" | jq -r .hookSpecificOutput.permissionDecision)" deny
+eq "guard: a worker editing a file of that name inside the worktree is denied" "$(gin Edit "$T/wtg/linear_api_key" | FLEET_ROLE=worker FLEET_WORKTREE="$T/wtg" "$GUARD" | jq -r .hookSpecificOutput.permissionDecision)" deny
+eq "guard: reading another file outside the worktree is allowed" "$(gin Read "$T/elsewhere.txt" | FLEET_ROLE=worker FLEET_WORKTREE="$T/wtg" "$GUARD")" ""
+eq "guard: editing a file inside the worktree is allowed" "$(gin Edit "$T/wtg/x.txt" | FLEET_ROLE=worker FLEET_WORKTREE="$T/wtg" "$GUARD")" ""
+eq "guard: writing outside the worktree is still denied" "$(gin Write "$T/elsewhere.txt" | FLEET_ROLE=worker FLEET_WORKTREE="$T/wtg" "$GUARD" | jq -r .hookSpecificOutput.permissionDecision)" deny
+dec() { local o; o="$(cat)"; if [ -z "$o" ]; then echo allow; else printf '%s' "$o" | jq -r '.hookSpecificOutput.permissionDecision // "allow"'; fi; } # a hook that prints nothing allows
+eq "guard: a lead reading the key is denied too" "$(gin Read "$T/anywhere/.config/fleet/$kf" | FLEET_ROLE=lead "$GUARD" | dec)" deny
+eq "guard: a lead editing the key is denied" "$(gin Edit "$FLEET_CONFIG_DIR/$kf" | FLEET_ROLE=lead "$GUARD" | dec)" deny
+eq "guard: a lead may still read and write outside any worktree" "$(gin Write "$T/elsewhere.txt" | FLEET_ROLE=lead "$GUARD" | dec)" allow
+eq "guard: a session that is not a fleet agent (the Orchestrator) is never restricted" "$(gin Read "$FLEET_CONFIG_DIR/$kf" | env -u FLEET_ROLE "$GUARD" | dec)" allow
+ln -s "$FLEET_CONFIG_DIR/$kf" "$T/wtg/innocent.txt"
+eq "guard: a symlink with another name to the key is denied (worker)" "$(gin Read "$T/wtg/innocent.txt" | FLEET_ROLE=worker FLEET_WORKTREE="$T/wtg" "$GUARD" | dec)" deny
+eq "guard: and for a lead" "$(gin Edit "$T/wtg/innocent.txt" | FLEET_ROLE=lead "$GUARD" | dec)" deny
+ln -s "$FLEET_CONFIG_DIR" "$T/wtg/cfg"; ln -s "$kf" "$FLEET_CONFIG_DIR/k3"
+eq "guard: a relative symlink reached through a symlinked directory is denied" "$(gin Read "$T/wtg/cfg/k3" | FLEET_ROLE=lead "$GUARD" | dec)" deny
+eq "guard: a path with .. through a directory that does not exist is resolved" "$(gin Read "$T/wtg/nope/../../config/k3" | FLEET_ROLE=lead "$GUARD" | dec)" deny
+eq "guard: the key by a .. path is denied" "$(gin Read "$T/wtg/sub/../../config/$kf" | FLEET_ROLE=worker FLEET_WORKTREE="$T/wtg" "$GUARD" | dec)" deny
+eq "guard: an ordinary file beside the key is allowed to a lead" "$(gin Read "$FLEET_CONFIG_DIR/config.toml" | FLEET_ROLE=lead "$GUARD" | dec)" allow
+eq "guard: a worker's symlink out of the worktree is resolved and denied for writes" "$(ln -s "$T/elsewhere2.txt" "$T/wtg/out.txt"; gin Write "$T/wtg/out.txt" | FLEET_ROLE=worker FLEET_WORKTREE="$T/wtg" "$GUARD" | dec)" deny
+eq "guard: .. out of the worktree is denied for a worker's write" "$(gin Write "$T/wtg/../escape.txt" | FLEET_ROLE=worker FLEET_WORKTREE="$T/wtg" "$GUARD" | dec)" deny
+rm -f "$T/wtg/innocent.txt" "$T/wtg/cfg" "$T/wtg/out.txt" "$FLEET_CONFIG_DIR/k3"
+gg() { jq -nc --arg t "$1" --argjson i "$2" '{tool_name: $t, tool_input: $i}'; } # gg <tool> <input json>
+eq "guard: Grep of the key file is denied" "$(gg Grep "$(jq -nc --arg p "$FLEET_CONFIG_DIR/$kf" '{pattern: ".", path: $p}')" | FLEET_ROLE=worker FLEET_WORKTREE="$T/wtg" "$GUARD" | dec)" deny
+eq "guard: Grep rooted at the key's directory is denied" "$(gg Grep "$(jq -nc --arg p "$FLEET_CONFIG_DIR" '{pattern: ".", path: $p}')" | FLEET_ROLE=lead "$GUARD" | dec)" deny
+eq "guard: Grep rooted above the key's directory is denied" "$(gg Grep "$(jq -nc --arg p "$(dirname "$FLEET_CONFIG_DIR")" '{pattern: ".", path: $p}')" | FLEET_ROLE=lead "$GUARD" | dec)" deny
+eq "guard: Grep through a symlink to the key is denied" "$(ln -s "$FLEET_CONFIG_DIR/$kf" "$T/wtg/g.txt"; gg Grep "$(jq -nc --arg p "$T/wtg/g.txt" '{pattern: ".", path: $p}')" | FLEET_ROLE=worker FLEET_WORKTREE="$T/wtg" "$GUARD" | dec; rm -f "$T/wtg/g.txt")" deny
+eq "guard: Grep with the key's name in the glob is denied" "$(gg Grep "$(jq -nc --arg p "$T/wtg" '{pattern: "x", path: $p, glob: "linear_api_key*"}')" | FLEET_ROLE=lead "$GUARD" | dec)" deny
+eq "guard: Glob of the key by an absolute pattern is denied" "$(gg Glob "$(jq -nc --arg p "$FLEET_CONFIG_DIR/$kf" '{pattern: $p}')" | FLEET_ROLE=lead "$GUARD" | dec)" deny
+eq "guard: Glob naming the key is denied" "$(gg Glob '{"pattern": "**/linear_api_key"}' | FLEET_ROLE=worker FLEET_WORKTREE="$T/wtg" "$GUARD" | dec)" deny
+eq "guard: Grep in the worktree is allowed" "$(gg Grep "$(jq -nc --arg p "$T/wtg" '{pattern: "foo", path: $p}')" | FLEET_ROLE=worker FLEET_WORKTREE="$T/wtg" "$GUARD" | dec)" allow
+eq "guard: Glob with no path is allowed" "$(gg Glob '{"pattern": "**/*.sh"}' | FLEET_ROLE=worker FLEET_WORKTREE="$T/wtg" "$GUARD" | dec)" allow
+# H1: a Grep or Glob with no path searches the cwd: denied when the cwd is the key's directory or above it
+eq "guard (H1): Grep with no path from HOME (above the key) is denied" "$(cd "$HOME" && gg Grep '{"pattern": "lin_api_"}' | env -u FLEET_CONFIG_DIR -u XDG_CONFIG_HOME FLEET_ROLE=lead "$GUARD" | dec)" deny
+eq "guard (H1): Grep with no path from the key's directory is denied" "$(cd "$FLEET_CONFIG_DIR" && gg Grep '{"pattern": "lin_api_"}' | FLEET_ROLE=lead "$GUARD" | dec)" deny
+eq "guard (H1): Glob .config/** from HOME is denied" "$(cd "$HOME" && gg Glob '{"pattern": ".config/**"}' | env -u FLEET_CONFIG_DIR -u XDG_CONFIG_HOME FLEET_ROLE=lead "$GUARD" | dec)" deny
+eq "guard (H1): a Glob rooted in the worktree that climbs to .config is denied" "$(gg Glob "$(jq -nc --arg p "$T/wtg" '{pattern: "../home/.config/*/*", path: $p}')" | env -u FLEET_CONFIG_DIR -u XDG_CONFIG_HOME FLEET_ROLE=lead "$GUARD" | dec)" deny
+eq "guard (H1): an absolute Glob over HOME is denied" "$(gg Glob "$(jq -nc --arg p "$HOME/**/*" '{pattern: $p}')" | env -u FLEET_CONFIG_DIR -u XDG_CONFIG_HOME FLEET_ROLE=lead "$GUARD" | dec)" deny
+eq "guard (H1): a Glob spelling .config/fleet is denied" "$(gg Glob '{"pattern": "**/.config/fleet/*"}' | FLEET_ROLE=worker FLEET_WORKTREE="$T/wtg" "$GUARD" | dec)" deny
+eq "guard (H1): Grep's glob filter reaching the key is denied" "$(gg Grep "$(jq -nc --arg p "$T/wtg" --arg g "$FLEET_CONFIG_DIR/*" '{pattern: "x", path: $p, glob: $g}')" | FLEET_ROLE=lead "$GUARD" | dec)" deny
+eq "guard (H1): Grep with no path in a worktree is allowed" "$(cd "$T/wtg" && gg Grep '{"pattern": "foo"}' | FLEET_ROLE=worker FLEET_WORKTREE="$T/wtg" "$GUARD" | dec)" allow
+eq "guard: Grep of the key is allowed outside a fleet agent" "$(gg Grep "$(jq -nc --arg p "$FLEET_CONFIG_DIR/$kf" '{pattern: ".", path: $p}')" | env -u FLEET_ROLE "$GUARD" | dec)" allow
+check "hooks.json sends Grep and Glob to the scope guard" bash -c "jq -e '.hooks.PreToolUse[] | select(.matcher | test(\"Grep\") and test(\"Glob\"))' '$SCRIPTS/../../../hooks/hooks.json' >/dev/null"
+check "hooks.json runs the bash guard for Bash" bash -c "jq -e '.hooks.PreToolUse[] | select(.matcher == \"Bash\") | .hooks[].command | test(\"fleet-bash-guard\")' '$SCRIPTS/../../../hooks/hooks.json' >/dev/null"
+BG="$SCRIPTS/../../../hooks/fleet-bash-guard.sh"
+# The guard reads the team's herdr names from the registry under FLEET_STATE_DIR: a fixture of its own.
+mkdir -p "$T/gstate"; jq -n '{agents: {"build-ft/lead": {name: "build-ft/lead", team: "build-ft", herdr_ref: "build-ft-lead", status: "Working"},
+  "build-ft/builder": {name: "build-ft/builder", team: "build-ft", herdr_ref: "build-ft-builder", status: "Working"},
+  "build-ft/tester": {name: "build-ft/tester", team: "build-ft", herdr_ref: "build-ft-tester", status: "Working"},
+  "build-ft/old": {name: "build-ft/old", team: "build-ft", herdr_ref: "build-ft-old", status: "Retired"},
+  "build-ftx/builder": {name: "build-ftx/builder", team: "build-ftx", herdr_ref: "build-ftx-builder", status: "Working"}}}' >"$T/gstate/fleet.json"
+bg() { jq -nc --arg c "$1" '{tool_name: "Bash", tool_input: {command: $c}}' | FLEET_STATE_DIR="$T/gstate" FLEET_ROLE="${2:-worker}" FLEET_TEAM=build-ft FLEET_NAME=build-ft/builder "$BG" | dec; }
+# bgh: the default config dir (~/.config/fleet under the test HOME), so ~ and ~/.config are above the key's directory
+bgh() { jq -nc --arg c "$1" '{tool_name: "Bash", tool_input: {command: $c}}' | env -u FLEET_CONFIG_DIR -u XDG_CONFIG_HOME FLEET_STATE_DIR="$T/gstate" FLEET_ROLE="${2:-worker}" FLEET_TEAM=build-ft "$BG" | dec; }
+eq "bash guard: cat of the key file is denied" "$(bg "cat ~/.config/fleet/$kf")" deny
+eq "bash guard: the key variable is denied" "$(bg "echo \$LINEAR_API""_KEY")" deny
+eq "bash guard: the key variable is denied for a lead" "$(bg "printenv LINEAR_API""_KEY" lead)" deny
+eq "bash guard: herdr pane run is denied" "$(bg "herdr pane run p1 'ls'")" deny
+eq "bash guard: herdr pane run is denied for a lead too" "$(bg "herdr pane send-text p1 hi" lead)" deny
+eq "bash guard: herdr pane send-keys behind a pipe or && is denied" "$(bg "true && herdr --session s pane send-keys p1 enter" lead)" deny
+eq "bash guard: herdr pane run inside bash -c is denied" "$(bg "bash -c 'herdr pane run p1 id'")" deny
+eq "bash guard: a worker may read its own team's agent" "$(bg "herdr agent read build-ft-tester --source visible")" allow
+eq "bash guard: a worker may not read another team's agent" "$(bg "herdr agent read build-other-lead")" deny
+eq "bash guard: a worker may not prompt even its own team" "$(bg "herdr agent prompt build-ft-lead hi")" deny
+eq "bash guard: a lead may prompt its own worker" "$(bg "herdr agent prompt build-ft-builder 'do it'" lead)" allow
+eq "bash guard: a lead may send-keys to its own worker" "$(bg "herdr --session s agent send-keys build-ft-builder enter" lead)" allow
+eq "bash guard: a lead may not prompt another team's agent" "$(bg "herdr agent prompt build-other-builder hi" lead)" deny
+eq "bash guard: a team that only shares a prefix is another team" "$(bg "herdr agent prompt build-ftx-builder hi" lead)" deny
+eq "bash guard: an unreadable target is denied" "$(bg 'herdr agent prompt $T hi' lead)" deny
+eq "bash guard: herdr agent get and list are not restricted" "$(bg "herdr agent get build-other-lead; herdr agent list")" allow
+eq "bash guard: an ordinary command is allowed" "$(bg "git status && ls")" allow
+# H1: the key's directory in any form, not just the file name
+for c in 'cat ~/.config/fleet/*' 'cat $HOME/.config/fleet/linear_api_k*' 'grep -r lin_api_ ~/.config/fleet' 'cat ${XDG_CONFIG_HOME}/fleet/x' \
+  'cat $XDG_CONFIG_HOME/fleet/x' 'ls $FLEET_CONFIG_DIR' 'ls "${FLEET_CONFIG_DIR}"/' "cat '\$HOME'/.config/fl\"eet\"/k" 'cd ~/.config && cat fleet/k' \
+  'grep -r lin_api_ ~/.config' 'grep -rn lin_api_ ~' 'rg lin_api_ $HOME' 'find ~ -name "*key*"' 'cat ~/.config/*/lin*' 'cat ~/.config/fl*/*' \
+  "cat $HOME/.config/fleet/k" "cat $HOME/.config/../.config/fleet/k"; do
+  eq "bash guard (H1): $c is denied" "$(bgh "$c")" deny
+done
+mkdir -p "$HOME/.config/fleet"; ln -s "$HOME/.config/fleet" "$T/cfglink"
+eq "bash guard (H1): the resolved path of the key's directory is denied" "$(bgh "cat $(cd "$HOME/.config/fleet" && pwd -P)/k")" deny
+eq "bash guard (H1): the set FLEET_CONFIG_DIR by its absolute path is denied" "$(bg "cat $FLEET_CONFIG_DIR/config.toml")" deny
+rm -f "$T/cfglink"
+for c in 'cd ~ && ls' 'ls -la ~/.config' 'grep -rn foo .' 'rg foo src' 'cat ~/.config/fleet-notes.txt' 'find . -name x' 'git -C ~/code/repo status'; do
+  eq "bash guard (H1): $c is allowed" "$(bgh "$c")" allow
+done
+# LOW: the own team is the exact herdr names of its rows in the registry, not a name prefix
+eq "bash guard: a name with the team's prefix that is not a row of the team is denied" "$(bg "herdr agent prompt build-ft-ghost hi" lead)" deny
+eq "bash guard: a Retired row of the team is not a target" "$(bg "herdr agent prompt build-ft-old hi" lead)" deny
+# NH1 in the bash guard: the parent-directory checks ignore case too
+for c in 'cat ~/.CONFIG/f*/*' 'cat ~/.Config/fl*/*' 'cd ~/.CONFIG && cat fleet/*' 'grep -r tok ~/.CONFIG' 'find ~/.CONFIG' 'tar cf /tmp/x.tar ~/.CONFIG' 'cp -r ~/.Config /tmp/c' 'cat ~/.CONFIG/FLEET/x' 'rg tok $HOME/.CONFIG'; do
+  eq "bash guard (NH1): $c is denied" "$(bgh "$c")" deny
+done
+# command names in other case: APFS runs them
+for c in 'GREP -r tok ~/.config' 'FIND ~/.config' 'TAR cf /tmp/x ~/.config' 'Cp -r ~/.config /tmp/c' 'RG tok ~' 'Ls -R ~/.config' 'RG tok $HOME'; do
+  eq "bash guard (command case): $c is denied" "$(bgh "$c")" deny
+done
+# flags are not folded, and a capitalised word that is not a command names no tool
+for c in 'ls -ltr ~' 'ls -r ~' 'ls -latr ~/.config' 'ls -ltr $HOME' 'ls -ltr /' 'git commit -m "Find it" ~' "git commit -m 'Tree walk' ~" 'cd ~ && go test ./pkg/tree' 'grep -n foo ~'; do
+  eq "bash guard (flags): $c is allowed" "$(bgh "$c")" allow
+done
+for c in 'ls -R ~' 'sudo find ~' 'xargs grep -r x ~' 'Grep -rn tok ~' 'RSYNC -a ~/.config /tmp' 'DU ~' 'TREE ~' 'ZIP x ~'; do
+  eq "bash guard (command word): $c is denied" "$(bgh "$c")" deny
+done
+# a recursive tool anywhere in the command, after wrappers, keywords and grouping (no command-position parsing)
+for c in 'timeout 5 grep -r x ~' 'nice -n 5 grep -r x ~' 'env -i grep -r x ~' 'sudo -u me grep -r x ~' 'xargs -0 grep -r x ~' 'command -p grep -r x ~' \
+  'time -p find ~' 'if grep -r x ~; then echo y; fi' '! grep -r x ~' '{ grep -r x ~; }' 'for d in ~; do grep -r x $d; done' 'while true; do find ~; done' \
+  'stdbuf -oL grep -r x ~' 'caffeinate -i find ~' 'watch find ~' 'ionice find ~' 'TIMEOUT 5 GREP -r x ~' 'sudo FIND ~' 'cat x | RG tok ~' 'xargs -0 TREE ~' '/usr/bin/GREP -r x ~'; do
+  eq "bash guard (any word): $c is denied" "$(bgh "$c")" deny
+done
+for c in 'timeout 5 ls -l ~' 'nice -n 5 ls -ltr ~' 'grep -n foo ~; ls -l ~' "grep -n 'a;b' f"; do
+  eq "bash guard (any word): $c is allowed" "$(bgh "$c")" allow
+done
+# the same under bash 3.2 and a UTF-8 locale, where character ranges and tr sets can differ (the CI runner's case)
+bgl() { jq -nc --arg c "$1" '{tool_name: "Bash", tool_input: {command: $c}}' | env -u FLEET_CONFIG_DIR -u XDG_CONFIG_HOME LC_ALL="$2" FLEET_STATE_DIR="$T/gstate" FLEET_ROLE=worker FLEET_TEAM=build-ft /bin/bash "$BG" | dec; }
+for L in C en_US.UTF-8; do
+  for c in 'TIMEOUT 5 GREP -r x ~' 'sudo FIND ~' 'xargs -0 TREE ~' 'cat ~/.CONFIG/f*/*' 'Cp -r ~/.Config /tmp/c'; do
+    eq "bash guard under /bin/bash and LC_ALL=$L: $c is denied" "$(bgl "$c" "$L")" deny
+  done
+  eq "bash guard under /bin/bash and LC_ALL=$L: ls -r ~ is allowed, echo Tree ~ is denied" "$(bgl 'ls -r ~' "$L")$(bgl 'echo Tree ~' "$L")" allowdeny
+done
+# newlines, quote pairing, mixed case after a wrapper, and the size cap
+NLC=$'\n'
+for c in "cd /tmp${NLC}grep -r x ~" "echo hi${NLC}find ~" "cd /tmp${NLC}ls -R ~" "cd /tmp && \\${NLC} grep -r x ~" \
+  "awk -F'\"' '{print}' f; grep -r x ~; echo \"done\"" "sed 's/\"//g' f && grep -rn x ~ && echo \"ok\"" 'echo \"; grep -r x ~; echo \"' '"grep" -r x ~' 'grep "-r" x ~' \
+  'sudo Find ~' 'timeout 5 Grep -r x ~' 'nice -n 5 Tar cf x ~' 'xargs Grep -r x ~' 'env Find ~' 'if Find ~' '! Grep -r x ~' 'echo ~ | xargs Grep -r x' 'echo Tree ~'; do
+  eq "bash guard (lines, quotes, case): $(printf '%s' "$c" | tr '\n' '~') is denied" "$(bgh "$c")" deny
+done
+# every form from the review of f9ec6f9
+for c in '\grep -r x ~' '\Find ~' '$(which grep) -r x ~' '`which grep` -r x ~' 'watch "grep -r x ~"' '/USR/BIN/GREP -r x ~' '/Usr/Bin/Find ~' \
+  'echo "; grep -r x ~; echo "' 'grep -e a -e b -e c -e d -e e -e f -e g -e h -e i -e j -e k -e l -e m -e n -e o -e p -e q -e r2 -e s -e t -e u -r x ~'; do
+  eq "bash guard (review forms): $c is denied" "$(bgh "$c")" deny
+done
+bigw="echo $(for i in $(seq 1 1000); do printf 'ls '; done); grep -r x ~"
+t0=$(date +%s); r="$(bgh "$bigw")"; t1=$(date +%s)
+eq "bash guard: 1000 ls words then grep -r x ~ is denied within 2 seconds (one pass, no size cap)" "$((t1 - t0 <= 2)):$r" "1:deny"
+bigq="gh pr create --title t --body \"$(for i in $(seq 1 2000); do printf 'word '; done)\""
+t0=$(date +%s); r="$(bgh "$bigq")"; t1=$(date +%s)
+eq "bash guard: a 2000-word quoted PR body is allowed within 2 seconds" "$((t1 - t0 <= 2)):$r" "1:allow"
+benign="echo $(for i in $(seq 1 300); do printf 'ls '; done)"
+t0=$(date +%s); r="$(bgh "$benign")"; t1=$(date +%s)
+eq "bash guard: a 300-word benign command is allowed within 2 seconds" "$((t1 - t0 <= 2)):$r" "1:allow"
+manyseg="$(for i in $(seq 1 2000); do printf 'ls -l x;'; done)"
+t0=$(date +%s); bg "$manyseg" >/dev/null; t1=$(date +%s)
+eq "bash guard: 2000 segments stay within 2 seconds (no fork per segment)" "$((t1 - t0 <= 2))" 1
+longcmd="$(for i in 1 2 3 4 5 6 7 8 9 10; do printf 'herdr agent read build-ft-tester; '; done)"
+t0=$(date +%s); bg "$longcmd" >/dev/null; t1=$(date +%s)
+eq "bash guard: a long command naming herdr ten times stays within 2 seconds" "$((t1 - t0 <= 2))" 1
+eq "bash guard (command case): HERDR pane run is denied" "$(bg "HERDR pane run p1 ls")" deny
+eq "bash guard (command case): Herdr pane send-text is denied" "$(bg "Herdr pane send-text p1 x" lead)" deny
+eq "bash guard (command case): /opt/homebrew/bin/HERDR pane read is denied" "$(bg "/opt/homebrew/bin/HERDR pane read p1")" deny
+eq "bash guard (command case): Herdr agent read of another team is denied" "$(bg "Herdr agent read build-other-lead")" deny
+eq "bash guard (command case): Herdr agent read of its own team is allowed" "$(bg "Herdr agent read build-ft-tester")" allow
+eq "bash guard (NH1): a similar name is still allowed" "$(bgh 'cat ~/.CONFIG/fleetish/x')" allow
+eq "bash guard: herdr pane read is denied (another pane's screen)" "$(bg "herdr pane read p1")" deny
+# NH1: APFS ignores case, so the key by another case is the key
+eq "guard (NH1): Read of the key in other case is denied" "$(gin Read "$FLEET_CONFIG_DIR/$(printf '%s' "$kf" | tr a-z A-Z)" | FLEET_ROLE=lead "$GUARD" | dec)" deny
+eq "guard (NH1): the key's directory in other case is denied" "$(gin Read "$(printf '%s' "$FLEET_CONFIG_DIR" | tr a-z A-Z)/$kf" | FLEET_ROLE=worker FLEET_WORKTREE="$T/wtg" "$GUARD" | dec)" deny
+eq "guard (NH1): Grep rooted at the key's directory in other case is denied" "$(gg Grep "$(jq -nc --arg p "$(printf '%s' "$FLEET_CONFIG_DIR" | tr a-z A-Z)" '{pattern: ".", path: $p}')" | FLEET_ROLE=lead "$GUARD" | dec)" deny
+eq "guard (NH1): Glob naming the key in other case is denied" "$(gg Glob '{"pattern": "**/Linear_Api_Key"}' | FLEET_ROLE=lead "$GUARD" | dec)" deny
+eq "guard: the hook input's cwd decides a Grep with no path" "$(jq -nc --arg c "$FLEET_CONFIG_DIR" '{tool_name: "Grep", cwd: $c, tool_input: {pattern: "x"}}' | (cd "$T/wtg" && FLEET_ROLE=lead "$GUARD") | dec)" deny
+# NH2: linear.sh is not for agents, and its transport is fixed outside the tests
+printf '#!/usr/bin/env bash\ncat >"$CAPTURE"\necho "{}"\n' >"$T/capture.sh"; chmod +x "$T/capture.sh"; : >"$T/captured"
+FLEET_ROLE=worker CAPTURE="$T/captured" FLEET_CURL="$T/capture.sh" LINEAR_API_KEY=KEYFIXTURE-nh2 "$SCRIPTS/linear.sh" whoami >/dev/null 2>"$T/nh2.err"; rc=$?
+eq "NH2: linear.sh refuses a fleet agent" "$rc:$(grep -c 'may not run it' "$T/nh2.err")" "1:1"
+eq "NH2: and nothing reached the agent's own transport" "$(wc -c <"$T/captured" | tr -d ' ')" 0
+# (No test runs linear.sh outside FLEET_TEST with a key: with the real curl that would post to api.linear.app.)
+printf '%s\n' "$LINEAR_STUB_KEY" >"$FLEET_CONFIG_DIR/linear_api_key"; chmod 600 "$FLEET_CONFIG_DIR/linear_api_key"
+eq "NH2: curl is called with -q first (no ~/.curlrc)" "$(dbreset; "$LIN" holder DEV-1 >/dev/null 2>&1; awk '{print $1}' "$LINEAR_ARGV_LOG" | sort -u)" "-q"
+# The key-override bypass: FLEET_TEST=1 with a scratch state dir and a capture program, but the key at the real layout
+# path under a "real home" (a temp dir the guard treats as live). The override is refused and the capture gets nothing.
+RH="$T/realhome"; RHC="$RH/.config/fleet"; mkdir -p "$RHC"; printf 'KEYFIXTURE-live\n' >"$RHC/$kf"; chmod 600 "$RHC/$kf"
+: >"$T/captured"
+env FLEET_REAL_HOME="$RH" FLEET_TEST=1 FLEET_STATE_DIR="$T/scratch-state" FLEET_CONFIG_DIR="$RHC" CAPTURE="$T/captured" FLEET_CURL="$T/capture.sh" "$SCRIPTS/linear.sh" whoami >/dev/null 2>"$T/ko.err"; rc=$?
+eq "key override: FLEET_CURL with the key at the live path is refused" "$rc:$(grep -c 'refusing, nothing was sent' "$T/ko.err")" "1:1"
+eq "key override: and the capture program received nothing" "$(wc -c <"$T/captured" | tr -d ' ')" 0
+: >"$T/captured"; env FLEET_REAL_HOME="$RH" FLEET_TEST=1 FLEET_STATE_DIR="$T/scratch-state" FLEET_CONFIG_DIR="$(printf '%s' "$RHC" | tr a-z A-Z)" CAPTURE="$T/captured" FLEET_CURL="$T/capture.sh" "$SCRIPTS/linear.sh" whoami >/dev/null 2>&1
+eq "key override: the live path in other case is refused too" "$(wc -c <"$T/captured" | tr -d ' ')" 0
+: >"$T/captured"; env FLEET_REAL_HOME="$RH" FLEET_TEST=1 FLEET_STATE_DIR="$T/scratch-state" FLEET_CONFIG_DIR="$T/config" LINEAR_API_KEY=KEYFIXTURE-env CAPTURE="$T/captured" FLEET_CURL="$T/capture.sh" "$SCRIPTS/linear.sh" whoami >/dev/null 2>&1
+eq "key override: a key from LINEAR_API_KEY refuses the override" "$(wc -c <"$T/captured" | tr -d ' ')" 0
+: >"$T/captured"; env FLEET_REAL_HOME="$RH" FLEET_TEST=1 FLEET_STATE_DIR="$T/scratch-state" FLEET_CONFIG_DIR="$T/config" CAPTURE="$T/captured" FLEET_CURL="$T/capture.sh" "$SCRIPTS/linear.sh" whoami >/dev/null 2>&1
+eq "key override: with a test key outside the live path the override is honoured (the capture got the fixture key)" "$(grep -c KEYFIXTURE "$T/captured")" 1
+rm -f "$FLEET_CONFIG_DIR/linear_api_key"
+check "NH2: outside the tests curl comes from a fixed list of absolute paths, not the caller's PATH" bash -c "grep -q 'for _c in /usr/bin/curl ' '$SCRIPTS/linear.sh'"
+eq "bash guard: an unreadable registry denies every target" "$(jq -nc '{tool_name: "Bash", tool_input: {command: "herdr agent read build-ft-tester"}}' | FLEET_STATE_DIR="$T/nostate" FLEET_ROLE=worker FLEET_TEAM=build-ft "$BG" | dec)" deny
+eq "bash guard: the Orchestrator is never restricted" "$(jq -nc '{tool_name: "Bash", tool_input: {command: "herdr pane run p1 ls"}}' | env -u FLEET_ROLE "$BG" | dec)" allow
+check "boot: workers get no blanket Bash(herdr:*)" bash -c "! grep -q 'Bash(herdr:\*)' '$SCRIPTS/boot.sh'"
+check "SKILL.md states the same-uid residual risk" grep -qi 'same-uid\|same user' "$SCRIPTS/../SKILL.md"
+check "README states the same-uid residual risk" grep -qi 'same-uid\|same user' "$SCRIPTS/../README.md"
+check "hooks.json runs the guard for Read" grep -q '"matcher": "Read|' "$SCRIPTS/../../../hooks/hooks.json"
+check "linear.sh keeps reads and writes apart (gql_read and gql_write)" bash -c "grep -q '^gql_read()' '$LIN' && grep -q '^gql_write()' '$LIN'"
+realkey="config/fleet/""linear_api_key"
+eq "the real key path is not named in the tests" "$(grep -c "$realkey" "$HERE/run.sh" | tr -d ' ')" 0
+
+export FLEET_STATE_DIR="$_ostate" FLEET_REGISTRY="$_oreg"; [ -n "$_oinbox" ] && export FLEET_INBOX="$_oinbox" || unset FLEET_INBOX
+cp "$T/config.b.bak" "$FLEET_CONFIG_DIR/config.toml"; unset FLEET_CURL
 
 # version and docs
 SK="$SCRIPTS/.."; PLUGIN="$SK/../.."

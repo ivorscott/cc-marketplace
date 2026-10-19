@@ -5,7 +5,9 @@
 #   machine-id.sh key                   first 8 hex characters of the id (FLEET_MACHINE replaces it)
 #   machine-id.sh label                 <label_prefix><key>, e.g. fleet:3f9a2c1e
 #   machine-id.sh description [--date YYYY-MM-DD]
-#                                       text for the machine's tracker label description
+#                                       text for the machine's tracker label description; it carries
+#                                       `machine id sha256:<first 12 hex of sha256(id)>`, never the id
+#   machine-id.sh hash <string>         the first 12 hex of sha256(string) (what description publishes)
 #   machine-id.sh show                  everything above as JSON, plus where the id came from
 #
 # Id sources, first valid one wins (>= 8 hex characters, not all zeros or all F):
@@ -95,6 +97,26 @@ resolve() {
   warn "cannot store a machine id in $FLEET_STATE_DIR or $FLEET_CONFIG_DIR; using one that will not persist"
 }
 
+# sha256_hex: sha256 of stdin as hex. shasum -a 256 first (on macOS and the Ubuntu runners without
+# installs), then sha256sum, then openssl.
+sha256_hex() {
+  if command -v shasum >/dev/null 2>&1; then shasum -a 256 | cut -d' ' -f1
+  elif command -v sha256sum >/dev/null 2>&1; then sha256sum | cut -d' ' -f1
+  elif command -v openssl >/dev/null 2>&1; then openssl dgst -sha256 -r | cut -d' ' -f1
+  else return 1; fi
+}
+# id_hash <id>: first 12 hex of sha256(id). Fails (and prints nothing) without a hash tool; the caller
+# must then not publish anything, since the alternative would be the full id.
+id_hash() {
+  local h; h="$(printf '%s' "$1" | sha256_hex | cut -c1-12)"
+  [ "${#h}" = 12 ] || { echo "machine-id: no sha256 tool (shasum, sha256sum or openssl); not publishing the machine id" >&2; return 1; }
+  # Fail closed on a tool that misbehaves: the result must be 12 lowercase hex characters and must not be
+  # the start of the id itself (a tool that echoed its input would otherwise publish the raw id).
+  case "$h" in *[!0-9a-f]*) echo "machine-id: the sha256 tool gave an unusable result; not publishing the machine id" >&2; return 1 ;; esac
+  case "$1" in "$h"* | "$(printf '%s' "$h" | tr 'a-f' 'A-F')"*) echo "machine-id: the sha256 tool echoed the id; not publishing the machine id" >&2; return 1 ;; esac
+  printf '%s\n' "$h"
+}
+
 key() {
   if [ -n "${FLEET_MACHINE:-}" ]; then printf '%s\n' "$FLEET_MACHINE"; return; fi
   resolve; norm "$ID" | cut -c1-8
@@ -111,13 +133,15 @@ case "${1:-}" in
     [ "${2:-}" = "--date" ] && date_s="${3:?usage: description [--date YYYY-MM-DD]}"
     resolve
     name="$(machine_name)"; [ -n "$name" ] || name="$(host_name)"
-    printf '%s · %s · machine id %s · first claim %s\n' "$name" "$(host_os)" "$ID" "$date_s" ;;
+    hid="$(id_hash "$ID")" || exit 1
+    printf '%s · %s · machine id sha256:%s · first claim %s\n' "$name" "$(host_os)" "$hid" "$date_s" ;;
+  hash) id_hash "${2:?usage: hash <string>}" || exit 1 ;;
   show)
     resolve; KEY="$(key)"
     jq -cn --arg id "$ID" --arg key "$KEY" --arg label "$(label_prefix)$KEY" \
       --arg name "$(machine_name)" --arg host "$(host_name)" --arg os "$(host_os)" \
       --arg legacy "$(cfg_str machine_legacy_label "")" --arg source "$SOURCE" \
       '{id: $id, key: $key, label: $label, name: $name, host: $host, os: $os, legacy_label: $legacy, source: $source}' ;;
-  *) echo "usage: machine-id.sh id|key|label|description [--date D]|show" >&2; exit 2 ;;
+  *) echo "usage: machine-id.sh id|key|label|description [--date D]|hash <string>|show" >&2; exit 2 ;;
 esac
 exit 0

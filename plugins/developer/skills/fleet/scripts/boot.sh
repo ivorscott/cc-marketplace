@@ -20,23 +20,18 @@
 # so a full disk never hangs Docker mid-run.
 #
 # Claims (see SKILL.md, "Claim"): boot never calls a tracker. The Orchestrator claims the issue
-# first and passes the result in.
+# first (linear.sh claim) and passes the result in.
 #   --issue ID           the tracker issue this team works on
 #   --claimed-by KEY     the machine key (or label) that holds the claim
 #   --labels a,b,c       the issue's labels, as just re-read; any <label_prefix>* label that
 #                        is not this machine's is another machine's claim
 #   --scope 'repo: p1, p2'  declared file scope (repo defaults to the repo-dir name; no paths = whole repo)
-#   --peer-claim 'KEY/team=repo: p1, p2'   a live claim on another machine (repeatable)
 # Boot refuses an issue claimed by another machine (FLEET_FORCE=1 does not bypass it), and warns
-# when the declared scope overlaps a live claim in the same repo.
-#
-# Takeover (see SKILL.md, "Takeover"): a claim whose lease has lapsed can be taken over.
-#   --takeover-of KEY      the holder being replaced; --claimed-by must be this machine
-#   --lease-expires ISO    that holder's lease, as read from its claim comment
-#   --last-activity ISO    the last activity on the issue's PR, if there is one
-# Boot accepts the takeover only when claim.sh expired agrees: the lease is past and there was
-# no PR activity within lease_hours. A missing lease, a live lease or recent activity refuse.
-# FLEET_FORCE=1 never bypasses this. The clock is FLEET_NOW when set (tests), else now.
+# when the declared scope overlaps a live team on this machine in the same repo. (Scope of other
+# machines' claims is no longer known: the label plus the heartbeat is the lock.) A takeover is
+# done with linear.sh takeover before boot; afterwards the label on the issue is this machine's.
+# With --issue and no Linear key boot proceeds with a warning, unless config.toml says
+# machines > 1, where it refuses: claims cannot be checked.
 #
 # Env: FLEET_SESSION (named herdr session, for isolated runs), FLEET_FORCE=1 (ignore
 # max_agents and min_free_gb), FLEET_MACHINE (replaces this machine's key, see machine-id.sh),
@@ -45,18 +40,20 @@ set -euo pipefail
 . "$(dirname "$0")/common.sh"
 require_herdr
 need git
+# Whether a key exists (nothing is read from it), then agents never get it: boot starts them from
+# a shell that does not carry LINEAR_API_KEY.
+have_key=0; "$FLEET_SCRIPTS/linear.sh" has-key >/dev/null 2>&1 && have_key=1
+# linear_writes = off counts as no key here: claims cannot be made, so with several machines there is no lock.
+claims_why="no Linear key"; if [ "$have_key" = 1 ] && [ "$(linear_writes)" = off ]; then have_key=0; claims_why="linear_writes = off"; fi
+unset LINEAR_API_KEY
 
-issue=""; claimed_by=""; labels=""; scope_arg=""; peers=(); takeover_of=""; lease_expires=""; last_activity=""
+issue=""; claimed_by=""; labels=""; scope_arg=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --issue) issue="${2:?--issue needs a value}"; shift 2 ;;
     --claimed-by) claimed_by="${2:?--claimed-by needs a value}"; shift 2 ;;
     --labels) labels="${2:?--labels needs a value}"; shift 2 ;;
     --scope) scope_arg="${2:?--scope needs a value}"; shift 2 ;;
-    --takeover-of) takeover_of="${2:?--takeover-of needs a value}"; shift 2 ;;
-    --lease-expires) lease_expires="${2:?--lease-expires needs a value}"; shift 2 ;;
-    --last-activity) last_activity="${2:?--last-activity needs a value}"; shift 2 ;;
-    --peer-claim) peers+=("${2:?--peer-claim needs a value}"); shift 2 ;;
     -*) die "unknown option: $1" ;;
     *) break ;;
   esac
@@ -92,18 +89,7 @@ parse_scope() { # parse_scope <'repo: p1, p2'> → {repo, paths[]}; the repo def
 prefix="$(label_prefix)"; my_label="$(machine_label)"; legacy_label="$(cfg_str machine_legacy_label '')"
 is_mine() { [ "$1" = "$my_label" ] || { [ -n "$legacy_label" ] && [ "$1" = "$legacy_label" ]; }; }
 claim_label() { case "$1" in "$prefix"*) printf '%s' "$1" ;; *) printf '%s%s' "$prefix" "$1" ;; esac; }
-[ -z "$takeover_of" ] || [ -n "$issue" ] || die "--takeover-of needs --issue"
-[ -z "$lease_expires$last_activity" ] || [ -n "$takeover_of" ] || die "--lease-expires and --last-activity belong with --takeover-of"
 if [ -n "$issue" ]; then
-  if [ -n "$takeover_of" ]; then
-    old_label="$(claim_label "$takeover_of")"
-    ! is_mine "$old_label" || die "--takeover-of names this machine ($my_label); nothing to take over"
-    [ -n "$claimed_by" ] || die "a takeover needs --claimed-by (this machine's key)"
-    [ -n "$lease_expires" ] || die "$issue is claimed by $old_label; no --lease-expires given. Not taking over"
-    expired_args=(expired --lease "$lease_expires" --now "${FLEET_NOW:-$(now)}")
-    [ -z "$last_activity" ] || expired_args+=(--last-activity "$last_activity")
-    why="$("$FLEET_SCRIPTS/claim.sh" "${expired_args[@]}" 2>&1)" || die "$issue is claimed by $old_label ($why). Not taking over"
-  fi
   if [ -n "$claimed_by" ]; then
     holder="$(claim_label "$claimed_by")"
     is_mine "$holder" || die "$issue is claimed by $holder; this machine is $my_label. Not booting"
@@ -113,22 +99,19 @@ if [ -n "$issue" ]; then
     IFS=',' read -r -a label_list <<<"$labels"
     for l in ${label_list[@]+"${label_list[@]}"}; do
       l="$(trim "$l")"
-      case "$l" in "$prefix"*) is_mine "$l" || { [ -n "$takeover_of" ] && [ "$l" = "$old_label" ]; } || die "$issue is claimed by $l; this machine is $my_label. Not booting" ;; esac
+      case "$l" in "$prefix"*) is_mine "$l" || die "$issue is claimed by $l; this machine is $my_label. Not booting" ;; esac
     done
   fi
+  if [ "$have_key" != 1 ]; then
+    if [ "$(cfg_int machines 1)" -gt 1 ]; then die "$issue: $claims_why and machines > 1 in config.toml, so claims cannot be checked. Not booting"; fi
+    warn "$claims_why; booting $issue without checking claims (machines = 1)"
+  fi
 fi
-lease_new=""
-[ -z "$issue" ] || [ -z "$claimed_by" ] || lease_new="$("$FLEET_SCRIPTS/claim.sh" lease --now "${FLEET_NOW:-$(now)}")"
 scope_json=null
 if [ -n "$scope_arg" ]; then
   scope_json="$(parse_scope "$scope_arg")"
   others="$("$registry" list --live | jq -c --arg team "$team" --arg p "$prefix" \
     '[.[] | select(.team != $team and .scope != null) | {team, label: ($p + (.machine // "local")), scope}] | unique_by(.team)')"
-  for pc in ${peers[@]+"${peers[@]}"}; do # KEY/team=repo: p1, p2
-    pk="${pc%%/*}"; rest="${pc#*/}"; pt="${rest%%=*}"
-    others="$(printf '%s' "$others" | jq -c --arg t "$pt" --arg l "$(claim_label "$pk")" --argjson s "$(parse_scope "${rest#*=}")" \
-      '. + [{team: $t, label: $l, scope: $s}]')"
-  done
   printf '%s' "$others" | jq -r --arg team "$team" --arg me "$my_label" --argjson mine "$scope_json" '
     def segs: split("/") | map(select(length > 0));
     def pre($a; $b): ($a | segs) as $x | ($b | segs) as $y | ([($x | length), ($y | length)] | min) as $k | $x[0:$k] == $y[0:$k];
@@ -177,11 +160,13 @@ render() { # render <text> <name> <worktree> <workers>
 }
 
 claude_args() { # claude_args <model> <tier> <worktree> <allow-json>
-  local settings extra="${4:-[]}"
+  local settings extra="${4:-[]}" herdr_allow='["Bash(herdr agent get:*)", "Bash(herdr agent read:*)", "Bash(herdr agent list:*)", "Bash(herdr agent wait:*)"]'
+  # Leads drive their own workers; fleet-bash-guard.sh holds them to their own team.
+  [ "$2" != "Lead" ] || herdr_allow='["Bash(herdr agent get:*)", "Bash(herdr agent read:*)", "Bash(herdr agent list:*)", "Bash(herdr agent wait:*)", "Bash(herdr agent prompt:*)", "Bash(herdr agent send-keys:*)"]'
   extra="${extra//\{\{scripts\}\}/$FLEET_SCRIPTS}"
   extra="${extra//\{\{team\}\}/$team}"; extra="${extra//\{\{worktree\}\}/$3}"
-  settings="$(jq -cn --arg r "$registry" --argjson extra "$extra" --argjson tools "$tool_allow" \
-    '{permissions: {allow: (["Bash(\($r):*)", "Bash(herdr:*)"] + $extra + $tools | unique)}}')"
+  settings="$(jq -cn --arg r "$registry" --argjson extra "$extra" --argjson tools "$tool_allow" --argjson h "$herdr_allow" \
+    '{permissions: {allow: (["Bash(\($r):*)"] + $h + $extra + $tools | unique)}}')"
   printf '%s\0' --settings "$settings"
   [ -n "$1" ] && printf '%s\0' --model "$1"
   [ "$2" = "Lead" ] && printf '%s\0' --agent developer:lead
@@ -214,6 +199,11 @@ alive() { # the pane runs something other than its shell (gotcha: idle can mean 
 
 start_agent_once() { # start_agent_once <agent> <kind> <pane> <model> <tier> <worktree> <allow-json> → prints status
   local agent="$1" kind="$2" pane="$3" args=() out code tries=0
+  # herdr starts the canonical `claude` executable, so `env -u` cannot prefix it. The pane's shell
+  # drops the Linear key first, so the harness and every Bash call it makes start without it.
+  # Every kind of agent, not only claude: a codex pane would otherwise keep the key. A failure is a warning.
+  # A failed unset leaves the key in the pane: the agent is not started there (a Zombie, retried once by start_agent).
+  hd pane run "$pane" 'unset LINEAR_API_KEY' >/dev/null 2>&1 || { warn "could not type the key unset into pane $pane; not starting $agent there"; printf 'Zombie'; return 0; }
   if [ "$kind" = "claude" ]; then
     while IFS= read -r -d '' a; do args+=("$a"); done < <(claude_args "$4" "$5" "$6" "${7:-[]}")
   fi
@@ -291,14 +281,12 @@ row() { # row <name> <tier> <agent> <pane> <kind> <model> <status> <cwd> <worktr
   jq -cn --arg name "$1" --arg tier "$2" --arg ref "$3" --arg pane "$4" --arg harness "$5" --arg model "$6" \
     --arg status "$7" --arg cwd "$8" --arg wt "$9" --arg br "${10}" --arg ex "${11}" \
     --arg team "$team" --arg tpl "$template" --arg repo "$repo" --arg task "$task" --arg m "$machine" --arg ws "$workspace" \
-    --arg tr "${row_transcript:-}" --arg issue "$issue" --arg cb "$claimed_by" --argjson scope "$scope_json" --arg lease "$lease_new" --arg toof "$takeover_of" \
+    --arg tr "${row_transcript:-}" --arg issue "$issue" --arg cb "$claimed_by" --argjson scope "$scope_json" \
     '{name: $name, team: $team, tier: $tier, template: $tpl, harness: $harness, model: $model, repo: $repo,
       machine: $m, status: $status, assignment: $task, herdr_ref: $ref, pane: $pane, workspace: $ws,
       cwd: $cwd, worktree: $wt, branch: $br, expertise_file: $ex}
     + (if $tr != "" then {transcript: $tr} else {} end)
     + (if $issue != "" then {issue: $issue, claimed_by: $cb} else {} end)
-    + (if $lease != "" then {lease_expires: $lease} else {} end)
-    + (if $toof != "" then {takeover_of: $toof} else {} end)
     + (if $scope != null then {scope: $scope} else {} end)'
 }
 

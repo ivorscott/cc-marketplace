@@ -115,10 +115,11 @@ The Orchestrator and agents call these directly (from `scripts/`). You can call 
 
 | Script | Commands |
 |---|---|
-| `boot.sh` | `boot.sh [--issue ID --claimed-by KEY --labels a,b --scope 'repo: paths' --peer-claim … --takeover-of KEY --lease-expires ISO --last-activity ISO] <template> <focus> <dir> [task…]` boots a team (`FLEET_FORCE=1` goes over the `max_agents` cap and the `min_free_gb` disk floor, never over another machine's claim or a live lease). `--takeover-of` is accepted only when the passed lease is past and the PR shows no activity within `lease_hours` |
-| `claim.sh` | `line` builds the claim comment · `renew` moves its `lease=` · `lease` prints now + `lease_hours` · `parse` turns tracker comments (JSON on stdin) into claims · `expired --lease ISO [--last-activity ISO]` says whether a claim can be taken over. Pure: it never calls a tracker |
+| `boot.sh` | `boot.sh [--issue ID --claimed-by KEY --labels a,b --scope 'repo: paths'] <template> <focus> <dir> [task…]` boots a team (`FLEET_FORCE=1` goes over the `max_agents` cap and the `min_free_gb` disk floor, never over another machine's claim). A takeover is done with `linear.sh takeover` before boot |
+| `claim.sh` | `lease` prints now + `lease_hours` · `hb` reads the `heartbeat=` line of a label description (stdin) · `expired --lease ISO` says whether a lease has lapsed (the open-PR check is `linear.sh takeover`'s). Pure: it never calls a tracker |
+| `linear.sh` | claims and heartbeat on the Linear API: `claim <ISSUE> [--dry-run]` · `heartbeat` (one mutation) · `holder <ISSUE>` and `peers` (read-only) · `takeover <ISSUE> [--repo OWNER/NAME]` (refuses while a PR is open) · `migrate [--dry-run]` · `has-key`. Key in `~/.config/fleet/linear_api_key` (mode 600) or `LINEAR_API_KEY`; none: exit 3. Writes need `linear_writes` (below): off, the default, exits 3 too. Never posts claim or lease comments |
 | `chat.sh` | `channel` and `allow` print `chat_channel` and `chat_allow` · `format <event> …` prints the one-line message. It never posts or reads; the Orchestrator does with its own chat tools |
-| `machine-id.sh` | `id\|key\|label\|description\|show`: this machine's tracker identity, e.g. `fleet:3f9a2c1e` |
+| `machine-id.sh` | `id\|key\|label\|description\|hash\|show`: this machine's tracker identity, e.g. `fleet:3f9a2c1e`. The label description publishes `machine id sha256:<12 hex>`, never the full id; `linear.sh migrate` rewrites an older label that still holds the full id |
 | `status.sh` | `status.sh [--problems] [--team T] [--json] [--all [--claims FILE\|-]]` recomputes health, writes it to the registry and prints free disk first |
 | `registry.sh archive` | moves Retired rows with lessons and no open escalation to `fleet-archive.json` (`archive_after_days` in config.toml, default 0); `get --archived` and `list --with-archived` read both |
 | `tick.sh` | `tick.sh [--team T]` one JSON array of what changed since the last tick (stalled, dead, escalation, pr_ready, pr_merged, repo_without_team, disk), or nothing · reads PRs with read-only `gh pr view` through `FLEET_GH` |
@@ -157,7 +158,8 @@ warn_free_gb = 75  # status marks LOW and watch notifies below this
 # Several machines on one Linear workspace: each claims issues with the label <label_prefix><machine key>.
 # Claims need Linear. With another tracker, run the fleet on one machine and leave these unset.
 label_prefix = "fleet:"
-lease_hours = 2   # a claim's lease; a lapsed lease with no PR activity this long can be taken over
+lease_hours = 2   # a claim's lease; a lapsed lease with no open PR can be taken over
+linear_writes = "off"   # off (default) | "test:FT" (writes only on issues of Linear team FT) | "on". Off: no heartbeat, claim, takeover or migrate
 machine_name = "Mac 1"   # display name, optional
 machine_legacy_label = "fleet:mac1"   # only while migrating an older label
 
@@ -252,18 +254,35 @@ Example using kind:
 Claims, leases, takeover and `status --all` need Linear (label groups and comments). Any other
 tracker runs the fleet on one machine, and those parts are skipped.
 
-- A claim comment carries `lease=`, `lease_hours` ahead (default 2). The Orchestrator renews the
-  lease on every pass (each `status`, each `watch` check, each `/loop` tick). Scripts cannot renew:
-  an Orchestrator that is not running stops renewing, and that is when a takeover is allowed.
-- A lease older than `lease_hours` with no PR activity in that time can be taken over. The
-  taker posts a new claim comment with a `takeover:` line naming the voided comment, and boot
-  accepts it only when the passed lease is really expired. `FLEET_FORCE=1` never bypasses a live claim.
-- **The tracker has no compare-and-swap.** Re-reading and the earliest-wins rule narrow the race
-  between two takers; they do not remove it. A machine whose claim was taken over stops renewing
-  and tells you; it never fights back.
-- `status --all` builds one table from the claim comments the Orchestrator can read and this
-  machine's registry. Other machines' health is not probed: their rows show `Claimed`, the lease
-  and the scope.
+- A claim is the machine's label on the issue; liveness is a `heartbeat=` line in that label's
+  description, rewritten by the Orchestrator's tick (one API call per tick). No claim or lease
+  comments. Scripts cannot heartbeat: an Orchestrator that is not running stops, and that is when a
+  takeover is allowed.
+- A heartbeat older than `lease_hours` (default 2) with no open PR (looked up on `fleet/<slug>`,
+  Linear's branch, and any open PR whose title or body names the issue key, whatever its branch) can
+  be taken over with `linear.sh takeover`, which re-reads like claim (of two at once, one wins) and
+  leaves one comment.
+- Nothing writes to Linear while `linear_writes = "off"` (the default); Ivor sets `on` after the FT proof.
+  Tick keeps heartbeating Done rows (a team waiting on a merge keeps its claim) and never migrates. `FLEET_FORCE=1` never bypasses a live claim.
+- **The tracker has no compare-and-swap.** The last writer wins and both machines re-read; that
+  narrows the race, it does not remove it. A machine whose issue was taken over stops and tells
+  you; it never fights back.
+- `status --all` builds one table from `linear.sh peers` and this machine's registry. Other
+  machines' health is not probed: their rows show `Claimed`, the issue and the heartbeat age.
+- The Linear API key lives only on the Orchestrator machine (`~/.config/fleet/linear_api_key`,
+  mode 600, or `LINEAR_API_KEY` in its shell). Boot gives it to no agent: panes start with
+  `LINEAR_API_KEY` unset, the scope guard denies Read, Grep and Glob of the file (and a Grep or Glob,
+  with or without a path, that searches its directory or above it), and the Bash guard denies any
+  command naming the file or reaching its directory (`~/.config/fleet`, `$HOME/.config/fleet`,
+  `${XDG_CONFIG_HOME}/fleet`, `$FLEET_CONFIG_DIR`, the absolute path, a glob or a recursive search
+  that can reach it), and any `herdr pane run|send-text|send-keys`. **Residual risk:**
+  these hooks are a guardrail, not a boundary. Agents run as the same user (same-uid), and a
+  same-uid process can read a mode-600 file, so a determined or prompt-injected agent could still
+  reach it. Closing that needs the key outside the agents' reach (a Keychain item or another OS
+  user), which is a follow-up. Without it claims are unavailable (`linear.sh` exits 3), not fatal.
+- Agents get an allowlist of herdr subcommands, not `herdr:*`: workers `agent get|read|list|wait`,
+  leads also `agent prompt|send-keys`; the Bash guard holds `agent read|prompt|send-keys` to the
+  agent's own team: the exact herdr names of its rows in the registry. `herdr pane read` is denied to agents. `linear.sh` refuses a fleet agent (`FLEET_ROLE` set) and its endpoint and transport are fixed in the code (the tests alone override them), so an agent cannot have the key piped to a program of its own. The guards compare the key's name and path without regard to case (macOS volumes ignore it). Known gaps: a relative path after a `cd`, a symlink made by the agent, and a PR that never names its issue key (takeover's search) are not caught; this is a guardrail, not a boundary.
 
 ### Cloned machine id
 
@@ -271,9 +290,43 @@ Each machine is told apart by its key, the first 8 hex characters of its machine
 or a restored disk image copies `/etc/machine-id` (or the stored `machine-id` file), so two
 machines then share one key and the label and arbitration cannot tell them apart. Give each
 clone its own key: set `FLEET_MACHINE=<unique>`, or delete `$FLEET_STATE_DIR/machine-id` and, for
-the OS-derived sources, regenerate the OS id. Detection is best effort: `status --all` marks a
-claim that carries this machine's key but names no team in the local registry as `SAME KEY?` and
-warns. Two clones that run the same team names are not caught.
+the OS-derived sources, regenerate the OS id. Nothing detects a cloned id for you.
+
+## Guard residuals (4.1)
+
+The scope guard (`hooks/fleet-scope-guard.sh`) and the Bash guard (`hooks/fleet-bash-guard.sh`) catch mistakes; they are
+not a security boundary. Agents run as the same user as the Orchestrator, so a mode-600 key file is readable by any
+process of that user whatever the guards say (a Keychain item or a separate OS user is the follow-up). The guards' scope
+is frozen for B: what they deny today stays denied, and the bypass classes below are known and accepted, to be taken up
+in 4.1. Anything that newly exposes the key is a blocker; the items that touch the key are marked (key).
+
+- **Environment is an agent's own (key):** `FLEET_ROLE` is a convention, so `FLEET_ROLE= linear.sh ...` runs the script
+  as the Orchestrator would, with the key it can read. (Closed: the key-override bypass. `linear.sh` honours `FLEET_CURL`
+  and `LINEAR_URL` only when `FLEET_TEST=1`, the state dir is not the live one, `LINEAR_API_KEY` is not set and the key
+  file is not under the real `~/.config/fleet`, resolved from the real home and compared in lower case; otherwise it
+  refuses and sends nothing.)
+- **Built at run time (key):** a path or name assembled by variables, `eval`, aliases, encodings, `g''rep`-style quote
+  splitting beyond what the three scans undo, or an interpreter (`python -c`, `perl -e`, `node -e`). `sh -c` and `bash -c`
+  strings are scanned as text, not parsed.
+- **Relative paths and links (key):** a relative path after a `cd` (`cd ~/.config && cat fleet/*` is denied; a two-step
+  `d=~/.config; cat $d/fleet/*` is not), a symlink the agent makes itself (`ln -s ~/.config /tmp/c; cat /tmp/c/fl*/*`),
+  and a copy of the key under another name.
+- **Quote and separator edge cases:** a `;`, `|` or `(` inside a quoted `grep` argument splits the segment, so
+  `grep -E 'a|b' -r x ~` is allowed; a backslash-newline continuation (`grep \` then `-r x ~` on the next line) resets the
+  scan; `/bin/\Find ~` and `GREP\ -r x ~` are cheap evasion variants; a mixed-case tool inside a wrapper's quoted string
+  (`watch "Grep -r x ~"`, `$(which Grep) -r x ~`) is matched in lower case only.
+- **Tool list:** GNU's abbreviated `--recurs` and the long `--directories=recurse` are not recognised, nor `bsdtar` or
+  `scp -r`. Prose over-denial is by design: an unquoted `echo Tree ~` and quoted prose that mentions `grep -r` and `~`
+  are denied (agents quote their prose); so is `ls -ltr ~; echo Find`.
+- **herdr:** `herdr --machine m1 pane run ...` and `--remote h ...` are allowed (an option that takes a value is skipped as
+  a flag); `\herdr ...` is allowed (a leading backslash is not stripped in the herdr rules); a tab after `;` is not a
+  command start; quote-split names (`H""ERDR`).
+- **Takeover:** a PR on boot's `fleet/<team>/<role>` branch whose title and body never name the issue key is not found by
+  `linear.sh takeover`'s search; house rules make every fleet PR body link its issue.
+- **Hook timing:** a hook that exceeds its timeout does not block; every case measured is well under it (0.25 s at the
+  worst), but an enormous input could still reach it.
+- **Not guard gaps, by design:** claims are not released at retire, next or a Failed row, so the machine-wide heartbeat keeps an
+  abandoned issue locked while this machine runs any team; the viewer cache saves one `Viewer` read per tick only.
 
 ## Files
 
@@ -282,7 +335,8 @@ warns. Two clones that run the same team names are not caught.
 | `SKILL.md` | routes and rules the Orchestrator follows |
 | `templates/*.json` | team shapes: roles, agent kind, model, worktree, briefs, exit criteria |
 | `scripts/boot.sh` | one-command team boot |
-| `scripts/claim.sh` | claim comment: build, parse, renew, lease expiry test |
+| `scripts/claim.sh` | lease arithmetic: lease, heartbeat parse, expiry test |
+| `scripts/linear.sh` | claims and heartbeat on the Linear API |
 | `scripts/chat.sh` | chat channel settings and message format (never posts) |
 | `scripts/machine-id.sh` | this machine's id, key and tracker label for claims |
 | `scripts/status.sh` | health computation |

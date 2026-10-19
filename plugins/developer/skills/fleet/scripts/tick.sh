@@ -19,7 +19,11 @@
 #   pr_merged       the row's PR was merged; the Orchestrator answers with next.sh. Once per PR.
 #   repo_without_team  a repo in config.toml `repos` with no live team, when it becomes so
 #   disk, disk_ok   free disk crossed below warn_free_gb, and recovered
-#   claim_takeover  reserved (claims land in a later slice)
+#   claim_takeover  a team's issue now carries another machine's label (once per team, issue and holder)
+#   claims_unavailable  teams hold issues but no Linear key is configured (once)
+#   claims_readonly     teams hold issues and a key exists, but linear_writes = off (once)
+# With a key and linear_writes allowing it, every tick makes ONE heartbeat mutation (linear.sh heartbeat);
+# with a key, one read per claimed issue (holder), Done rows included. Tick never runs linear.sh migrate.
 # Once a week (ISO week, in the state file) tick also runs `registry.sh archive`.
 # One tick at a time: tick.lock (mkdir; pid and start time inside). A tick that finds a live, recent lock
 # exits 0 quietly; a stale one (dead pid, or older than tick_lock_stale_secs, default 900) is broken.
@@ -64,13 +68,49 @@ ghtmp=""
 cleanup() { rm -rf "$lockdir"; if [ -n "$ghtmp" ]; then rm -f "$ghtmp"; fi; }
 trap cleanup EXIT
 
+FLEET_TICK_ID="$(now)-$$"; export FLEET_TICK_ID # one tick, one Linear viewer read (linear.sh caches by it)
 state="$(tick_state)"
 events="[]"
 add_events() { events="$(jq -cn --argjson a "$events" --argjson b "$1" '$a + $b')"; }
 
-# Source hooks the claims slice fills in.
-heartbeat() { :; }
-claims_taken_over() { :; }
+# --- claims: heartbeat, takeover -------------------------------------------------------
+# One heartbeat mutation per tick, however many issues are claimed (linear.sh heartbeat), and only when
+# linear_writes allows it (off is the default: one claims_readonly event, the first time only). Without a
+# key nothing is called: one claims_unavailable event, once. Tick never migrates; that is a release step.
+# Done rows count: a team waiting on a merge keeps its claim.
+claim_rows="$("$registry" list ${team:+--team "$team"} | jq -c '[.[] | select((.issue // "") != "" and .tier != "Orchestrator" and .status != "Retired")]')"
+heartbeat() {
+  local rows_n; rows_n="$(printf '%s' "$claim_rows" | jq length)"
+  if "$FLEET_SCRIPTS/linear.sh" has-key >/dev/null 2>&1; then
+    if [ "$(linear_writes)" = off ]; then
+      if [ "$rows_n" != 0 ] && [ "$(printf '%s' "$state" | jq -r '.claims_readonly_emitted // false')" != true ]; then
+        add_events '[{"type": "claims_readonly", "team": "", "name": "", "detail": "linear_writes = off; no heartbeat is written, takeover checks still read"}]'
+        state="$(jq -cn --argjson st "$state" '$st + {claims_readonly_emitted: true}')"
+      fi
+    else
+      [ "$rows_n" = 0 ] ||
+        "$FLEET_SCRIPTS/linear.sh" heartbeat >/dev/null 2>&1 || warn "linear.sh heartbeat failed"
+    fi
+  elif [ "$rows_n" != 0 ] && [ "$(printf '%s' "$state" | jq -r '.claims_unavailable_emitted // false')" != true ]; then
+    add_events '[{"type": "claims_unavailable", "team": "", "name": "", "detail": "no Linear key; heartbeat and takeover checks are off"}]'
+    state="$(jq -cn --argjson st "$state" '$st + {claims_unavailable_emitted: true}')"
+  fi
+}
+# A team of ours whose issue now carries another machine's label was taken over: report it once.
+claims_taken_over() {
+  "$FLEET_SCRIPTS/linear.sh" has-key >/dev/null 2>&1 || return 0
+  local t i h
+  while IFS=$'\t' read -r t i; do
+    [ -n "$i" ] || continue
+    h="$("$FLEET_SCRIPTS/linear.sh" holder "$i" 2>/dev/null)" || { warn "could not read the holder of $i"; continue; }
+    printf '%s' "$h" | jq -e '.holder != null and (.ours | not)' >/dev/null 2>&1 || continue
+    h="$(printf '%s' "$h" | jq -r .holder)"
+    if [ "$(printf '%s' "$state" | jq --arg k "$t|$i|$h" '(.takeover_emitted // []) | index($k) == null')" = true ]; then
+      add_events "$(jq -cn --arg t "$t" --arg i "$i" --arg h "$h" '[{type: "claim_takeover", team: $t, name: ($t + "/lead"), issue: $i, holder: $h}]')"
+      state="$(jq -cn --argjson st "$state" --arg k "$t|$i|$h" '$st + {takeover_emitted: ((($st.takeover_emitted // []) + [$k]) | unique)}')"
+    fi
+  done < <(printf '%s' "$claim_rows" | jq -r '[.[] | [.team, .issue]] | unique[] | @tsv')
+}
 heartbeat
 claims_taken_over
 
