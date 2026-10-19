@@ -263,7 +263,7 @@ tracker runs the fleet on one machine, and those parts are skipped.
   takeover is allowed.
 - A heartbeat older than `lease_hours` (default 2) with no open PR (looked up on `fleet/<slug>` and
   Linear's branch) can be taken over with `linear.sh takeover`, which leaves one comment.
-- Nothing writes to Linear while `linear_writes = "off"` (the default); Ivor sets `on` after the FT proof.
+- Nothing writes to Linear while `linear_writes = "off"` (the default); The user sets `on` after the FT proof.
   Tick keeps heartbeating Done rows (a team waiting on a merge keeps its claim) and never migrates. `FLEET_FORCE=1` never bypasses a live claim.
 - **The tracker has no compare-and-swap.** The last writer wins and both machines re-read; that
   narrows the race, it does not remove it. A machine whose issue was taken over stops and tells

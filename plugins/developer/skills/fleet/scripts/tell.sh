@@ -62,16 +62,37 @@ case "$target" in
      pane="$(printf '%s' "$r" | jq -r '.pane // ""')"; transcript="$(printf '%s' "$r" | jq -r '.transcript // ""')" ;;
 esac
 
+# --- a brief goes as a file: written first, so last_brief names THIS brief even when an early exit follows ---
+if $is_brief; then
+  case "$target" in */*) bteam="${target%%/*}"; brole="${target#*/}" ;; *) bteam=agent; brole="$target" ;; esac
+  bteam="$(printf '%s' "$bteam" | tr -c 'A-Za-z0-9_.-' '_')"; brole="$(printf '%s' "$brole" | tr -c 'A-Za-z0-9_.-' '_')"
+  if [ -n "$brief_file" ]; then
+    [ -f "$brief_file" ] || die "no brief file $brief_file"
+    bid="$(basename "$brief_file" .md)"
+  else
+    bid="b$(date -u +%Y%m%d%H%M%S)$$$RANDOM"
+    bdir="$FLEET_STATE_DIR/briefs/$bteam/$brole"
+    (umask 077; mkdir -p "$bdir" && printf '%s\n' "$text" >"$bdir/$bid.md") || die "cannot write the brief file in $bdir"
+    chmod 600 "$bdir/$bid.md"; brief_file="$bdir/$bid.md"
+  fi
+  case "$target" in */*) "$FLEET_SCRIPTS/registry.sh" set "$target" last_brief="$brief_file" >/dev/null 2>&1 || true ;; esac
+  text="Read your brief: $brief_file (id $bid)"
+fi
+
 verdict() { # verdict <delivered true|false> <reason> <exit code>
   if $is_brief; then
     ev_log "$([ "$1" = true ] && echo brief_delivered || echo brief_failed)" team="${target%%/*}" name="$target" detail="$2"
-    # brief_failed_at marks the row for tick's one re-send of the pointer; a delivered brief clears it.
+    # brief_failed_at (with the row's issue then) marks the row for tick's one re-send of this brief's pointer;
+    # a delivered brief clears it, and a Failed row comes back as the restart intended: a lead Working, a
+    # worker Idle (waiting for the lead).
     case "$target" in */*)
+      brow="$("$FLEET_SCRIPTS/registry.sh" get "$target" 2>/dev/null || echo '{}')"
       if [ "$1" = true ]; then
-        if [ "$("$FLEET_SCRIPTS/registry.sh" get "$target" 2>/dev/null | jq -r '.status // ""')" = Failed ]; then
-          "$FLEET_SCRIPTS/registry.sh" set "$target" brief_failed_at= brief_resent= status=Working >/dev/null 2>&1 || true
-        else "$FLEET_SCRIPTS/registry.sh" set "$target" brief_failed_at= >/dev/null 2>&1 || true; fi
-      else "$FLEET_SCRIPTS/registry.sh" set "$target" brief_failed_at="$(now)" >/dev/null 2>&1 || true; fi ;;
+        if [ "$(printf '%s' "$brow" | jq -r '.status // ""')" = Failed ]; then
+          "$FLEET_SCRIPTS/registry.sh" set "$target" brief_failed_at= brief_failed_issue= brief_resent= \
+            status="$([ "$(printf '%s' "$brow" | jq -r '.tier // ""')" = Lead ] && echo Working || echo Idle)" >/dev/null 2>&1 || true
+        else "$FLEET_SCRIPTS/registry.sh" set "$target" brief_failed_at= brief_failed_issue= >/dev/null 2>&1 || true; fi
+      else "$FLEET_SCRIPTS/registry.sh" set "$target" brief_failed_at="$(now)" brief_failed_issue="$(printf '%s' "$brow" | jq -r '.issue // ""')" >/dev/null 2>&1 || true; fi ;;
     esac
   fi
   jq -cn --argjson d "$1" --arg r "$2" --arg t "$target" '{delivered: $d, target: $t} + (if $r != "" then {reason: $r} else {} end)'
@@ -99,21 +120,8 @@ transcript() {
 }
 screen() { hd agent read "$ref" --source recent-unwrapped 2>/dev/null | tail -n 60 || true; }
 
-# --- a brief goes as a file ------------------------------------------------------------------------------
+# --- a brief waits for idle -------------------------------------------------------------------------------
 if $is_brief; then
-  case "$target" in */*) bteam="${target%%/*}"; brole="${target#*/}" ;; *) bteam=agent; brole="$target" ;; esac
-  bteam="$(printf '%s' "$bteam" | tr -c 'A-Za-z0-9_.-' '_')"; brole="$(printf '%s' "$brole" | tr -c 'A-Za-z0-9_.-' '_')"
-  if [ -n "$brief_file" ]; then
-    [ -f "$brief_file" ] || die "no brief file $brief_file"
-    bid="$(basename "$brief_file" .md)"
-  else
-    bid="b$(date -u +%Y%m%d%H%M%S)$$$RANDOM"
-    bdir="$FLEET_STATE_DIR/briefs/$bteam/$brole"
-    (umask 077; mkdir -p "$bdir" && printf '%s\n' "$text" >"$bdir/$bid.md") || die "cannot write the brief file in $bdir"
-    chmod 600 "$bdir/$bid.md"; brief_file="$bdir/$bid.md"
-  fi
-  case "$target" in */*) "$FLEET_SCRIPTS/registry.sh" set "$target" last_brief="$brief_file" >/dev/null 2>&1 || true ;; esac
-  text="Read your brief: $brief_file (id $bid)"
   # Wait for idle: typing into a busy agent queues the line behind its turn, or loses it.
   idle_secs="$(cfg_int brief_idle_secs 60)"; poll="${FLEET_TELL_POLL:-1}"; w=0
   until case "$(agent_state)" in idle | done) true ;; *) false ;; esac; do

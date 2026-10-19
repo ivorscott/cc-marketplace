@@ -119,7 +119,14 @@ while IFS= read -r seg; do
       fi ;;
     *) check_install "${rest[@]}" ;;
   esac
-done < <(printf '%s\n' "$cmd" | tr ';&|()' '\n\n\n\n\n')
+done < <(printf '%s\n' "$cmd" | awk -v sq="'" '
+  # ; & | ( ) inside a quoted string do not end a command: blank them before the split.
+  { out = ""; for (i = 1; i <= length($0); i++) { c = substr($0, i, 1)
+      if (q == "") { if (c == "\"" || c == sq) q = c }
+      else if (c == q) q = ""
+      else if (c ~ /[;&|()]/) c = " "
+      out = out c }
+    print out }' | tr ';&|()' '\n\n\n\n\n')
 
 case "$cmd" in *herdr*) ;; *) exit 0 ;; esac
 

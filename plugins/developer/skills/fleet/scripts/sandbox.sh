@@ -9,7 +9,8 @@
 # Linear), and HERDR_ENV, FLEET_SESSION, LINEAR_API_KEY, FLEET_ROLE, FLEET_NAME, FLEET_TEAM and FLEET_WORKTREE
 # unset (FLEET_SESSION is then set to the fake session "fleet-sandbox", which only the herdr shim answers, and HOME
 # to an empty directory, so no tracker key, Claude transcript or plugin cache is found). FLEET_REGISTRY and
-# FLEET_INBOX are unset too, so nothing can point back at live state. Then it runs
+# FLEET_INBOX, FLEET_GH, KUBECONFIG and every AWS_* variable are unset too, so nothing can point back at live
+# state or real cloud credentials. Then it runs
 # cmd (default: an interactive shell) with the fleet scripts at $F. On exit the temporary root is removed
 # unless --keep (it prints where it is).
 #
@@ -74,8 +75,9 @@ chmod +x "$root/bin/herdr" "$root/bin/gh" "$root/bin/curl"
 
 [ $# -gt 0 ] || set -- "${SHELL:-/bin/bash}"
 rc=0
+unsets=(); for v in $(env | sed -n 's/^\(AWS_[A-Za-z0-9_]*\)=.*/\1/p'); do unsets+=(-u "$v"); done
 env -u HERDR_ENV -u FLEET_SESSION -u LINEAR_API_KEY -u FLEET_ROLE -u FLEET_NAME -u FLEET_TEAM -u FLEET_WORKTREE \
-  -u FLEET_REGISTRY -u FLEET_INBOX \
+  -u FLEET_REGISTRY -u FLEET_INBOX -u FLEET_WORKTREES -u FLEET_GH -u KUBECONFIG ${unsets[@]+"${unsets[@]}"} \
   FLEET_SANDBOX="$root" FLEET_STATE_DIR="$state_dir" FLEET_CONFIG_DIR="$config_dir" FLEET_SESSION=fleet-sandbox HOME="$root/home" \
   F="$here" PATH="$root/bin:$PATH" "$@" || rc=$?
 exit "$rc"

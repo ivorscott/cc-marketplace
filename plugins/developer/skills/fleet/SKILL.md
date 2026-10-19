@@ -245,7 +245,7 @@ what changed, or **nothing** when nothing did; a quiet tick is answered in one l
 has `type`, `team`, `name` and, where a PR exists, the full `url`. Act on each:
 
 - `pr_ready`: send ONE `PushNotification` with the full PR URL (it is emitted once per PR and head SHA).
-- `pr_merged`: run `$F/next.sh <team> <next issue> [--brief TEXT] [--assignment TEXT] [--issue-url URL]`
+- `pr_merged`: run `$F/next.sh <team> <next issue> [--brief TEXT] [--assignment TEXT] [--issue-url URL]` **with Bash run_in_background (it takes minutes) and wait for its completion**,
   when the team is at a safe point (every agent idle, no background task; otherwise it changes nothing,
   says who is busy and you run it later). It logs `issue_done`, reassigns every row, and restarts every
   agent: `/exit`, then a fresh start with a new session and its full brief as a file. No /clear, no /compact.
