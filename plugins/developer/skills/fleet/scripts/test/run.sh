@@ -1612,8 +1612,10 @@ eq "migrate: the other machine's claim comment and a human comment remain" "$(jq
 : >"$LINEAR_LOG"; eq "migrate: a second run deletes nothing" "$("$LIN" migrate | jq -r .deleted):$(nmut)" "0:0"
 
 # ---- DEV-368 S: schedule.sh and loop-tick.sh ------------------------------------------------------------
-_sstate="$FLEET_STATE_DIR"; _sreg="$FLEET_REGISTRY"; _sinbox="${FLEET_INBOX:-}"
+_sstate="$FLEET_STATE_DIR"; _sreg="$FLEET_REGISTRY"; _sinbox="${FLEET_INBOX:-}"; _stmpdir="${TMPDIR-}"
 export FLEET_STATE_DIR="$T/sst" FLEET_REGISTRY="$T/sst/fleet.json" FLEET_INBOX="$T/sst/escalations.jsonl"; mkdir -p "$FLEET_STATE_DIR"
+# its own TMPDIR, so the temp-file count never sees other runs' files
+export TMPDIR="$T/stmp"; mkdir -p "$TMPDIR"
 cp "$FLEET_CONFIG_DIR/config.toml" "$T/config.s.bak" 2>/dev/null || : >"$T/config.s.bak"
 SCH="$SCRIPTS/schedule.sh"; LA="$T/la"; LCL="$T/lctl.log"; LOADED="$T/lctl.loaded"; : >"$LCL"; rm -f "$LOADED"
 export FLEET_TICK="$T/fake-tick" FTJ="$T/fake-tick.json" FTFAIL="$T/fake-tick.fail" FTERR="$T/fake-tick.err"
@@ -1793,9 +1795,10 @@ eq "bad input: a corrupt loop state file is replaced" "$(jq -e 'type == "object"
 # overlapping loop runs leave a valid state (the tick lock itself is slice A's)
 : >"$FTJ"; lt >/dev/null 2>&1 & lt >/dev/null 2>&1 & wait
 eq "overlap: two loop runs at once leave a valid state file" "$(jq -e 'type == "object"' "$FLEET_STATE_DIR/loop.state.json" >/dev/null && echo ok)" ok
-eq "loop: no temp files are left behind" "$(ls "$FLEET_STATE_DIR" "${TMPDIR:-/tmp}" 2>/dev/null | grep -c 'loop.state.json.new\|fleet-loop-err' || true)" 0
+eq "loop: no temp files are left behind" "$(ls -A "$FLEET_STATE_DIR" "$TMPDIR" 2>/dev/null | grep -c 'loop.state.json.new\|fleet-loop-err' || true)" 0
 cp "$T/config.s.bak" "$FLEET_CONFIG_DIR/config.toml"; unset FLEET_NOW FLEET_TICK FLEET_INSTALLED_PLUGINS FTJ FTFAIL FTERR
 export FLEET_STATE_DIR="$_sstate" FLEET_REGISTRY="$_sreg"; [ -n "$_sinbox" ] && export FLEET_INBOX="$_sinbox" || unset FLEET_INBOX
+if [ -n "$_stmpdir" ]; then export TMPDIR="$_stmpdir"; else unset TMPDIR; fi
 
 # -- N3: the full machine id never leaves the machine; only its hash is published
 MID="$SCRIPTS/machine-id.sh"
