@@ -23,11 +23,12 @@
 #   registry.sh env-get <team>
 #   registry.sh env-release <team>                         mark the environment Down, freeing its slot
 #   registry.sh archive                                    move Retired rows to fleet-archive.json (lessons written, no open escalation, ended archive_after_days ago)
+#   registry.sh orchestrator here [--transcript PATH]   the Orchestrator registers its pane as the loop's wake target
 #   registry.sh path
 #
 # Every path comes from FLEET_STATE_DIR (fleet.json, escalations.jsonl, worktrees/, fleet-archive.json); there
 # is no FLEET_REGISTRY or FLEET_INBOX override. Agents (FLEET_ROLE set) are refused add, retire, archive,
-# reassign, resolve and close-stale.
+# reassign, resolve, close-stale and orchestrator.
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
 
@@ -90,7 +91,7 @@ cmd="${1:-}"; shift || true
 # Agents (FLEET_ROLE set in their pane) can report on themselves (set, done, escalate, note, signoff for the
 # tester) but cannot create, retire, archive, move or resolve: those are the Orchestrator's.
 case "$cmd" in
-  add | retire | archive | reassign | resolve | close-stale)
+  add | retire | archive | reassign | resolve | close-stale | orchestrator)
     [ -z "${FLEET_ROLE:-}" ] || die "$cmd is the Orchestrator's; an agent (FLEET_ROLE=$FLEET_ROLE) may not run it" ;;
 esac
 case "$cmd" in
@@ -356,6 +357,28 @@ case "$cmd" in
     team="${1:?usage: env-release <team>}"
     update --arg t "$team" --arg now "$(now)" \
       'if .envs[$t] then .envs[$t] |= (.state = "Down" | .slot = null | .http_port = null | .https_port = null | .updated_at = $now) else . end'
+    ;;
+  orchestrator)
+    # The Orchestrator registers its own pane as the loop's wake target, once per session. The row is
+    # replaced whole, so an older session's pane and transcript never linger.
+    [ "${1:-}" = here ] || die "usage: orchestrator here [--transcript PATH]"; shift
+    otr=""
+    while [ $# -gt 0 ]; do
+      case "$1" in --transcript) otr="${2:?--transcript needs a path}"; shift 2 ;; *) die "unknown option: $1" ;; esac
+    done
+    opane="${HERDR_PANE_ID:-}"
+    [ -n "$opane" ] || die "orchestrator here: not in a herdr pane (HERDR_PANE_ID is unset)"
+    oget="$(hd agent get "$opane" 2>/dev/null)" || die "orchestrator here: herdr agent get $opane failed"
+    oref="$(printf '%s' "$oget" | jq -r '(.result.agent.name // "") | select(. != "") // empty' 2>/dev/null || true)"
+    opane2="$(printf '%s' "$oget" | jq -r '(.result.agent.pane_id // "") | select(. != "") // empty' 2>/dev/null || true)"
+    [ -n "$opane2" ] && opane="$opane2"; [ -n "$oref" ] || oref="$opane"
+    # No --transcript: the newest session file of this directory's Claude project (UNVERIFIED: the
+    # newest file is this session's when one Claude Code session runs in the directory).
+    if [ -z "$otr" ]; then otr="$(ls -t "$(transcript_dir_for "$PWD")"/*.jsonl 2>/dev/null | head -n 1 || true)"; fi
+    update --arg r "$oref" --arg p "$opane" --arg tr "$otr" --arg m "$(machine_key 2>/dev/null || true)" --arg t "$(now)" \
+      '.agents.orchestrator = {name: "orchestrator", team: "orchestrator", tier: "Orchestrator", status: "Working", herdr_ref: $r, pane: $p,
+         machine: $m, at: $t, started: $t, updated_at: $t, discovered: [], escalations: []} + (if $tr != "" then {transcript: $tr} else {} end)'
+    "$0" get orchestrator
     ;;
   path) printf '%s\n' "$FLEET_REGISTRY" ;;
   *) sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;

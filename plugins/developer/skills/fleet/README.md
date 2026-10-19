@@ -50,7 +50,6 @@ This skill builds the rest on top of it.
    └─► workspace review-auth: lead + security + correctness reviewers, briefs sent
 /fleet status              → table of agents with Working / Idle / Stalled / Zombie / Done
 /fleet tell review-auth "focus on token expiry"
-/fleet watch               → a monitor pane that notifies on every stall, death or finish
 /fleet retire review-auth  → push WIP, close the workspace, archive reports and remove worktrees, delete the test cluster and its images
 /fleet prime               → after a compaction: rebuild the picture of the fleet from the registry
 /fleet debrief             → lessons per agent, proposed diffs to .claude/experts/<role>.md
@@ -63,7 +62,6 @@ This skill builds the rest on top of it.
 | `/fleet boot <template> <focus> <dir> [task]` | Creates the herdr workspace `<template>-<focus>` (the team name), starts a lead and its workers in split panes, gives every writer its own git worktree on branch `fleet/<team>/<role>`, sends each agent its brief and registers it. `<template>` is `build`, `race`, `review`, `research` or a path to your own template JSON |
 | `/fleet status [--problems] [--team T] [--json] [--all]` | Shows each live agent's health (see below) and its team's test cluster, under a disk line (free GiB, `LOW` below `warn_free_gb`). `--problems` lists only agents that need you, `--team` limits it to one team, `--json` gives machine-readable output. `--all` adds one row per claim other machines hold, with a MACHINE and a LEASE column (Linear only; see "Several machines") |
 | `/fleet tell <team\|agent> <msg>` | Sends a message to the team's lead, or to one agent if you name it, then quotes a line of its reply so you know it arrived |
-| `/fleet watch [--team T]` | Opens a monitor pane beside yours that raises a herdr notification whenever an agent stalls, dies, needs input or finishes, or free disk drops below `warn_free_gb` |
 | `/fleet escalate <P0\|P1\|P2> <msg>` | Raises a question by severity (also appended to the escalation inbox, which the loop job watches, so the Orchestrator hears within seconds). It stays open until the Orchestrator runs `registry.sh resolve <name> <id|at>`, or the team is retired. The Orchestrator answers P2 itself, brings P1 to you with a recommendation, and stops for P0 and brings it to you immediately (a P0 in a race pauses the race) |
 | `/fleet retire <team\|team/role> [--outcome O]` | Shuts down a whole team or a single agent. Live agents are asked to push their work first, then only the fleet's own panes are closed, worktrees are removed (build outputs ignored, untracked reports copied to `reports/fleet-archive/<team>-<role>/`; one with unpushed commits, untracked source or uncommitted edits is kept and the files or commits named), the team's test cluster and images are deleted, and its open escalations are closed ("closed at retire"). `O` is `Shipped`, `Won race`, `Partial`, `Abandoned` or `Failed` |
 | `/fleet prime` | Rebuilds the Orchestrator's picture of the fleet from the registry (which teams exist, who is doing what, what needs attention). Use it after a context compaction or in a new session |
@@ -92,7 +90,7 @@ tries the next one, and escalates P0 if none can be verified. Then retire the lo
 
 ```
 /fleet boot race login ~/code/api "login test fails on CI"
-/fleet watch --team race-login
+/fleet status --team race-login
 /fleet retire race-login/racer-2 --outcome Abandoned
 /fleet retire race-login/racer-3 --outcome Abandoned
 /fleet retire race-login --outcome Shipped
@@ -153,7 +151,7 @@ The Orchestrator and agents call these directly (from `scripts/`). You can call 
 max_agents = 4   # live agents across all teams
 max_envs = 3     # test clusters at once
 min_free_gb = 40   # boot refuses below this much free disk (0 = off; FLEET_FORCE=1 overrides)
-warn_free_gb = 75  # status marks LOW and watch notifies below this
+warn_free_gb = 75  # status marks LOW and the loop alerts below this
 
 # Several machines on one Linear workspace: each claims issues with the label <label_prefix><machine key>.
 # Claims need Linear. With another tracker, run the fleet on one machine and leave these unset.
@@ -207,11 +205,11 @@ Orchestrator then checks it with the matching CLI.
 
 `scripts/schedule.sh install` writes a small launcher, `$FLEET_STATE_DIR/bin/fleet-tick`, and `~/Library/LaunchAgents/fleet.tick.plist` (label: `schedule_label`; interval: `tick_secs`, default 300), loads it, and waits for the first tick: if that fails it unloads the job and prints the last log line. The launcher reads the plugin's `installPath` from `~/.claude/plugins/installed_plugins.json` each run, so a plugin update takes effect on the next tick and a swept old version cannot break the job. The job also runs whenever the escalation inbox changes (`WatchPaths`), so a P0 starts a tick within seconds. `uninstall` and `status` do the rest; `status` says whether the loop is healthy (a good tick within twice `tick_secs`).
 
-Each run is `scripts/loop-tick.sh`: one `tick.sh`, no model. It wakes the Orchestrator's pane only for a ready or merged PR, a P0/P1 escalation, a dead agent, a taken-over claim, an agent that needs input, a failed brief, or a PR the lead could not be told about, in one message per tick. The message is a fixed template, one line per event, `fleet tick: <type> <team> <issue> <PR url> <esc id>`; an agent's own words are never typed into the pane. With no live Orchestrator pane it sends a notification and logs `orchestrator_wake_missed`. Output goes to `loop.log` in the state dir. Overlapping ticks are handled by the tick lock in `tick.sh`. On Linux, run `loop-tick.sh` from a systemd user timer instead (no code here). The Linear heartbeat runs only when `linear_writes` in `config.toml` is `on` or `test:<TEAM>` (default off).
+Each run is `scripts/loop-tick.sh`: one `tick.sh`, no model. It wakes the Orchestrator's pane for every event someone must act on: a ready or merged PR, any escalation (the Orchestrator answers P2 itself), a dead or stalled agent, a taken-over claim, an agent that needs input, a failed brief, the weekly summary, or a PR the lead could not be told about, in one message per tick. Low disk and a repo with no team go to alerts instead. The message is a fixed template, one line per event, `fleet tick: <type> <team> <name> <issue> <PR url> <esc id>`; an agent's own words are never typed into the pane. The wake target is `orchestrator_ref` in `config.toml`, else the pane the Orchestrator registered with `registry.sh orchestrator here` (once per session; `install` and `status` remind you). A wake that cannot be delivered (no Orchestrator registered, its pane gone, herdr down) stays queued and is sent again on the next tick; each miss is a notification and an `orchestrator_wake_missed` event with the reason, and the third miss in a row is an alert. Output goes to `loop.log` in the state dir. Overlapping ticks are handled by the tick lock in `tick.sh`. On Linux, run `loop-tick.sh` from a systemd user timer instead (no code here). The Linear heartbeat runs only when `linear_writes` in `config.toml` is `on` or `test:<TEAM>` (default off).
 
 ### Alerts that reach your phone
 
-The Orchestrator shares your login, so a wake into its pane is useless when the login has expired. `loop-tick.sh` therefore also calls `notify` with the optional config `alert_cmd`, at most once per cause per 4 hours, for: a P0/P1 escalation, a login that expired on this Mac, no Orchestrator reply 15 minutes after a wake, herdr not answering, and 3 failed loop runs in a row. `alert_cmd` is run with the message as its one argument, and a failure is logged, never hidden. Point it at a small script, for example:
+The Orchestrator shares your login, so a wake into its pane is useless when the login has expired. `loop-tick.sh` therefore also calls `notify` with the optional config `alert_cmd`, at most once per cause per 4 hours, for: a P0/P1 escalation, a login that expired on this Mac, no Orchestrator reply 15 minutes after a wake, herdr not answering, low disk, a repo with no team, 3 failed loop runs in a row, no good tick within twice `tick_secs`, and a wake that could not be delivered 3 times. A good tick ran `tick.sh` and got an event list back; a skipped tick (the lock is held) or junk output counts as failed. `alert_cmd` is run with the message as its one argument, and a failure is logged, never hidden. Point it at a small script, for example:
 
 ```sh
 # ~/bin/fleet-alert  (alert_cmd = "/Users/you/bin/fleet-alert")   iMessage to yourself
@@ -233,7 +231,7 @@ builds and loads images. Four guards keep it from filling:
   files, and the output names them.
 - **`env.sh down`** removes the team's images and build cache after the repo's `down` (see below).
 - **Boot** refuses below `min_free_gb`, with the same `FLEET_FORCE=1` override as `max_agents`.
-- **Status** shows free disk; **watch** prints and notifies only when disk drops below `warn_free_gb` (or `min_free_gb`) or recovers.
+- **Status** shows free disk; the launchd loop alerts (notify and `alert_cmd`, once per 4 hours) when disk drops below `warn_free_gb` (or `min_free_gb`).
 
 Docker Desktop's own disk limit is yours to set (Settings, Resources).
 
