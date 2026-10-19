@@ -66,6 +66,7 @@ ghtmp=""
 cleanup() { rm -rf "$lockdir"; if [ -n "$ghtmp" ]; then rm -f "$ghtmp"; fi; }
 trap cleanup EXIT
 
+FLEET_TICK_ID="$(now)-$$"; export FLEET_TICK_ID # one tick, one Linear viewer read (linear.sh caches by it)
 state="$(tick_state)"
 events="[]"
 add_events() { events="$(jq -cn --argjson a "$events" --argjson b "$1" '$a + $b')"; }
