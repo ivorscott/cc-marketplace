@@ -4,9 +4,10 @@
 #
 #   registry.sh add '<json object with at least .name>'   upsert a row
 #   registry.sh set <name> key=value [key=value ...]      update fields
+#   registry.sh append <name> key value                    add value to the row's list at key (no duplicates; an agent: own row, transcripts only)
 #   registry.sh get [--archived] <name>                    --archived also looks in fleet-archive.json
-#   registry.sh list [--team T] [--live] [--problems]
-#   registry.sh count-live                                 agents counted against max_agents
+#   registry.sh list [--team T] [--live] [--parked] [--problems]
+#   registry.sh count-live                                 live agents (Parked, Done and Retired rows are not live)
 #   registry.sh done <name> --outcome O --summary TEXT     the done contract (+ notification)
 #   registry.sh escalate <name> P0|P1|P2 TEXT              severity-routed escalation (+ notification + inbox line)
 #   registry.sh escalations [--open] [--team T] [--not-retired]  every escalation, Done and Retired rows included unless --not-retired
@@ -14,7 +15,12 @@
 #   registry.sh note <name> discovered TEXT                file discovered work instead of fixing it
 #   registry.sh retire <name|team> [--outcome O]           also closes the rows' open escalations ("closed at retire")
 #   registry.sh signoff <name> <pr-url|N> <sha>            the tester's sign-off: records the PR and the exact SHA verified
-#   registry.sh reassign <team> <issue>                    move a team to a new issue (next.sh): clears the old outcome, PR and sign-off
+#   registry.sh reassign <team> <issue> [--assignment TEXT] [--issue-url URL]
+#                                                          move a team to a new issue (next.sh): logs issue_done for the old one,
+#                                                          clears the old outcome, PR and sign-off, rewrites the assignment;
+#                                                          workers go Idle, the lead Working
+#   registry.sh park <team> <reason>                       one write: every unfinished row of the team becomes Parked (park.sh, which also closes the panes)
+#   registry.sh park-mark <team> <reason|->                 mark the team to park when its PR merges (reason park-after-merge or focus:<team>); - clears it
 #   registry.sh unsynced                                   rows changed since the sink last mirrored them
 #   registry.sh synced <name> [name ...]                   mark rows as mirrored
 #   registry.sh env-claim <team> <max> <cluster> [busy-slots]  atomically take the lowest free port slot
@@ -22,11 +28,12 @@
 #   registry.sh env-get <team>
 #   registry.sh env-release <team>                         mark the environment Down, freeing its slot
 #   registry.sh archive                                    move Retired rows to fleet-archive.json (lessons written, no open escalation, ended archive_after_days ago)
+#   registry.sh orchestrator here [--transcript PATH]   the Orchestrator registers its pane as the loop's wake target
 #   registry.sh path
 #
 # Every path comes from FLEET_STATE_DIR (fleet.json, escalations.jsonl, worktrees/, fleet-archive.json); there
 # is no FLEET_REGISTRY or FLEET_INBOX override. Agents (FLEET_ROLE set) are refused add, retire, archive,
-# reassign, resolve and close-stale.
+# reassign, resolve, close-stale and orchestrator.
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
 
@@ -48,6 +55,8 @@ lock() {
 update() {
   lock
   local tmp; tmp="$(mktemp "$FLEET_REGISTRY.XXXXXX")"
+  # The trap frees the temp file (and the lock) even when jq or the schema check kills the script.
+  trap "rm -f '$tmp'; rmdir '$LOCK' 2>/dev/null || true" EXIT
   if jq "$@" "$FLEET_REGISTRY" >"$tmp" && jq -e '.agents | type == "object"' "$tmp" >/dev/null 2>&1; then
     # Schema: a write may not make a row malformed (name a string, escalations an array of
     # entries with severity P0/P1/P2, message and at, discovered an array). A row that was
@@ -58,10 +67,13 @@ update() {
       | [$n[0].agents | to_entries[] | select((.value | row_ok | not) and (($old[.key]) == null or ($old[.key] | row_ok)))
         | .key] | join(", ")')"
     if [ -n "$bad" ]; then rm -f "$tmp"; die "registry write refused: would leave malformed row(s): $bad; $FLEET_REGISTRY left unchanged"; fi
-    # A transcript path (new or changed) must be under Claude's projects directory.
+    # A transcript path (new or changed), and any new entry of `transcripts`, must be under Claude's projects directory.
     bad="$(jq -nr --slurpfile o "$FLEET_REGISTRY" --slurpfile n "$tmp" --arg pd "$(projects_dir)/" '($o[0].agents // {}) as $old
-      | [$n[0].agents | to_entries[] | select((.value.transcript // "") != "" and (.value.transcript != ($old[.key].transcript // ""))
-          and ((.value.transcript | tostring | startswith($pd)) | not)) | .key] | join(", ")')"
+      | [$n[0].agents | to_entries[] | select(
+          ((.value.transcript // "") != "" and (.value.transcript != ($old[.key].transcript // ""))
+            and ((.value.transcript | tostring | startswith($pd)) | not))
+          or ([(.value.transcripts // []) | if type == "array" then .[] else . end] - [($old[.key].transcripts // []) | if type == "array" then .[] else . end]
+            | any(tostring | startswith($pd) | not))) | .key] | join(", ")')"
     if [ -n "$bad" ]; then rm -f "$tmp"; die "registry write refused: transcript of $bad is not under $(projects_dir)/; $FLEET_REGISTRY left unchanged"; fi
     stale="$(jq -r "$ESC_DEFS"'[.agents | to_entries[] | select(.value | row_ok | not) | .key] | join(", ")' "$tmp")"
     [ -z "$stale" ] || warn "malformed row(s) already in the registry: $stale (a repairing write: escalate, resolve or retire)"
@@ -73,16 +85,7 @@ update() {
 
 exists() { jq -e --arg n "$1" '.agents[$n] != null' "$FLEET_REGISTRY" >/dev/null || die "no agent '$1' in the registry"; }
 
-notify() {
-  [ "${HERDR_ENV:-}" = "1" ] || [ -n "${FLEET_SESSION:-}" ] || return 0
-  command -v herdr >/dev/null 2>&1 || return 0
-  local err
-  if ! err="$(hd notification show "$1" --body "$2" --sound "${3:-done}" 2>&1 >/dev/null)"; then
-    warn "notification failed: $1: $(printf '%s' "$err" | head -1)"
-  fi
-}
-
-LIVE='(.status != "Done" and .status != "Retired")'
+LIVE='(.status != "Done" and .status != "Retired" and .status != "Parked")'
 OPEN_ESC='([escs[] | select(.resolved_at == null)] | length > 0)'
 # .escalation is derived from the open entries: the highest open severity, "" when none is open.
 DERIVE="$ESC_DEFS"'def derive: ([escs[] | select(.resolved_at == null) | .severity]) as $o
@@ -93,7 +96,7 @@ cmd="${1:-}"; shift || true
 # Agents (FLEET_ROLE set in their pane) can report on themselves (set, done, escalate, note, signoff for the
 # tester) but cannot create, retire, archive, move or resolve: those are the Orchestrator's.
 case "$cmd" in
-  add | retire | archive | reassign | resolve | close-stale)
+  add | retire | archive | reassign | resolve | close-stale | orchestrator | park | park-mark)
     [ -z "${FLEET_ROLE:-}" ] || die "$cmd is the Orchestrator's; an agent (FLEET_ROLE=$FLEET_ROLE) may not run it" ;;
 esac
 case "$cmd" in
@@ -115,11 +118,22 @@ case "$cmd" in
       # An agent (FLEET_ROLE set in its pane) may set only these keys of its row; the Orchestrator and the
       # scripts (FLEET_ROLE unset) may set any other, and the schema check still applies to the result.
       if [ -n "${FLEET_ROLE:-}" ]; then
-        case "$k" in status | summary | nudged_at | branch | worktree) ;; *) die "cannot set $k from an agent: agents may set only status, summary, nudged_at, branch and worktree" ;; esac
+        case "$k" in status | status_detail | summary | nudged_at | branch | worktree) ;; *) die "cannot set $k from an agent: agents may set only status, status_detail, summary, nudged_at, branch and worktree" ;; esac
       fi
       args+=(--arg "k$i" "$k" --arg "v$i" "$v"); prog="$prog | .[\$k$i] = \$v$i"; i=$((i + 1))
     done
     update "${args[@]}" --arg t "$(now)" ".agents[\$n] = ($prog | .updated_at = \$t)"
+    ;;
+  append)
+    name="${1:?usage: append <name> key value}"; k="${2:?usage: append <name> key value}"; v="${3:?usage: append <name> key value}"
+    exists "$name"
+    # An agent (FLEET_ROLE set) may append only to its own row (FLEET_NAME), and only to `transcripts`.
+    if [ -n "${FLEET_ROLE:-}" ]; then
+      [ "$name" = "${FLEET_NAME:-}" ] || die "an agent may append only to its own row (FLEET_NAME=${FLEET_NAME:-unset}), not $name"
+      case "$k" in transcripts) ;; *) die "cannot append to $k from an agent: agents may append only to transcripts" ;; esac
+    fi
+    update --arg n "$name" --arg k "$k" --arg v "$v" --arg t "$(now)" \
+      '.agents[$n] |= ((.[$k] = ((((.[$k] // []) | if type == "array" then . else [.] end) + [$v]) | unique)) | .updated_at = $t)'
     ;;
   get)
     files=("$FLEET_REGISTRY")
@@ -133,6 +147,7 @@ case "$cmd" in
       case "$1" in
         --team) team="$2"; shift 2 ;;
         --live) filter="$filter and $LIVE"; shift ;;
+        --parked) filter="$filter and .status == \"Parked\""; shift ;;
         --with-archived) archived=true; shift ;;
         --problems) filter="$filter and (($LIVE and $PROBLEM) or $OPEN_ESC)"; shift ;;
         *) die "unknown list option: $1" ;;
@@ -170,10 +185,11 @@ case "$cmd" in
         | derive | .updated_at = $t)'
     # update() holds the lock until this process exits, so the new entry is still the last one.
     id="$(jq -r --arg n "$name" '.agents[$n].escalations | last | .id' "$FLEET_REGISTRY")"
-    # The inbox is what escalation-wait.sh delivers to the Orchestrator; the registry row stays the source of truth.
+    # The launchd job watches the inbox file, so a new line starts a tick; the registry row stays the source of truth.
     line="$(jq -nc --arg at "$at" --arg id "$id" --arg n "$name" --arg tm "$(jq -r --arg n "$name" '.agents[$n].team // ""' "$FLEET_REGISTRY")" --arg s "$sev" --arg m "$msg" \
       '{at: $at, id: $id, name: $n, team: $tm, severity: $s, message: $m}')"
     { printf '%s\n' "$line" >>"$FLEET_INBOX"; } 2>/dev/null || warn "cannot write the escalation inbox $FLEET_INBOX"
+    ev_log escalation_raised team="$(jq -r --arg n "$name" '.agents[$n].team // ""' "$FLEET_REGISTRY")" name="$name" detail="$sev $id"
     notify "fleet $sev: $name" "$msg" request
     ;;
   escalations)
@@ -214,6 +230,7 @@ case "$cmd" in
         | derive
         | if .escalation == "" and .status == "Needs input" then .status = "Working" else . end
         | .updated_at = $t)'
+    ev_log escalation_resolved team="$(jq -r --arg n "$name" '.agents[$n].team // ""' "$FLEET_REGISTRY")" name="$name" detail="$ref"
     ;;
   note)
     name="${1:?usage: note <name> discovered TEXT}"; kind="${2:?}"; msg="${3:?}"
@@ -265,10 +282,15 @@ case "$cmd" in
     name="${1:?usage: signoff <name> <pr-url|N> <sha>}"; pr="${2:?usage: signoff <name> <pr-url|N> <sha>}"; sha="${3:?usage: signoff <name> <pr-url|N> <sha>}"
     exists "$name"
     # Only the tester signs off, and only for itself: an agent's FLEET_NAME must end in /tester and be the row
-    # named. (FLEET_NAME and FLEET_ROLE are conventions an agent could set: this guards against mistakes,
-    # not against an adversary.) The Orchestrator and scripts (FLEET_ROLE unset) may record a sign-off.
-    if [ -n "${FLEET_ROLE:-}" ] && [ "${FLEET_ROLE:-}" != tester ]; then
-      case "${FLEET_NAME:-}" in */tester) [ "${FLEET_NAME:-}" = "$name" ] || die "signoff: $name is not you (${FLEET_NAME:-unknown})" ;; *) die "signoff is the tester's: ${FLEET_NAME:-this agent} may not sign off" ;; esac
+    # named, in the agent's own team (FLEET_TEAM). No FLEET_ROLE value skips this check. (FLEET_NAME, FLEET_TEAM
+    # and FLEET_ROLE are conventions an agent could set: this guards against mistakes, not against an
+    # adversary.) The Orchestrator and scripts (FLEET_ROLE unset) may record a sign-off.
+    if [ -n "${FLEET_ROLE:-}" ]; then
+      case "${FLEET_NAME:-}" in
+        */tester) [ "${FLEET_NAME:-}" = "$name" ] || die "signoff: $name is not you (${FLEET_NAME:-unknown})"
+          [ -z "${FLEET_TEAM:-}" ] || [ "$(jq -r --arg n "$name" '.agents[$n].team' "$FLEET_REGISTRY")" = "${FLEET_TEAM:-}" ] || die "signoff: $name is not in your team (${FLEET_TEAM:-unknown})" ;;
+        *) die "signoff is the tester's: ${FLEET_NAME:-this agent} may not sign off" ;;
+      esac
     fi
     printf '%s' "$sha" | grep -Eq '^[0-9a-fA-F]{7,40}$' || die "sha must be 7-40 hex characters: $sha"
     sha="$(printf '%s' "$sha" | tr 'A-F' 'a-f')"
@@ -286,19 +308,63 @@ case "$cmd" in
     esac
     update --arg n "$name" --arg pr "$pr" --arg sha "$sha" --arg t "$(now)" \
       '.agents[$n] += {pr: $pr, signoff: {pr: $pr, sha: $sha, at: $t}, updated_at: $t}'
+    ev_log signoff team="$(jq -r --arg n "$name" '.agents[$n].team // ""' "$FLEET_REGISTRY")" name="$name" pr="$pr" sha="$sha"
     ;;
   reassign)
-    team="${1:?usage: reassign <team> <issue>}"; issue="${2:?usage: reassign <team> <issue>}"
+    team="${1:?usage: reassign <team> <issue> [--assignment TEXT] [--issue-url URL]}"; issue="${2:?usage: reassign <team> <issue>}"; shift 2
+    assignment=""; iurl=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --assignment) assignment="${2:?--assignment needs text}"; shift 2 ;;
+        --issue-url) iurl="${2:?--issue-url needs a URL}"; shift 2 ;;
+        *) die "unknown reassign option: $1" ;;
+      esac
+    done
+    [ -n "$assignment" ] || assignment="$issue"
     jq -e --arg t "$team" '[.agents[] | select(.team == $t and .status != "Retired" and .tier != "Orchestrator")] | length > 0' "$FLEET_REGISTRY" >/dev/null ||
       die "no live rows for team '$team'"
+    jq -e --arg t "$team" '[.agents[] | select(.team == $t and .status == "Parked")] | length == 0' "$FLEET_REGISTRY" >/dev/null ||
+      die "team '$team' is parked; unpark it first"
+    # The old issue's outcome, summary and lessons are written to the event log before the rows are cleared:
+    # the debrief reads these events, not rows that no longer hold them.
+    jq -c --arg t "$team" '.agents[] | select(.team == $t and .status != "Retired" and .tier != "Orchestrator"
+        and ((.outcome // "") != "" or (.summary // "") != "" or (.lessons // "") != ""))
+      | [.name, (.issue // ""), (.outcome // ""), (.summary // ""), (.lessons // ""), (.pr // "")]' "$FLEET_REGISTRY" |
+      while IFS= read -r line; do
+        ev_log issue_done team="$team" name="$(printf '%s' "$line" | jq -r '.[0]')" issue="$(printf '%s' "$line" | jq -r '.[1]')" \
+          outcome="$(printf '%s' "$line" | jq -r '.[2]')" summary="$(printf '%s' "$line" | jq -r '.[3]')" lessons="$(printf '%s' "$line" | jq -r '.[4]')" \
+          pr="$(printf '%s' "$line" | jq -r '.[5]')"
+      done
     # One update for every row: a half-moved team would be worse than an unmoved one.
-    update --arg t "$team" --arg i "$issue" --arg now "$(now)" "$DERIVE"'
+    update --arg t "$team" --arg i "$issue" --arg a "$assignment" --arg u "$iurl" --arg now "$(now)" "$DERIVE"'
       .agents |= with_entries(
         if .value.team == $t and .value.status != "Retired" and .value.tier != "Orchestrator" then
           .value |= (
-            del(.outcome, .summary, .done_at, .signoff, .pr, .lessons)
+            del(.outcome, .summary, .done_at, .signoff, .pr, .lessons, .nudged_at)
             | norm | esc_close("closed at next"; $now)
-            | derive | .issue = $i | .status = "Working" | .updated_at = $now)
+            | derive | .issue = $i | .assignment = $a
+            | (if $u != "" then .issue_url = $u else del(.issue_url) end)
+            | .status = (if .tier == "Lead" then "Working" else "Idle" end) | .updated_at = $now)
+        else . end)'
+    ;;
+  park)
+    team="${1:?usage: park <team> <reason>}"; reason="${2:?usage: park <team> <reason>}"
+    jq -e --arg t "$team" '[.agents[] | select(.team == $t and .tier != "Orchestrator" and .status != "Retired")] | length > 0' "$FLEET_REGISTRY" >/dev/null ||
+      die "no rows for team '$team'"
+    # Inside the one write, so two parks (or a park and a tick) cannot both win.
+    update --arg t "$team" --arg r "$reason" --arg now "$(now)" '
+      if ([.agents[] | select(.team == $t and .status == "Parked")] | length) > 0 then error("team is already parked") else . end
+      | .agents |= with_entries(
+        if .value.team == $t and .value.tier != "Orchestrator" and (.value.status | IN("Done", "Retired") | not) then
+          .value |= (.status = "Parked" | .parked_at = $now | .parked_reason = $r | del(.park_after_merge) | .updated_at = $now)
+        else . end)'
+    ;;
+  park-mark)
+    team="${1:?usage: park-mark <team> <reason|->}"; reason="${2:?usage: park-mark <team> <reason|->}"
+    update --arg t "$team" --arg r "$reason" --arg now "$(now)" '
+      .agents |= with_entries(
+        if .value.team == $t and .value.tier != "Orchestrator" and .value.status != "Retired" then
+          .value |= ((if $r == "-" then del(.park_after_merge) else .park_after_merge = $r end) | .updated_at = $now)
         else . end)'
     ;;
   unsynced)
@@ -345,6 +411,28 @@ case "$cmd" in
     team="${1:?usage: env-release <team>}"
     update --arg t "$team" --arg now "$(now)" \
       'if .envs[$t] then .envs[$t] |= (.state = "Down" | .slot = null | .http_port = null | .https_port = null | .updated_at = $now) else . end'
+    ;;
+  orchestrator)
+    # The Orchestrator registers its own pane as the loop's wake target, once per session. The row is
+    # replaced whole, so an older session's pane and transcript never linger.
+    [ "${1:-}" = here ] || die "usage: orchestrator here [--transcript PATH]"; shift
+    otr=""
+    while [ $# -gt 0 ]; do
+      case "$1" in --transcript) otr="${2:?--transcript needs a path}"; shift 2 ;; *) die "unknown option: $1" ;; esac
+    done
+    opane="${HERDR_PANE_ID:-}"
+    [ -n "$opane" ] || die "orchestrator here: not in a herdr pane (HERDR_PANE_ID is unset)"
+    oget="$(hd agent get "$opane" 2>/dev/null)" || die "orchestrator here: herdr agent get $opane failed"
+    oref="$(printf '%s' "$oget" | jq -r '(.result.agent.name // "") | select(. != "") // empty' 2>/dev/null || true)"
+    opane2="$(printf '%s' "$oget" | jq -r '(.result.agent.pane_id // "") | select(. != "") // empty' 2>/dev/null || true)"
+    [ -n "$opane2" ] && opane="$opane2"; [ -n "$oref" ] || oref="$opane"
+    # No --transcript: the newest session file of this directory's Claude project (UNVERIFIED: the
+    # newest file is this session's when one Claude Code session runs in the directory).
+    if [ -z "$otr" ]; then otr="$(ls -t "$(transcript_dir_for "$PWD")"/*.jsonl 2>/dev/null | head -n 1 || true)"; fi
+    update --arg r "$oref" --arg p "$opane" --arg tr "$otr" --arg m "$(machine_key 2>/dev/null || true)" --arg t "$(now)" \
+      '.agents.orchestrator = {name: "orchestrator", team: "orchestrator", tier: "Orchestrator", status: "Working", herdr_ref: $r, pane: $p,
+         machine: $m, at: $t, started: $t, updated_at: $t, discovered: [], escalations: []} + (if $tr != "" then {transcript: $tr} else {} end)'
+    "$0" get orchestrator
     ;;
   path) printf '%s\n' "$FLEET_REGISTRY" ;;
   *) sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;

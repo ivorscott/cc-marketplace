@@ -27,7 +27,7 @@ This skill builds the rest on top of it.
        ┌─────────────────────┼─────────────────────┐
   ┌────▼─────┐          ┌────▼─────┐          ┌────▼─────┐
   │ LEAD     │          │ LEAD     │          │ LEAD     │   one herdr workspace per team
-  │ build-x  │          │ review-y │          │ race-z   │   no Write/Edit tools
+  │ build-x  │          │ review-y │          │ research │   no Write/Edit tools
   └──┬───┬───┘          └──┬───┬───┘          └──┬───┬───┘
      W   W                 W   W                 W   W       workers in split panes, any
                                                              agent CLI; writers get a worktree
@@ -39,7 +39,7 @@ This skill builds the rest on top of it.
 |---|---|
 | workspaces, panes, 20+ agent CLIs | tiers: Orchestrator → lead → workers |
 | `idle / working / blocked / done` | health: **Stalled** and **Zombie**, from the done contract and process checks |
-| `prompt --wait`, `wait --until`, reads, keys | team templates: build, race, review, research |
+| `prompt --wait`, `wait --until`, reads, keys | team templates: build, review, research |
 | persistence, restore, multi-machine | a registry: identity, assignment, outcome, lessons |
 | its own agent skill (`herdr --skill`) | escalation P0–P2, a `max_agents` cap, context-recovery and scope-guard hooks, debriefs into expertise files |
 
@@ -50,7 +50,6 @@ This skill builds the rest on top of it.
    └─► workspace review-auth: lead + security + correctness reviewers, briefs sent
 /fleet status              → table of agents with Working / Idle / Stalled / Zombie / Done
 /fleet tell review-auth "focus on token expiry"
-/fleet watch               → a monitor pane that notifies on every stall, death or finish
 /fleet retire review-auth  → push WIP, close the workspace, archive reports and remove worktrees, delete the test cluster and its images
 /fleet prime               → after a compaction: rebuild the picture of the fleet from the registry
 /fleet debrief             → lessons per agent, proposed diffs to .claude/experts/<role>.md
@@ -60,43 +59,27 @@ This skill builds the rest on top of it.
 
 | Command | What it does |
 |---|---|
-| `/fleet boot <template> <focus> <dir> [task]` | Creates the herdr workspace `<template>-<focus>` (the team name), starts a lead and its workers in split panes, gives every writer its own git worktree on branch `fleet/<team>/<role>`, sends each agent its brief and registers it. `<template>` is `build`, `race`, `review`, `research` or a path to your own template JSON |
+| `/fleet boot <template> <focus> <dir> [task]` | Creates the herdr workspace `<template>-<focus>` (the team name), starts a lead and its workers in split panes, gives every writer its own git worktree on branch `fleet/<team>/<role>`, sends each agent its brief and registers it. `<template>` is `build`, `review`, `research` or a path to your own template JSON |
 | `/fleet status [--problems] [--team T] [--json] [--all]` | Shows each live agent's health (see below) and its team's test cluster, under a disk line (free GiB, `LOW` below `warn_free_gb`). `--problems` lists only agents that need you, `--team` limits it to one team, `--json` gives machine-readable output. `--all` adds one row per claim other machines hold, with a MACHINE and a LEASE column (Linear only; see "Several machines") |
 | `/fleet tell <team\|agent> <msg>` | Sends a message to the team's lead, or to one agent if you name it, then quotes a line of its reply so you know it arrived |
-| `/fleet watch [--team T]` | Opens a monitor pane beside yours that raises a herdr notification whenever an agent stalls, dies, needs input or finishes, or free disk drops below `warn_free_gb` |
-| `/fleet escalate <P0\|P1\|P2> <msg>` | Raises a question by severity (also appended to the escalation inbox, which `escalation-wait.sh` delivers to the Orchestrator within seconds). It stays open until the Orchestrator runs `registry.sh resolve <name> <id|at>`, or the team is retired. The Orchestrator answers P2 itself, brings P1 to you with a recommendation, and stops for P0 and brings it to you immediately (a P0 in a race pauses the race) |
-| `/fleet retire <team\|team/role> [--outcome O]` | Shuts down a whole team or a single agent. Live agents are asked to push their work first, then only the fleet's own panes are closed, worktrees are removed (build outputs ignored, untracked reports copied to `reports/fleet-archive/<team>-<role>/`; one with unpushed commits, untracked source or uncommitted edits is kept and the files or commits named), the team's test cluster and images are deleted, and its open escalations are closed ("closed at retire"). `O` is `Shipped`, `Won race`, `Partial`, `Abandoned` or `Failed` |
+| `/fleet escalate <P0\|P1\|P2> <msg>` | Raises a question by severity (also appended to the escalation inbox, which the loop job watches, so the Orchestrator hears within seconds). It stays open until the Orchestrator runs `registry.sh resolve <name> <id|at>`, or the team is retired. The Orchestrator answers P2 itself, brings P1 to you with a recommendation, and stops for P0 and brings it to you immediately |
+| `/fleet retire <team\|team/role> [--outcome O]` | Shuts down a whole team or a single agent. Live agents are asked to push their work first, then only the fleet's own panes are closed, worktrees are removed (build outputs ignored, untracked reports copied to `reports/fleet-archive/<team>-<role>/`; one with unpushed commits, untracked source or uncommitted edits is kept and the files or commits named), the team's test cluster and images are deleted, and its open escalations are closed ("closed at retire"). `O` is `Shipped`, `Partial`, `Abandoned` or `Failed` |
 | `/fleet prime` | Rebuilds the Orchestrator's picture of the fleet from the registry (which teams exist, who is doing what, what needs attention). Use it after a context compaction or in a new session |
 | `/fleet debrief` | For each retired team: records one or two lessons per agent and *proposes* (never applies) diffs to `.claude/experts/<role>.md` and to the template, plus a list of discovered follow-up work |
 
-Plain language works too: "how is the fleet", "ask the build team to …", "stop the race".
+Plain language works too: "how is the fleet", "ask the build team to …", "shut the team down".
 
 ## Templates
 
 | Template | Team | Use it for | Example |
 |---|---|---|---|
 | `build` | lead + planner, builder, tester | Planning, building and testing one piece of work. The planner only plans; the tester checks out the builder's exact pushed SHA (no merge) and signs off on it | `/fleet boot build export ~/code/api "add CSV invoice export"` |
-| `race` | lead (judge) + 3 racers, each in its own worktree | Incidents: several agents attack the same bug at once, and the first verified fix wins | `/fleet boot race login ~/code/api "login test fails on CI"` |
 | `review` | lead + security and correctness reviewers (read-only) | Independent reviews of one change from different angles | `/fleet boot review auth ~/code/api "review the auth refactor"` |
 | `research` | lead + researcher | Learning a tool or topic problem-first, ending in one study guide | `/fleet boot research herdr ~/notes "how herdr restores sessions"` |
 
 Leads run Opus and have no Write/Edit tools. Only roles with `"worktree": true` get a worktree.
 A template role can name another agent CLI herdr supports as its `kind`. If that CLI is not
 installed, the role runs on Claude Code instead.
-
-### Running a race
-
-Each racer works in its own worktree. The lead verifies the first racer that reports Done by
-re-running the failing check. If it passes, that racer is marked `Won race`. Otherwise the lead
-tries the next one, and escalates P0 if none can be verified. Then retire the losers and the lead:
-
-```
-/fleet boot race login ~/code/api "login test fails on CI"
-/fleet watch --team race-login
-/fleet retire race-login/racer-2 --outcome Abandoned
-/fleet retire race-login/racer-3 --outcome Abandoned
-/fleet retire race-login --outcome Shipped
-```
 
 ## Health states
 
@@ -115,17 +98,19 @@ The Orchestrator and agents call these directly (from `scripts/`). You can call 
 
 | Script | Commands |
 |---|---|
-| `boot.sh` | `boot.sh [--issue ID --claimed-by KEY --labels a,b --scope 'repo: paths' --peer-claim … --takeover-of KEY --lease-expires ISO --last-activity ISO] <template> <focus> <dir> [task…]` boots a team (`FLEET_FORCE=1` goes over the `max_agents` cap and the `min_free_gb` disk floor, never over another machine's claim or a live lease). `--takeover-of` is accepted only when the passed lease is past and the PR shows no activity within `lease_hours` |
-| `claim.sh` | `line` builds the claim comment · `renew` moves its `lease=` · `lease` prints now + `lease_hours` · `parse` turns tracker comments (JSON on stdin) into claims · `expired --lease ISO [--last-activity ISO]` says whether a claim can be taken over. Pure: it never calls a tracker |
+| `boot.sh` | `boot.sh [--issue ID --claimed-by KEY --labels a,b --scope 'repo: paths'] <template> <focus> <dir> [task…]` boots a team (`FLEET_FORCE=1` goes over the `max_agents` cap and the `min_free_gb` disk floor, never over another machine's claim). A takeover is done with `linear.sh takeover` before boot |
+| `claim.sh` | `lease` prints now + `lease_hours` · `hb` reads the `heartbeat=` line of a label description (stdin) · `expired --lease ISO` says whether a lease has lapsed (the open-PR check is `linear.sh takeover`'s). Pure: it never calls a tracker |
+| `linear.sh` | claims and heartbeat on the Linear API: `claim <ISSUE> [--dry-run]` · `heartbeat` (one mutation) · `holder <ISSUE>` and `peers` (read-only) · `takeover <ISSUE> [--repo OWNER/NAME]` (refuses while a PR is open) · `migrate [--dry-run]` · `has-key`. Key in `~/.config/fleet/linear_api_key` (mode 600) or `LINEAR_API_KEY`; none: exit 3. Writes need `linear_writes` (below): off, the default, exits 3 too. Never posts claim or lease comments |
 | `chat.sh` | `channel` and `allow` print `chat_channel` and `chat_allow` · `format <event> …` prints the one-line message. It never posts or reads; the Orchestrator does with its own chat tools |
-| `machine-id.sh` | `id\|key\|label\|description\|show`: this machine's tracker identity, e.g. `fleet:3f9a2c1e` |
+| `machine-id.sh` | `id\|key\|label\|description\|hash\|show`: this machine's tracker identity, e.g. `fleet:3f9a2c1e`. The label description publishes `machine id sha256:<12 hex>`, never the full id; `linear.sh migrate` rewrites an older label that still holds the full id |
 | `status.sh` | `status.sh [--problems] [--team T] [--json] [--all [--claims FILE\|-]]` recomputes health, writes it to the registry and prints free disk first |
 | `registry.sh archive` | moves Retired rows with lessons and no open escalation to `fleet-archive.json` (`archive_after_days` in config.toml, default 0); `get --archived` and `list --with-archived` read both |
 | `tick.sh` | `tick.sh [--team T]` one JSON array of what changed since the last tick (stalled, dead, escalation, pr_ready, pr_merged, repo_without_team, disk), or nothing · reads PRs with read-only `gh pr view` through `FLEET_GH` |
 | `tell.sh` | `tell.sh <team/role> <text> [--no-confirm]` sends and checks delivery; exit 1 not delivered, 2 pane at the shell |
-| `next.sh` | `next.sh <team> <issue> [--brief TEXT]` after a merge: reassign, `/clear` workers, `/compact` a large lead, brief the lead |
-| `watch.sh` | `watch.sh [--team T] [--every SECONDS] [--once]` live monitor, polls every 20s by default; notifies on low disk |
-| `escalation-wait.sh` | `escalation-wait.sh [--timeout SECONDS] [--every SECONDS] [--from-start]` prints new inbox lines and exits; default timeout 1500s, polls every 5s |
+| `next.sh` | `next.sh <team> <issue> [--brief TEXT] [--assignment TEXT] [--issue-url URL]` after a merge, at a safe point (every agent idle, no background task): log `issue_done`, reassign, then restart every agent (`/exit`, a fresh session, its full brief as a file) |
+| `sandbox.sh` | `sandbox.sh [--keep] [--] [cmd...]` runs a reproduction with a temporary state and config root, shims for herdr, gh and curl, and no session, key or `FLEET_ROLE`; refuses the live roots |
+| `respawn.sh` | `respawn.sh <team/role>` starts a Zombie row again from the row (same role, worktree, branch, model; new session id) and sends a resume brief; `tick.sh` calls it within the budget `respawn_max` (1) per `respawn_window_hours` (6) |
+| `metrics.sh` | `metrics.sh [--since 7d] [--json]` per PR: minutes to ready, rework rounds, stalls, missed messages, tokens (from `events.jsonl` and the agents' transcripts) |
 | `retire.sh` | `retire.sh <team\|team/role> [--outcome O]` safe teardown; `--summary <target...>` read-only pre-retire summary |
 | `env.sh` | `up [--branch B] <team>` creates the team's cluster (exit 75 = queued at `max_envs`) · `down <team>` removes it, with its images and builder · `status` lists every env |
 | `registry.sh` | `add '<json>'` · `set <name> key=value…` · `get <name>` · `list [--team T] [--live] [--problems]` · `list --envs` · `done <name> --outcome O --summary TEXT` · `escalate <name> P0\|P1\|P2 TEXT` · `escalations [--open] [--team T] [--not-retired]` · `resolve <name> <id|at> [--note TEXT]` · `note <name> discovered TEXT` · `retire <name\|team> [--outcome O]` · `unsynced` · `synced <name…>` · `path` |
@@ -146,26 +131,9 @@ The Orchestrator and agents call these directly (from `scripts/`). You can call 
 
 ## Configuration
 
-`~/.config/fleet/config.toml` holds machine-wide settings. Every key is optional.
+`~/.config/fleet/config.toml` holds machine-wide settings. Every key is optional, and [`config.example.toml`](config.example.toml) is the only list of them: it has every key with its default and a line of what it does (a test keeps the scripts and that file in step). A key that is not in it, or whose value is the wrong kind, is ignored with one warning per key. The caps are `max_teams` (live teams, default 3; Parked teams do not count), `teams_per_repo` (default 1) and `repos` (repos that should always have a team; with it set, only teams on a listed repo take a slot); `min_free_gb` and `warn_free_gb` guard the disk; `lease_hours`, `label_prefix`, `machines` and `linear_writes` (off | `test:<TEAM>` | on, default off), `machine_name` and `machine_legacy_label` (only while migrating an older label) are the claim settings; `tracker_allow`, `forge_allow`, `chat_channel`, `chat_allow` and `permission_mode` are the agents' permissions. Internal timings (the tell confirm wait, the claim settle wait, the respawn budget, the background-task age, the compact threshold) are constants; the tests change them with `FLEET_TELL_CONFIRM_SECS`, `FLEET_CLAIM_SETTLE_SECS`, `FLEET_RESPAWN_MAX`, `FLEET_RESPAWN_WINDOW_HOURS`, `FLEET_BG_TASK_MAX_HOURS` and `FLEET_COMPACT_ABOVE_PCT`. Hard rules are not settings: the credential scrub always runs.
 
-```toml
-max_agents = 4   # live agents across all teams
-max_envs = 3     # test clusters at once
-min_free_gb = 40   # boot refuses below this much free disk (0 = off; FLEET_FORCE=1 overrides)
-warn_free_gb = 75  # status marks LOW and watch notifies below this
-
-# Several machines on one Linear workspace: each claims issues with the label <label_prefix><machine key>.
-# Claims need Linear. With another tracker, run the fleet on one machine and leave these unset.
-label_prefix = "fleet:"
-lease_hours = 2   # a claim's lease; a lapsed lease with no PR activity this long can be taken over
-machine_name = "Mac 1"   # display name, optional
-machine_legacy_label = "fleet:mac1"   # only while migrating an older label
-
-# Permissions added to every Claude agent at boot. Templates never name a tracker or a
-# code host; put yours here. Values are Claude Code permission rules.
-tracker_allow = ["mcp__claude_ai_Linear__get_issue", "mcp__claude_ai_Linear__list_comments", "mcp__claude_ai_Linear__list_issue_labels"]
-forge_allow = ["Bash(gh pr view:*)", "Bash(gh pr checks:*)", "Bash(gh pr create:*)"]
-```
+Claims need Linear. With another tracker, run the fleet on one machine and leave the claim keys unset. Permissions in `tracker_allow` and `forge_allow` are added to every Claude agent at boot (Claude Code permission rules); templates name no tracker or code host.
 
 Only the Orchestrator claims, labels and comments, so the write tools (Linear's label, issue and
 comment tools) go in the Orchestrator's own Claude Code settings, not in `tracker_allow`, which
@@ -201,6 +169,27 @@ repo-specific rule, use that repo's `.claude/settings.json` instead.
 `MR !12` (GitLab style) and tags each one with the origin remote's `host` and `project`. The
 Orchestrator then checks it with the matching CLI.
 
+## Parking a team
+
+`scripts/park.sh <team>` closes a team's panes and keeps everything else (rows, worktrees, branches, plans, reports and the Linear claim; nothing is written to Linear). The rows become `Parked`; tick skips them (no nudge, respawn or next issue, never Stalled or Zombie), the team still covers its repo for `repo_without_team`, and it does not count against `max_teams`. It refuses at once, changing nothing, when herdr does not answer or when a worktree has uncommitted changes or commits that are on no remote. `park.sh <team> --after-merge` parks nothing now; tick parks the team when its PR merges, instead of the Orchestrator running `next.sh`. `scripts/unpark.sh <team>` starts the agents again from their rows with the same resume brief a respawn gets (the lead first, in a new workspace); it costs no respawn budget and refuses at once when `max_teams` or `teams_per_repo` is full. `scripts/focus.sh <team>` parks every other live team after its PR merges (`--now`: at once); `focus.sh --clear` unparks only the teams focus parked. `status` shows one line per parked team and one for the focus.
+
+## Running the loop from launchd
+
+`scripts/schedule.sh install` writes a small launcher, `$FLEET_STATE_DIR/bin/fleet-tick`, and `~/Library/LaunchAgents/fleet.tick.plist` (label: `schedule_label`; interval: `tick_secs`, default 300), loads it, and waits for the first tick: if that fails it unloads the job and prints the last log line. The launcher reads the plugin's `installPath` from `~/.claude/plugins/installed_plugins.json` each run, so a plugin update takes effect on the next tick and a swept old version cannot break the job. The job also runs whenever the escalation inbox changes (`WatchPaths`), so a P0 starts a tick within seconds. `uninstall` and `status` do the rest; `status` says whether the loop is healthy (a good tick within twice `tick_secs`).
+
+Each run is `scripts/loop-tick.sh`: one `tick.sh`, no model. It wakes the Orchestrator's pane for every event someone must act on: a ready or merged PR, any escalation (the Orchestrator answers P2 itself), a dead or stalled agent, a taken-over claim, an agent that needs input, a failed brief, the weekly summary, or a PR the lead could not be told about, in one message per tick. Low disk and a repo with no team go to alerts instead. The message is a fixed template, one line per event, `fleet tick: <type> <team> <name> <issue> <PR url> <esc id>`; an agent's own words are never typed into the pane. The wake target is `orchestrator_ref` in `config.toml`, else the pane the Orchestrator registered with `registry.sh orchestrator here` (once per session; `install` and `status` remind you). A wake that cannot be delivered (no Orchestrator registered, its pane gone, herdr down) stays queued and is sent again on the next tick; each miss is a notification and an `orchestrator_wake_missed` event with the reason, and the third miss in a row is an alert. Output goes to `loop.log` in the state dir. Overlapping ticks are handled by the tick lock in `tick.sh`. On Linux, run `loop-tick.sh` from a systemd user timer instead (no code here). The Linear heartbeat runs only when `linear_writes` in `config.toml` is `on` or `test:<TEAM>` (default off).
+
+### Alerts that reach your phone
+
+The Orchestrator shares your login, so a wake into its pane is useless when the login has expired. `loop-tick.sh` therefore also calls `notify` with the optional config `alert_cmd`, at most once per cause per 4 hours, for: a P0/P1 escalation, a login that expired on this Mac, no Orchestrator reply 15 minutes after a wake, herdr not answering, low disk, a repo with no team, 3 failed loop runs in a row, no good tick within twice `tick_secs`, and a wake that could not be delivered 3 times. A good tick ran `tick.sh` and got an event list back; a skipped tick (the lock is held) or junk output counts as failed. `alert_cmd` is run with the message as its one argument, and a failure is logged, never hidden. Point it at a small script, for example:
+
+```sh
+# ~/bin/fleet-alert  (alert_cmd = "/Users/you/bin/fleet-alert")   iMessage to yourself
+osascript -e 'on run argv' -e 'tell application "Messages" to send (item 1 of argv) to buddy "+15551234567" of (1st account whose service type = iMessage)' -e 'end run' "$1"
+# ntfy:      curl -fsS -d "$1" https://ntfy.sh/your-private-topic
+# Pushover:  curl -fsS --form-string "token=APP_TOKEN" --form-string "user=USER_KEY" --form-string "message=$1" https://api.pushover.net/1/messages.json
+```
+
 ## Disk
 
 Fleet runs fill disks: worktrees carry `node_modules` and build output, and every team cluster
@@ -214,7 +203,7 @@ builds and loads images. Four guards keep it from filling:
   files, and the output names them.
 - **`env.sh down`** removes the team's images and build cache after the repo's `down` (see below).
 - **Boot** refuses below `min_free_gb`, with the same `FLEET_FORCE=1` override as `max_agents`.
-- **Status** shows free disk; **watch** prints and notifies only when disk drops below `warn_free_gb` (or `min_free_gb`) or recovers.
+- **Status** shows free disk; the launchd loop alerts (notify and `alert_cmd`, once per 4 hours) when disk drops below `warn_free_gb` (or `min_free_gb`).
 
 Docker Desktop's own disk limit is yours to set (Settings, Resources).
 
@@ -252,18 +241,45 @@ Example using kind:
 Claims, leases, takeover and `status --all` need Linear (label groups and comments). Any other
 tracker runs the fleet on one machine, and those parts are skipped.
 
-- A claim comment carries `lease=`, `lease_hours` ahead (default 2). The Orchestrator renews the
-  lease on every pass (each `status`, each `watch` check, each `/loop` tick). Scripts cannot renew:
-  an Orchestrator that is not running stops renewing, and that is when a takeover is allowed.
-- A lease older than `lease_hours` with no PR activity in that time can be taken over. The
-  taker posts a new claim comment with a `takeover:` line naming the voided comment, and boot
-  accepts it only when the passed lease is really expired. `FLEET_FORCE=1` never bypasses a live claim.
-- **The tracker has no compare-and-swap.** Re-reading and the earliest-wins rule narrow the race
-  between two takers; they do not remove it. A machine whose claim was taken over stops renewing
-  and tells you; it never fights back.
-- `status --all` builds one table from the claim comments the Orchestrator can read and this
-  machine's registry. Other machines' health is not probed: their rows show `Claimed`, the lease
-  and the scope.
+- A claim is the machine's label on the issue; liveness is a `heartbeat=` line in that label's
+  description, rewritten by tick (one API call per tick, only when `linear_writes` allows it; the
+  launchd loop runs tick without an Orchestrator session). No claim or lease comments. A Mac whose
+  loop stops (asleep, off, uninstalled) stops heartbeating, and that is when a takeover is allowed.
+- A heartbeat older than `lease_hours` (default 2) with no open PR (looked up on `fleet/<slug>`,
+  Linear's branch, and any open PR whose title or body names the issue key, whatever its branch) can
+  be taken over with `linear.sh takeover`, which re-reads like claim (of two at once, one wins) and
+  leaves one comment.
+- Nothing writes to Linear while `linear_writes = "off"` (the default); the user sets `on` after the FT proof.
+  Tick keeps heartbeating Done rows (a team waiting on a merge keeps its claim) and never migrates. `FLEET_FORCE=1` never bypasses a live claim.
+- **The tracker has no compare-and-swap.** The last writer wins and both machines re-read; that
+  narrows the race, it does not remove it. A machine whose issue was taken over stops and tells
+  you; it never fights back.
+- `status --all` builds one table from `linear.sh peers` and this machine's registry. Other
+  machines' health is not probed: their rows show `Claimed`, the issue and the heartbeat age.
+- The Linear API key lives only on the Orchestrator machine (`~/.config/fleet/linear_api_key`,
+  mode 600, or `LINEAR_API_KEY` in its shell). Boot gives it to no agent: panes start with
+  `LINEAR_API_KEY` unset, the scope guard denies Read, Grep and Glob of the file (and a Grep or Glob,
+  with or without a path, that searches its directory or above it), and the Bash guard denies any
+  command naming the file or reaching its directory (`~/.config/fleet`, `$HOME/.config/fleet`,
+  `${XDG_CONFIG_HOME}/fleet`, `$FLEET_CONFIG_DIR`, the absolute path, a glob or a recursive search
+  that can reach it), and any `herdr pane run|send-text|send-keys`. **Residual risk:**
+  these hooks are a guardrail, not a boundary. Agents run as the same user (same-uid), and a
+  same-uid process can read a mode-600 file, so a determined or prompt-injected agent could still
+  reach it. Closing that needs the key outside the agents' reach (a Keychain item or another OS
+  user), which is a follow-up. Without it claims are unavailable (`linear.sh` exits 3), not fatal.
+- Agents get an allowlist of herdr subcommands, not `herdr:*`: workers `agent get|read|list|wait`,
+  leads also `agent prompt|send-keys`; the Bash guard holds `agent read|prompt|send-keys` to the
+  agent's own team: the exact herdr names of its rows in the registry. `herdr pane read` is denied to agents. `linear.sh` refuses a fleet agent (`FLEET_ROLE` set) and its endpoint and transport are fixed in the code (the tests alone override them), so an agent cannot have the key piped to a program of its own. The guards compare the key's name and path without regard to case (macOS volumes ignore it). Known gaps: a relative path after a `cd`, a symlink made by the agent, and a PR that never names its issue key (takeover's search) are not caught; this is a guardrail, not a boundary.
+- Every agent pane's shell is scrubbed before its agent starts: `LINEAR_API_KEY`, `AWS_PROFILE`,
+  `AWS_DEFAULT_PROFILE`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_SESSION_TOKEN` and any
+  names in `scrub_env` (config.toml) are unset, the AWS shared files point at `/dev/null`, and
+  `KUBECONFIG` is `/dev/null` unless the team has its own. It is always on. The Bash guard also denies
+  package installers (`brew|npm|pip|go|gem|cargo|apt|yarn|pnpm install/add <package>`, unless
+  config.toml has `installs = "allow"`; lockfile installs such as `npm ci` pass), `gh pr merge`, a
+  force push without `--force-with-lease`, and any push to the default branch. These guards catch
+  mistakes; they are not a security boundary (see above). Agents run with permission checks on:
+  `bypassPermissions` is refused. UNVERIFIED: that a real pane's shell passes the scrubbed
+  environment to `claude`.
 
 ### Cloned machine id
 
@@ -271,9 +287,43 @@ Each machine is told apart by its key, the first 8 hex characters of its machine
 or a restored disk image copies `/etc/machine-id` (or the stored `machine-id` file), so two
 machines then share one key and the label and arbitration cannot tell them apart. Give each
 clone its own key: set `FLEET_MACHINE=<unique>`, or delete `$FLEET_STATE_DIR/machine-id` and, for
-the OS-derived sources, regenerate the OS id. Detection is best effort: `status --all` marks a
-claim that carries this machine's key but names no team in the local registry as `SAME KEY?` and
-warns. Two clones that run the same team names are not caught.
+the OS-derived sources, regenerate the OS id. Nothing detects a cloned id for you.
+
+## Guard residuals (4.1)
+
+The scope guard (`hooks/fleet-scope-guard.sh`) and the Bash guard (`hooks/fleet-bash-guard.sh`) catch mistakes; they are
+not a security boundary. Agents run as the same user as the Orchestrator, so a mode-600 key file is readable by any
+process of that user whatever the guards say (a Keychain item or a separate OS user is the follow-up). The guards' scope
+is frozen for B: what they deny today stays denied, and the bypass classes below are known and accepted, to be taken up
+in 4.1. Anything that newly exposes the key is a blocker; the items that touch the key are marked (key).
+
+- **Environment is an agent's own (key):** `FLEET_ROLE` is a convention, so `FLEET_ROLE= linear.sh ...` runs the script
+  as the Orchestrator would, with the key it can read. (Closed: the key-override bypass. `linear.sh` honours `FLEET_CURL`
+  and `LINEAR_URL` only when `FLEET_TEST=1`, the state dir is not the live one, `LINEAR_API_KEY` is not set and the key
+  file is not under the real `~/.config/fleet`, resolved from the real home and compared in lower case; otherwise it
+  refuses and sends nothing.)
+- **Built at run time (key):** a path or name assembled by variables, `eval`, aliases, encodings, `g''rep`-style quote
+  splitting beyond what the three scans undo, or an interpreter (`python -c`, `perl -e`, `node -e`). `sh -c` and `bash -c`
+  strings are scanned as text, not parsed.
+- **Relative paths and links (key):** a relative path after a `cd` (`cd ~/.config && cat fleet/*` is denied; a two-step
+  `d=~/.config; cat $d/fleet/*` is not), a symlink the agent makes itself (`ln -s ~/.config /tmp/c; cat /tmp/c/fl*/*`),
+  and a copy of the key under another name.
+- **Quote and separator edge cases:** a `;`, `|` or `(` inside a quoted `grep` argument splits the segment, so
+  `grep -E 'a|b' -r x ~` is allowed; a backslash-newline continuation (`grep \` then `-r x ~` on the next line) resets the
+  scan; `/bin/\Find ~` and `GREP\ -r x ~` are cheap evasion variants; a mixed-case tool inside a wrapper's quoted string
+  (`watch "Grep -r x ~"`, `$(which Grep) -r x ~`) is matched in lower case only.
+- **Tool list:** GNU's abbreviated `--recurs` and the long `--directories=recurse` are not recognised, nor `bsdtar` or
+  `scp -r`. Prose over-denial is by design: an unquoted `echo Tree ~` and quoted prose that mentions `grep -r` and `~`
+  are denied (agents quote their prose); so is `ls -ltr ~; echo Find`.
+- **herdr:** `herdr --machine m1 pane run ...` and `--remote h ...` are allowed (an option that takes a value is skipped as
+  a flag); `\herdr ...` is allowed (a leading backslash is not stripped in the herdr rules); a tab after `;` is not a
+  command start; quote-split names (`H""ERDR`).
+- **Takeover:** a PR on boot's `fleet/<team>/<role>` branch whose title and body never name the issue key is not found by
+  `linear.sh takeover`'s search; house rules make every fleet PR body link its issue.
+- **Hook timing:** a hook that exceeds its timeout does not block; every case measured is well under it (0.25 s at the
+  worst), but an enormous input could still reach it.
+- **Not guard gaps, by design:** claims are not released at retire, next or a Failed row, so the machine-wide heartbeat keeps an
+  abandoned issue locked while this machine runs any team; the viewer cache saves one `Viewer` read per tick only.
 
 ## Files
 
@@ -282,13 +332,15 @@ warns. Two clones that run the same team names are not caught.
 | `SKILL.md` | routes and rules the Orchestrator follows |
 | `templates/*.json` | team shapes: roles, agent kind, model, worktree, briefs, exit criteria |
 | `scripts/boot.sh` | one-command team boot |
-| `scripts/claim.sh` | claim comment: build, parse, renew, lease expiry test |
+| `scripts/claim.sh` | lease arithmetic: lease, heartbeat parse, expiry test |
+| `scripts/linear.sh` | claims and heartbeat on the Linear API |
 | `scripts/chat.sh` | chat channel settings and message format (never posts) |
 | `scripts/machine-id.sh` | this machine's id, key and tracker label for claims |
 | `scripts/status.sh` | health computation |
-| `scripts/watch.sh` | live monitor (humans; the Orchestrator loop uses `tick.sh`) |
-| `scripts/tick.sh`, `tell.sh`, `next.sh` | loop tick, checked delivery, moving a team to its next issue |
-| `scripts/escalation-wait.sh` | waits for new escalations in the inbox (the Orchestrator arms it in the background each tick) |
+| `scripts/respawn.sh`, `metrics.sh`, `agent-lib.sh` | respawn a dead agent, per-PR metrics from `events.jsonl`, the agent-start functions boot and respawn share |
+| `scripts/tick.sh`, `tell.sh`, `next.sh` | loop tick, checked delivery (briefs as files), moving a team to its next issue |
+| `scripts/sandbox.sh` | reproductions away from the live fleet |
+| `rules/house.md` | the house rules every brief ends with (a repo's `.claude/fleet-rules.md` follows them) |
 | `scripts/retire.sh` | safe teardown: archives reports to `reports/fleet-archive/`, removes worktrees, removes the team's test cluster |
 | `scripts/env.sh` | per-team disposable test cluster, declared by the repo's `.claude/fleet-env.json` |
 | `scripts/test/run.sh` | offline tests (stub `up`/`down`, docker, df and herdr; no kind, no live fleet) |

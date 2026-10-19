@@ -21,12 +21,19 @@ restarted, compacted or replaced agent picks up from the row, not from memory.
 | `repo`, `cwd`, `worktree`, `branch` | where it works; `worktree` and `branch` are set for writers only |
 | `machine`, `workspace`, `pane`, `herdr_ref` | where it runs; `herdr_ref` is the herdr agent name |
 | `issue`, `claimed_by`, `scope` | the tracker issue, the machine key that claimed it, and the declared file scope `{repo, paths[]}` (empty paths = whole repo); set by `boot.sh --issue/--claimed-by/--scope` |
-| `lease_expires`, `takeover_of` | the claim's lease (UTC, renewed with `registry.sh set`) and, after a takeover, the key of the machine it replaced |
 | `assignment` | the task it owes (the hook) |
-| `status` | Booting, Working, Needs input, Stalled, Zombie, Idle, Done, Retired |
+| `status` | Booting, Working, Needs input, Stalled, Zombie, Idle, Done, Parked, Retired |
 | `escalation`, `escalations[]` | `escalation` is derived: the highest severity among open entries, `""` when none. Each entry is `{id, severity, message, at}` (`id` is `<at compact>-<seq>`, seq the 1-based array position; entries filed before ids existed get the same derived id on read) plus `resolved_at` and `resolution` once `registry.sh resolve` closes it; `(name, id)` identifies one. Open entries survive `done`; `retire` closes them with resolution "closed at retire". A non-array `escalations` reads as empty and non-object elements are skipped |
-| `transcript` | path of the agent's Claude Code transcript (`<projects>/<cwd slug>/<session id>.jsonl`), set by boot (`--session-id`) and re-pointed by `next.sh` after `/clear` |
-| `pr`, `signoff` | `registry.sh signoff <name> <PR URL or N> <sha>` (the tester) sets `pr` and `signoff = {pr, sha, at}`; `tick.sh` reads them. `registry.sh reassign <team> <issue>` (run by `next.sh`) clears `outcome`, `summary`, `done_at`, `pr`, `signoff` and `lessons`, closes open escalations with `resolution: "closed at next"`, and sets `issue` and status Working |
+| `transcript` | path of the agent's Claude Code transcript (`<projects>/<cwd slug>/<session id>.jsonl`), set by boot (`--session-id`) and replaced when `respawn.sh` or `next.sh` restarts the agent with a new session |
+| `transcripts` | earlier transcript paths of the agent (a list), appended by `respawn.sh` (also when `next.sh` restarts the agent); `metrics.sh` counts tokens only from these and `transcript` |
+| `status_detail` | "login expired" or "API error" while the newest assistant line of the transcript is an API error (status.sh); empty otherwise |
+| `continued_at` | when tick last sent a `continue` to an agent stopped by an API error (at most one per 30 minutes) |
+| `parked_at`, `parked_reason` | set for the whole team by `park.sh` (`registry.sh park`, one write): when, and why (`park`, `after-merge` or `focus:<team>`). Done rows keep their status. The panes are closed; rows, worktrees, branches and the claim stay. `unpark.sh` empties both |
+| `park_after_merge` | the reason the team parks with once its PR merges (`park.sh --after-merge`, `focus.sh` without `--now`); `tick.sh` parks the team then. `unpark.sh` and `focus.sh --clear` clear it |
+| `nudged_at` | set by `tick.sh` when it nudged a Stalled agent; cleared when the agent stops being Stalled |
+| `plugin_version`, `issue_url` | the plugin version that booted (or last restarted) the agent, for tick's `stale_version`; the issue's full URL, for the brief's `Fixes` line |
+| `last_brief`, `brief_failed_at`, `brief_resent` | the agent's latest brief file (`briefs/<team>/<role>/<id>.md` in the state dir, mode 600); set when a brief did not arrive (the row stays Failed, never Stalled); set when tick re-sent the pointer, once |
+| `pr`, `signoff` | `registry.sh signoff <name> <PR URL or N> <sha>` (the tester) sets `pr` and `signoff = {pr, sha, at}`; `tick.sh` reads them. `registry.sh reassign <team> <issue>` (run by `next.sh`) clears `outcome`, `summary`, `done_at`, `pr`, `signoff` and `lessons`, closes open escalations with `resolution: "closed at next"`, sets `issue`, rewrites `assignment`, and sets the lead Working and the workers Idle; it logs `issue_done` (the old issue, PR and outcome) to the event log first |
 | `escalation`, `escalations[]` | `escalation` is derived: the highest severity among open entries, `""` when none. Each entry is `{severity, message, at}` plus `resolved_at` and `resolution` once `registry.sh resolve` closes it; `(name, at)` identifies one. Open entries survive `done` and `retire` |
 | `discovered[]` | unrelated work the agent filed instead of doing |
 | `expertise_file` | the role's expertise file, if the repo has one |
@@ -38,8 +45,8 @@ restarted, compacted or replaced agent picks up from the row, not from memory.
 
 `registry.sh escalate` also appends one JSON line `{at, id, name, team, severity, message}` to
 `escalations.jsonl` in the state dir. It is append-only and never
-rotated; resolving does not write to it. `scripts/escalation-wait.sh` reads it with a persisted
-cursor (`escalations.cursor`) so no arrival is missed between two arms.
+rotated; resolving does not write to it. The launchd job (`schedule.sh`) watches the file (`WatchPaths`), so a
+new line starts a tick within seconds.
 
 ## Schema check and the archive
 
@@ -64,6 +71,17 @@ lowercase hex `sha` of 7 to 40 characters, `pr` is empty or an `https://` URL, `
 ends in `/tester`; `tick.sh` ignores a sign-off on any row that is not a tester row of the PR's team.
 `FLEET_NAME` and `FLEET_ROLE` are environment conventions an agent could set, so this guards against
 mistakes, not against an adversary.
+
+## The event log
+
+`events.jsonl` in the state dir is append-only, one JSON object per line:
+`{at, type, team, name, issue, pr, sha, detail}` (empty fields are null). Types: `boot`, `brief_delivered`,
+`brief_failed`, `signoff`, `escalation_raised`, `escalation_resolved`, `next`, `pr_opened`, `pr_ready`,
+`pr_merged`, `stalled`, `dead`, `respawned`, `retired`, `parked`, `unparked`, `park_marked`, `focus_set`,
+`focus_cleared` and `issue_done`. `detail` is a short reason (cut at 120 characters), never brief text and
+never the Linear key. `issue_done` is the one type with more fields: `outcome`, `summary` and `lessons`, one
+event per row, written by `registry.sh reassign` (`next.sh`) before it clears the old issue's row, so a debrief
+still finds them. `metrics.sh` reads the log.
 
 ## Tick state
 
@@ -145,28 +163,16 @@ Linear only. With one machine, or any other tracker, `issue`, `claimed_by` and `
 
 `machine` is the machine key (first 8 hex characters of its id; `FLEET_MACHINE` overrides it).
 The tracker label is `<label_prefix><key>`, e.g. `fleet:3f9a2c1e`, and its description reads
-`<name or hostname> · <OS> · machine id <full id> · first claim <YYYY-MM-DD>`. A claim comment is
-two lines plus an optional third, written by `scripts/claim.sh line`:
-
-```
-fleet-claim: machine=3f9a2c1e name="Mac 1" team=build-dev317 at=2026-10-18T09:00:00Z lease=2026-10-18T11:00:00Z
-scope: platform: deploy/local, scripts/local.sh
-takeover: from=9b1d4e07 team=build-dev298 comment=<old comment id> at=2026-10-18T09:00:00Z previous-lease=2026-10-18T08:00:00Z reason=expired
-```
-
-`lease=` is renewed (`claim.sh renew`) on every Orchestrator pass. The `takeover:` line exists
-only on a takeover; it is the log, and `comment=` names the claim comment it voids
-(`claim.sh parse` returns it as `takeover_of_comment`). A lease older than `lease_hours` with no PR
-activity in that time can be taken over; `boot.sh --takeover-of` checks it.
+`<name or hostname> · <OS> · machine id sha256:<first 12 hex of sha256(id)> · first claim <YYYY-MM-DD>` (the full id never leaves the machine; an older label that holds it is rewritten by `linear.sh migrate`) plus a
+`heartbeat=<ISO>` line that `linear.sh heartbeat` rewrites on every tick (liveness lives only
+there; no claim, lease or heartbeat comment exists). A heartbeat older than `lease_hours` with no open PR
+can be taken over with `linear.sh takeover` (`claim.sh expired` checks the lease, takeover looks the PR up). Writes need `linear_writes` (default off).
 
 `status.sh --all --json` is a bare array. Registry rows keep their fields and add `source: "registry"`;
-claims from other machines are rows with `source: "tracker"`, `status` `Claimed`
-(`Claimed (lease lapsed)`, or `SAME KEY?`), `machine`, `machine_name`, `issue`, `lease_expires`,
-`claim_comment` and `scope`.
+claims from other machines (`linear.sh peers`) are rows with `source: "tracker"`, `status` `Claimed`
+(`Claimed (heartbeat lapsed)`, `Claimed (no heartbeat)`), `machine`, `issue`, `heartbeat` and
+`heartbeat_age`.
 
 **Cloned machine id.** A cloned VM or restored disk copies the machine id, and two machines then
 share one key. Set `FLEET_MACHINE=<unique>` or delete the stored `machine-id` file on the clone.
-`status --all` flags a claim with this key and no local team as `SAME KEY?`; detection is best effort.
-
-The registry is local to one machine, so overlap with another machine's claim comes from
-`boot.sh --peer-claim 'KEY/team=repo: paths'`, filled in from the claim comments the Orchestrator read.
+Nothing detects it for you. Other machines' scope is not known (the label plus the heartbeat is the lock); `boot.sh` warns only about overlap with teams on this machine.

@@ -71,12 +71,12 @@ require_herdr() {
   fi
 }
 
-# max_agents from config.toml (key = value), default 4.
-max_agents() {
-  local v=""
-  [ -f "$FLEET_CONFIG_DIR/config.toml" ] &&
-    v="$(sed -n 's/^[[:space:]]*max_agents[[:space:]]*=[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$FLEET_CONFIG_DIR/config.toml" | head -1)"
-  printf '%s\n' "${v:-4}"
+# const_int <NAME> <default>: an internal timing or limit. It is a constant, not a setting: only the
+# FLEET_<NAME> environment variable (upper case) overrides it, and the tests use that.
+const_int() {
+  local v; eval "v=\${FLEET_$1:-}"
+  case "$v" in "" | *[!0-9]*) v="$2" ;; esac
+  printf '%s\n' "$v"
 }
 
 # cfg_int <key> <default>: an integer from config.toml (key = value).
@@ -87,16 +87,26 @@ cfg_int() {
   printf '%s\n' "${v:-$2}"
 }
 # permission_mode: the Claude Code --permission-mode every agent starts in. FLEET_PERMISSION_MODE
-# wins, then config.toml (permission_mode = "..."), default auto. A pane that starts in a
-# stricter mode blocks on the first permission prompt and sits idle until someone enables auto.
+# wins, then config.toml, default auto. A pane that starts in a stricter mode blocks on the first
+# permission prompt and sits idle until someone enables auto.
 permission_mode() {
   local v="${FLEET_PERMISSION_MODE:-}"
-  [ -z "$v" ] && [ -f "$FLEET_CONFIG_DIR/config.toml" ] &&
-    v="$(sed -n 's/^[[:space:]]*permission_mode[[:space:]]*=[[:space:]]*"\([A-Za-z]*\)".*/\1/p' "$FLEET_CONFIG_DIR/config.toml" | head -1)"
-  printf '%s\n' "${v:-auto}"
+  [ -n "$v" ] || v="$(cfg_str permission_mode auto)"
+  check_permission_mode "${v:-auto}"
+}
+# check_permission_mode <mode>: prints the mode, or dies for one that turns permission checks off. No setting
+# allows bypassPermissions (or --dangerously-skip-permissions): agents always run with checks on.
+check_permission_mode() {
+  case "$1" in
+    bypassPermissions | *dangerously* | *skip-permissions*) die "permission mode '$1' turns permission checks off; fleet agents never run that way" ;;
+  esac
+  printf '%s\n' "$1"
 }
 
-# min_free_gb (boot refuses below it, default 40; 0 disables) and warn_free_gb (watch notifies below it, default 75).
+# max_teams: live teams at once (Parked teams do not count), default 3.
+max_teams() { cfg_int max_teams 3; }
+
+# min_free_gb (boot refuses below it, default 40; 0 disables) and warn_free_gb (status marks LOW and the loop alerts below it, default 75).
 min_free_gb() { cfg_int min_free_gb 40; }
 warn_free_gb() { cfg_int warn_free_gb 75; }
 
@@ -135,6 +145,51 @@ config_list() {
     { warn "ignoring $1 in $f: not a one-level array of strings"; printf '[]\n'; }
 }
 
+# config_pairs <file> [commented]: the top-level keys of a TOML file as "key<TAB>value" lines, plus a "[table]<TAB>"
+# line for each table header (the keys inside a table are not listed). With a 2nd argument, commented
+# lines (# key = value) count too: that is how config.example.toml lists the keys that have no default worth setting.
+config_pairs() {
+  awk -v c="${2:-}" '
+    /^[[:space:]]*\[[A-Za-z_]+\]/ { t = $0; gsub(/[][[:space:]]/, "", t); print "[" t "]\t"; intbl = 1; next }
+    intbl { next }
+    { l = $0; if (c != "") sub(/^[[:space:]]*#+[[:space:]]*/, "", l)
+      if (match(l, /^[a-z_]+[[:space:]]*=[[:space:]]*/)) { k = substr(l, 1, RLENGTH); v = substr(l, RLENGTH + 1)
+        sub(/[[:space:]]*=[[:space:]]*$/, "", k); print k "\t" v } }' "$1"
+}
+
+# config_warn_unknown: config.example.toml is the only list of keys. One warning per key in config.toml that the
+# example does not list (a typo, or a key an older fleet read), and one per key whose value is not the kind the
+# example shows (a number, a quoted string, an array): the setting is ignored either way.
+config_warn_unknown() {
+  local f="$FLEET_CONFIG_DIR/config.toml" ex="$FLEET_SKILL_DIR/config.example.toml" k v want got
+  [ -f "$f" ] && [ -f "$ex" ] || return 0
+  while IFS=$'\t' read -r k v; do
+    [ -n "$k" ] || continue
+    want="$(config_pairs "$ex" 1 | awk -F'\t' -v k="$k" '$1 == k { print $2; found = 1; exit } END { if (!found) print "?" }')"
+    if [ "$want" = "?" ]; then warn "unknown key '$k' in $f (ignored; the keys are listed in config.example.toml)"; continue; fi
+    case "$want" in [0-9]*) want=number ;; '"'*) want=string ;; '['*) want=array ;; *) want="" ;; esac
+    case "$v" in [0-9]*) got=number ;; '"'*) got=string ;; '['*) got=array ;; *) got=other ;; esac
+    [ -z "$want" ] || [ "$got" = "$want" ] || warn "key '$k' in $f is not a $want (ignored)"
+  done < <(config_pairs "$f")
+}
+
+# live_team_count [exclude-team]: teams with a live row (Parked, Done and Retired rows are not live), which is what
+# max_teams caps. When `repos` is set in config.toml only the teams on a listed repo count: a tooling repo
+# takes a slot only when it is listed.
+live_team_count() {
+  "$FLEET_SCRIPTS/registry.sh" list --live | jq -r --arg x "${1:-}" --argjson repos "$(config_list repos)" '
+    [.[] | select(.tier != "Orchestrator" and .team != $x)
+      | select(($repos | length) == 0 or ((.repo // "") as $r | any($repos[]; . == $r or (split("/") | last) == ($r | split("/") | last))))
+      | .team] | unique | length'
+}
+# teams_per_repo: live teams on one repo, default 1.
+teams_per_repo() { cfg_int teams_per_repo 1; }
+# teams_on_repo <repo> [exclude-team]: the live teams other than exclude-team that work <repo>, one per line.
+teams_on_repo() {
+  "$FLEET_SCRIPTS/registry.sh" list --live | jq -r --arg r "$1" --arg x "${2:-}" \
+    '[.[] | select(.tier != "Orchestrator" and .team != $x and (.repo // "") == $r) | .team] | unique[]'
+}
+
 # Agent names must match herdr's rule: [a-z][a-z0-9_-]{0,31}.
 agent_name() {
   local n
@@ -143,13 +198,8 @@ agent_name() {
   printf '%s\n' "${n:0:32}"
 }
 
-# max_envs from config.toml (key = value), default 3.
-max_envs() {
-  local v=""
-  [ -f "$FLEET_CONFIG_DIR/config.toml" ] &&
-    v="$(sed -n 's/^[[:space:]]*max_envs[[:space:]]*=[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$FLEET_CONFIG_DIR/config.toml" | head -1)"
-  printf '%s\n' "${v:-3}"
-}
+# max_envs: test clusters at once, default 3.
+max_envs() { cfg_int max_envs 3; }
 
 # Team environment: a repo opts in with <repo>/.claude/fleet-env.json.
 env_config() { [ -f "$1/.claude/fleet-env.json" ] && printf '%s\n' "$1/.claude/fleet-env.json" || true; }
@@ -191,11 +241,129 @@ contract() {
   [ -n "$expertise" ] && x=" Before you start, read your expertise file $expertise and follow it."
   printf '%s' "
 
-Fleet rules for $name.$x Stay on this one task. If you notice unrelated work, run \`$registry note $name discovered \"<what>\"\` instead of doing it. If you need a decision you cannot make, run \`$registry escalate $name P1 \"<question>\"\` and wait. P1 is only for a decision the user must make; \"PR ready\" goes through done, not an escalation. If you stop to wait for instructions, first run \`$registry set $name status=Idle\`. Every commit carries the trailer \`Agent: $name\`. When your part is finished: push your branch if you have one, then run \`$registry done $name --outcome <Shipped|Partial|Failed> --summary \"<one line>\"\`, then stop. Going idle without that command marks you Stalled."
+Fleet rules for $name.$x Stay on this one task. If you notice unrelated work, run \`$registry note $name discovered \"<what>\"\` instead of doing it. If you need a decision you cannot make, run \`$registry escalate $name P1 \"<question>\"\` and wait. P1 is only for a decision the user must make; \"PR ready\" goes through done, not an escalation. If you stop to wait for instructions, first run \`$registry set $name status=Idle\`. When your part is finished: push your \`fleet/<slug>\` branch if you have one (with \`--force-with-lease\`, never to the default branch), then run \`$registry done $name --outcome <Shipped|Partial|Failed> --summary \"<one line>\"\`, then stop. Going idle without that command marks you Stalled."
 }
 
-# build_brief <name> <expertise-file> <text>: a brief plus the fleet rules.
-build_brief() { printf '%s%s' "$3" "$(contract "$1" "$2")"; }
+# build_brief <name> <expertise-file> <text>: a brief plus the fleet rules and the house rules.
+# build_brief --resume <name> <expertise-file> <role brief>: the brief for a respawned agent.
+# Either way the house rules (rules/house.md, then the repo's own .claude/fleet-rules.md) come last, once.
+build_brief() {
+  if [ "${1:-}" = "--resume" ]; then shift; resume_brief "$@"; house_rules "$1"; return; fi
+  printf '%s%s' "$3" "$(contract "$1" "$2")"
+  house_rules "$1"
+}
+
+# house_rules <agent row name>: the fleet's house rules, then the agent's repository's .claude/fleet-rules.md
+# when it has one. The repository is the row's `repo`; without a row only the fleet's rules are printed.
+house_rules() {
+  local repo f
+  repo="$("$FLEET_SCRIPTS/registry.sh" get "$1" 2>/dev/null | jq -r '.repo // ""' 2>/dev/null)" || repo=""
+  printf '\n\n'
+  cat "$FLEET_SKILL_DIR/rules/house.md" 2>/dev/null || warn "house rules missing: $FLEET_SKILL_DIR/rules/house.md"
+  f="$repo/.claude/fleet-rules.md"
+  if [ -n "$repo" ] && [ -f "$f" ]; then printf '\nRepository rules (%s):\n' "$f"; cat "$f"; fi
+}
+
+# resume_brief <name> <expertise-file> <role brief>: what a respawned agent needs to carry on: its role
+# brief, its assignment, the last report file of its role, `git status` and `git log` of its branch,
+# and its open escalations (no screen text: it would come back as a user turn). A lead also gets
+# the plan path (the planner's summary) and the team's rows.
+resume_brief() {
+  local name="$1" ex="$2" role_brief="$3" row dir role team report="" gs="" gl="" esc="" plan="" rows=""
+  row="$("$FLEET_SCRIPTS/registry.sh" get "$name")" || return 1
+  dir="$(printf '%s' "$row" | jq -r 'if (.worktree // "") != "" then .worktree else (.cwd // "") end')"
+  role="${name#*/}"; team="${name%%/*}"
+  [ -z "$dir" ] || [ ! -d "$dir" ] || {
+    report="$(ls -t "$dir"/reports/*-"$role"*.md "$dir"/*-"$role"*.md 2>/dev/null | head -n 1 || true)"
+    gs="$(git -C "$dir" status --short 2>/dev/null | head -n 30 || true)"
+    gl="$(git -C "$dir" log -5 --oneline 2>/dev/null || true)"
+  }
+  esc="$("$FLEET_SCRIPTS/registry.sh" escalations --open | jq -r --arg n "$name" '.[] | select(.name == $n) | "- [\(.severity)] \(.message)"')"
+  if [ "$(printf '%s' "$row" | jq -r .tier)" = "Lead" ]; then
+    plan="$("$FLEET_SCRIPTS/registry.sh" list --team "$team" | jq -r '[.[] | select(.name | endswith("/planner")) | .summary // ""] | first // ""')"
+    rows="$("$FLEET_SCRIPTS/registry.sh" list --team "$team" | jq -r '.[] | "- \(.name): \(.status)\(if (.summary // "") != "" then " (\(.summary))" else "" end)"')"
+  fi
+  printf '%s\n\nYou are being respawned: %s. Carry on from where the record below says you were; do not start over.\nAssignment: %s\n' \
+    "$role_brief" "${FLEET_RESUME_WHY:-your previous session died}" "$(printf '%s' "$row" | jq -r '.assignment // ""')"
+  [ -z "$report" ] || printf 'Your last report file: %s\n' "$report"
+  [ -z "$gl" ] || printf '\ngit log -5 --oneline:\n%s\n' "$gl"
+  printf '\ngit status --short:\n%s\n' "${gs:-(clean)}"
+  [ -z "$esc" ] || printf '\nYour open escalations:\n%s\n' "$esc"
+  [ -z "$plan" ] || printf '\nThe plan (from the planner summary): %s\n' "$plan"
+  [ -z "$rows" ] || printf '\nThe team:\n%s\n' "$rows"
+  contract "$name" "$ex"
+}
+
+# notify <title> <body> [sound] [alert]: the one notification path. The herdr notification shows when herdr is
+# reachable; with a 4th argument "alert" the optional config `alert_cmd` also runs, with the body as its one
+# argument (a script that sends an iMessage via osascript, or a Pushover or ntfy curl: see the README). A failure of either is logged on stderr, never
+# hidden, and never fails the caller.
+notify() {
+  local err cmd
+  if { [ "${HERDR_ENV:-}" = "1" ] || [ -n "${FLEET_SESSION:-}" ]; } && command -v herdr >/dev/null 2>&1; then
+    if ! err="$(hd notification show "$1" --body "$2" --sound "${3:-done}" 2>&1 >/dev/null)"; then
+      warn "notification failed: $1: $(printf '%s' "$err" | head -1)"
+    fi
+  fi
+  if [ "${4:-}" = alert ]; then
+    cmd="$(cfg_str alert_cmd '')"
+    if [ -n "$cmd" ] && ! err="$(/bin/sh -c "$cmd \"\$1\"" fleet-alert "$2" 2>&1 >/dev/null)"; then
+      warn "alert_cmd failed: $(printf '%s' "$err" | head -1)"
+    fi
+  fi
+  return 0
+}
+
+# api_error_detail <transcript>: "login expired" or "API error" when the newest assistant line of the
+# transcript is an API error message (isApiErrorMessage), else nothing. Lines are parsed one at a time;
+# a bad line is skipped. UNVERIFIED: the line shape (.type == "assistant", .isApiErrorMessage, the text
+# in .message.content[].text) is what Claude Code writes today (DEV-368).
+api_error_detail() {
+  [ -n "$1" ] && [ -f "$1" ] || return 0
+  tail -n 40 "$1" 2>/dev/null | jq -Rr 'fromjson? // empty | select(type == "object" and .type == "assistant")
+      | if .isApiErrorMessage == true then
+          ([.message.content? | if type == "array" then .[] | select(type == "object") | .text? // empty elif type == "string" then . else empty end] | join(" ")) as $t
+          | (if ($t | test("login|log in|authenticat|expired|401|unauthorized"; "i")) then "login expired" else "API error" end)
+        else "" end' 2>/dev/null | tail -n 1 || true
+}
+
+# --- the event log: one append-only JSON line per thing that happened ---------------------------------
+# ev_log <type> [team=T] [name=N] [issue=I] [pr=URL] [sha=S] [detail=SHORT REASON]
+# {at, type, team, name, issue, pr, sha, detail}; empty values are null. detail is a short reason (cut
+# at 120 characters), never brief text and never the Linear key; any other key is ignored. The one exception is
+# issue_done, which also takes outcome, summary and lessons (what a debrief reads after a row is cleared). One `>>`
+# write. A write that fails is a warning, never a failure of the caller.
+events_file() { printf '%s\n' "$FLEET_STATE_DIR/events.jsonl"; } # no override: every path comes from FLEET_STATE_DIR
+ev_log() {
+  local type="$1" kv k v line f; shift
+  local a_team="" a_name="" a_issue="" a_pr="" a_sha="" a_detail="" a_outcome="" a_summary="" a_lessons=""
+  for kv in "$@"; do
+    k="${kv%%=*}"; v="${kv#*=}"
+    case "$k" in
+      team) a_team="$v" ;; name) a_name="$v" ;; issue) a_issue="$v" ;; pr) a_pr="$v" ;; sha) a_sha="$v" ;;
+      detail) a_detail="${v:0:120}" ;;
+      outcome) a_outcome="${v:0:40}" ;; summary) a_summary="${v:0:300}" ;; lessons) a_lessons="${v:0:2000}" ;;
+    esac
+  done
+  line="$(jq -nc --arg at "${FLEET_NOW:-$(now)}" --arg type "$type" --arg team "$a_team" --arg name "$a_name" --arg issue "$a_issue" \
+    --arg pr "$a_pr" --arg sha "$a_sha" --arg detail "$a_detail" --arg outcome "$a_outcome" --arg summary "$a_summary" --arg lessons "$a_lessons" \
+    '{at: $at, type: $type, team: $team, name: $name, issue: $issue, pr: $pr, sha: $sha, detail: $detail}
+      + (if $type == "issue_done" then {outcome: $outcome, summary: $summary, lessons: $lessons} else {} end)
+      | with_entries(if .value == "" then .value = null else . end)')" || return 0
+  f="$(events_file)"
+  { mkdir -p "$(dirname "$f")" && printf '%s\n' "$line" >>"$f"; } 2>/dev/null || warn "cannot write the event log $f"
+  return 0
+}
+
+# linear_writes: whether anything may write to Linear. off (the default; anything unrecognised too),
+# test:<TEAM> (writes only on issues of that Linear team) or on. Checked by linear.sh before any write.
+linear_writes() {
+  local v; v="$(cfg_str linear_writes off)"
+  case "$v" in
+    off | on | test:?*) printf '%s\n' "$v" ;;
+    *) warn "linear_writes = '$v' is not off, test:<TEAM> or on; treating it as off"; printf 'off\n' ;;
+  esac
+}
 
 # FLEET_GH: the GitHub CLI, overridable for tests. Scripts only ever make read-only calls (pr view).
 FLEET_GH="${FLEET_GH:-gh}"
@@ -228,29 +396,28 @@ new_uuid() {
   else od -An -N16 -tx1 /dev/urandom | tr -d ' \n' | sed -E 's/(.{8})(.{4})(.{4})(.{4})(.{12})/\1-\2-\3-\4-\5/'; fi
 }
 
-# context_window <model>: the model's context window in tokens, from the [context_window] table
-# of config.toml (model = N lines, the model name optionally quoted); default 200000.
-# UNVERIFIED: the real window per model (DEV-368).
-context_window() {
-  local v="" f="$FLEET_CONFIG_DIR/config.toml"
-  [ -f "$f" ] && v="$(awk -v m="$1" '
-    /^[[:space:]]*\[/ { on = ($0 ~ /^[[:space:]]*\[context_window\]/); next }
-    on { k = $0; sub(/[[:space:]]*=.*/, "", k); gsub(/^[[:space:]]*"?|"?[[:space:]]*$/, "", k)
-         if (k == m) { v = $0; sub(/^[^=]*=[[:space:]]*/, "", v); sub(/[^0-9].*/, "", v); print v; exit } }' "$f")"
-  printf '%s\n' "${v:-200000}"
-}
 
-# transcript_context_pct <transcript file>: percent of the context window the latest assistant
-# turn used (input + cache read + cache creation tokens). Prints nothing when it can't be read.
-transcript_context_pct() {
-  [ -r "$1" ] || return 0
-  local last model tokens
-  last="$(grep -F '"type":"assistant"' "$1" 2>/dev/null | tail -n 1)" || true
-  [ -n "$last" ] || return 0
-  tokens="$(printf '%s' "$last" | jq -r '.message.usage | if type == "object" then ((.input_tokens // 0) + (.cache_read_input_tokens // 0) + (.cache_creation_input_tokens // 0)) else empty end' 2>/dev/null)" || return 0
-  [ -n "$tokens" ] || return 0
-  model="$(printf '%s' "$last" | jq -r '.message.model // ""' 2>/dev/null)"
-  printf '%s\n' $((tokens * 100 / $(context_window "$model")))
+# plugin_version: the version of the plugin these scripts belong to (its plugin.json).
+plugin_version() { jq -r '.version // ""' "$FLEET_SKILL_DIR/../../.claude-plugin/plugin.json" 2>/dev/null || true; }
+# installed_version: the newest developer plugin version installed in Claude Code's plugin cache
+# (FLEET_INSTALLED_VERSION wins, for tests); empty when none is found.
+installed_version() {
+  if [ -n "${FLEET_INSTALLED_VERSION:-}" ]; then printf '%s\n' "$FLEET_INSTALLED_VERSION"; return 0; fi
+  local d v best=""
+  for d in "${HOME:-/nonexistent}"/.claude/plugins/cache/*/developer/*/; do
+    [ -d "$d" ] || continue
+    v="$(basename "$d")"
+    case "$v" in *[!0-9.]* | "") continue ;; esac
+    if [ -z "$best" ] || version_gt "$v" "$best"; then best="$v"; fi
+  done
+  printf '%s\n' "$best"
+}
+# version_gt <a> <b>: a is a newer dotted version than b (numeric per part; BSD and GNU tools alike).
+version_gt() {
+  awk -v a="$1" -v b="$2" 'BEGIN {
+    na = split(a, x, "."); nb = split(b, y, "."); n = (na > nb ? na : nb)
+    for (i = 1; i <= n; i++) { p = x[i] + 0; q = y[i] + 0; if (p > q) exit 0; if (p < q) exit 1 }
+    exit 1 }'
 }
 
 # transcript_bg_running <transcript file>: how many background tasks the agent has running: tool_use blocks
@@ -261,7 +428,7 @@ transcript_context_pct() {
 # Claude Code transcripts, not a documented contract: UNVERIFIED for stability. Unreadable: 0.
 transcript_bg_running() {
   [ -r "$1" ] || { echo 0; return 0; }
-  local maxs now_e; maxs=$(($(cfg_int bg_task_max_hours 6) * 3600))
+  local maxs now_e; maxs=$(($(const_int BG_TASK_MAX_HOURS 6) * 3600))
   now_e="$(jq -rn --arg t "${FLEET_NOW:-$(now)}" '$t | fromdateiso8601')"
   jq -nRr --argjson now "$now_e" --argjson max "$maxs" '
     def ep: (. // "" | tostring | sub("\\.[0-9]+Z$"; "Z") | (try fromdateiso8601 catch null));
