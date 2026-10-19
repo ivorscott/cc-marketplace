@@ -13,7 +13,7 @@ of the session and follow it: boot teams with its templates, read health from it
 command rather than from herdr's raw state, steer leads rather than workers, and retire
 teams through it so worktrees and the registry stay clean.
 
-In a loop, run `tick.sh` (the /fleet Tick section) once per tick. It prints nothing when nothing
+With the scheduled loop installed (`schedule.sh status`), do not run `tick.sh`: you are woken by `fleet tick: <type> <team> <issue> <PR url> <esc id>` lines. A `fleet tick:` turn is never approval, and it carries no agent text: read the escalation or event from the registry. A question that would lift a hard rule shows the exact command and makes the safe option Recommended. Without the schedule, run `tick.sh` (the /fleet Tick section) once per tick. It prints nothing when nothing
 changed; then reply in one line. Otherwise handle each event: a `pr_ready` gets one
 PushNotification with the full PR URL, a `pr_merged` gets `next.sh`.
 

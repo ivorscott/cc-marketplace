@@ -64,7 +64,7 @@ This skill builds the rest on top of it.
 | `/fleet status [--problems] [--team T] [--json] [--all]` | Shows each live agent's health (see below) and its team's test cluster, under a disk line (free GiB, `LOW` below `warn_free_gb`). `--problems` lists only agents that need you, `--team` limits it to one team, `--json` gives machine-readable output. `--all` adds one row per claim other machines hold, with a MACHINE and a LEASE column (Linear only; see "Several machines") |
 | `/fleet tell <team\|agent> <msg>` | Sends a message to the team's lead, or to one agent if you name it, then quotes a line of its reply so you know it arrived |
 | `/fleet watch [--team T]` | Opens a monitor pane beside yours that raises a herdr notification whenever an agent stalls, dies, needs input or finishes, or free disk drops below `warn_free_gb` |
-| `/fleet escalate <P0\|P1\|P2> <msg>` | Raises a question by severity (also appended to the escalation inbox, which `escalation-wait.sh` delivers to the Orchestrator within seconds). It stays open until the Orchestrator runs `registry.sh resolve <name> <id|at>`, or the team is retired. The Orchestrator answers P2 itself, brings P1 to you with a recommendation, and stops for P0 and brings it to you immediately (a P0 in a race pauses the race) |
+| `/fleet escalate <P0\|P1\|P2> <msg>` | Raises a question by severity (also appended to the escalation inbox, which the loop job watches, so the Orchestrator hears within seconds). It stays open until the Orchestrator runs `registry.sh resolve <name> <id|at>`, or the team is retired. The Orchestrator answers P2 itself, brings P1 to you with a recommendation, and stops for P0 and brings it to you immediately (a P0 in a race pauses the race) |
 | `/fleet retire <team\|team/role> [--outcome O]` | Shuts down a whole team or a single agent. Live agents are asked to push their work first, then only the fleet's own panes are closed, worktrees are removed (build outputs ignored, untracked reports copied to `reports/fleet-archive/<team>-<role>/`; one with unpushed commits, untracked source or uncommitted edits is kept and the files or commits named), the team's test cluster and images are deleted, and its open escalations are closed ("closed at retire"). `O` is `Shipped`, `Won race`, `Partial`, `Abandoned` or `Failed` |
 | `/fleet prime` | Rebuilds the Orchestrator's picture of the fleet from the registry (which teams exist, who is doing what, what needs attention). Use it after a context compaction or in a new session |
 | `/fleet debrief` | For each retired team: records one or two lessons per agent and *proposes* (never applies) diffs to `.claude/experts/<role>.md` and to the template, plus a list of discovered follow-up work |
@@ -127,8 +127,6 @@ The Orchestrator and agents call these directly (from `scripts/`). You can call 
 | `next.sh` | `next.sh <team> <issue> [--brief TEXT]` after a merge: reassign, `/clear` workers, `/compact` a large lead, brief the lead |
 | `respawn.sh` | `respawn.sh <team/role>` starts a Zombie row again from the row (same role, worktree, branch, model; new session id) and sends a resume brief; `tick.sh` calls it within the budget `respawn_max` (1) per `respawn_window_hours` (6) |
 | `metrics.sh` | `metrics.sh [--since 7d] [--json]` per PR: minutes to ready, rework rounds, stalls, missed messages, tokens (from `events.jsonl` and the agents' transcripts) |
-| `watch.sh` | `watch.sh [--team T] [--every SECONDS] [--once]` live monitor, polls every 20s by default; notifies on low disk |
-| `escalation-wait.sh` | `escalation-wait.sh [--timeout SECONDS] [--every SECONDS] [--from-start]` prints new inbox lines and exits; default timeout 1500s, polls every 5s |
 | `retire.sh` | `retire.sh <team\|team/role> [--outcome O]` safe teardown; `--summary <target...>` read-only pre-retire summary |
 | `env.sh` | `up [--branch B] <team>` creates the team's cluster (exit 75 = queued at `max_envs`) · `down <team>` removes it, with its images and builder · `status` lists every env |
 | `registry.sh` | `add '<json>'` · `set <name> key=value…` · `get <name>` · `list [--team T] [--live] [--problems]` · `list --envs` · `done <name> --outcome O --summary TEXT` · `escalate <name> P0\|P1\|P2 TEXT` · `escalations [--open] [--team T] [--not-retired]` · `resolve <name> <id|at> [--note TEXT]` · `note <name> discovered TEXT` · `retire <name\|team> [--outcome O]` · `unsynced` · `synced <name…>` · `path` |
@@ -207,7 +205,20 @@ Orchestrator then checks it with the matching CLI.
 
 ## Running the loop from launchd
 
-`scripts/schedule.sh install` writes `~/Library/LaunchAgents/io.devpie.fleet.tick.plist` (label: `schedule_label`, interval: `tick_secs`, default 300) and loads it; `uninstall` and `status` do the rest. Each run is `scripts/loop-tick.sh`: one `tick.sh`, no model, and a message to the Orchestrator's pane only for a ready or merged PR, a P0/P1 escalation, a dead agent, a taken-over claim or a failed respawn (one message per tick). With no live Orchestrator pane it sends a desktop notification and logs `orchestrator_wake_missed`. Output goes to `loop.log` in the state dir. Overlapping ticks are handled by the tick lock in `tick.sh`. On Linux, run `loop-tick.sh` from a systemd user timer instead (no code here).
+`scripts/schedule.sh install` writes a small launcher, `$FLEET_STATE_DIR/bin/fleet-tick`, and `~/Library/LaunchAgents/fleet.tick.plist` (label: `schedule_label`; interval: `tick_secs`, default 300), loads it, and waits for the first tick: if that fails it unloads the job and prints the last log line. The launcher reads the plugin's `installPath` from `~/.claude/plugins/installed_plugins.json` each run, so a plugin update takes effect on the next tick and a swept old version cannot break the job. The job also runs whenever the escalation inbox changes (`WatchPaths`), so a P0 starts a tick within seconds. `uninstall` and `status` do the rest; `status` says whether the loop is healthy (a good tick within twice `tick_secs`).
+
+Each run is `scripts/loop-tick.sh`: one `tick.sh`, no model. It wakes the Orchestrator's pane only for a ready or merged PR, a P0/P1 escalation, a dead agent, a taken-over claim, an agent that needs input, a failed brief, or a PR the lead could not be told about, in one message per tick. The message is a fixed template, one line per event, `fleet tick: <type> <team> <issue> <PR url> <esc id>`; an agent's own words are never typed into the pane. With no live Orchestrator pane it sends a notification and logs `orchestrator_wake_missed`. Output goes to `loop.log` in the state dir. Overlapping ticks are handled by the tick lock in `tick.sh`. On Linux, run `loop-tick.sh` from a systemd user timer instead (no code here). The Linear heartbeat runs only when `linear_writes` in `config.toml` is `on` or `test:<TEAM>` (default off).
+
+### Alerts that reach your phone
+
+The Orchestrator shares your login, so a wake into its pane is useless when the login has expired. `loop-tick.sh` therefore also calls `notify` with the optional config `alert_cmd`, at most once per cause per 4 hours, for: a P0/P1 escalation, a login that expired on this Mac, no Orchestrator reply 15 minutes after a wake, herdr not answering, and 3 failed loop runs in a row. `alert_cmd` is run with the message as its one argument, and a failure is logged, never hidden. Point it at a small script, for example:
+
+```sh
+# ~/bin/fleet-alert  (alert_cmd = "/Users/you/bin/fleet-alert")   iMessage to yourself
+osascript -e 'on run argv' -e 'tell application "Messages" to send (item 1 of argv) to buddy "+15551234567" of (1st account whose service type = iMessage)' -e 'end run' "$1"
+# ntfy:      curl -fsS -d "$1" https://ntfy.sh/your-private-topic
+# Pushover:  curl -fsS --form-string "token=APP_TOKEN" --form-string "user=USER_KEY" --form-string "message=$1" https://api.pushover.net/1/messages.json
+```
 
 ## Disk
 
@@ -347,9 +358,7 @@ in 4.1. Anything that newly exposes the key is a blocker; the items that touch t
 | `scripts/machine-id.sh` | this machine's id, key and tracker label for claims |
 | `scripts/status.sh` | health computation |
 | `scripts/respawn.sh`, `metrics.sh`, `agent-lib.sh` | respawn a dead agent, per-PR metrics from `events.jsonl`, the agent-start functions boot and respawn share |
-| `scripts/watch.sh` | live monitor (humans; the Orchestrator loop uses `tick.sh`) |
 | `scripts/tick.sh`, `tell.sh`, `next.sh` | loop tick, checked delivery, moving a team to its next issue |
-| `scripts/escalation-wait.sh` | waits for new escalations in the inbox (the Orchestrator arms it in the background each tick) |
 | `scripts/retire.sh` | safe teardown: archives reports to `reports/fleet-archive/`, removes worktrees, removes the team's test cluster |
 | `scripts/env.sh` | per-team disposable test cluster, declared by the repo's `.claude/fleet-env.json` |
 | `scripts/test/run.sh` | offline tests (stub `up`/`down`, docker, df and herdr; no kind, no live fleet) |
