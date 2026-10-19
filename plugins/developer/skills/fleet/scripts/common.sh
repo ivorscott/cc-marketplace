@@ -70,12 +70,7 @@ require_herdr() {
 }
 
 # max_agents from config.toml (key = value), default 4.
-max_agents() {
-  local v=""
-  [ -f "$FLEET_CONFIG_DIR/config.toml" ] &&
-    v="$(sed -n 's/^[[:space:]]*max_agents[[:space:]]*=[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$FLEET_CONFIG_DIR/config.toml" | head -1)"
-  printf '%s\n' "${v:-4}"
-}
+max_agents() { cfg_int max_agents 4; }
 
 # cfg_int <key> <default>: an integer from config.toml (key = value).
 cfg_int() {
@@ -87,11 +82,16 @@ cfg_int() {
 # permission_mode: the Claude Code --permission-mode every agent starts in. FLEET_PERMISSION_MODE
 # wins, then config.toml (permission_mode = "..."), default auto. A pane that starts in a
 # stricter mode blocks on the first permission prompt and sits idle until someone enables auto.
-permission_mode() {
-  local v="${FLEET_PERMISSION_MODE:-}"
-  [ -z "$v" ] && [ -f "$FLEET_CONFIG_DIR/config.toml" ] &&
-    v="$(sed -n 's/^[[:space:]]*permission_mode[[:space:]]*=[[:space:]]*"\([A-Za-z]*\)".*/\1/p' "$FLEET_CONFIG_DIR/config.toml" | head -1)"
-  printf '%s\n' "${v:-auto}"
+permission_mode() { printf '%s\n' "${FLEET_PERMISSION_MODE:-$(cfg_str permission_mode auto)}"; }
+
+# const_int <name> <default>: an internal timing or threshold. It is a constant of the code, not a setting:
+# config.toml is not read for it; only the environment can change it (FLEET_<NAME>, upper case), for tests.
+#   claim_settle_secs 5 (claim and takeover re-read) · tell_confirm_secs 15 (tell.sh delivery wait)
+#   respawn_max 1 and respawn_window_hours 6 (tick's respawn budget) · bg_task_max_hours 6 · compact_above_pct 50
+const_int() {
+  local e v; e="FLEET_$(printf '%s' "$1" | tr 'a-z' 'A-Z')"; v="${!e:-}"
+  case "$v" in "" | *[!0-9]*) v="$2" ;; esac
+  printf '%s\n' "$v"
 }
 
 # min_free_gb (boot refuses below it, default 40; 0 disables) and warn_free_gb (watch notifies below it, default 75).
@@ -168,12 +168,7 @@ agent_name() {
 }
 
 # max_envs from config.toml (key = value), default 3.
-max_envs() {
-  local v=""
-  [ -f "$FLEET_CONFIG_DIR/config.toml" ] &&
-    v="$(sed -n 's/^[[:space:]]*max_envs[[:space:]]*=[[:space:]]*\([0-9][0-9]*\).*/\1/p' "$FLEET_CONFIG_DIR/config.toml" | head -1)"
-  printf '%s\n' "${v:-3}"
-}
+max_envs() { cfg_int max_envs 3; }
 
 # Team environment: a repo opts in with <repo>/.claude/fleet-env.json.
 env_config() { [ -f "$1/.claude/fleet-env.json" ] && printf '%s\n' "$1/.claude/fleet-env.json" || true; }
@@ -193,6 +188,29 @@ render_env() {
   v="$(printf '%q' "${9:-}")"; s="${s//\{\{image_label\}\}/$v}"
   v="$(printf '%q' "${10:-}")"; s="${s//\{\{builder\}\}/$v}"
   printf '%s' "$s"
+}
+
+# config_check: warns, once per distinct set, about keys in config.toml that config.example.toml (the only list of
+# keys, next to SKILL.md) does not know, and about a known number key whose value is not a whole number. The
+# warned set is remembered in $FLEET_STATE_DIR/config.warned, so a loop tick says it once, not every five minutes.
+# Reads names only; a value is never printed.
+config_check() {
+  local f="$FLEET_CONFIG_DIR/config.toml" ex="$FLEET_SKILL_DIR/config.example.toml" bad w
+  [ -f "$f" ] && [ -f "$ex" ] || return 0
+  bad="$(awk '
+    function key(l,   k) { if (l ~ /^[[:space:]]*\[/) { k = l; sub(/^[[:space:]]*\[/, "", k); sub(/\].*/, "", k); return "[" k "]" }
+                           if (l ~ /^[[:space:]]*[A-Za-z_][A-Za-z0-9_]*[[:space:]]*=/) { k = l; sub(/[[:space:]]*=.*/, "", k); gsub(/^[[:space:]]+/, "", k); return k } return "" }
+    NR == FNR { k = key($0); if (k != "") { known[k] = 1; v = $0; sub(/^[^=]*=[[:space:]]*/, "", v); if (v ~ /^[0-9]+/) isnum[k] = 1 } next }
+    { k = key($0); if (k == "") next
+      if (k ~ /^\[/) { insec = (k == "[context_window]"); if (!(k in known)) print "unknown " k; next }
+      if (insec) next
+      if (!(k in known)) { print "unknown " k; next }
+      if (k in isnum) { v = $0; sub(/^[^=]*=[[:space:]]*/, "", v); if (v !~ /^[0-9]+([[:space:]]|#|$)/) print "unparsed " k } }' "$ex" "$f" | sort -u)"
+  [ -n "$bad" ] || return 0
+  w="$FLEET_STATE_DIR/config.warned"
+  [ "$(cat "$w" 2>/dev/null || true)" != "$bad" ] || return 0
+  mkdir -p "$FLEET_STATE_DIR" 2>/dev/null && printf '%s\n' "$bad" >"$w" 2>/dev/null || true
+  warn "config.toml: $(printf '%s' "$bad" | sed 's/^unknown \(.*\)$/unknown key \1 (ignored)/; s/^unparsed \(.*\)$/\1 is not a whole number (default used)/' | paste -sd';' - | sed 's/;/; /g'). Keys: $ex"
 }
 
 # cfg_str <key> <default>: a double-quoted string from config.toml (key = "value").
@@ -387,7 +405,7 @@ transcript_context_pct() {
 # Claude Code transcripts, not a documented contract: UNVERIFIED for stability. Unreadable: 0.
 transcript_bg_running() {
   [ -r "$1" ] || { echo 0; return 0; }
-  local maxs now_e; maxs=$(($(cfg_int bg_task_max_hours 6) * 3600))
+  local maxs now_e; maxs=$(($(const_int bg_task_max_hours 6) * 3600))
   now_e="$(jq -rn --arg t "${FLEET_NOW:-$(now)}" '$t | fromdateiso8601')"
   jq -nRr --argjson now "$now_e" --argjson max "$maxs" '
     def ep: (. // "" | tostring | sub("\\.[0-9]+Z$"; "Z") | (try fromdateiso8601 catch null));

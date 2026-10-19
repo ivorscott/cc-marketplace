@@ -39,6 +39,7 @@
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
 require_herdr
+config_check
 need git
 # Whether a key exists (nothing is read from it), then agents never get it: boot starts them from
 # a shell that does not carry LINEAR_API_KEY.

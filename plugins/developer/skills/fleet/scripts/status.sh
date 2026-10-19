@@ -38,6 +38,7 @@
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
 require_herdr
+config_check
 registry="$FLEET_SCRIPTS/registry.sh"
 
 team=""; problems=false; json=false; all=false; claims_file=

@@ -326,7 +326,7 @@ case "$cmd" in
       exit 0
     fi
     m_issue_update "$iid" "$ids" "$sid"
-    sleep "$(cfg_int claim_settle_secs 5)"
+    sleep "$(const_int claim_settle_secs 5)"
     after="$(q_issue "$issue")"
     if printf '%s' "$after" | jq -e --arg m "$mine" 'any(.labels.nodes[]; .name == $m)' >/dev/null; then
       say --arg i "$issue" --arg m "$mine" '{claimed: true, issue: $i, label: $m}'

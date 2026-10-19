@@ -104,7 +104,7 @@ label's description. **No claim, lease or heartbeat comment is ever posted.**
    `<label_prefix>*` label (`$F/linear.sh holder <ISSUE>` says who holds it; read-only).
 2. **Claim:** `$F/linear.sh claim <ISSUE>` (`--dry-run` lists what it would do). It ensures this
    machine's label (under the `fleet` group, described by `machine-id.sh description`), labels the
-   issue, sets In Progress, waits `claim_settle_secs` (default 5), re-reads, and exits 1 naming the
+   issue, sets In Progress, waits `claim_settle_secs` (a constant, 5 seconds), re-reads, and exits 1 naming the
    holder if another machine's label won. An issue that already carries another machine's label is
    refused.
 3. **Boot** as the winner:
@@ -272,7 +272,7 @@ A repo whose PRs have no CI is listed in `no_pr_ci = ["repo"]` in config.toml. U
 One tick runs at a time (`tick.lock` in the state dir, `tick_lock_stale_secs`, default 900); a second one
 exits quietly. An agent with a background task running (a started task with no notification in its
 transcript, or "N shell(s)" / "N monitor(s)" in the pane footer when there is no transcript) counts as
-Working, not Stalled; a task older than `bg_task_max_hours` (default 6) is aged out.
+Working, not Stalled; a task older than `bg_task_max_hours` (a constant, 6) is aged out. Internal timings are constants of the code, not settings; only the tests change them (`FLEET_*`). `config.example.toml` next to this file is the only list of `config.toml` keys: an unknown key is warned about once.
 
 ### The event log and metrics
 

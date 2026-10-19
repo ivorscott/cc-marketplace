@@ -156,7 +156,7 @@ The Orchestrator and agents call these directly (from `scripts/`). You can call 
 
 ## Configuration
 
-`~/.config/fleet/config.toml` holds machine-wide settings. Every key is optional.
+`~/.config/fleet/config.toml` holds machine-wide settings. Every key is optional. [`config.example.toml`](config.example.toml) is the only list of keys (a test keeps it in step with the code); an unknown key, or a number key that is not a whole number, is warned about once and ignored. Internal timings (the claim settle wait, the tell delivery wait, the respawn budget `respawn_max` 1 per `respawn_window_hours` 6, the background-task age) are constants of the code, not settings; the tests change them with `FLEET_*` variables.
 
 ```toml
 max_agents = 4   # live agents across all teams (Parked ones don't count)

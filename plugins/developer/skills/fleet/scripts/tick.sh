@@ -41,6 +41,7 @@
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
 require_herdr
+config_check
 registry="$FLEET_SCRIPTS/registry.sh"
 
 team=""
@@ -167,7 +168,7 @@ elif rows="$("$FLEET_SCRIPTS/status.sh" ${targs[@]+"${targs[@]}"} --json 2>/dev/
         and ((($stf[0].needs_input_emitted // []) | index($k)) == null))
       | {type: "needs_input", team, name, detail: .status_detail}]')"
   st_upd --argjson rows "$rows" '$st + {needs_input_emitted: [$rows[] | select(.status == "Needs input" and (.status_detail // "") != "") | .name + "|" + .status_detail]}'
-  rwin="$(cfg_int respawn_window_hours 6)"; rmax="$(cfg_int respawn_max 1)"
+  rwin="$(const_int respawn_window_hours 6)"; rmax="$(const_int respawn_max 1)"
   while IFS= read -r zname; do
     [ -n "$zname" ] || continue
     # Respawn needs Zombie on two ticks in a row: the state still holds the previous tick's status.
@@ -345,7 +346,7 @@ done < <(jq -r '.[] | select(.type | IN("pr_opened", "pr_ready", "pr_merged", "s
 live_prs="$("$registry" list | jq -c '[.[] | select(.status != "Retired") | .pr // empty]')"
 live_esc="$("$registry" escalations --open | jq -c '[.[] | .name + "|" + .id]')"
 live_claims="$("$registry" list --live | jq -c '[.[] | select((.issue // "") != "") | .team + "|" + .issue]')"
-st_upd --argjson prs "$live_prs" --argjson esc "$live_esc" --argjson cl "$live_claims" --argjson now "$now_epoch" --argjson w "$(cfg_int respawn_window_hours 6)" '
+st_upd --argjson prs "$live_prs" --argjson esc "$live_esc" --argjson cl "$live_claims" --argjson now "$now_epoch" --argjson w "$(const_int respawn_window_hours 6)" '
   def inrecent: map(select(. > $now - $w * 3600));
   $st
   + (if .pr_ready_emitted then {pr_ready_emitted: [.pr_ready_emitted[] | select(split("@")[0] as $u | $prs | index($u))]} else {} end)

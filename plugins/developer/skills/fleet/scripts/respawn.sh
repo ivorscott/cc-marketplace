@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Respawn a dead agent (a Zombie row) from its registry row: same role, worktree, branch, model and
 # harness, in its own workspace. tick.sh runs this, within a budget (respawn_max = 1 per
-# respawn_window_hours = 6 per agent, config.toml); a Done or Retired row is never respawned.
+# respawn_window_hours = 6 per agent; constants, FLEET_RESPAWN_MAX and FLEET_RESPAWN_WINDOW_HOURS in tests); a Done or Retired row is never respawned.
 # unpark.sh runs it for every Parked row of a team (no budget: that is tick's).
 #
 #   respawn.sh <team/role>

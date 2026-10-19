@@ -11,7 +11,7 @@
 # is gone: exits 2. --no-confirm only checks that herdr accepted the send (for slash
 # commands, which change neither the agent's state nor the transcript).
 #
-# Delivery is seen when, within tell_confirm_secs (config.toml, default 15), the first of these
+# Delivery is seen when, within tell_confirm_secs (a constant, 15 seconds; FLEET_TELL_CONFIRM_SECS in tests), the first of these
 # shows up (structured signals first, screen text last):
 #   (a) the agent's Claude Code transcript (the row's `transcript` file) gains a line after the
 #       send with type "user" whose string .message.content starts with the first 40 characters
@@ -104,7 +104,7 @@ send() { hd agent prompt "$ref" "$text" >/dev/null 2>&1; }
 send || { warn "not delivered to $target: herdr agent prompt failed"; verdict false "herdr rejected the send" 1; }
 $confirm || verdict true "" 0
 
-secs="$(cfg_int tell_confirm_secs 15)"; poll="${FLEET_TELL_POLL:-1}"
+secs="$(const_int tell_confirm_secs 15)"; poll="${FLEET_TELL_POLL:-1}"
 arrived() { # structured signals first: transcript user line, herdr state; then the screen
   local s q
   if [ -n "$transcript" ] && [ -r "$transcript" ] &&

@@ -945,7 +945,7 @@ check "SKILL.md documents the registry archive" grep -q 'registry.sh archive' "$
 check "registry.md documents archive_after_days" grep -q 'archive_after_days' "$SCRIPTS/../references/registry.md"
 # ---- DEV-368 A: tell, boot delivery, signoff, reassign/next, tick ---------------------------------
 export FLEET_TELL_POLL=0.05
-cp "$FLEET_CONFIG_DIR/config.toml" "$T/config.a.bak"; printf 'tell_confirm_secs = 3\n' >>"$FLEET_CONFIG_DIR/config.toml"
+cp "$FLEET_CONFIG_DIR/config.toml" "$T/config.a.bak"; export FLEET_TELL_CONFIRM_SECS=3
 GH_DIR="$T/gh"; mkdir -p "$GH_DIR"; export GH_DIR GH_LOG="$T/gh.log" REAL_GH_LOG="$T/realgh.log"; : >"$GH_LOG"; : >"$REAL_GH_LOG"
 cat >"$T/bin/gh" <<'S'
 #!/usr/bin/env bash
@@ -1257,7 +1257,7 @@ jq '.archive_week = "1999-W01"' "$FLEET_STATE_DIR/tick.state.json" >"$T/ts.tmp" 
 eq "tick: a new week archives again" "$("$REG" list --team wk | jq length)" 0
 
 export FLEET_STATE_DIR="$_ostate" FLEET_REGISTRY="$_oreg"; [ -n "$_oinbox" ] && export FLEET_INBOX="$_oinbox" || unset FLEET_INBOX
-cp "$T/config.a.bak" "$FLEET_CONFIG_DIR/config.toml"; unset FLEET_TELL_POLL
+cp "$T/config.a.bak" "$FLEET_CONFIG_DIR/config.toml"; unset FLEET_TELL_POLL FLEET_TELL_CONFIRM_SECS
 SKA="$SCRIPTS/.."
 check "SKILL.md documents tick.sh" grep -q 'tick.sh' "$SKA/SKILL.md"
 check "SKILL.md documents tell.sh and next.sh" bash -c "grep -q 'tell.sh' '$SKA/SKILL.md' && grep -q 'next.sh' '$SKA/SKILL.md'"
@@ -1391,14 +1391,15 @@ export FLEET_STATE_DIR="$_afs" FLEET_REGISTRY="$_afr" FLEET_INBOX="$_afi"
 # ---- DEV-368 B: Linear claims and heartbeat against a fake API --------------------------------------
 # The key is a fixture under $T; nothing here reads, stats or names the real key file.
 case "$FLEET_CONFIG_DIR" in "$T"/*) ;; *) echo "refusing to run B tests outside $T"; exit 1 ;; esac
+export FLEET_CLAIM_SETTLE_SECS=0 # a constant of the code, not a setting; the tests do not wait
 LIN="$SCRIPTS/linear.sh"; STUB="$HERE/linear-stub.sh"
 export LINEAR_DB="$T/linear.json" LINEAR_LOG="$T/linear.log" LINEAR_ARGV_LOG="$T/linear.argv" LINEAR_STUB_KEY="KEYFIXTURE-9f3a77c1" FLEET_CURL="$STUB"
 printf '%s\n' "$LINEAR_STUB_KEY" >"$FLEET_CONFIG_DIR/linear_api_key"; chmod 600 "$FLEET_CONFIG_DIR/linear_api_key"
-cp "$FLEET_CONFIG_DIR/config.toml" "$T/config.b.bak"; printf 'claim_settle_secs = 0\nlinear_writes = "on"\nmachine_name = "test box"\n' >>"$FLEET_CONFIG_DIR/config.toml"
+cp "$FLEET_CONFIG_DIR/config.toml" "$T/config.b.bak"; printf 'linear_writes = "on"\nmachine_name = "test box"\n' >>"$FLEET_CONFIG_DIR/config.toml"
 : >"$NETLOG"
 # A fixture machine id: these tests never use this machine's real id (a stored id wins over the OS one).
 FIXID="AAAAAAAA-1111-4222-8333-444455556666"; printf '%s\n' "$FIXID" >"$FLEET_STATE_DIR/machine-id"
-setw() { cp "$T/config.b.bak" "$FLEET_CONFIG_DIR/config.toml"; printf 'claim_settle_secs = 0\nmachine_name = "test box"\n' >>"$FLEET_CONFIG_DIR/config.toml"; [ -z "${1:-}" ] || printf 'linear_writes = "%s"\n' "$1" >>"$FLEET_CONFIG_DIR/config.toml"; } # setw [off-by-default | value]
+setw() { cp "$T/config.b.bak" "$FLEET_CONFIG_DIR/config.toml"; printf 'machine_name = "test box"\n' >>"$FLEET_CONFIG_DIR/config.toml"; [ -z "${1:-}" ] || printf 'linear_writes = "%s"\n' "$1" >>"$FLEET_CONFIG_DIR/config.toml"; } # setw [off-by-default | value]
 setw on
 IDRE='[0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12}|[0-9A-Fa-f]{32}'
 dbreset() { # two issues, a team, a state; labels: the fleet group and a foreign machine's label with a stale heartbeat
@@ -1721,7 +1722,7 @@ bt --issue DEV-81 --claimed-by test build nk2 "$T/plain" t
 eq "boot: --issue without a key refuses when machines > 1" "$BTRC" 1
 eq "boot: the refusal adds no rows" "$(rows_of build-nk2)" 0
 bt build nk3 "$T/plain" t; eq "boot: no --issue needs no key even with machines > 1" "$BTRC" 0
-cp "$T/config.b.bak" "$FLEET_CONFIG_DIR/config.toml"; printf 'claim_settle_secs = 0\nlinear_writes = "on"\nmachine_name = "test box"\n' >>"$FLEET_CONFIG_DIR/config.toml"
+cp "$T/config.b.bak" "$FLEET_CONFIG_DIR/config.toml"; printf 'linear_writes = "on"\nmachine_name = "test box"\n' >>"$FLEET_CONFIG_DIR/config.toml"
 # the key never reaches an agent: boot with the key in its own environment and on disk
 printf '%s\n' "$LINEAR_STUB_KEY" >"$FLEET_CONFIG_DIR/linear_api_key"; chmod 600 "$FLEET_CONFIG_DIR/linear_api_key"
 LINEAR_API_KEY="$LINEAR_STUB_KEY" bt --issue DEV-82 --claimed-by test build lk1 "$T/plain" t
@@ -1910,7 +1911,7 @@ echo gone >"$AS/build-rsp-lead"; : >"$HERDR_LOG"; "$SCRIPTS/tick.sh" >/dev/null 
 eq "respawn: a lead is started again as the lead agent" "$(grep "^agent start build-rsp-lead " "$HERDR_LOG" | grep -c -- '--agent developer:lead')" 1
 check "respawn: a lead's resume brief names the team" grep -q 'The team:' "$HERDR_LOG"
 # a respawn that always fails still spends the budget: tried respawn_max times, then one P1, no pane leak
-printf 'respawn_max = 2\n' >"$FLEET_CONFIG_DIR/config.toml"
+export FLEET_RESPAWN_MAX=2; rm -f "$FLEET_CONFIG_DIR/config.toml"
 "$SCRIPTS/boot.sh" build rsf "$T/repo" "task" >/dev/null 2>&1
 for r in build-rsf/lead build-rsf/planner build-rsf/builder build-rsf/tester; do "$REG" set "$r" status=Idle >/dev/null; done
 rm -f "$FLEET_STATE_DIR/tick.state.json"; export FLEET_NOW=2026-10-19T10:00:00Z
@@ -1922,7 +1923,7 @@ check "respawn failing: the builder was tried (twice per attempt: start retries 
 eq "respawn failing: and not again after respawn_max attempts" "$(nstart build-rsf-builder)" "$n2"
 eq "respawn failing: every pane it split is closed again" "$(grep -c '^pane close' "$HERDR_LOG")" "$(grep -c '^pane split' "$HERDR_LOG")"
 eq "respawn failing: one P1 and no more" "$("$REG" escalations --open --team build-rsf | jq -c '[.[] | select(.name == "build-rsf/builder") | [.severity, .message]]')" '[["P1","build-rsf/builder could not be respawned in 6h"]]'
-rm -f "$FLEET_CONFIG_DIR/config.toml"; unset FLEET_NOW
+rm -f "$FLEET_CONFIG_DIR/config.toml"; unset FLEET_NOW FLEET_RESPAWN_MAX
 # Done and Retired rows are never respawned
 "$REG" done build-rsp/tester --outcome Shipped --summary x >/dev/null 2>&1; echo gone >"$AS/build-rsp-tester"; : >"$HERDR_LOG"
 "$SCRIPTS/tick.sh" >/dev/null 2>&1; eq "respawn: a Done row is not respawned" "$(nstart build-rsp-tester)" 0
@@ -2251,6 +2252,34 @@ eq "issue_done: other events keep their eight fields" "$( . "$SCRIPTS/common.sh"
 "$REG" reassign build-c1 DEV-602 >/dev/null 2>"$T/ra.err"; check "reassign refuses a parked team" grep -q 'is parked; unpark it first' "$T/ra.err"
 check "SKILL.md: debrief reads issue_done" grep -q 'issue_done' "$SCRIPTS/../SKILL.md"
 export FLEET_STATE_DIR="$_estate" FLEET_REGISTRY="$_ereg"; [ -n "$_einbox" ] && export FLEET_INBOX="$_einbox" || unset FLEET_INBOX
+rm -f "$FLEET_CONFIG_DIR/config.toml"
+
+# ---- DEV-368 E: the config budget (config.example.toml is the only list of keys) ----------------------------
+CEX="$SCRIPTS/../config.example.toml"
+code_keys() { # every key the code reads: cfg_int/cfg_str/config_list names, plus the [context_window] table
+  { grep -hoE '(cfg_int|cfg_str|config_list) [a-z_]+' "$SCRIPTS"/*.sh | awk '{print $2}'
+    grep -q '\[context_window\]' "$SCRIPTS/common.sh" && echo '[context_window]'; } | sort -u; }
+ex_keys() { sed -n 's/^\(\[[a-z_]*\]\)[[:space:]].*/\1/p; s/^\([a-z_][a-z0-9_]*\)[[:space:]]*=.*/\1/p' "$CEX" | sort -u; }
+eq "config budget: the example file and the code read the same keys (a failure lists the difference)" "$(diff <(code_keys) <(ex_keys) | paste -sd' ' -)" ""
+eq "config budget: the internal timings are not in the example file" "$(ex_keys | grep -cE '^(claim_settle_secs|tell_confirm_secs|respawn_max|respawn_window_hours|bg_task_max_hours|compact_above_pct)$' || true)" 0
+eq "config budget: cloud_writes, allow_bypass, issue_url_template and branch_prefix_swap are not keys" "$(grep -rlE 'cloud_writes|allow_bypass|issue_url_template|branch_prefix_swap' "$SCRIPTS"/*.sh "$SCRIPTS/../config.example.toml" 2>/dev/null | grep -vc run.sh || true)" 0
+printf 'claim_settle_secs = 9\ntell_confirm_secs = 9\n' >"$FLEET_CONFIG_DIR/config.toml"
+eq "config budget: a timing in config.toml is ignored (a constant of the code)" "$(. "$SCRIPTS/common.sh"; const_int claim_settle_secs 5)" 5
+eq "config budget: FLEET_CLAIM_SETTLE_SECS overrides it" "$(FLEET_CLAIM_SETTLE_SECS=2 bash -c ". $SCRIPTS/common.sh; const_int claim_settle_secs 5")" 2
+eq "config budget: a non-number override falls back to the constant" "$(FLEET_CLAIM_SETTLE_SECS=x bash -c ". $SCRIPTS/common.sh; const_int claim_settle_secs 5")" 5
+cfw() { FLEET_STATE_DIR="$T/cfgstate" bash -c ". $SCRIPTS/common.sh; config_check" 2>&1; }
+rm -rf "$T/cfgstate"; printf 'max_agents = 4\nbogus_key = 1\nmax_teams = three\n' >"$FLEET_CONFIG_DIR/config.toml"
+w1="$(cfw)"; w2="$(cfw)"
+check "config budget: an unknown key is warned about, by name" bash -c "printf '%s' '$w1' | grep -q 'unknown key bogus_key (ignored)'"
+check "config budget: a known number key that is not a number is warned about" bash -c "printf '%s' '$w1' | grep -q 'max_teams is not a whole number'"
+eq "config budget: once: the second look says nothing" "$w2" ""
+eq "config budget: a value is never printed" "$(printf '%s' "$w1" | grep -c 'three')" 0
+printf 'max_agents = 4\nbogus_key = 1\nother_key = 2\n' >"$FLEET_CONFIG_DIR/config.toml"; w3="$(cfw)"
+check "config budget: a different set of keys is warned about again" bash -c "printf '%s' '$w3' | grep -q 'other_key'"
+printf 'max_agents = 4\npermission_mode = "auto"\nrepos = ["a"]\n[context_window]\n"claude-x" = 4\n' >"$FLEET_CONFIG_DIR/config.toml"
+rm -rf "$T/cfgstate"; eq "config budget: known keys and the context_window table are silent" "$(cfw)" ""
+eq "config budget: a missing config.toml is silent" "$(rm -f "$FLEET_CONFIG_DIR/config.toml"; cfw)" ""
+eq "config budget: bash 3.2" "$(printf 'zzz = 1\n' >"$FLEET_CONFIG_DIR/config.toml"; rm -rf "$T/cfgstate"; FLEET_STATE_DIR="$T/cfgstate" /bin/bash -c ". $SCRIPTS/common.sh; config_check" 2>&1 | grep -c 'unknown key zzz')" 1
 rm -f "$FLEET_CONFIG_DIR/config.toml"
 
 # version and docs

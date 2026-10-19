@@ -1,0 +1,34 @@
+# ~/.config/fleet/config.toml: machine-wide settings, every key optional. This file is the only list of keys:
+# a key that is not here is warned about once and ignored, and a test keeps it in step with the code.
+# Internal timings (claim settle, tell confirm, respawn budget, background-task age, compact threshold) are not
+# settings; the tests change them with FLEET_* variables.
+
+# Caps (parked teams count against none of them, except teams_per_repo: a parked team keeps its repo)
+max_agents = 4          # live agents across all teams
+max_teams = 3           # live teams; with `repos` set, only teams in a listed repo count
+teams_per_repo = 1      # teams in one repo
+max_envs = 3            # test clusters at once
+min_free_gb = 40        # boot refuses below this much free disk (0 = off; FLEET_FORCE=1 overrides)
+warn_free_gb = 75       # status marks LOW and tick reports below this
+
+# Repos
+repos = []              # repos that should always have a team: tick reports one with none (repo_without_team)
+no_pr_ci = []           # repos whose PRs have no CI: pr_ready accepts "no checks" for them
+
+# Agents
+permission_mode = "auto"   # Claude Code permission mode every agent starts in (FLEET_PERMISSION_MODE for one boot)
+tracker_allow = []      # permission rules added to every agent for reading tickets
+forge_allow = []        # permission rules added to every agent for reading PRs
+chat_channel = ""       # free text the Orchestrator hands to its chat tool
+chat_allow = []         # permission rules for the Orchestrator's chat tools (boot gives them to no agent)
+archive_after_days = 0  # days a Retired row stays in the live registry before it is archived
+
+# Several machines on one Linear workspace
+machines = 1            # more than 1: boot and next refuse an issue whose claim cannot be checked
+label_prefix = "fleet:" # claim labels are <label_prefix><machine key>
+lease_hours = 2         # a claim's lease; a lapsed lease with no open PR can be taken over
+linear_writes = "off"   # off | "test:FT" | "on". Off: no heartbeat, claim, takeover or migrate
+machine_name = ""       # display name, optional
+machine_legacy_label = ""   # only while migrating an older machine label
+
+[context_window]        # tokens per model name, used for the lead's context percentage; default 200000

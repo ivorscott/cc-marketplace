@@ -9,7 +9,7 @@
 #      its open escalations closed ("closed at next") and status Working
 #   3. workers get /clear and the row's `transcript` is re-pointed at the new session file
 #      (/clear starts a new transcript with a new session id); the lead gets /compact when its
-#      context is above compact_above_pct (config.toml, default 50) or when it cannot be read
+#      context is above compact_above_pct (a constant, 50; FLEET_COMPACT_ABOVE_PCT in tests) or when it cannot be read
 #   4. the lead gets the brief (--brief TEXT, default "New issue: <issue>.") plus the fleet rules
 # Slash commands are sent with --no-confirm (they change neither state nor transcript); the
 # brief is confirmed. A message that is not delivered marks that row Failed and next exits 1.
@@ -74,7 +74,7 @@ clear_session() {
   [ -z "$dir" ] || before="$(ls "$dir"/*.jsonl 2>/dev/null || true)"
   send "$name" /clear --no-confirm || return 0
   [ -n "$dir" ] || return 0
-  secs="$(cfg_int tell_confirm_secs 15)"
+  secs="$(const_int tell_confirm_secs 15)"
   while :; do
     for f in $(ls -t "$dir"/*.jsonl 2>/dev/null || true); do
       printf '%s\n' "$before" | grep -qxF "$f" || { best="$f"; break; }
@@ -98,7 +98,7 @@ done < <(printf '%s' "$rows" | jq -r '.[].name')
 
 if [ -n "$lead" ]; then
   ref="$(printf '%s' "$rows" | jq -r --arg n "$lead" '.[] | select(.name == $n) | .herdr_ref')"
-  pct="$(context_pct "$(printf '%s' "$rows" | jq -r --arg n "$lead" '.[] | select(.name == $n) | .transcript // ""')" "$ref")"; above="$(cfg_int compact_above_pct 50)"
+  pct="$(context_pct "$(printf '%s' "$rows" | jq -r --arg n "$lead" '.[] | select(.name == $n) | .transcript // ""')" "$ref")"; above="$(const_int compact_above_pct 50)"
   if [ -z "$pct" ] || [ "$pct" -gt "$above" ]; then
     send "$lead" /compact --no-confirm || true
     hd agent wait "$ref" --until idle --timeout 120000 >/dev/null 2>&1 || true
