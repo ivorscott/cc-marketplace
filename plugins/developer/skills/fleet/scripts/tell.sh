@@ -2,7 +2,9 @@
 # Send text to a fleet agent and check that it arrived. A message that did not arrive is a
 # failure, never a silent success.
 #
-#   tell.sh <team/role | herdr agent> <text> [--no-confirm]
+#   tell.sh <team/role | herdr agent> <text> [--no-confirm] [--brief]
+#   --brief marks the text as a brief: the outcome is logged as brief_delivered / brief_failed in
+#   the event log (the text itself never is).
 #
 # Prints {"delivered":true,...} and exits 0 once delivery is seen. Not delivered: prints
 # {"delivered":false,"reason":...} and exits 1; the pane is back at its shell or the agent
@@ -29,12 +31,13 @@ set -euo pipefail
 . "$(dirname "$0")/common.sh"
 require_herdr
 
-usage="usage: tell.sh <team/role | herdr agent> <text> [--no-confirm]"
+usage="usage: tell.sh <team/role | herdr agent> <text> [--no-confirm] [--brief]"
 target="${1:?$usage}"; text="${2:?$usage}"; shift 2
-confirm=true
+confirm=true; is_brief=false
 while [ $# -gt 0 ]; do
   case "$1" in
     --no-confirm) confirm=false; shift ;;
+    --brief) is_brief=true; shift ;;
     *) die "unknown option: $1" ;;
   esac
 done
@@ -51,6 +54,9 @@ case "$target" in
 esac
 
 verdict() { # verdict <delivered true|false> <reason> <exit code>
+  if $is_brief; then
+    ev_log "$([ "$1" = true ] && echo brief_delivered || echo brief_failed)" team="${target%%/*}" name="$target" detail="$2"
+  fi
   jq -cn --argjson d "$1" --arg r "$2" --arg t "$target" '{delivered: $d, target: $t} + (if $r != "" then {reason: $r} else {} end)'
   exit "$3"
 }
