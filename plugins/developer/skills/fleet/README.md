@@ -205,6 +205,10 @@ repo-specific rule, use that repo's `.claude/settings.json` instead.
 `MR !12` (GitLab style) and tags each one with the origin remote's `host` and `project`. The
 Orchestrator then checks it with the matching CLI.
 
+## Running the loop from launchd
+
+`scripts/schedule.sh install` writes `~/Library/LaunchAgents/io.devpie.fleet.tick.plist` (label: `schedule_label`, interval: `tick_secs`, default 300) and loads it; `uninstall` and `status` do the rest. Each run is `scripts/loop-tick.sh`: one `tick.sh`, no model, and a message to the Orchestrator's pane only for a ready or merged PR, a P0/P1 escalation, a dead agent, a taken-over claim or a failed respawn (one message per tick). With no live Orchestrator pane it sends a desktop notification and logs `orchestrator_wake_missed`. Output goes to `loop.log` in the state dir. Overlapping ticks are handled by the tick lock in `tick.sh`. On Linux, run `loop-tick.sh` from a systemd user timer instead (no code here).
+
 ## Disk
 
 Fleet runs fill disks: worktrees carry `node_modules` and build output, and every team cluster
