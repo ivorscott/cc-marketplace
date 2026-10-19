@@ -841,5 +841,20 @@ if command -v kubectl >/dev/null 2>&1; then
   eq "absent team kubeconfig shows no contexts" "$(KUBECONFIG="$FLEET_STATE_DIR/env/none/kubeconfig" kubectl config get-contexts -o name 2>/dev/null)" ""
 else echo "skip kubectl not installed"; fi
 
+# CI workflow (DEV-357): runs exactly this suite, and shellcheck at error severity on changed scripts
+WF="$SCRIPTS/../../../../../.github/workflows/fleet-tests.yml"
+check "CI workflow exists" test -f "$WF"
+check "CI runs exactly the suite command" grep -qx '        run: bash plugins/developer/skills/fleet/scripts/test/run.sh' "$WF"
+check "CI tests job runs on macos-latest" grep -q 'runs-on: macos-latest' "$WF"
+check "CI shellcheck job runs on ubuntu-latest" grep -q 'runs-on: ubuntu-latest' "$WF"
+check "CI runs shellcheck --severity=error" grep -q 'shellcheck --severity=error' "$WF"
+check "CI lists changed *.sh against the base" grep -q "diff --name-only --diff-filter=ACMR .*-- '\*.sh'" "$WF"
+check "CI shellcheck job fetches full history" grep -q 'fetch-depth: 0' "$WF"
+check "CI triggers on pull_request" grep -qx '  pull_request:' "$WF"
+check "CI permissions are contents: read" grep -qx '  contents: read' "$WF"
+eq "CI jobs have a 30 minute timeout" "$(grep -c 'timeout-minutes: 30' "$WF")" 2
+eq "CI has no install step" "$(grep -ciE 'brew |apt|apt-get|npm i|pip install' "$WF")" 0
+check "run.sh exits non-zero on a failed assertion" bash -c "tail -n 1 '$HERE/run.sh' | grep -qx '\[ \"\$failn\" = 0 \]'"
+
 printf '\n%d passed, %d failed\n' "$pass" "$failn"
 [ "$failn" = 0 ]
