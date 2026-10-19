@@ -93,7 +93,15 @@ permission_mode() {
   local v="${FLEET_PERMISSION_MODE:-}"
   [ -z "$v" ] && [ -f "$FLEET_CONFIG_DIR/config.toml" ] &&
     v="$(sed -n 's/^[[:space:]]*permission_mode[[:space:]]*=[[:space:]]*"\([A-Za-z]*\)".*/\1/p' "$FLEET_CONFIG_DIR/config.toml" | head -1)"
-  printf '%s\n' "${v:-auto}"
+  check_permission_mode "${v:-auto}"
+}
+# check_permission_mode <mode>: prints the mode, or dies for one that turns permission checks off. No setting
+# allows bypassPermissions (or --dangerously-skip-permissions): agents always run with checks on.
+check_permission_mode() {
+  case "$1" in
+    bypassPermissions | *dangerously* | *skip-permissions*) die "permission mode '$1' turns permission checks off; fleet agents never run that way" ;;
+  esac
+  printf '%s\n' "$1"
 }
 
 # min_free_gb (boot refuses below it, default 40; 0 disables) and warn_free_gb (status marks LOW and the loop alerts below it, default 75).
@@ -191,14 +199,27 @@ contract() {
   [ -n "$expertise" ] && x=" Before you start, read your expertise file $expertise and follow it."
   printf '%s' "
 
-Fleet rules for $name.$x Stay on this one task. If you notice unrelated work, run \`$registry note $name discovered \"<what>\"\` instead of doing it. If you need a decision you cannot make, run \`$registry escalate $name P1 \"<question>\"\` and wait. P1 is only for a decision the user must make; \"PR ready\" goes through done, not an escalation. If you stop to wait for instructions, first run \`$registry set $name status=Idle\`. Every commit carries the trailer \`Agent: $name\`. When your part is finished: push your branch if you have one, then run \`$registry done $name --outcome <Shipped|Partial|Failed> --summary \"<one line>\"\`, then stop. Going idle without that command marks you Stalled."
+Fleet rules for $name.$x Stay on this one task. If you notice unrelated work, run \`$registry note $name discovered \"<what>\"\` instead of doing it. If you need a decision you cannot make, run \`$registry escalate $name P1 \"<question>\"\` and wait. P1 is only for a decision the user must make; \"PR ready\" goes through done, not an escalation. If you stop to wait for instructions, first run \`$registry set $name status=Idle\`. When your part is finished: push your \`fleet/<slug>\` branch if you have one (with \`--force-with-lease\`, never to the default branch), then run \`$registry done $name --outcome <Shipped|Partial|Failed> --summary \"<one line>\"\`, then stop. Going idle without that command marks you Stalled."
 }
 
-# build_brief <name> <expertise-file> <text>: a brief plus the fleet rules.
+# build_brief <name> <expertise-file> <text>: a brief plus the fleet rules and the house rules.
 # build_brief --resume <name> <expertise-file> <role brief>: the brief for a respawned agent.
+# Either way the house rules (rules/house.md, then the repo's own .claude/fleet-rules.md) come last, once.
 build_brief() {
-  if [ "${1:-}" = "--resume" ]; then shift; resume_brief "$@"; return; fi
+  if [ "${1:-}" = "--resume" ]; then shift; resume_brief "$@"; house_rules "$1"; return; fi
   printf '%s%s' "$3" "$(contract "$1" "$2")"
+  house_rules "$1"
+}
+
+# house_rules <agent row name>: the fleet's house rules, then the agent's repository's .claude/fleet-rules.md
+# when it has one. The repository is the row's `repo`; without a row only the fleet's rules are printed.
+house_rules() {
+  local repo f
+  repo="$("$FLEET_SCRIPTS/registry.sh" get "$1" 2>/dev/null | jq -r '.repo // ""' 2>/dev/null)" || repo=""
+  printf '\n\n'
+  cat "$FLEET_SKILL_DIR/rules/house.md" 2>/dev/null || warn "house rules missing: $FLEET_SKILL_DIR/rules/house.md"
+  f="$repo/.claude/fleet-rules.md"
+  if [ -n "$repo" ] && [ -f "$f" ]; then printf '\nRepository rules (%s):\n' "$f"; cat "$f"; fi
 }
 
 # resume_brief <name> <expertise-file> <role brief>: what a respawned agent needs to carry on: its role
@@ -329,29 +350,28 @@ new_uuid() {
   else od -An -N16 -tx1 /dev/urandom | tr -d ' \n' | sed -E 's/(.{8})(.{4})(.{4})(.{4})(.{12})/\1-\2-\3-\4-\5/'; fi
 }
 
-# context_window <model>: the model's context window in tokens, from the [context_window] table
-# of config.toml (model = N lines, the model name optionally quoted); default 200000.
-# UNVERIFIED: the real window per model (DEV-368).
-context_window() {
-  local v="" f="$FLEET_CONFIG_DIR/config.toml"
-  [ -f "$f" ] && v="$(awk -v m="$1" '
-    /^[[:space:]]*\[/ { on = ($0 ~ /^[[:space:]]*\[context_window\]/); next }
-    on { k = $0; sub(/[[:space:]]*=.*/, "", k); gsub(/^[[:space:]]*"?|"?[[:space:]]*$/, "", k)
-         if (k == m) { v = $0; sub(/^[^=]*=[[:space:]]*/, "", v); sub(/[^0-9].*/, "", v); print v; exit } }' "$f")"
-  printf '%s\n' "${v:-200000}"
-}
 
-# transcript_context_pct <transcript file>: percent of the context window the latest assistant
-# turn used (input + cache read + cache creation tokens). Prints nothing when it can't be read.
-transcript_context_pct() {
-  [ -r "$1" ] || return 0
-  local last model tokens
-  last="$(grep -F '"type":"assistant"' "$1" 2>/dev/null | tail -n 1)" || true
-  [ -n "$last" ] || return 0
-  tokens="$(printf '%s' "$last" | jq -r '.message.usage | if type == "object" then ((.input_tokens // 0) + (.cache_read_input_tokens // 0) + (.cache_creation_input_tokens // 0)) else empty end' 2>/dev/null)" || return 0
-  [ -n "$tokens" ] || return 0
-  model="$(printf '%s' "$last" | jq -r '.message.model // ""' 2>/dev/null)"
-  printf '%s\n' $((tokens * 100 / $(context_window "$model")))
+# plugin_version: the version of the plugin these scripts belong to (its plugin.json).
+plugin_version() { jq -r '.version // ""' "$FLEET_SKILL_DIR/../../.claude-plugin/plugin.json" 2>/dev/null || true; }
+# installed_version: the newest developer plugin version installed in Claude Code's plugin cache
+# (FLEET_INSTALLED_VERSION wins, for tests); empty when none is found.
+installed_version() {
+  if [ -n "${FLEET_INSTALLED_VERSION:-}" ]; then printf '%s\n' "$FLEET_INSTALLED_VERSION"; return 0; fi
+  local d v best=""
+  for d in "${HOME:-/nonexistent}"/.claude/plugins/cache/*/developer/*/; do
+    [ -d "$d" ] || continue
+    v="$(basename "$d")"
+    case "$v" in *[!0-9.]* | "") continue ;; esac
+    if [ -z "$best" ] || version_gt "$v" "$best"; then best="$v"; fi
+  done
+  printf '%s\n' "$best"
+}
+# version_gt <a> <b>: a is a newer dotted version than b (numeric per part; BSD and GNU tools alike).
+version_gt() {
+  awk -v a="$1" -v b="$2" 'BEGIN {
+    na = split(a, x, "."); nb = split(b, y, "."); n = (na > nb ? na : nb)
+    for (i = 1; i <= n; i++) { p = x[i] + 0; q = y[i] + 0; if (p > q) exit 0; if (p < q) exit 1 }
+    exit 1 }'
 }
 
 # transcript_bg_running <transcript file>: how many background tasks the agent has running: tool_use blocks

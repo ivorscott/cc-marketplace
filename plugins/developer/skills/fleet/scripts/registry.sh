@@ -15,7 +15,10 @@
 #   registry.sh note <name> discovered TEXT                file discovered work instead of fixing it
 #   registry.sh retire <name|team> [--outcome O]           also closes the rows' open escalations ("closed at retire")
 #   registry.sh signoff <name> <pr-url|N> <sha>            the tester's sign-off: records the PR and the exact SHA verified
-#   registry.sh reassign <team> <issue>                    move a team to a new issue (next.sh): clears the old outcome, PR and sign-off
+#   registry.sh reassign <team> <issue> [--assignment TEXT] [--issue-url URL]
+#                                                          move a team to a new issue (next.sh): logs issue_done for the old one,
+#                                                          clears the old outcome, PR and sign-off, rewrites the assignment;
+#                                                          workers go Idle, the lead Working
 #   registry.sh unsynced                                   rows changed since the sink last mirrored them
 #   registry.sh synced <name> [name ...]                   mark rows as mirrored
 #   registry.sh env-claim <team> <max> <cluster> [busy-slots]  atomically take the lowest free port slot
@@ -300,17 +303,33 @@ case "$cmd" in
     ev_log signoff team="$(jq -r --arg n "$name" '.agents[$n].team // ""' "$FLEET_REGISTRY")" name="$name" pr="$pr" sha="$sha"
     ;;
   reassign)
-    team="${1:?usage: reassign <team> <issue>}"; issue="${2:?usage: reassign <team> <issue>}"
+    team="${1:?usage: reassign <team> <issue> [--assignment TEXT] [--issue-url URL]}"; issue="${2:?usage: reassign <team> <issue>}"; shift 2
+    assignment=""; iurl=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --assignment) assignment="${2:?--assignment needs text}"; shift 2 ;;
+        --issue-url) iurl="${2:?--issue-url needs a URL}"; shift 2 ;;
+        *) die "unknown reassign option: $1" ;;
+      esac
+    done
+    [ -n "$assignment" ] || assignment="$issue"
     jq -e --arg t "$team" '[.agents[] | select(.team == $t and .status != "Retired" and .tier != "Orchestrator")] | length > 0' "$FLEET_REGISTRY" >/dev/null ||
       die "no live rows for team '$team'"
+    # The finished issue is logged before its row data is cleared, so debrief can still read what the team did.
+    old="$(jq -c --arg t "$team" '[.agents[] | select(.team == $t and .status != "Retired" and .tier != "Orchestrator")]
+      | {issue: ([.[] | .issue // empty | select(. != "")] | first // ""), pr: ([.[] | .pr // empty | select(. != "")] | first // ""),
+         outcome: ([.[] | select(.tier == "Lead") | .outcome // empty] | first // "")}' "$FLEET_REGISTRY")"
+    ev_log issue_done team="$team" issue="$(printf '%s' "$old" | jq -r .issue)" pr="$(printf '%s' "$old" | jq -r .pr)" detail="$(printf '%s' "$old" | jq -r .outcome)"
     # One update for every row: a half-moved team would be worse than an unmoved one.
-    update --arg t "$team" --arg i "$issue" --arg now "$(now)" "$DERIVE"'
+    update --arg t "$team" --arg i "$issue" --arg a "$assignment" --arg u "$iurl" --arg now "$(now)" "$DERIVE"'
       .agents |= with_entries(
         if .value.team == $t and .value.status != "Retired" and .value.tier != "Orchestrator" then
           .value |= (
-            del(.outcome, .summary, .done_at, .signoff, .pr, .lessons)
+            del(.outcome, .summary, .done_at, .signoff, .pr, .lessons, .nudged_at)
             | norm | esc_close("closed at next"; $now)
-            | derive | .issue = $i | .status = "Working" | .updated_at = $now)
+            | derive | .issue = $i | .assignment = $a
+            | (if $u != "" then .issue_url = $u else del(.issue_url) end)
+            | .status = (if .tier == "Lead" then "Working" else "Idle" end) | .updated_at = $now)
         else . end)'
     ;;
   unsynced)

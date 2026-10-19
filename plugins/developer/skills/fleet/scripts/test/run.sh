@@ -256,6 +256,12 @@ case "$1 $2" in
   "workspace create") echo '{"result":{"workspace":{"workspace_id":"w1"},"root_pane":{"pane_id":"p0"}}}' ;;
   "pane split") n=$(( $(grep -c '^pane split' "$HERDR_LOG") )); echo "{\"result\":{\"pane\":{\"pane_id\":\"p$n\"}}}" ;;
   "pane process-info")
+    # an agent that got /exit shows its shell until it is started again
+    if ls "$AS"/exited.* >/dev/null 2>&1; then
+      for xr in $(jq -r --arg p "$4" '.agents[] | select(.pane == $p) | .herdr_ref' "$FLEET_STATE_DIR/fleet.json" 2>/dev/null); do
+        if [ -e "$AS/exited.$xr" ]; then echo '{"result":{"process_info":{"foreground_process_group_id":1,"shell_pid":1}}}'; exit 0; fi
+      done
+    fi
     if [ -n "${PANE_GONE:-}" ]; then echo '{"result":{"process_info":{"foreground_process_group_id":1,"shell_pid":1}}}'; exit 1; fi
     if [ -n "${DEAD_ONCE:-}" ] && [ -e "$DEAD_ONCE" ]; then rm -f "$DEAD_ONCE"; echo '{"result":{"process_info":{"foreground_process_group_id":1,"shell_pid":1}}}'
     else echo '{"result":{"process_info":{"foreground_process_group_id":2,"shell_pid":1}}}'; fi ;;
@@ -263,7 +269,7 @@ case "$1 $2" in
   # working unless PROMPT_NOSTATE is set, and `agent read` prints $AS/<agent>.read.
   # A pane started by the shim runs what boot types into it, so its env can be dumped: $AS/<pane>.env.
   "pane run") ( eval "${*:4}"; env ) >"$AS/$3.env" 2>/dev/null; echo '{}' ;;
-  "agent start") rm -f "$AS/$3" "$AS/$3.read"; echo '{}' ;;
+  "agent start") rm -f "$AS/$3" "$AS/$3.read" "$AS/exited.$3"; echo '{}' ;;
   "agent list") [ -z "${AGENT_LIST_FAIL:-}" ] || exit 1; cat "$AS/agent-list.json" 2>/dev/null || echo '{}' ;;
   # A pane with $AS/<pane>.name answers `agent get <pane>` with that name and its pane id, as herdr does.
   "agent get") echo "{\"result\":{\"agent\":{\"agent_status\":\"$(cat "$AS/$3" 2>/dev/null || echo idle)\",\"state_change_seq\":$(cat "$AS/$3.seq" 2>/dev/null || echo 0)$([ ! -f "$AS/$3.name" ] || printf ',"name":"%s","pane_id":"%s"' "$(cat "$AS/$3.name")" "$3")}}}" ;;
@@ -273,7 +279,20 @@ case "$1 $2" in
     [ -n "${PROMPT_NOSTATE:-}" ] || echo working >"$AS/$3"
     [ -z "${PROMPT_SEQ:-}" ] || echo $(( $(cat "$AS/$3.seq" 2>/dev/null || echo 0) + 1 )) >"$AS/$3.seq"
     [ -z "${PROMPT_TRANSCRIPT:-}" ] || jq -nc --arg c "$4" '{type: "user", message: {role: "user", content: $c}}' >>"$PROMPT_TRANSCRIPT"
-    [ -z "${PROMPT_NEWSESSION_DIR:-}" ] || [ "$4" != /clear ] || echo '{}' >"$PROMPT_NEWSESSION_DIR/new-$RANDOM$RANDOM.jsonl"
+    # A brief pointer shows up in the agent's transcript as a user line (BRIEF_QUEUED: a queued_command attachment;
+    # BRIEF_LOST: nowhere), like Claude Code writing the prompt it received. /exit leaves the pane at its shell.
+    case "$4" in
+      "Read your brief: "*)
+        if [ -z "${BRIEF_LOST:-}" ]; then
+          xt="$(jq -r --arg r "$3" '[.agents[] | select(.herdr_ref == $r) | .transcript // ""] | first // ""' "$FLEET_STATE_DIR/fleet.json" 2>/dev/null)"
+          if [ -n "$xt" ]; then
+            mkdir -p "$(dirname "$xt")"
+            if [ -n "${BRIEF_QUEUED:-}" ]; then jq -nc --arg c "$4" '{type: "attachment", attachment: {type: "queued_command", prompt: $c}}' >>"$xt"
+            else jq -nc --arg c "$4" '{type: "user", message: {role: "user", content: $c}}' >>"$xt"; fi
+          fi
+        fi ;;
+      /exit) [ -n "${EXIT_STUCK:-}" ] || : >"$AS/exited.$3" ;;
+    esac
     [ -z "${PROMPT_ECHO:-}" ] || printf '%s\n> %s\n\n────────\n❯ \n────────\n' "$(cat "$AS/$3.read" 2>/dev/null)" "$4" >"$AS/$3.read"
     echo '{}' ;;
   "agent send-keys") [ -z "${ENTER_WORKS:-}" ] || echo working >"$AS/$3"; echo '{}' ;;
@@ -785,7 +804,7 @@ check "escalate logs 'notification failed'" grep -q 'notification failed' <<<"$e
 err="$(NOTIFY_FAIL=1 "$REG" done esc/solo --outcome Shipped --summary s 2>&1 >/dev/null)"
 check "done logs 'notification failed'" grep -q 'notification failed' <<<"$err"
 eq "a working notification logs nothing" "$("$REG" escalate esc/builder P2 "n2" 2>&1 >/dev/null)" ""
-for f in registry.sh status.sh retire.sh common.sh boot.sh tell.sh tick.sh next.sh linear.sh claim.sh respawn.sh metrics.sh agent-lib.sh schedule.sh loop-tick.sh; do check "bash -n $f" bash -n "$SCRIPTS/$f"; done
+for f in registry.sh status.sh retire.sh common.sh boot.sh tell.sh tick.sh next.sh linear.sh claim.sh respawn.sh metrics.sh agent-lib.sh schedule.sh loop-tick.sh sandbox.sh; do check "bash -n $f" bash -n "$SCRIPTS/$f"; done
 SKD0="$SCRIPTS/.."
 eq "SKILL.md no longer routes through escalation-wait.sh" "$(grep -c 'escalation-wait' "$SKD0/SKILL.md" || true)" 0
 check "SKILL.md documents resolve" grep -q 'registry.sh resolve' "$SKD0/SKILL.md"
@@ -1000,7 +1019,7 @@ check "tell: bad option fails" bash -c "! '$SCRIPTS/tell.sh' tl/builder x --bogu
 # -- boot: an undelivered brief is a failure (AC4)
 : >"$HERDR_LOG"; rm -f "$AS"/*
 export FLEET_STATE_DIR="$_ostate" FLEET_REGISTRY="$_oreg"; [ -n "$_oinbox" ] && export FLEET_INBOX="$_oinbox" || unset FLEET_INBOX
-PROMPT_NOSTATE=1 "$SCRIPTS/boot.sh" build nodeliver "$T/repo" task >"$T/nd.out" 2>"$T/nd.err"; rc=$?
+BRIEF_LOST=1 PROMPT_NOSTATE=1 "$SCRIPTS/boot.sh" build nodeliver "$T/repo" task >"$T/nd.out" 2>"$T/nd.err"; rc=$?
 eq "boot: a brief that never lands makes boot exit non-zero" "$((rc != 0))" 1
 eq "boot: no row of that team stays Working" "$("$REG" list --team build-nodeliver | jq '[.[] | select(.status == "Working")] | length')" 0
 eq "boot: every row of that team is Failed" "$("$REG" list --team build-nodeliver | jq '[.[] | select(.status == "Failed")] | length')" "$("$REG" list --team build-nodeliver | jq length)"
@@ -1031,30 +1050,14 @@ for r in tn/lead tn/w1 tn/w2; do "$REG" done "$r" --outcome Shipped --summary "P
 "$REG" escalate tn/w1 P1 "old question" >/dev/null 2>&1
 "$REG" set tn/w2 lessons=learned >/dev/null
 "$REG" reassign tn DEV-9 >/dev/null
-eq "reassign: every row gets the issue and status Working" "$("$REG" list --team tn | jq -c '[.[] | [.issue, .status] | join(":")] | unique')" '["DEV-9:Working"]'
+eq "reassign: every row gets the issue; the lead is Working, the workers Idle" "$("$REG" list --team tn | jq -c '[.[] | [.name, .issue, .status] | join(":")] | sort')" '["tn/lead:DEV-9:Working","tn/w1:DEV-9:Idle","tn/w2:DEV-9:Idle"]'
+eq "reassign: the assignment is rewritten (default: the issue)" "$("$REG" list --team tn | jq -c '[.[].assignment] | unique')" '["DEV-9"]'
 eq "reassign: outcome, summary, PR, sign-off and lessons are cleared" "$("$REG" list --team tn | jq '[.[] | select(.outcome != null or .summary != null or .done_at != null or .pr != null or .signoff != null or .lessons != null)] | length')" 0
 eq "reassign: the open escalation is closed with the note" "$("$REG" get tn/w1 | jq -c '[.escalation, .escalations[0].resolution, (.escalations[0].resolved_at != null)]')" '["","closed at next",true]'
 check "reassign: an unknown team is refused" bash -c "! '$REG' reassign nosuchteam DEV-1"
 
-for r in tn/lead tn/w1 tn/w2; do "$REG" done "$r" --outcome Shipped --summary x >/dev/null 2>&1; done
-: >"$HERDR_LOG"; rm -f "$AS"/*; printf 'chat\n20%% context used\n' >"$AS/tn-l.read"
-"$SCRIPTS/next.sh" tn DEV-10 --brief "Work on DEV-10 now" >"$T/next.out" 2>&1; rc=$?
-eq "next: exits 0" "$rc" 0
-eq "next: each worker is told /clear" "$(grep -c '^agent prompt tn-w[12] /clear' "$HERDR_LOG")" 2
-eq "next: the lead is not compacted below the threshold" "$(grep -c '^agent prompt tn-l /compact' "$HERDR_LOG")" 0
-eq "next: the lead gets the brief" "$(grep -c '^agent prompt tn-l Work on DEV-10 now' "$HERDR_LOG")" 1
-check "next: the brief carries the fleet rules" grep -q 'Fleet rules for tn/lead' "$HERDR_LOG"
-eq "next: rows moved to the new issue" "$("$REG" list --team tn | jq -c '[.[].issue] | unique')" '["DEV-10"]'
-: >"$HERDR_LOG"; printf 'chat\n80%% context used\n' >"$AS/tn-l.read"
-"$SCRIPTS/next.sh" tn DEV-11 >/dev/null 2>&1
-eq "next: the lead is compacted above the threshold" "$(grep -c '^agent prompt tn-l /compact' "$HERDR_LOG")" 1
-eq "next: the default brief names the issue" "$(grep -c 'New issue: DEV-11' "$HERDR_LOG")" 1
-: >"$HERDR_LOG"; printf 'nothing to see\n' >"$AS/tn-l.read"
-"$SCRIPTS/next.sh" tn DEV-12 >/dev/null 2>&1
-eq "next: an unreadable context percentage compacts" "$(grep -c '^agent prompt tn-l /compact' "$HERDR_LOG")" 1
-PROMPT_FAIL=1 "$SCRIPTS/next.sh" tn DEV-13 >/dev/null 2>&1; rc=$?
-eq "next: an undelivered message exits non-zero" "$((rc != 0))" 1
-eq "next: and the row is Failed, not Working" "$("$REG" get tn/lead | jq -r .status)" Failed
+for r in tn/lead tn/w1 tn/w2; do "$REG" set "$r" template=build >/dev/null; done
+rm -f "${AS:?}"/*
 # a failed claim aborts before any row changes (linear.sh arrives in a later slice; this stub stands in for it)
 cp -R "$SCRIPTS" "$T/sc"; printf '#!/usr/bin/env bash\nexit 1\n' >"$T/sc/linear.sh"; chmod +x "$T/sc/linear.sh"
 "$REG" reassign tn DEV-20 >/dev/null; : >"$HERDR_LOG"
@@ -1063,10 +1066,14 @@ eq "next: a failed claim exits non-zero" "$((rc != 0))" 1
 eq "next: a failed claim leaves the old issue" "$("$REG" list --team tn | jq -c '[.[].issue] | unique')" '["DEV-20"]'
 eq "next: a failed claim sends nothing" "$(grep -c '^agent prompt' "$HERDR_LOG")" 0
 printf '#!/usr/bin/env bash\nexit 3\n' >"$T/sc/linear.sh"
-"$T/sc/next.sh" tn DEV-22 >/dev/null 2>&1; eq "next: no Linear key (exit 3) proceeds unclaimed" "$?" 0
-eq "next: with no Linear key the claim step is skipped (exit 3)" "$("$SCRIPTS/next.sh" tn DEV-23 >/dev/null 2>&1; echo $?)" 0
+# (these rows have no worktree, so their restarts fail; the claim step is what is checked here)
+FLEET_EXIT_WAIT_SECS=0 "$T/sc/next.sh" tn DEV-22 >/dev/null 2>&1; rm -f "${AS:?}"/*
+eq "next: no Linear key (exit 3) proceeds unclaimed" "$("$REG" list --team tn | jq -c '[.[].issue] | unique')" '["DEV-22"]'
+FLEET_EXIT_WAIT_SECS=0 "$SCRIPTS/next.sh" tn DEV-23 >/dev/null 2>&1; rm -f "${AS:?}"/*
+eq "next: with no Linear key the claim step is skipped (exit 3)" "$("$REG" list --team tn | jq -c '[.[].issue] | unique')" '["DEV-23"]'
 printf 'machines = 2\n' >>"$FLEET_CONFIG_DIR/config.toml"
-"$T/sc/next.sh" tn DEV-24 >/dev/null 2>&1; eq "next: no Linear key and machines > 1 refuses (NH3)" "$?" 1
+FLEET_EXIT_WAIT_SECS=0 "$T/sc/next.sh" tn DEV-24 >/dev/null 2>&1; nrc=$?; rm -f "${AS:?}"/*
+eq "next: no Linear key and machines > 1 refuses (NH3)" "$nrc:$("$REG" list --team tn | jq -c '[.[].issue] | unique')" '1:["DEV-23"]'
 sed -i.bak '/^machines/d' "$FLEET_CONFIG_DIR/config.toml"; rm -f "$FLEET_CONFIG_DIR/config.toml.bak"
 rm -rf "$T/sc"
 
@@ -1173,38 +1180,6 @@ rm -f "$AS"/*
 out="$(PROMPT_NOSTATE=1 PROMPT_SEQ=1 "$SCRIPTS/tell.sh" sd/builder "state change seq only" 2>/dev/null)"; rc=$?
 eq "tell: an increased state_change_seq is delivery" "$rc:$(printf '%s' "$out" | jq -r .delivered)" "0:true"
 
-# -- lead context from transcript usage
-LT="$TRD/lead.jsonl"; arow2 sd/lead Lead sd-l "" "$LT"; arow2 sd/w1 Worker sd-w1 "" "$TRD/w1.jsonl"
-usage() { jq -nc --argjson i "$1" --argjson r "$2" --argjson c "$3" --arg m "$4" '{type: "assistant", message: {model: $m, usage: {input_tokens: $i, cache_read_input_tokens: $r, cache_creation_input_tokens: $c, output_tokens: 9}}}'; }
-{ usage 1 1 1 claude-x; usage 10000 130000 10000 claude-x; } >"$LT"
-eq "context_window: default 200000" "$(. "$SCRIPTS/common.sh"; context_window claude-x)" 200000
-eq "context: latest assistant turn / default window" "$(. "$SCRIPTS/common.sh"; transcript_context_pct "$LT")" 75
-printf '[context_window]\n"claude-x" = 400000\nother = 1000\n' >>"$FLEET_CONFIG_DIR/config.toml"
-eq "context_window: read from the [context_window] table" "$(. "$SCRIPTS/common.sh"; context_window claude-x)" 400000
-eq "context: uses the model's window" "$(. "$SCRIPTS/common.sh"; transcript_context_pct "$LT")" 37
-eq "context: an unreadable transcript prints nothing" "$(. "$SCRIPTS/common.sh"; transcript_context_pct "$TRD/nope.jsonl")" ""
-for r in sd/lead sd/w1; do "$REG" done "$r" --outcome Shipped --summary x >/dev/null 2>&1; done
-: >"$HERDR_LOG"; rm -f "$AS"/*; printf 'chat\n80%% context used\n' >"$AS/sd-l.read"
-"$SCRIPTS/next.sh" sd DEV-30 >/dev/null 2>&1
-eq "next: transcript says 37%, so the lead is not compacted even though the screen says 80%" "$(grep -c '^agent prompt sd-l /compact' "$HERDR_LOG")" 0
-usage 100000 100000 20000 claude-x >>"$LT"
-: >"$HERDR_LOG"; "$SCRIPTS/next.sh" sd DEV-31 >/dev/null 2>&1
-eq "next: transcript at 55% compacts the lead" "$(grep -c '^agent prompt sd-l /compact' "$HERDR_LOG")" 1
-sed -i.bak '/context_window/,$d' "$FLEET_CONFIG_DIR/config.toml"; rm -f "$FLEET_CONFIG_DIR/config.toml.bak"
-
-# -- /clear starts a new session file: next re-resolves the row's transcript
-arow2 sc/lead Lead sc-l "/work/sc/lead" ""; arow2 sc/w1 Worker sc-w "/work/sc/w.1" "$HOME/.claude/projects/-work-sc-w-1/old.jsonl"
-SD="$HOME/.claude/projects/-work-sc-w-1"; mkdir -p "$SD"; echo '{}' >"$SD/old.jsonl"
-for r in sc/lead sc/w1; do "$REG" done "$r" --outcome Shipped --summary x >/dev/null 2>&1; done
-rm -f "$AS"/*; printf 'chat\n20%% context used\n' >"$AS/sc-l.read"
-PROMPT_NEWSESSION_DIR="$SD" "$SCRIPTS/next.sh" sc DEV-40 >/dev/null 2>&1
-new="$("$REG" get sc/w1 | jq -r .transcript)"
-check "next: the worker's row points at the new session file" bash -c "[ '$new' != '$SD/old.jsonl' ] && [ -f '$new' ] && case '$new' in '$SD'/*) true ;; *) false ;; esac"
-rm -f "$AS"/*; for r in sc/lead sc/w1; do "$REG" done "$r" --outcome Shipped --summary x >/dev/null 2>&1; done
-"$REG" set sc/w1 transcript="$SD/old.jsonl" >/dev/null
-err="$(FLEET_TELL_POLL=0.01 "$SCRIPTS/next.sh" sc DEV-41 2>&1 >/dev/null)"
-check "next: no new session file after /clear is warned about" grep -q 'no new transcript for sc/w1' <<<"$err"
-eq "next: and the old path is left alone" "$("$REG" get sc/w1 | jq -r .transcript)" "$SD/old.jsonl"
 eq "scripts reach Claude's projects dir only through projects_dir" "$(grep -l 'claude/projects' "$SCRIPTS"/*.sh | xargs -n1 basename | tr '\n' ' ')" "common.sh "
 eq "projects_dir follows HOME" "$(HOME=/nowhere-x . "$SCRIPTS/common.sh"; HOME=/nowhere-x projects_dir)" /nowhere-x/.claude/projects
 
@@ -2316,7 +2291,7 @@ rm -f "$EVF"; : >"$HERDR_LOG"; rm -f "${AS:?}"/*
 nrows="$("$REG" list --team build-evt | jq length)"
 eq "events: boot is logged once" "$(evn boot)" 1
 eq "events: every delivered brief is logged" "$(evn brief_delivered)" "$nrows"
-PROMPT_NOSTATE=1 FLEET_TELL_POLL=0.01 "$SCRIPTS/boot.sh" build evf "$T/repo" "SECRETTASKWORDS again" >/dev/null 2>&1
+BRIEF_LOST=1 PROMPT_NOSTATE=1 FLEET_TELL_POLL=0.01 "$SCRIPTS/boot.sh" build evf "$T/repo" "SECRETTASKWORDS again" >/dev/null 2>&1
 eq "events: every undelivered brief is logged as brief_failed" "$(evn brief_failed)" "$("$REG" list --team build-evf | jq length)"
 eq "events: no brief text, task text or key reaches the log" "$(grep -c 'Fleet rules for\|SECRETTASKWORDS\|KEYFIXTURE\|Role:' "$EVF" || true)" 0
 "$REG" signoff build-evt/tester https://github.com/o/r/pull/21 abc1234 >/dev/null
@@ -2326,6 +2301,7 @@ eid="$("$REG" escalations --open --team build-evt | jq -r '.[0].id')"
 "$REG" resolve build-evt/lead "$eid" >/dev/null 2>&1
 eq "events: escalation raised and resolved" "$(evn escalation_raised)$(evn escalation_resolved)" 11
 eq "events: the escalation text is not logged" "$(grep -c 'which db' "$EVF" || true)" 0
+rm -f "${AS:?}"/build-evt-* # next needs a safe point: every agent idle
 "$SCRIPTS/next.sh" build-evt DEV-77 >/dev/null 2>&1
 eq "events: next is logged" "$(grep '"type":"next"' "$EVF" | jq -c '[.team, .issue]')" '["build-evt","DEV-77"]'
 "$SCRIPTS/retire.sh" build-evt >/dev/null 2>&1
@@ -2371,12 +2347,13 @@ eq "respawn: with a new session id" "$(grep "^agent start build-rsp-builder " "$
 check "respawn: the row has a new transcript path" bash -c "[ \"\$('$REG' get build-rsp/builder | jq -r .transcript)\" != '$OLDT' ]"
 eq "respawn: the row is Working" "$("$REG" get build-rsp/builder | jq -r .status)" Working
 eq "respawn: respawned is logged" "$(evn respawned)" 1
-check "respawn: the resume brief is sent to the agent and says so" bash -c "grep -q '^agent prompt build-rsp-builder ' '$HERDR_LOG' && grep -q 'You are being respawned' '$HERDR_LOG'"
-check "respawn: and carries the assignment" grep -q 'Assignment: SECRETTASKWORDS respawn me' "$HERDR_LOG"
-check "respawn: and the last report file" grep -q "DEV-1-builder.md" "$HERDR_LOG"
-check "respawn: and git log and git status of the branch" bash -c "grep -q 'git log -5 --oneline' '$HERDR_LOG' && grep -q 'untracked-note.txt' '$HERDR_LOG'"
+lastbrief() { cat "$("$REG" get "$1" | jq -r '.last_brief // "/nonexistent"')" 2>/dev/null; }
+check "respawn: the resume brief is sent to the agent (a pointer to the file) and says so" bash -c "grep -q '^agent prompt build-rsp-builder Read your brief: ' '$HERDR_LOG' && grep -q 'You are being respawned' '$("$REG" get build-rsp/builder | jq -r .last_brief)'"
+check "respawn: and carries the assignment" grep -q 'Assignment: SECRETTASKWORDS respawn me' <<<"$(lastbrief build-rsp/builder)"
+check "respawn: and the last report file" grep -q "DEV-1-builder.md" <<<"$(lastbrief build-rsp/builder)"
+check "respawn: and git log and git status of the branch" bash -c "grep -q 'git log -5 --oneline' <<<\"\$1\" && grep -q 'untracked-note.txt' <<<\"\$1\"" _ "$(lastbrief build-rsp/builder)"
 eq "respawn: the resume brief carries no pane text" "$(grep -c PANETAILMARK "$HERDR_LOG" || true)" 0
-check "respawn: and the fleet rules" grep -q 'Fleet rules for build-rsp/builder' "$HERDR_LOG"
+check "respawn: and the fleet rules" grep -q 'Fleet rules for build-rsp/builder' <<<"$(lastbrief build-rsp/builder)"
 eq "respawn: the brief text itself is not in the event log" "$(grep -c 'SECRETTASKWORDS\|Fleet rules' "$EVF" || true)" 0
 # a second death inside the window: P1 escalation, no respawn
 echo gone >"$AS/build-rsp-builder"; : >"$HERDR_LOG"
@@ -2392,7 +2369,7 @@ eq "respawn: after the window a new death is respawned" "$(nstart build-rsp-buil
 # a lead is respawned as a lead
 echo gone >"$AS/build-rsp-lead"; : >"$HERDR_LOG"; "$SCRIPTS/tick.sh" >/dev/null 2>&1; "$SCRIPTS/tick.sh" >/dev/null 2>&1
 eq "respawn: a lead is started again as the lead agent" "$(grep "^agent start build-rsp-lead " "$HERDR_LOG" | grep -c -- '--agent developer:lead')" 1
-check "respawn: a lead's resume brief names the team" grep -q 'The team:' "$HERDR_LOG"
+check "respawn: a lead's resume brief names the team" grep -q 'The team:' <<<"$(lastbrief build-rsp/lead)"
 # a respawn that always fails still spends the budget: tried respawn_max times, then one P1, no pane leak
 printf 'respawn_max = 2\n' >"$FLEET_CONFIG_DIR/config.toml"
 "$SCRIPTS/boot.sh" build rsf "$T/repo" "task" >/dev/null 2>&1
@@ -2547,6 +2524,174 @@ export FLEET_STATE_DIR="$_rstate" FLEET_REGISTRY="$_rreg"; [ -n "$_rinbox" ] && 
 for k in events.jsonl metrics.sh respawn respawn_max nudge; do check "SKILL.md documents $k" grep -qi -- "$k" "$SCRIPTS/../SKILL.md"; done
 for k in metrics.sh respawn.sh events.jsonl; do check "README documents $k" grep -q -- "$k" "$SCRIPTS/../README.md"; done
 check "registry.md documents the event log and nudged_at" bash -c "grep -q 'events.jsonl' '$SCRIPTS/../references/registry.md' && grep -q 'nudged_at' '$SCRIPTS/../references/registry.md'"
+
+# ---- DEV-368 D: house rules, briefs as files, restart at next, sandbox ---------------------------------------
+_dds="$FLEET_STATE_DIR"; _ddr="$FLEET_REGISTRY"; _ddi="${FLEET_INBOX:-}"
+export FLEET_STATE_DIR="$T/dst" FLEET_REGISTRY="$T/dst/fleet.json" FLEET_INBOX="$T/dst/escalations.jsonl"; mkdir -p "$FLEET_STATE_DIR"
+cp "$FLEET_CONFIG_DIR/config.toml" "$T/config.d.bak"; printf 'tell_confirm_secs = 2\nbrief_idle_secs = 2\n' >>"$FLEET_CONFIG_DIR/config.toml"
+export FLEET_TELL_POLL=0.05 FLEET_EXIT_WAIT_SECS=1
+SKD_="$SCRIPTS/.."
+modeof() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"; }
+lastbrief() { cat "$("$REG" get "$1" | jq -r '.last_brief // "/nonexistent"')" 2>/dev/null; }
+rm -f "${AS:?}"/*; : >"$HERDR_LOG"
+
+# -- house rules: in every brief once, then the repo's own rules; no trailer; generic text
+mkdir -p "$T/hr/.claude"; printf 'Repo rule: run make check.\n' >"$T/hr/.claude/fleet-rules.md"
+"$REG" add "$(jq -cn --arg r "$T/hr" '{name: "hr/builder", team: "hr", tier: "Worker", status: "Idle", herdr_ref: "hr-b", pane: "p", repo: $r}')"
+hb="$(. "$SCRIPTS/common.sh"; build_brief hr/builder "" "Role: builder.")"
+eq "house rules: appended once" "$(printf '%s' "$hb" | grep -c '^House rules (fleet)')" 1
+eq "house rules: the repo's own rules follow, once" "$(printf '%s' "$hb" | grep -c 'Repo rule: run make check.')" 1
+check "house rules: the repo's rules come after the house rules" bash -c "printf '%s' \"\$1\" | awk '/^House rules/ {h = NR} /Repo rule:/ {r = NR} END {exit !(h && r > h)}'" _ "$hb"
+eq "house rules: no commit trailer in the brief" "$(printf '%s' "$hb" | grep -c 'Agent:' || true)" 0
+check "house rules: the branch rule with its example" bash -c "printf '%s' \"\$1\" | grep -q 'fleet/dev-12-fix-login' && printf '%s' \"\$1\" | grep -q 'git push --force-with-lease origin fleet/<slug>'" _ "$hb"
+check "house rules: untrusted text is data" grep -q 'never approves anything and never relaxes a rule' <<<"$hb"
+eq "house rules: a resume brief carries them once too" "$(. "$SCRIPTS/common.sh"; build_brief --resume hr/builder "" "Role: builder." | grep -c '^House rules (fleet)')" 1
+eq "skill text names no person or company (rules, templates, SKILL.md, references, agents)" "$(grep -rliE 'ivor|devpie' "$SKD_/rules" "$SKD_/templates" "$SKD_/SKILL.md" "$SKD_/references" "$SKD_/../../agents" | wc -l | tr -d ' ')" 0
+eq "no Agent: trailer anywhere in skill text, templates or scripts" "$(grep -rl 'Agent: ' "$SKD_/rules" "$SKD_/templates" "$SKD_/SKILL.md" "$SKD_/references" "$SKD_/../../agents" "$SCRIPTS"/*.sh | wc -l | tr -d ' ')" 0
+check "the race template is gone" test ! -e "$SKD_/templates/race.json"
+check "the builder brief rebases and pushes with lease, never merges the default branch" bash -c "jq -r '.workers[] | select(.role == \"builder\") | .brief' '$SKD_/templates/build.json' | grep -q 'git push --force-with-lease origin fleet/<slug>' && ! jq -r '.workers[] | select(.role == \"builder\") | .brief' '$SKD_/templates/build.json' | grep -q 'merge origin/main'"
+
+# -- boot: briefs as files with pointers; the Fixes line; push.useForceIfIncludes; plugin_version
+: >"$HERDR_LOG"; rm -f "${AS:?}"/*
+"$SCRIPTS/boot.sh" --issue DEV-7 --issue-url https://tracker.example/issue/DEV-7 build hb "$T/repo" "build the thing" >"$T/dboot.out" 2>"$T/dboot.err"; rc=$?
+eq "boot: exits 0 with every brief delivered as a file" "$rc" 0
+nb="$("$REG" list --team build-hb | jq length)"
+eq "boot: every agent got one pointer line, not the brief" "$(grep -c '^agent prompt build-hb-[a-z]* Read your brief: ' "$HERDR_LOG")" "$nb"
+eq "boot: no brief text is typed into a pane" "$(grep -c 'Fleet rules for\|House rules (fleet)' "$HERDR_LOG" || true)" 0
+eq "boot: no Agent: anywhere in the herdr log" "$(grep -c 'Agent:' "$HERDR_LOG" || true)" 0
+for r in $("$REG" list --team build-hb | jq -r '.[].name'); do
+  bf="$("$REG" get "$r" | jq -r .last_brief)"
+  eq "boot: $r's brief is a mode-600 file in the state dir" "$(case "$bf" in "$FLEET_STATE_DIR"/briefs/build-hb/*.md) modeof "$bf" ;; *) echo "$bf" ;; esac)" 600
+  eq "boot: $r's brief carries the house rules once and no trailer" "$(grep -c '^House rules (fleet)' "$bf"):$(grep -c 'Agent:' "$bf" || true)" "1:0"
+done
+check "boot: the builder's brief carries the exact Fixes line" grep -q 'Fixes https://tracker.example/issue/DEV-7' <<<"$(lastbrief build-hb/builder)"
+eq "boot: rows carry the issue URL and the plugin version" "$("$REG" get build-hb/builder | jq -c '[.issue_url, .plugin_version]')" "[\"https://tracker.example/issue/DEV-7\",\"$(jq -r .version "$SCRIPTS/../../../.claude-plugin/plugin.json")\"]"
+eq "boot: push.useForceIfIncludes is on in the builder's worktree" "$(git -C "$("$REG" get build-hb/builder | jq -r .worktree)" config push.useForceIfIncludes)" true
+
+# -- permission mode: never off
+: >"$HERDR_LOG"
+FLEET_PERMISSION_MODE=bypassPermissions "$SCRIPTS/boot.sh" build bp1 "$T/repo" t >/dev/null 2>"$T/bp.err"; rc=$?
+eq "permission: bypassPermissions is refused" "$((rc != 0))" 1
+eq "permission: and nothing was started" "$(grep -c '^workspace create\|^agent start' "$HERDR_LOG" || true)" 0
+check "permission: the refusal says why" grep -q 'turns permission checks off' "$T/bp.err"
+jq '.permission_mode = "plan"' "$SKD_/templates/build.json" >"$T/tpl-plan.json"; : >"$HERDR_LOG"
+"$SCRIPTS/boot.sh" "$T/tpl-plan.json" pm1 "$T/repo" t >/dev/null 2>&1
+eq "permission: a template may set its own mode" "$(grep '^agent start' "$HERDR_LOG" | grep -c -- '--permission-mode plan')" "$(grep -c '^agent start' "$HERDR_LOG")"
+jq '.permission_mode = "bypassPermissions"' "$SKD_/templates/build.json" >"$T/tpl-bp.json"
+"$SCRIPTS/boot.sh" "$T/tpl-bp.json" pm2 "$T/repo" t >/dev/null 2>&1; eq "permission: but not bypassPermissions" "$?" 1
+eq "permission: the dangerous flag is never passed" "$(grep -c 'dangerously-skip-permissions' "$HERDR_LOG" || true)" 0
+
+# -- tell --brief: delivered only when the transcript shows the id
+TB="$HOME/.claude/projects/tb"; mkdir -p "$TB"; : >"$TB/t.jsonl"
+"$REG" add "$(jq -cn --arg tr "$TB/t.jsonl" '{name: "tb/builder", team: "tb", tier: "Worker", status: "Idle", herdr_ref: "tb-b", pane: "p", repo: "/x", transcript: $tr}')"
+rm -f "${AS:?}"/*; : >"$HERDR_LOG"
+out="$("$SCRIPTS/tell.sh" tb/builder "the whole brief text" --brief 2>/dev/null)"; rc=$?
+eq "tell --brief: delivered when the transcript shows the id" "$rc:$(printf '%s' "$out" | jq -r .delivered)" "0:true"
+bf="$("$REG" get tb/builder | jq -r .last_brief)"
+eq "tell --brief: the brief is in the file (mode 600), not typed" "$(cat "$bf"):$(modeof "$bf"):$(grep -c 'the whole brief text' "$HERDR_LOG" || true)" "the whole brief text:600:0"
+check "tell --brief: the pointer names the file and its id" grep -q "^agent prompt tb-b Read your brief: $bf (id $(basename "$bf" .md))" "$HERDR_LOG"
+rm -f "${AS:?}"/*; out="$(BRIEF_QUEUED=1 "$SCRIPTS/tell.sh" tb/builder "queued brief" --brief 2>/dev/null)"
+eq "tell --brief: a queued_command attachment with the id counts" "$(printf '%s' "$out" | jq -r .delivered)" true
+rm -f "${AS:?}"/*; out="$(BRIEF_LOST=1 "$SCRIPTS/tell.sh" tb/builder "lost brief" --brief 2>/dev/null)"; rc=$?
+eq "tell --brief: no id in the transcript is not delivered (exit 1)" "$rc:$(printf '%s' "$out" | jq -r .delivered)" "1:false"
+check "tell --brief: and the row is marked for one re-send" test -n "$("$REG" get tb/builder | jq -r '.brief_failed_at // ""')"
+rm -f "${AS:?}"/*; out="$(BRIEF_LOST=1 PROMPT_SEQ=1 "$SCRIPTS/tell.sh" tb/builder "seq only" --brief 2>/dev/null)"
+eq "tell --brief: a state change alone is not delivery" "$(printf '%s' "$out" | jq -r .delivered)" false
+jq -nc '{type: "user", message: {content: "Read your brief: /x/other.md (id b1234unrelated)"}}' >>"$TB/t.jsonl"
+rm -f "${AS:?}"/*; out="$(BRIEF_LOST=1 "$SCRIPTS/tell.sh" tb/builder "another" --brief 2>/dev/null)"
+eq "tell --brief: an id it never sent does not count (bad input)" "$(printf '%s' "$out" | jq -r .delivered)" false
+echo working >"$AS/tb-b"; : >"$HERDR_LOG"
+out="$("$SCRIPTS/tell.sh" tb/builder "while busy" --brief 2>/dev/null)"; rc=$?
+eq "tell --brief: an agent that is not idle in time gets nothing (exit 1)" "$rc:$(printf '%s' "$out" | jq -r .reason)" "1:not idle"
+eq "tell --brief: nothing was typed" "$(grep -c '^agent prompt tb-b' "$HERDR_LOG" || true)" 0
+rm -f "${AS:?}"/*; : >"$HERDR_LOG"
+out="$("$SCRIPTS/tell.sh" tb/builder - --brief-file "$bf" 2>/dev/null)"
+eq "tell --brief-file: re-sends the pointer to the same file and id" "$(printf '%s' "$out" | jq -r .delivered):$(grep -c "Read your brief: $bf (id $(basename "$bf" .md))" "$HERDR_LOG")" "true:1"
+
+# -- a Failed row stays Failed; tick re-sends the pointer once, then one brief_failed
+"$REG" set tb/builder status=Failed brief_failed_at=2026-10-19T00:00:00Z last_brief="$bf" >/dev/null
+rm -f "${AS:?}"/* "$FLEET_STATE_DIR/tick.state.json"
+eq "status: a Failed row (idle in herdr) stays Failed, never Stalled" "$("$SCRIPTS/status.sh" --json 2>/dev/null | jq -r '.[] | select(.name == "tb/builder") | .status')" Failed
+: >"$HERDR_LOG"; f1="$(BRIEF_LOST=1 "$SCRIPTS/tick.sh" 2>/dev/null)"
+eq "tick: the pointer is re-sent once" "$(grep -c '^agent prompt tb-b Read your brief:' "$HERDR_LOG")" 1
+eq "tick: still lost, so one brief_failed event" "$(evc "$f1" brief_failed)" 1
+: >"$HERDR_LOG"; f2="$(BRIEF_LOST=1 "$SCRIPTS/tick.sh" 2>/dev/null)"
+eq "tick: no second re-send and no second event" "$(grep -c '^agent prompt tb-b' "$HERDR_LOG" || true):$(evc "$f2" brief_failed)" "0:0"
+"$REG" set tb/builder brief_resent= >/dev/null; rm -f "${AS:?}"/* "$FLEET_STATE_DIR/tick.state.json"
+"$SCRIPTS/tick.sh" >/dev/null 2>&1
+eq "tick: a re-sent pointer that arrives brings the row back" "$("$REG" get tb/builder | jq -c '[.status, (.brief_failed_at // "")]')" '["Working",""]'
+
+# -- stale_version: an agent on an older plugin than the installed one, once per version
+eq "version_gt: 3.10.0 > 3.9.0 (numeric, not text)" "$(. "$SCRIPTS/common.sh"; version_gt 3.10.0 3.9.0 && echo y || echo n)" y
+eq "version_gt: equal is not newer" "$(. "$SCRIPTS/common.sh"; version_gt 3.10.0 3.10.0 && echo y || echo n)" n
+eq "version_gt: 1.2 < 1.10" "$(. "$SCRIPTS/common.sh"; version_gt 1.2 1.10 && echo y || echo n)" n
+rm -f "$FLEET_STATE_DIR/tick.state.json"
+s1="$(FLEET_INSTALLED_VERSION=99.0.0 "$SCRIPTS/tick.sh" --team build-hb 2>/dev/null)"; s2="$(FLEET_INSTALLED_VERSION=99.0.0 "$SCRIPTS/tick.sh" --team build-hb 2>/dev/null)"
+eq "tick: stale_version for each booted agent, once" "$(evc "$s1" stale_version):$(evc "$s2" stale_version)" "$nb:0"
+eq "tick: no stale_version when the installed version is the same" "$(rm -f "$FLEET_STATE_DIR/tick.state.json"; evc "$(FLEET_INSTALLED_VERSION="$(jq -r .version "$SCRIPTS/../../../.claude-plugin/plugin.json")" "$SCRIPTS/tick.sh" 2>/dev/null)" stale_version)" 0
+
+# -- next: restart every agent with its full brief (a file); no /clear, no /compact
+rm -f "${AS:?}"/*; : >"$HERDR_LOG"; : >"$FLEET_STATE_DIR/events.jsonl"
+before_t="$("$REG" list --team build-hb | jq -c '[.[] | {(.name): .transcript}] | add')"
+out="$("$SCRIPTS/next.sh" build-hb DEV-8 --brief "Start on DEV-8 now" --issue-url https://tracker.example/issue/DEV-8 2>"$T/next.err")"; rc=$?
+eq "next: exits 0" "$rc" 0
+eq "next: every agent got /exit once" "$(grep -c '^agent prompt build-hb-[a-z]* /exit' "$HERDR_LOG")" "$nb"
+eq "next: and a fresh start with a new session id" "$(grep '^agent start build-hb-' "$HERDR_LOG" | grep -c -- '--session-id')" "$nb"
+eq "next: every transcript path changed (the old one is kept in transcripts)" "$("$REG" list --team build-hb | jq --argjson b "$before_t" '[.[] | $b[.name] as $o | select(.transcript != $o and ((.transcripts // []) | index($o) != null))] | length')" "$nb"
+eq "next: every agent got its brief as a pointer" "$(grep -c '^agent prompt build-hb-[a-z]* Read your brief: ' "$HERDR_LOG")" "$nb"
+eq "next: no /clear and no /compact" "$(grep -c '/clear\|/compact' "$HERDR_LOG" || true)" 0
+check "next: the lead's brief is the full role brief plus the new text" bash -c "grep -q 'You lead team build-hb' <<<\"\$1\" && grep -q 'Start on DEV-8 now' <<<\"\$1\"" _ "$(lastbrief build-hb/lead)"
+check "next: a worker's brief is its full role brief with the new Fixes line" bash -c "grep -q 'Role: builder in team build-hb' <<<\"\$1\" && grep -q 'Fixes https://tracker.example/issue/DEV-8' <<<\"\$1\"" _ "$(lastbrief build-hb/builder)"
+eq "next: the lead is Working, the workers Idle, all on DEV-8" "$("$REG" list --team build-hb | jq -c '[.[] | [.tier, .status, .issue] | join(":")] | unique | sort')" '["Lead:Working:DEV-8","Worker:Idle:DEV-8"]'
+eq "next: issue_done is logged (for DEV-7) before next" "$(jq -rs '[.[] | select(.type == "issue_done" or .type == "next") | .type + ":" + (.issue // "")] | join(",")' "$FLEET_STATE_DIR/events.jsonl")" "issue_done:DEV-7,next:DEV-8"
+eq "next: restarted is logged for each agent" "$(jq -s '[.[] | select(.type == "restarted")] | length' "$FLEET_STATE_DIR/events.jsonl")" "$nb"
+# runs twice: right after, the agents are busy with their briefs, so nothing changes
+: >"$HERDR_LOG"; "$SCRIPTS/next.sh" build-hb DEV-9 >/dev/null 2>"$T/next.err"; rc=$?
+eq "next twice: not at a safe point (agents mid-turn): exit 1, nothing changed" "$rc:$("$REG" list --team build-hb | jq -c '[.[].issue] | unique'):$(grep -c '^agent prompt' "$HERDR_LOG" || true)" '1:["DEV-8"]:0'
+check "next twice: it says who is busy" grep -q 'is not at a safe point' "$T/next.err"
+rm -f "${AS:?}"/*; printf 'working\n  1 shell still running\n' >"$AS/build-hb-builder.read"
+"$SCRIPTS/next.sh" build-hb DEV-9 >/dev/null 2>"$T/next.err"; rc=$?
+eq "next: a background task is not a safe point" "$rc:$(grep -c 'build-hb/builder (background task)' "$T/next.err")" "1:1"
+rm -f "${AS:?}"/*
+mkdir "$FLEET_STATE_DIR/next.build-hb.lock"
+"$SCRIPTS/next.sh" build-hb DEV-9 >/dev/null 2>"$T/next.err"; rc=$?
+eq "next overlapping: a second next while one runs skips (exit 4) and changes nothing" "$rc:$("$REG" list --team build-hb | jq -c '[.[].issue] | unique')" '4:["DEV-8"]'
+rmdir "$FLEET_STATE_DIR/next.build-hb.lock"
+: >"$HERDR_LOG"; AGENT_LIST_FAIL=1 "$SCRIPTS/next.sh" build-hb DEV-9 >/dev/null 2>"$T/next.err"; rc=$?
+eq "next with herdr down: fails cleanly, rows unchanged, nothing sent" "$rc:$("$REG" list --team build-hb | jq -c '[.[].issue] | unique'):$(grep -c '^agent prompt' "$HERDR_LOG" || true)" '1:["DEV-8"]:0'
+rm -f "${AS:?}"/*; : >"$HERDR_LOG"
+EXIT_STUCK=1 "$SCRIPTS/next.sh" build-hb DEV-9 >/dev/null 2>"$T/next.err"; rc=$?
+eq "next: an agent that does not exit is set Failed and next exits 1" "$rc:$("$REG" list --team build-hb | jq -c '[.[].status] | unique')" '1:["Failed"]'
+eq "next: and it was never started again" "$(grep -c '^agent start' "$HERDR_LOG" || true)" 0
+check "next: the error names it" grep -q 'did not exit' "$T/next.err"
+
+# -- sandbox: temporary roots, no session, no key, no role; refuses the live roots; the incident replay
+LIVEDIR="$HOME/.local/state/fleet"; mkdir -p "$LIVEDIR"
+printf '{"agents":{"live/row":{"name":"live/row","team":"live","tier":"Worker","status":"Working","herdr_ref":"x","pane":"p"}}}\n' >"$LIVEDIR/fleet.json"
+livesum="$(cksum <"$LIVEDIR/fleet.json")"; : >"$HERDR_LOG"
+out="$(FLEET_ROLE=worker LINEAR_API_KEY=KEYFIXTURE HERDR_ENV=1 "$SCRIPTS/sandbox.sh" -- bash -c 'printf "%s|%s|%s|%s|%s\n" "${FLEET_ROLE:-none}" "${LINEAR_API_KEY:-none}" "${HERDR_ENV:-none}" "$FLEET_SESSION" "$("$F/registry.sh" path)"')"
+eq "sandbox: no role, no key, no herdr env, a fake session" "$(printf '%s' "$out" | cut -d'|' -f1-4)" "none|none|none|fleet-sandbox"
+check "sandbox: the registry is in a temporary root" bash -c "case '$(printf '%s' "$out" | cut -d'|' -f5)' in '$LIVEDIR'/*) exit 1 ;; */fleet-sandbox.*/state/fleet.json) exit 0 ;; *) exit 1 ;; esac"
+"$SCRIPTS/sandbox.sh" --state-dir "$LIVEDIR" -- true 2>"$T/sb.err"; eq "sandbox: refuses the live state root" "$?" 1
+"$SCRIPTS/sandbox.sh" --state-dir "$LIVEDIR/sub" -- true 2>/dev/null; eq "sandbox: and anything under it" "$?" 1
+"$SCRIPTS/sandbox.sh" --config-dir "$HOME/.config/fleet" -- true 2>/dev/null; eq "sandbox: and the live config root" "$?" 1
+# the reviewer incident, replayed inside the sandbox: a scratch row and a scratch P0
+FLEET_REGISTRY="$LIVEDIR/fleet.json" FLEET_INBOX="$LIVEDIR/escalations.jsonl" "$SCRIPTS/sandbox.sh" -- bash -c '
+  "$F/registry.sh" add "{\"name\":\"x/builder\",\"team\":\"x\",\"tier\":\"Worker\",\"status\":\"Working\",\"herdr_ref\":\"x\",\"pane\":\"p\"}" >/dev/null
+  "$F/registry.sh" escalate x/builder P0 "fake P0" >/dev/null 2>&1' ; rc=$?
+eq "sandbox incident: the scratch run itself works" "$rc" 0
+eq "sandbox incident: the live registry is byte-identical" "$(cksum <"$LIVEDIR/fleet.json")" "$livesum"
+check "sandbox incident: no live inbox was written" test ! -e "$LIVEDIR/escalations.jsonl"
+eq "sandbox incident: nobody was notified (no herdr call outside the sandbox)" "$(wc -l <"$HERDR_LOG" | tr -d ' ')" 0
+eq "sandbox: nothing reached the network shims outside" "$(wc -l <"$REAL_GH_LOG" | tr -d ' ')" 0
+rm -rf "$LIVEDIR"
+
+cp "$T/config.d.bak" "$FLEET_CONFIG_DIR/config.toml"; unset FLEET_EXIT_WAIT_SECS
+export FLEET_STATE_DIR="$_dds" FLEET_REGISTRY="$_ddr"; [ -n "$_ddi" ] && export FLEET_INBOX="$_ddi" || unset FLEET_INBOX
+rm -f "${AS:?}"/*
+check "SKILL.md documents the sandbox and briefs as files" bash -c "grep -q 'sandbox.sh' '$SKD_/SKILL.md' && grep -q 'briefs/<team>/<role>/<id>.md' '$SKD_/SKILL.md'"
+check "README documents sandbox.sh and rules/house.md" bash -c "grep -q 'sandbox.sh' '$SKD_/README.md' && grep -q 'rules/house.md' '$SKD_/README.md'"
+check "registry.md documents last_brief and plugin_version" bash -c "grep -q 'last_brief' '$SKD_/references/registry.md' && grep -q 'plugin_version' '$SKD_/references/registry.md'"
 
 # version and docs
 SK="$SCRIPTS/.."; PLUGIN="$SK/../.."
