@@ -2,21 +2,26 @@
 # PreToolUse hook for /fleet agents. Inert unless FLEET_ROLE is set (only in panes /fleet booted):
 # the Orchestrator and the user's own sessions are not fleet agents and are never restricted.
 #
-#   Every fleet agent, leads included: denied any Read, Edit or Write of the Linear key file. The
+#   Every fleet agent, leads included: denied any Read, Edit, Write, Grep or Glob of the Linear key file. The
 #   target is resolved first (`..` collapsed, directories made physical, symlinks followed), so a
 #   path with another name that leads to the key is denied too. The key file is recognised by its
 #   name (linear_api_key) and by the resolved path of $FLEET_CONFIG_DIR/linear_api_key; only the
 #   directory of that path is looked at, never the key file itself.
 #   Workers with a worktree (FLEET_WORKTREE): also denied file writes outside that worktree.
 #
-# Shell commands are not covered; the brief, the template's permission mode and the absence of the
-# key from the agents' environment carry that part.
+# Shell commands are covered by fleet-bash-guard.sh. Both are guardrails, not a boundary: the key
+# file is mode 600 for the user the agents run as, so any same-uid process can read it.
 set -u
 input="$(cat 2>/dev/null || true)"
 [ -n "${FLEET_ROLE:-}" ] || exit 0
 command -v jq >/dev/null 2>&1 || exit 0
-path="$(printf '%s' "$input" | jq -r '.tool_input.file_path // .tool_input.notebook_path // empty')"
-[ -n "$path" ] || exit 0
+tool="$(printf '%s' "$input" | jq -r '.tool_name // empty')"
+path="$(printf '%s' "$input" | jq -r '.tool_input.file_path // .tool_input.notebook_path // .tool_input.path // empty')"
+# Grep and Glob also name files in their pattern and glob arguments.
+pats=""
+case "$tool" in Grep | Glob) pats="$(printf '%s' "$input" | jq -r '[.tool_input.pattern, .tool_input.glob] | map(strings) | .[]')" ;; esac
+[ -n "$path" ] || [ -n "$pats" ] || exit 0
+searched="$path"; case "$tool" in Grep | Glob) [ -n "$path" ] || path="$PWD" ;; esac
 case "$path" in /*) ;; *) path="$PWD/$path" ;; esac
 
 deny() { jq -n --arg r "$1" '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: $r}}'; exit 0; }
@@ -65,10 +70,22 @@ for cand in "$path" "$rp"; do
   esac
 done
 [ "$rp" != "$keypath" ] || deny "fleet scope guard: $path leads to the Linear key; only the Orchestrator reads it."
+case "$tool" in
+  Grep | Glob)
+    # A pattern or glob that names the key file, by name or as a path that resolves to it.
+    while IFS= read -r pt; do
+      [ -n "$pt" ] || continue
+      case "$pt" in *linear_api_key*) deny "fleet scope guard: the $tool argument names the Linear key; only the Orchestrator reads it." ;; esac
+      case "$pt" in /*) [ "$(resolve "$pt")" != "$keypath" ] || deny "fleet scope guard: the $tool argument leads to the Linear key; only the Orchestrator reads it." ;; esac
+    done <<<"$pats"
+    # A search rooted at the key's directory, or above it, would read the file as part of the tree.
+    [ -z "$searched" ] || case "$keypath" in "$rp"/*) deny "fleet scope guard: searching $path would read the Linear key; search a narrower directory." ;; esac
+    ;;
+esac
 
-# The worktree fence is for workers with a worktree, and not for reads.
+# The worktree fence is for workers with a worktree, and not for reads (Read, Grep, Glob).
 [ "${FLEET_ROLE:-}" = "worker" ] && [ -n "${FLEET_WORKTREE:-}" ] || exit 0
-[ "$(printf '%s' "$input" | jq -r '.tool_name // empty')" != "Read" ] || exit 0
+case "$tool" in Read | Grep | Glob) exit 0 ;; esac
 root="$(cd "$FLEET_WORKTREE" 2>/dev/null && pwd -P)" || exit 0
 case "$rp/" in
   "$root"/*) exit 0 ;;

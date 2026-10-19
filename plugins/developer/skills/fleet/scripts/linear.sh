@@ -162,8 +162,8 @@ describe_with_hb() { # describe_with_hb <description> <ISO>: the description wit
     END { if (!d) print hb }'
 }
 other_fleet_labels() { # other_fleet_labels <issue json> → names of fleet labels on it that are not ours
-  local mine; mine="$(machine_label)"
-  printf '%s' "$1" | jq -r --arg p "$(label_prefix)" --arg m "$mine" '.labels.nodes[] | select((.name | startswith($p)) and .name != $m) | .name'
+  local mine legacy; mine="$(machine_label)"; legacy="$(cfg_str machine_legacy_label '')"
+  printf '%s' "$1" | jq -r --arg p "$(label_prefix)" --arg m "$mine" --arg l "$legacy" '.labels.nodes[] | select((.name | startswith($p)) and .name != $m and ($l == "" or .name != $l)) | .name'
 }
 say() { jq -nc "$@"; }
 

@@ -158,11 +158,13 @@ render() { # render <text> <name> <worktree> <workers>
 }
 
 claude_args() { # claude_args <model> <tier> <worktree> <allow-json>
-  local settings extra="${4:-[]}"
+  local settings extra="${4:-[]}" herdr_allow='["Bash(herdr agent get:*)", "Bash(herdr agent read:*)", "Bash(herdr agent list:*)", "Bash(herdr agent wait:*)"]'
+  # Leads drive their own workers; fleet-bash-guard.sh holds them to their own team.
+  [ "$2" != "Lead" ] || herdr_allow='["Bash(herdr agent get:*)", "Bash(herdr agent read:*)", "Bash(herdr agent list:*)", "Bash(herdr agent wait:*)", "Bash(herdr agent prompt:*)", "Bash(herdr agent send-keys:*)"]'
   extra="${extra//\{\{scripts\}\}/$FLEET_SCRIPTS}"
   extra="${extra//\{\{team\}\}/$team}"; extra="${extra//\{\{worktree\}\}/$3}"
-  settings="$(jq -cn --arg r "$registry" --argjson extra "$extra" --argjson tools "$tool_allow" \
-    '{permissions: {allow: (["Bash(\($r):*)", "Bash(herdr:*)"] + $extra + $tools | unique)}}')"
+  settings="$(jq -cn --arg r "$registry" --argjson extra "$extra" --argjson tools "$tool_allow" --argjson h "$herdr_allow" \
+    '{permissions: {allow: (["Bash(\($r):*)"] + $h + $extra + $tools | unique)}}')"
   printf '%s\0' --settings "$settings"
   [ -n "$1" ] && printf '%s\0' --model "$1"
   [ "$2" = "Lead" ] && printf '%s\0' --agent developer:lead
@@ -195,6 +197,9 @@ alive() { # the pane runs something other than its shell (gotcha: idle can mean 
 
 start_agent_once() { # start_agent_once <agent> <kind> <pane> <model> <tier> <worktree> <allow-json> → prints status
   local agent="$1" kind="$2" pane="$3" args=() out code tries=0
+  # herdr starts the canonical `claude` executable, so `env -u` cannot prefix it. The pane's shell
+  # drops the Linear key first, so the harness and every Bash call it makes start without it.
+  [ "$kind" != "claude" ] || hd pane run "$pane" 'unset LINEAR_API_KEY' >/dev/null 2>&1 || true
   if [ "$kind" = "claude" ]; then
     while IFS= read -r -d '' a; do args+=("$a"); done < <(claude_args "$4" "$5" "$6" "${7:-[]}")
   fi
