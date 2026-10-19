@@ -11,13 +11,12 @@
 # Open escalations are listed after the table, Done agents included, Retired agents not (retire
 # closes theirs): an escalation stays open until the Orchestrator runs `registry.sh resolve`.
 #
-# --all adds the other machines: one row per claim in the JSON that `claim.sh parse` printed
-# (--claims FILE, or - for stdin), which the Orchestrator builds from the claim comments on
-# the tracker. Peers are never probed; their rows show Claimed, the lease and the scope. The
-# MACHINE and LEASE columns appear only with --all. A claim carrying this machine's key but
-# no team in the local registry is marked SAME KEY? (a cloned machine id, see machine-id.sh).
-# --team limits the registry rows only. Without --claims the table says "peer claims: not provided". --all --json is a bare array
-# whose rows have machine and source (registry | tracker).
+# --all adds the other machines: one row per claim in the JSON that `linear.sh peers` printed
+# (--claims FILE, or - for stdin). Peers are never probed; their rows show Claimed, the issue and
+# the age of their last heartbeat ("lapsed" past lease_hours, "no heartbeat" when the label has
+# none). The MACHINE and HEARTBEAT columns appear only with --all. --team limits the registry
+# rows only. Without --claims the table says "peer claims: not provided". --all --json is a bare
+# array whose rows have machine and source (registry | tracker).
 #
 # Health rules (herdr's own state is necessary but not sufficient):
 #   Working      herdr says working
@@ -54,7 +53,7 @@ if [ -n "$claims_file" ]; then
     [ -r "$claims_file" ] || die "cannot read claims file: $claims_file"
     claims="$(cat "$claims_file")"
   fi
-  printf '%s' "$claims" | jq -e 'type == "array"' >/dev/null 2>&1 || die "claims must be the JSON array printed by claim.sh parse"
+  printf '%s' "$claims" | jq -e 'type == "array"' >/dev/null 2>&1 || die "claims must be the JSON array printed by linear.sh peers"
 fi
 
 list_args=(--live); [ -n "$team" ] && list_args+=(--team "$team")
@@ -110,22 +109,14 @@ filter='.'; $problems && filter='[.[] | select(.status == "Stalled" or .status =
 out="$("$registry" list "${list_args[@]}" | jq "$filter")"
 mykey="$(machine_key)"; myname="$(cfg_str machine_name '')"
 if $all; then
-  # Peer rows come only from the claims passed in. Claims of this machine's own teams are
-  # already local rows; one with this key and no local team is flagged.
-  local_teams="$("$registry" list | jq -c '[.[].team] | unique')"
-  peer_rows="$(printf '%s' "$claims" | jq -c --arg key "$mykey" --arg now "${FLEET_NOW:-$(now)}" --argjson teams "$local_teams" '
+  peer_rows="$(printf '%s' "$claims" | jq -c --arg now "${FLEET_NOW:-$(now)}" --argjson lease "$(lease_hours)" '
     [.[] | . as $c
-      | select(($c.machine != $key) or (($teams | index($c.team)) == null))
-      | ($c.machine == $key) as $same
-      | (($c.lease != null) and ($c.lease | fromdateiso8601) < ($now | fromdateiso8601)) as $lapsed
-      | {name: $c.team, team: $c.team, tier: "-", source: "tracker", machine: $c.machine, machine_name: $c.name,
-         status: (if $same then "SAME KEY?" elif $lapsed then "Claimed (lease lapsed)" else "Claimed" end),
-         escalation: "", herdr_ref: "-", issue: $c.issue, lease_expires: $c.lease, claim_comment: $c.id, scope: $c.scope,
-         assignment: ($c.scope | if . == null then "" else "\(.repo): \(if (.paths | length) == 0 then "whole repo" else (.paths | join(", ")) end)" end)}]')"
+      | (if $c.heartbeat == null then null else (($now | fromdateiso8601) - ($c.heartbeat | fromdateiso8601)) end) as $age
+      | {name: ($c.label // $c.machine), team: "", tier: "-", source: "tracker", machine: $c.machine,
+         status: (if $age == null then "Claimed (no heartbeat)" elif $age > ($lease * 3600) then "Claimed (heartbeat lapsed)" else "Claimed" end),
+         escalation: "", herdr_ref: "-", issue: $c.issue, heartbeat: $c.heartbeat,
+         heartbeat_age: (if $age == null then "-" else "\(($age / 60) | floor)m" end), assignment: ""}]')"
   $problems && peer_rows="[]"
-  printf '%s' "$peer_rows" | jq -r --arg key "$mykey" '.[] | select(.status == "SAME KEY?") | .team' | while IFS= read -r t; do
-    warn "claim for $t carries this machine's key ($mykey) but no local team: cloned machine id? (see machine-id.sh)"
-  done
   out="$(jq -cn --argjson l "$out" --argjson p "$peer_rows" '($l | map(. + {source: "registry"})) + $p')"
 fi
 if $json; then printf '%s\n' "$out"; exit 0; fi
@@ -147,10 +138,10 @@ printf '%s' "$out" | jq -r --argjson all "$all" --arg mykey "$mykey" --arg mynam
   def mcell: (.machine // "-") + (if (.machine_name // "") != "" then " (\(.machine_name))"
     elif .machine == $mykey and $myname != "" then " (\($myname))" else "" end);
   (["AGENT", "TIER", "STATUS", "ESC"] + (if $showenv then ["ENV"] else [] end) + (if $showissue then ["ISSUE"] else [] end)
-    + (if $all then ["MACHINE", "LEASE"] else [] end) + ["HERDR", "ASSIGNMENT"] | @tsv),
+    + (if $all then ["MACHINE", "HEARTBEAT"] else [] end) + ["HERDR", "ASSIGNMENT"] | @tsv),
   (sort_by(.team, .tier)[] | [.name, .tier, .status, (if (.escalation // "") == "" then "-" else .escalation end)]
     + (if $showenv then [envcell] else [] end) + (if $showissue then [(.issue // "-")] else [] end)
-    + (if $all then [mcell, (.lease_expires // "-")] else [] end)
+    + (if $all then [mcell, (.heartbeat_age // "-")] else [] end)
     + [.herdr_ref, ((.assignment // "")[0:50])] | @tsv)' |
   column -t -s $'\t'
 open_esc="$("$registry" escalations --open --not-retired ${team:+--team "$team"})"

@@ -115,8 +115,9 @@ The Orchestrator and agents call these directly (from `scripts/`). You can call 
 
 | Script | Commands |
 |---|---|
-| `boot.sh` | `boot.sh [--issue ID --claimed-by KEY --labels a,b --scope 'repo: paths' --peer-claim … --takeover-of KEY --lease-expires ISO --last-activity ISO] <template> <focus> <dir> [task…]` boots a team (`FLEET_FORCE=1` goes over the `max_agents` cap and the `min_free_gb` disk floor, never over another machine's claim or a live lease). `--takeover-of` is accepted only when the passed lease is past and the PR shows no activity within `lease_hours` |
-| `claim.sh` | `line` builds the claim comment · `renew` moves its `lease=` · `lease` prints now + `lease_hours` · `parse` turns tracker comments (JSON on stdin) into claims · `expired --lease ISO [--last-activity ISO]` says whether a claim can be taken over. Pure: it never calls a tracker |
+| `boot.sh` | `boot.sh [--issue ID --claimed-by KEY --labels a,b --scope 'repo: paths'] <template> <focus> <dir> [task…]` boots a team (`FLEET_FORCE=1` goes over the `max_agents` cap and the `min_free_gb` disk floor, never over another machine's claim). A takeover is done with `linear.sh takeover` before boot |
+| `claim.sh` | `lease` prints now + `lease_hours` · `hb` reads the `heartbeat=` line of a label description (stdin) · `expired --lease ISO [--last-activity ISO]` says whether a claim can be taken over. Pure: it never calls a tracker |
+| `linear.sh` | claims and heartbeat on the Linear API: `claim <ISSUE> [--dry-run]` · `heartbeat` (one mutation) · `holder <ISSUE>` and `peers` (read-only) · `takeover <ISSUE> [--last-activity ISO]` · `migrate [--dry-run]` · `has-key`. Key in `~/.config/fleet/linear_api_key` (mode 600) or `LINEAR_API_KEY`; none: exit 3. Never posts claim or lease comments |
 | `chat.sh` | `channel` and `allow` print `chat_channel` and `chat_allow` · `format <event> …` prints the one-line message. It never posts or reads; the Orchestrator does with its own chat tools |
 | `machine-id.sh` | `id\|key\|label\|description\|show`: this machine's tracker identity, e.g. `fleet:3f9a2c1e` |
 | `status.sh` | `status.sh [--problems] [--team T] [--json] [--all [--claims FILE\|-]]` recomputes health, writes it to the registry and prints free disk first |
@@ -252,18 +253,20 @@ Example using kind:
 Claims, leases, takeover and `status --all` need Linear (label groups and comments). Any other
 tracker runs the fleet on one machine, and those parts are skipped.
 
-- A claim comment carries `lease=`, `lease_hours` ahead (default 2). The Orchestrator renews the
-  lease on every pass (each `status`, each `watch` check, each `/loop` tick). Scripts cannot renew:
-  an Orchestrator that is not running stops renewing, and that is when a takeover is allowed.
-- A lease older than `lease_hours` with no PR activity in that time can be taken over. The
-  taker posts a new claim comment with a `takeover:` line naming the voided comment, and boot
-  accepts it only when the passed lease is really expired. `FLEET_FORCE=1` never bypasses a live claim.
-- **The tracker has no compare-and-swap.** Re-reading and the earliest-wins rule narrow the race
-  between two takers; they do not remove it. A machine whose claim was taken over stops renewing
-  and tells you; it never fights back.
-- `status --all` builds one table from the claim comments the Orchestrator can read and this
-  machine's registry. Other machines' health is not probed: their rows show `Claimed`, the lease
-  and the scope.
+- A claim is the machine's label on the issue; liveness is a `heartbeat=` line in that label's
+  description, rewritten by the Orchestrator's tick (one API call per tick). No claim or lease
+  comments. Scripts cannot heartbeat: an Orchestrator that is not running stops, and that is when a
+  takeover is allowed.
+- A heartbeat older than `lease_hours` (default 2) with no PR activity in that time can be taken
+  over with `linear.sh takeover`, which leaves one comment. `FLEET_FORCE=1` never bypasses a live claim.
+- **The tracker has no compare-and-swap.** The last writer wins and both machines re-read; that
+  narrows the race, it does not remove it. A machine whose issue was taken over stops and tells
+  you; it never fights back.
+- `status --all` builds one table from `linear.sh peers` and this machine's registry. Other
+  machines' health is not probed: their rows show `Claimed`, the issue and the heartbeat age.
+- The Linear API key lives only on the Orchestrator machine (`~/.config/fleet/linear_api_key`,
+  mode 600, or `LINEAR_API_KEY` in its shell). Agents never get it. Without it claims are
+  unavailable (`linear.sh` exits 3), not fatal.
 
 ### Cloned machine id
 
@@ -271,9 +274,7 @@ Each machine is told apart by its key, the first 8 hex characters of its machine
 or a restored disk image copies `/etc/machine-id` (or the stored `machine-id` file), so two
 machines then share one key and the label and arbitration cannot tell them apart. Give each
 clone its own key: set `FLEET_MACHINE=<unique>`, or delete `$FLEET_STATE_DIR/machine-id` and, for
-the OS-derived sources, regenerate the OS id. Detection is best effort: `status --all` marks a
-claim that carries this machine's key but names no team in the local registry as `SAME KEY?` and
-warns. Two clones that run the same team names are not caught.
+the OS-derived sources, regenerate the OS id. Nothing detects a cloned id for you.
 
 ## Files
 
@@ -282,7 +283,8 @@ warns. Two clones that run the same team names are not caught.
 | `SKILL.md` | routes and rules the Orchestrator follows |
 | `templates/*.json` | team shapes: roles, agent kind, model, worktree, briefs, exit criteria |
 | `scripts/boot.sh` | one-command team boot |
-| `scripts/claim.sh` | claim comment: build, parse, renew, lease expiry test |
+| `scripts/claim.sh` | lease arithmetic: lease, heartbeat parse, expiry test |
+| `scripts/linear.sh` | claims and heartbeat on the Linear API |
 | `scripts/chat.sh` | chat channel settings and message format (never posts) |
 | `scripts/machine-id.sh` | this machine's id, key and tracker label for claims |
 | `scripts/status.sh` | health computation |
