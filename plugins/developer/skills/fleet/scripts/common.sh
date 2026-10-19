@@ -203,10 +203,10 @@ build_brief() {
 
 # resume_brief <name> <expertise-file> <role brief>: what a respawned agent needs to carry on: its role
 # brief, its assignment, the last report file of its role, `git status` and `git log` of its branch,
-# its open escalations and the old pane's last lines (if herdr can still read them). A lead also gets
+# and its open escalations (no screen text: it would come back as a user turn). A lead also gets
 # the plan path (the planner's summary) and the team's rows.
 resume_brief() {
-  local name="$1" ex="$2" role_brief="$3" row dir role team report="" gs="" gl="" esc="" pane="" ref plan="" rows=""
+  local name="$1" ex="$2" role_brief="$3" row dir role team report="" gs="" gl="" esc="" plan="" rows=""
   row="$("$FLEET_SCRIPTS/registry.sh" get "$name")" || return 1
   dir="$(printf '%s' "$row" | jq -r 'if (.worktree // "") != "" then .worktree else (.cwd // "") end')"
   role="${name#*/}"; team="${name%%/*}"
@@ -216,8 +216,6 @@ resume_brief() {
     gl="$(git -C "$dir" log -5 --oneline 2>/dev/null || true)"
   }
   esc="$("$FLEET_SCRIPTS/registry.sh" escalations --open | jq -r --arg n "$name" '.[] | select(.name == $n) | "- [\(.severity)] \(.message)"')"
-  ref="$(printf '%s' "$row" | jq -r '.herdr_ref // ""')"
-  [ -z "$ref" ] || pane="$(hd agent read "$ref" --source recent-unwrapped 2>/dev/null | tail -n 40 || true)"
   if [ "$(printf '%s' "$row" | jq -r .tier)" = "Lead" ]; then
     plan="$("$FLEET_SCRIPTS/registry.sh" list --team "$team" | jq -r '[.[] | select(.name | endswith("/planner")) | .summary // ""] | first // ""')"
     rows="$("$FLEET_SCRIPTS/registry.sh" list --team "$team" | jq -r '.[] | "- \(.name): \(.status)\(if (.summary // "") != "" then " (\(.summary))" else "" end)"')"
@@ -230,7 +228,6 @@ resume_brief() {
   [ -z "$esc" ] || printf '\nYour open escalations:\n%s\n' "$esc"
   [ -z "$plan" ] || printf '\nThe plan (from the planner summary): %s\n' "$plan"
   [ -z "$rows" ] || printf '\nThe team:\n%s\n' "$rows"
-  [ -z "$pane" ] || printf '\nThe old pane, last lines:\n%s\n' "$pane"
   contract "$name" "$ex"
 }
 
