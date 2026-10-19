@@ -68,7 +68,8 @@ scrub_cmd() {
 
 start_agent_once() { # start_agent_once <agent> <kind> <pane> <model> <tier> <worktree> <allow-json> → prints status
   local agent="$1" kind="$2" pane="$3" args=() out code tries=0
-  [ "$kind" != "claude" ] || hd pane run "$pane" "$(scrub_cmd)" >/dev/null 2>&1 || true
+  # Every kind of harness, not only claude: a codex pane must not keep the key or the cloud credentials either.
+  hd pane run "$pane" "$(scrub_cmd)" >/dev/null 2>&1 || warn "could not scrub the environment of pane $pane for $agent; it may still hold credentials"
   if [ "$kind" = "claude" ]; then
     while IFS= read -r -d '' a; do args+=("$a"); done < <(claude_args "$4" "$5" "$6" "${7:-[]}")
   fi
