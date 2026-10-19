@@ -760,7 +760,7 @@ rm -f "$INBOX" "$FLEET_STATE_DIR/escalations.cursor"
 "$REG" escalate esc/builder P1 "which db?" >/dev/null 2>&1
 sleep 1  # (name, at) has one-second resolution
 eq "escalate appends one inbox line" "$(wc -l <"$INBOX" | tr -d ' ')" 1
-eq "inbox line has the five fields" "$(jq -c 'keys' "$INBOX")" '["at","message","name","severity","team"]'
+eq "inbox line has the six fields" "$(jq -c 'keys' "$INBOX")" '["at","id","message","name","severity","team"]'
 eq "inbox line carries the team and message" "$(jq -r '[.team, .name, .severity, .message] | join("|")' "$INBOX")" "esc|esc/builder|P1|which db?"
 "$REG" escalate esc/builder P2 "naming?" >/dev/null 2>&1
 eq "two escalates make two inbox lines" "$(wc -l <"$INBOX" | tr -d ' ')" 2
@@ -825,6 +825,140 @@ check "build lead brief no longer files an escalation for UNVERIFIED" test -z "$
 check "lead agent says P1 is only for a user decision" grep -q 'P1 is only for a decision the' "$SKD0/../../agents/lead.md"
 check "agent fleet rules say P1 is only for a user decision" grep -q 'P1 is only for a decision the user must make' "$SCRIPTS/boot.sh"
 check "registry.md documents the inbox and resolved_at" grep -q 'resolved_at' "$SKD0/references/registry.md"
+
+# Retire closes escalations, resolve by id, defensive reads (DEV-367)
+rm -f "$INBOX"
+"$REG" add '{"name":"esc3/builder","team":"esc3","tier":"Worker","status":"Working"}'
+"$REG" escalate esc3/builder P1 "first" >/dev/null 2>&1
+"$REG" escalate esc3/builder P2 "second" >/dev/null 2>&1
+ID1="$("$REG" escalations --team esc3 | jq -r '[.[] | select(.message == "first")][0].id')"
+ID2="$("$REG" escalations --team esc3 | jq -r '[.[] | select(.message == "second")][0].id')"
+eq "escalate stores an id <at compact>-<seq>" "$("$REG" get esc3/builder | jq -r '.escalations[0] | .id == ((.at | gsub("[-:]"; "")) + "-1")')" true
+eq "the inbox line carries the stored id" "$(jq -r 'select(.message == "second") | .id' "$INBOX")" "$ID2"
+check "two escalations get different ids" test "$ID1" != "$ID2"
+saved="$(cat "$FLEET_REGISTRY")"
+jq '.agents["esc3/builder"].escalations |= map(.at = "2026-10-19T10:00:00Z")' <<<"$saved" >"$FLEET_REGISTRY"
+"$REG" resolve esc3/builder "$ID2" --note "p2 only" >/dev/null 2>&1
+eq "same-second twins: resolving the second id closes only the second" "$("$REG" escalations --team esc3 | jq -c 'map(select(.resolved_at != null) | .message)')" '["second"]'
+eq "same-second twins: .escalation stays P1" "$("$REG" get esc3/builder | jq -r .escalation)" P1
+"$REG" resolve esc3/builder "$ID1" >/dev/null 2>&1
+eq "then the first id closes the first" "$("$REG" escalations --open --team esc3 | jq length)" 0
+check "resolve rejects an unknown id" bash -c "! '$REG' resolve esc3/builder nope-9"
+# legacy entries: no id stored, junk element in the array; ids derive from the raw position
+jq '.agents["esc3/builder"].escalations = [7, {severity: "P1", message: "old1", at: "2026-10-19T10:00:00Z"}, {severity: "P2", message: "old2", at: "2026-10-19T10:00:00Z"}]' <<<"$saved" >"$FLEET_REGISTRY"
+eq "legacy ids use the raw array position" "$("$REG" escalations --team esc3 | jq -c 'map(.id)')" '["20261019T100000Z-2","20261019T100000Z-3"]'
+"$REG" resolve esc3/builder 20261019T100000Z-3 >/dev/null 2>&1
+eq "a legacy entry resolves by its derived id" "$("$REG" escalations --open --team esc3 | jq -c 'map(.message)')" '["old1"]'
+"$REG" resolve esc3/builder 2026-10-19T10:00:00Z >/dev/null 2>&1
+eq "a legacy entry still resolves by at" "$("$REG" escalations --open --team esc3 | jq length)" 0
+eq "a junk element is left as it was" "$("$REG" get esc3/builder | jq -c '.escalations[0]')" 7
+# retire closes what is open
+printf '%s' "$saved" >"$FLEET_REGISTRY"
+"$REG" add '{"name":"esc3/tester","team":"esc3","tier":"Worker","status":"Working"}'
+"$REG" escalate esc3/tester P1 "t1" >/dev/null 2>&1
+"$REG" escalate esc3/tester P2 "t2" >/dev/null 2>&1
+"$REG" resolve esc3/tester "$("$REG" escalations --team esc3 | jq -r '[.[] | select(.message == "t2")][0].id')" --note "mine" >/dev/null 2>&1
+eq "retire --summary lists the open one before the go" "$("$SCRIPTS/retire.sh" --summary esc3 2>/dev/null | jq '[.escalations[] | select(.open)] | length')" 3
+"$SCRIPTS/retire.sh" esc3 >"$T/r3.json" 2>/dev/null
+eq "retire leaves nothing open on the team" "$("$REG" escalations --open --team esc3 | jq length)" 0
+eq "retire records 'closed at retire'" "$("$REG" escalations --team esc3 | jq -c 'map(select(.resolution == "closed at retire") | .message) | sort')" '["first","second","t1"]'
+eq "retire keeps an earlier resolution note" "$("$REG" escalations --team esc3 | jq -r '[.[] | select(.message == "t2")][0].resolution')" mine
+eq "retire clears .escalation" "$("$REG" get esc3/builder | jq -r .escalation)" ""
+eq "retire output lists closed_escalations" "$(jq -r '.closed_escalations | map(.name) | sort | join(",")' "$T/r3.json")" "esc3/builder,esc3/builder,esc3/tester"
+eq "retire --summary afterwards shows them closed" "$("$SCRIPTS/retire.sh" --summary esc3 2>/dev/null | jq '[.escalations[] | select(.open)] | length')" 0
+# status ignores Retired agents' escalations, not Done agents'
+"$REG" add '{"name":"esc4/a","team":"esc4","tier":"Worker","status":"Working"}'
+"$REG" escalate esc4/a P2 "retired-open" >/dev/null 2>&1
+jq '.agents["esc4/a"].status = "Retired"' "$FLEET_REGISTRY" >"$T/r.json" && mv "$T/r.json" "$FLEET_REGISTRY"
+eq "status.sh hides a Retired agent's open escalation" "$("$SCRIPTS/status.sh" 2>/dev/null | grep -c 'retired-open')" 0
+eq "escalations --not-retired drops Retired rows" "$("$REG" escalations --open --not-retired --team esc4 | jq length)" 0
+eq "escalations without the flag keeps them" "$("$REG" escalations --open --team esc4 | jq length)" 1
+# a malformed escalations value breaks nothing
+for bad in '"[]"' '{}' '5'; do
+  printf '%s' "$saved" >"$FLEET_REGISTRY"
+  "$REG" add '{"name":"bad/row","team":"bad","tier":"Worker","status":"Working"}'
+  jq --argjson b "$bad" '.agents["bad/row"].escalations = $b' "$FLEET_REGISTRY" >"$T/r.json" && mv "$T/r.json" "$FLEET_REGISTRY"
+  "$REG" add '{"name":"zlast/row","team":"zlast","tier":"Worker","status":"Working"}'
+  for c in "$SCRIPTS/status.sh" "$SCRIPTS/status.sh --problems" "$REG list --problems" "$REG escalations --open" "$SCRIPTS/retire.sh --summary bad" "$SCRIPTS/watch.sh --once"; do
+    $c >"$T/bad.out" 2>/dev/null; eq "escalations=$bad: ${c##*/} exits 0" "$?" 0
+  done
+  check "escalations=$bad: a row after the bad one is still listed" grep -q 'zlast/row' <(  "$SCRIPTS/status.sh" 2>/dev/null)
+  "$REG" escalate bad/row P2 "after" >/dev/null 2>&1
+  eq "escalations=$bad: escalate normalises to an array" "$("$REG" get bad/row | jq -c '.escalations | map(.message)')" '["after"]'
+  "$REG" retire bad >/dev/null 2>&1
+  eq "escalations=$bad: retire closes it" "$("$REG" escalations --open --team bad | jq length)" 0
+done
+printf '%s' "$saved" >"$FLEET_REGISTRY"
+check "SKILL.md documents 'closed at retire'" grep -q 'closed at retire' "$SKD0/SKILL.md"
+check "registry.md documents 'closed at retire'" grep -q 'closed at retire' "$SKD0/references/registry.md"
+check "README documents resolve <id|at>" grep -q '<id|at>' "$SKD0/README.md"
+
+# ---- DEV-368 C: esc_close, registry schema check, archive ----------------------------------------
+_cstate="$FLEET_STATE_DIR"; _creg="$FLEET_REGISTRY"; _cinbox="${FLEET_INBOX:-}"
+export FLEET_STATE_DIR="$T/cstate" FLEET_REGISTRY="$T/cstate/fleet.json" FLEET_INBOX="$T/cstate/escalations.jsonl"; mkdir -p "$FLEET_STATE_DIR"
+crow() { "$REG" add "$(jq -cn --arg n "$1" --arg st "${2:-Working}" '{name: $n, team: ($n | split("/")[0]), tier: "Worker", status: $st, herdr_ref: "x", pane: "p"}')"; }
+inject() { jq --argjson r "$1" '.agents[$r.name] = $r' "$FLEET_REGISTRY" >"$T/inject.tmp" && mv "$T/inject.tmp" "$FLEET_REGISTRY"; }
+
+# esc_close: the shared close helper
+got="$(. "$SCRIPTS/common.sh"; jq -nc "$ESC_DEFS"'{escalations: [{severity: "P1", message: "m", at: "a"}, {severity: "P2", message: "n", at: "b", resolved_at: "x", resolution: "kept"}, 5]}
+  | esc_close("closed at next"; "T") | [.escalations[0].resolution, .escalations[0].resolved_at, .escalations[1].resolution, .escalations[2]]')"
+eq "esc_close closes the open entry, keeps the closed one and a non-object element" "$got" '["closed at next","T","kept",5]'
+
+# schema check on every write
+crow cs/a; crow cs/b
+cp "$FLEET_REGISTRY" "$T/c.before"
+err="$("$REG" set cs/a discovered=oops 2>&1)"; rc=$?
+eq "schema: a write that breaks a valid row is refused" "$((rc != 0))" 1
+check "schema: the refusal names the row" grep -q 'cs/a' <<<"$err"
+check "schema: the registry file is byte-identical after a refusal" cmp -s "$T/c.before" "$FLEET_REGISTRY"
+"$REG" add '{"name":"cs/bad2","team":"cs","discovered":"x"}' >/dev/null 2>&1; eq "schema: a new row with discovered that is not an array is refused" "$?" 1
+"$REG" add '{"name":7}' >/dev/null 2>&1; eq "schema: a row whose name is not a string is refused" "$?" 1
+got="$(. "$SCRIPTS/common.sh"; jq -nc "$ESC_DEFS"'[{name: "a", escalations: [{severity: "P9", message: "m", at: "t"}]},
+  {name: "a", escalations: [{severity: "P1", message: "m"}]}, {name: "a", escalations: [5]}, {name: "a", escalations: "[]"},
+  {name: "a", escalations: [{severity: "P1", message: "m", at: "t", id: 3}]}, {name: "a", escalations: [{severity: "P1", message: "m", at: "t"}]}] | map(row_ok)')"
+eq "schema: row_ok rejects a bad severity, a missing at, a non-object entry, a non-array and a non-string id" "$got" '[false,false,false,false,false,true]'
+"$REG" add '{"name":"cs/ok","team":"cs"}' >/dev/null 2>&1; eq "schema: a well-formed row is accepted" "$?" 0
+"$REG" escalate cs/a P1 "q" >/dev/null 2>&1; eq "schema: escalate still works" "$("$REG" get cs/a | jq '.escalations | length')" 1
+# a row that is already malformed on disk does not block unrelated writes, and is repaired by escalate
+inject '{"name":"cs/legacy","team":"cs","tier":"Worker","status":"Working","herdr_ref":"x","pane":"p","escalations":"[]"}'
+"$REG" set cs/b status=Idle >/dev/null 2>"$T/c.warn"; eq "schema: a legacy malformed row does not block an unrelated write" "$?" 0
+check "schema: and the write warns about it" grep -q 'malformed row' "$T/c.warn"
+eq "schema: the unrelated write took effect" "$("$REG" get cs/b | jq -r .status)" Idle
+"$REG" escalate cs/legacy P2 "repair" >/dev/null 2>&1
+eq "schema: escalate repairs the legacy row" "$("$REG" get cs/legacy | jq -c '[(.escalations | type), (.escalations | length)]')" '["array",1]'
+
+# archive
+: >"$T/c.warn"
+for n in ca/lead ca/w cb/x cd/z; do crow "$n"; done
+inject '{"name":"ca/lead","team":"ca","tier":"Lead","status":"Retired","outcome":"Shipped","lessons":"l","ended":"2020-01-01T00:00:00Z","escalations":[],"discovered":[]}'
+inject '{"name":"ca/w","team":"ca","tier":"Worker","status":"Retired","outcome":"Shipped","lessons":"l","ended":"2020-01-01T00:00:00Z","escalations":[],"discovered":[]}'
+inject '{"name":"cb/x","team":"cb","tier":"Worker","status":"Retired","outcome":"Shipped","ended":"2020-01-01T00:00:00Z","escalations":[],"discovered":[]}'
+inject '{"name":"cc/y","team":"cc","tier":"Worker","status":"Retired","outcome":"Shipped","lessons":"l","ended":"2020-01-01T00:00:00Z","escalations":[{"severity":"P1","message":"open","at":"2020-01-01T00:00:00Z"}],"discovered":[]}'
+inject '{"name":"ce/new","team":"ce","tier":"Worker","status":"Retired","outcome":"Shipped","lessons":"l","ended":"2099-01-01T00:00:00Z","escalations":[],"discovered":[]}'
+printf 'archive_after_days = 100000\n' >>"$FLEET_CONFIG_DIR/config.toml"
+eq "archive: under a long archive_after_days nothing moves" "$("$REG" archive)" "[]"
+sed -i.bak '/archive_after_days/d' "$FLEET_CONFIG_DIR/config.toml"; rm -f "$FLEET_CONFIG_DIR/config.toml.bak"
+moved="$("$REG" archive)"
+eq "archive: moves Retired rows with lessons and no open escalation" "$(printf '%s' "$moved" | jq -c 'sort')" '["ca/lead","ca/w"]'
+eq "archive: the live registry no longer lists them" "$("$REG" list | jq -c '[.[].name] | map(select(startswith("ca/")))')" '[]'
+eq "archive: the archive file holds them whole" "$(jq -c '[.agents | to_entries[] | [.key, .value.lessons, .value.status]] | sort' "$FLEET_STATE_DIR/fleet-archive.json")" '[["ca/lead","l","Retired"],["ca/w","l","Retired"]]'
+eq "archive: a Retired row without lessons stays (debrief queue)" "$("$REG" get cb/x | jq -r .status)" Retired
+eq "archive: a Retired row with an open escalation stays" "$("$REG" get cc/y | jq -r .status)" Retired
+eq "archive: a live row stays" "$("$REG" get cd/z | jq -r .status)" Working
+eq "archive: a row not yet old enough stays (ended in the future)" "$("$REG" get ce/new | jq -r .status)" Retired
+cp "$FLEET_STATE_DIR/fleet-archive.json" "$T/c.arch"
+eq "archive: idempotent, a second run moves nothing" "$("$REG" archive)" "[]"
+check "archive: and leaves the archive file unchanged" cmp -s "$T/c.arch" "$FLEET_STATE_DIR/fleet-archive.json"
+check "get: the live file no longer has an archived row" bash -c "! '$REG' get ca/w"
+eq "get --archived finds it" "$("$REG" get --archived ca/w | jq -r .name)" ca/w
+check "get --archived still finds a live row" bash -c "'$REG' get --archived cd/z"
+eq "list does not show archived rows" "$("$REG" list --team ca | jq length)" 0
+eq "list --with-archived does" "$("$REG" list --with-archived --team ca | jq length)" 2
+eq "retire --summary reports the archived team's rows" "$("$SCRIPTS/retire.sh" --summary ca 2>/dev/null | jq -c '[.. | objects | select(.name? == "ca/w")] | length > 0')" true
+eq "a debrief-queue row is still found after an archive run" "$("$REG" list | jq -c '[.[] | select(.outcome != null and (.lessons // "") == "") | .name] | sort')" '["cb/x"]'
+export FLEET_STATE_DIR="$_cstate" FLEET_REGISTRY="$_creg"; [ -n "$_cinbox" ] && export FLEET_INBOX="$_cinbox" || unset FLEET_INBOX
+check "SKILL.md documents the registry archive" grep -q 'registry.sh archive' "$SCRIPTS/../SKILL.md"
+check "registry.md documents archive_after_days" grep -q 'archive_after_days' "$SCRIPTS/../references/registry.md"
 
 # version and docs
 SK="$SCRIPTS/.."; PLUGIN="$SK/../.."

@@ -8,8 +8,8 @@
 # warn_free_gb in config.toml) and ends with a machine line (fleet:<key>, plus machine_name
 # when set). --json is the bare array of agents, without either.
 #
-# Open escalations are listed after the table, Done and Retired agents included: an
-# escalation stays open until the Orchestrator runs `registry.sh resolve`.
+# Open escalations are listed after the table, Done agents included, Retired agents not (retire
+# closes theirs): an escalation stays open until the Orchestrator runs `registry.sh resolve`.
 #
 # --all adds the other machines: one row per claim in the JSON that `claim.sh parse` printed
 # (--claims FILE, or - for stdin), which the Orchestrator builds from the claim comments on
@@ -139,7 +139,7 @@ printf '%s' "$out" | jq -r --argjson all "$all" --arg mykey "$mykey" --arg mynam
     + (if $all then [mcell, (.lease_expires // "-")] else [] end)
     + [.herdr_ref, ((.assignment // "")[0:50])] | @tsv)' |
   column -t -s $'\t'
-open_esc="$("$registry" escalations --open ${team:+--team "$team"})"
+open_esc="$("$registry" escalations --open --not-retired ${team:+--team "$team"})"
 if [ "$(printf '%s' "$open_esc" | jq length)" != 0 ]; then
   echo "open escalations:"
   printf '%s' "$open_esc" | jq -r --arg now "${FLEET_NOW:-$(now)}" '.[] | [.name, .severity, .at,
