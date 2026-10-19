@@ -1483,7 +1483,7 @@ dbreset; jq --arg n "$ml" '.labels += [{id: "L9", name: $n, description: "", par
 eq "claim: an empty description is filled in" "$(jq -r --arg n "$ml" '.labels[] | select(.name == $n) | .description | test("heartbeat=")' "$LINEAR_DB")" true
 dbreset; jq --arg n "$ml" '.labels += [{id: "L9", name: $n, description: "mine already", parent: {id: "L1", name: "fleet"}}]' "$LINEAR_DB" >"$T/db.tmp" && mv "$T/db.tmp" "$LINEAR_DB"
 "$LIN" claim DEV-1 >/dev/null 2>&1
-eq "claim: a non-empty description is never overwritten" "$(jq -r --arg n "$ml" '.labels[] | select(.name == $n) | .description' "$LINEAR_DB")" "mine already"
+eq "claim: a non-empty description is never overwritten (the owner line is added after it)" "$(jq -r --arg n "$ml" '.labels[] | select(.name == $n) | .description' "$LINEAR_DB" | paste -sd'|' -)" "mine already|owner=Fixture Owner"
 # the race: another machine writes after us; the last writer wins and we exit 1
 dbreset; LINEAR_STUB_RACE=fleet:other "$LIN" claim DEV-3 >"$T/race.out" 2>"$T/race.err"; rc=$?
 eq "claim race: the loser exits 1" "$rc" 1
@@ -1498,7 +1498,7 @@ jq --arg n "$ml" '.labels |= map(if .name == $n then .description = "my box · m
 FLEET_NOW=2026-10-18T09:30:00Z "$LIN" heartbeat >/dev/null
 eq "heartbeat: exactly one mutation" "$(nmut)" 1
 eq "heartbeat: it is a label update, not a comment" "$(grep -c '^mutation IssueLabelUpdate' "$LINEAR_LOG")" 1
-eq "heartbeat: only the heartbeat line changed, other text kept" "$(jq -r --arg n "$ml" '.labels[] | select(.name == $n) | .description' "$LINEAR_DB" | paste -sd'|' -)" "my box · macOS|heartbeat=2026-10-18T09:30:00Z|extra note"
+eq "heartbeat: only the heartbeat line changed, other text kept" "$(jq -r --arg n "$ml" '.labels[] | select(.name == $n) | .description' "$LINEAR_DB" | paste -sd'|' -)" "my box · macOS|owner=Fixture Owner|heartbeat=2026-10-18T09:30:00Z|extra note"
 dbreset; : >"$LINEAR_LOG"; "$LIN" heartbeat >"$T/hb.out"; eq "heartbeat: with no label yet it makes no mutation" "$(nmut)" 0
 
 # -- takeover: heartbeat and PR quiet; one comment; FLEET_FORCE does not bypass
@@ -1569,12 +1569,59 @@ eq "N3: the description is untouched by the dry runs" "$(jq -r '.labels[] | sele
 : >"$LINEAR_LOG"; "$LIN" migrate >"$T/n3.out"
 eq "N3: migrate rewrites the label" "$(jq -r .rewrote_label "$T/n3.out")" true
 eq "N3: as one label update, a write" "$(grep -c '^mutation IssueLabelUpdate' "$LINEAR_LOG")$(nmut)" 11
-eq "N3: the rewritten description keeps every other line and the heartbeat" "$(jq -r '.labels[] | select(.id == "L9") | .description' "$LINEAR_DB" | paste -sd'|' -)" "my box · macOS · machine id sha256:$want · first claim 2026-01-02|heartbeat=2026-10-18T07:00:00Z|extra note"
+eq "N3: the rewritten description keeps every other line and the heartbeat" "$(jq -r '.labels[] | select(.id == "L9") | .description' "$LINEAR_DB" | paste -sd'|' -)" "my box · macOS · machine id sha256:$want · first claim 2026-01-02|owner=Fixture Owner|heartbeat=2026-10-18T07:00:00Z|extra note"
 : >"$LINEAR_LOG"; eq "N3: a second migrate rewrites nothing" "$("$LIN" migrate | jq -r .rewrote_label):$(nmut)" "false:0"
 legacy_db; "$LIN" claim DEV-3 >/dev/null 2>&1
-eq "N3: claim (ensure_label) rewrites it too, keeping the heartbeat and other text" "$(jq -r '.labels[] | select(.id == "L9") | .description' "$LINEAR_DB" | paste -sd'|' -)" "my box · macOS · machine id sha256:$want · first claim 2026-01-02|heartbeat=2026-10-18T07:00:00Z|extra note"
+eq "N3: claim (ensure_label) rewrites it too, keeping the heartbeat and other text" "$(jq -r '.labels[] | select(.id == "L9") | .description' "$LINEAR_DB" | paste -sd'|' -)" "my box · macOS · machine id sha256:$want · first claim 2026-01-02|owner=Fixture Owner|heartbeat=2026-10-18T07:00:00Z|extra note"
 eq "N3: and the full id is in no request" "$(grep -c "$FIXID" "$LINEAR_ARGV_LOG" || true)" 0
 eq "N3: and no description in the database holds one" "$(jq -r '.labels[].description' "$LINEAR_DB" | grep -Ec "$IDRE" || true)" 0
+
+# -- owner line: owner=<viewer name> beside the hashed id and the heartbeat line
+dbreset
+eq "whoami: prints the Linear user behind the key" "$("$LIN" whoami | jq -c '[.id, .name]')" '["U1","Fixture Owner"]'
+eq "whoami: is a read (no mutation)" "$(nmut)" 0
+"$LIN" claim DEV-1 >/dev/null 2>&1
+odesc() { jq -r --arg n "$ml" '.labels[] | select(.name == $n) | .description' "$LINEAR_DB"; }
+eq "owner: the new label's description has the hashed id, the owner and the heartbeat, in that order" "$(odesc | sed 's/ · first claim.*//; s/^[^·]* · [^·]* · //; s/^heartbeat=.*/heartbeat=…/' | paste -sd'|' -)" "machine id sha256:$want|owner=Fixture Owner|heartbeat=…"
+jq '.viewer = {name: "New Owner"}' "$LINEAR_DB" >"$T/db.tmp" && mv "$T/db.tmp" "$LINEAR_DB"
+FLEET_NOW=2026-10-19T10:00:00Z "$LIN" heartbeat >/dev/null
+eq "owner: heartbeat refreshes the owner line, keeps the hashed id and updates the heartbeat" "$(odesc | grep -c "machine id sha256:$want")$(odesc | grep -c '^owner=New Owner$')$(odesc | grep -c '^heartbeat=2026-10-19T10:00:00Z$')$(odesc | wc -l | tr -d ' ')" 1113
+jq '.labels |= map(if .name == "'"$ml"'" then .description = "my box · macOS\nheartbeat=2026-10-18T07:00:00Z\nextra note" else . end) | .viewer = {name: "Fixture Owner"}' "$LINEAR_DB" >"$T/db.tmp" && mv "$T/db.tmp" "$LINEAR_DB"
+"$LIN" migrate >/dev/null
+eq "owner: migrate adds a missing owner line and keeps the rest" "$(odesc | paste -sd'|' -)" "my box · macOS|owner=Fixture Owner|heartbeat=2026-10-18T07:00:00Z|extra note"
+: >"$LINEAR_LOG"; "$LIN" migrate >/dev/null; eq "owner: and a second migrate changes nothing" "$(nmut)" 0
+
+# -- test mode: --test-team FT refuses every write outside team FT, with zero mutations
+dbreset
+jq '.issues += [{id: "I20", identifier: "DEV-20", team: {id: "T2", key: "FT"}, state: {id: "S0", name: "Todo"}, labelIds: [], comments: []},
+                {id: "I21", identifier: "DEV-21", team: {id: "T2", key: "FT"}, state: {id: "S0", name: "Todo"}, labelIds: ["L2"], comments: []}]' "$LINEAR_DB" >"$T/db.tmp" && mv "$T/db.tmp" "$LINEAR_DB"
+: >"$LINEAR_LOG"
+"$LIN" --test-team FT claim DEV-1 >/dev/null 2>"$T/tt.err"; rc=$?
+eq "test mode: a claim on a non-FT issue is refused" "$rc" 1
+check "test mode: and the refusal names the team" grep -q 'DEV-1 is in team ENG' "$T/tt.err"
+eq "test mode: with zero mutations" "$(nmut)" 0
+eq "test mode: the issue is untouched" "$(labels_of DEV-1)" bug
+FLEET_LINEAR_TEST_TEAM=FT "$LIN" claim DEV-3 >/dev/null 2>&1; eq "test mode: FLEET_LINEAR_TEST_TEAM works like the option" "$?" 1
+eq "test mode: and also makes no mutation" "$(nmut)" 0
+"$LIN" --test-team FT claim DEV-20 >/dev/null 2>&1; eq "test mode: a claim on an FT issue goes through" "$?" 0
+eq "test mode: the label is on the FT issue" "$(labels_of DEV-20)" "$ml"
+eq "test mode: and it did write" "$([ "$(nmut)" -gt 0 ] && echo yes)" yes
+: >"$LINEAR_LOG"
+FLEET_NOW=2026-10-18T09:00:00Z "$LIN" --test-team FT takeover DEV-2 2>"$T/tt.err"; eq "test mode: a takeover on a non-FT issue is refused even with a lapsed holder" "$?" 1
+eq "test mode: the takeover made no mutation" "$(nmut)" 0
+FLEET_NOW=2026-10-18T09:00:00Z "$LIN" --test-team FT takeover DEV-21 >/dev/null 2>&1; eq "test mode: a takeover on an FT issue is allowed" "$?" 0
+eq "test mode: with exactly one comment" "$(ncomments)" 1
+: >"$LINEAR_LOG"; "$LIN" --test-team FT heartbeat >/dev/null; eq "test mode: a heartbeat (own label only) is allowed, one mutation" "$(nmut)" 1
+lid_mine="$(jq -r --arg n "$ml" '.labels[] | select(.name == $n) | .id' "$LINEAR_DB")"
+jq --arg l "$lid_mine" '.issues |= map(if .identifier == "DEV-1" then .labelIds = ["L3", $l] | .comments = [{id: "C1", body: "fleet-claim: machine=test team=x"}] else . end)' "$LINEAR_DB" >"$T/db.tmp" && mv "$T/db.tmp" "$LINEAR_DB"
+: >"$LINEAR_LOG"; "$LIN" --test-team FT migrate >/dev/null 2>"$T/tt.err"; rc=$?
+eq "test mode: migrate refuses to delete a comment on a non-FT issue" "$rc" 1
+eq "test mode: with zero mutations" "$(nmut)" 0
+eq "test mode: the comment is still there" "$(jq '[.issues[] | select(.identifier == "DEV-1") | .comments[]] | length' "$LINEAR_DB")" 1
+: >"$LINEAR_LOG"; "$LIN" --test-team FT holder DEV-1 >/dev/null; "$LIN" --test-team FT peers >/dev/null; "$LIN" --test-team FT whoami >/dev/null; "$LIN" --test-team FT claim DEV-1 --dry-run >/dev/null 2>&1
+eq "test mode: reads and dry runs are unrestricted, and write nothing" "$(nmut)" 0
+check "test mode: the team key is read before any write" bash -c "! grep -q '^mutation' '$LINEAR_LOG'"
+eq "no test mode: a non-FT claim is allowed as before" "$(dbreset; "$LIN" claim DEV-1 >/dev/null 2>&1; echo $?)" 0
 
 # -- tick: one heartbeat mutation however many issues are claimed; no claim comments
 export FLEET_STATE_DIR="$T/bstate" FLEET_REGISTRY="$T/bstate/fleet.json" FLEET_INBOX="$T/bstate/escalations.jsonl"; mkdir -p "$FLEET_STATE_DIR"; printf '%s\n' "$FIXID" >"$FLEET_STATE_DIR/machine-id"
@@ -1589,6 +1636,9 @@ for n in 2 3 4 5; do brow bt$n/builder DEV-3; done
 : >"$LINEAR_LOG"; "$SCRIPTS/tick.sh" >/dev/null 2>&1
 eq "tick: exactly one mutation for five claimed issues" "$(nmut)" 1
 eq "tick: claim, heartbeat and tick log no comment mutation (AC5)" "$(ncomments)" 0
+eq "tick: the Linear viewer is read once per tick" "$(grep -c '^query Viewer' "$LINEAR_LOG")" 1
+"$SCRIPTS/tick.sh" >/dev/null 2>&1
+eq "tick: and again on the next tick (cached per tick, not across ticks)" "$(grep -c '^query Viewer' "$LINEAR_LOG")" 2
 eq "tick: no unknown operation reached the API" "$(grep -c '^UNKNOWN' "$LINEAR_LOG")" 0
 # a team whose issue now carries another machine's label: one claim_takeover event
 jq '.issues |= map(if .identifier == "DEV-1" then .labelIds = ["L2"] else . end)' "$LINEAR_DB" >"$T/db.tmp" && mv "$T/db.tmp" "$LINEAR_DB"

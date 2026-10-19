@@ -34,6 +34,10 @@ case "$op" in
       | {issue: {id: $i.id, identifier: $i.identifier, team: $i.team, state: $i.state,
           labels: {nodes: [$i.labelIds[] as $l | .labels[] | select(.id == $l) | {id, name}]}}}' >"$LINEAR_DB.out"
     if [ -s "$LINEAR_DB.out" ]; then ok "$(cat "$LINEAR_DB.out")"; else ok '{"issue": null}'; fi ;;
+  Viewer)
+    ok "$(db '{viewer: {id: "U1", name: (.viewer.name // "Fixture Owner")}}')" ;;
+  IssueTeamKey)
+    ok "$(db --argjson v "$vars" '{issue: ((.issues[] | select(.identifier == $v.id)) | {identifier, team: {key: (.team.key // "ENG")}})}')" ;;
   IssueLabels)
     ok "$(db --argjson v "$vars" '{issueLabels: {nodes: [.labels[] | select(.name == $v.n)]}}')" ;;
   WorkflowStates)
