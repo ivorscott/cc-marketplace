@@ -37,8 +37,9 @@ reinvent it here. This skill adds only what herdr doesn't have:
   the registry didn't create. The user's own panes are not part of the fleet.
 - **Delegate:** never edit code; ask the lead. Talk to workers only when a lead is dead
   or stalled.
-- **Cap:** respect `max_agents` (default 4, in `~/.config/fleet/config.toml`). If a boot
-  would exceed it, tell the user and ask before retrying with `FLEET_FORCE=1`.
+- **Cap:** respect `max_teams` (default 3, in `~/.config/fleet/config.toml`; Parked teams do not
+  count) and `teams_per_repo` (default 1). If a boot would exceed either, tell the user and ask before
+  retrying with `FLEET_FORCE=1`. `config.example.toml` is the only list of config keys.
 - **Disk floor:** boot refuses when free disk is below `min_free_gb` (default 40, same file;
   0 disables). Tell the user and ask before retrying with `FLEET_FORCE=1`, as for the cap.
   Free disk is also shown in status, and the loop alerts below `warn_free_gb` (default 75).
@@ -60,6 +61,7 @@ reinvent it here. This skill adds only what herdr doesn't have:
 | `escalate …` | **E. Escalate** |
 | `retire …`, "shut the team down" | **F. Retire** |
 | `sandbox`, "reproduce this safely" | **Sandbox** |
+| `park …`, `unpark …`, `focus …`, "pause the team", "just work on X" | **F2. Park** |
 | `prime`, or you have lost track after a compaction | **G. Prime** |
 | `debrief`, "what did we learn" | **H. Debrief** |
 
@@ -372,6 +374,22 @@ decision the user must make; "PR ready" and UNVERIFIED belong in the done summar
    failed down is reported under `kept_envs` and the rows are still retired.
 3. Show the summary again with the final state (`kept_worktrees`, `kept_envs`, `archived`), then offer
    a debrief (H).
+
+## F2. Park
+
+Park frees a team's slot without losing anything: `$F/park.sh <team>` closes its panes and keeps the rows,
+worktrees, branches, plans, reports and the Linear claim (no Linear write). Tick leaves a Parked team alone
+(no nudge, respawn or next issue; never Stalled or Zombie) and it does not count against `max_teams`.
+
+- `park.sh <team>` refuses at once, changing nothing, when herdr does not answer or a worktree has
+  uncommitted changes or commits that are on no remote. Tell the user which, and ask the lead to commit and push.
+- `park.sh <team> --after-merge`: nothing changes now; when the PR merges, tick parks the team instead of you
+  running `next.sh` (the `pr_merged` event carries `parks`).
+- `unpark.sh <team>` starts the agents again from their rows with the shared resume brief (lead first). It refuses
+  at once when `max_teams` or `teams_per_repo` is full: tell the user, never queue.
+- `focus.sh <team> [--now]` parks every other live team (after its merge, or now); `focus.sh --clear` unparks only
+  those. A team named in `refused` stays as it was.
+- `next.sh` and `registry.sh reassign` refuse a Parked team. `status` shows one line per parked team and the focus.
 
 ## Team environment
 
