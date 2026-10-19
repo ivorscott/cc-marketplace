@@ -2487,9 +2487,11 @@ eq "next: restarted is logged for each agent" "$(jq -s '[.[] | select(.type == "
 : >"$HERDR_LOG"; "$SCRIPTS/next.sh" build-hb DEV-9 >/dev/null 2>"$T/next.err"; rc=$?
 eq "next twice: not at a safe point (agents mid-turn): exit 1, nothing changed" "$rc:$("$REG" list --team build-hb | jq -c '[.[].issue] | unique'):$(grep -c '^agent prompt' "$HERDR_LOG" || true)" '1:["DEV-8"]:0'
 check "next twice: it says who is busy" grep -q 'is not at a safe point' "$T/next.err"
-rm -f "${AS:?}"/*; printf 'working\n  1 shell still running\n' >"$AS/build-hb-builder.read"
+rm -f "${AS:?}"/*; bgtr="$("$REG" get build-hb/builder | jq -r .transcript)"; cp "$bgtr" "$T/bgtr.keep" 2>/dev/null || : >"$T/bgtr.keep"
+bgfix "$bgtr" "${FLEET_NOW:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}" Bash "Command running in background with ID: nxjob1. Output is being written to: /x"
 "$SCRIPTS/next.sh" build-hb DEV-9 >/dev/null 2>"$T/next.err"; rc=$?
-eq "next: a background task is not a safe point" "$rc:$(grep -c 'build-hb/builder (background task)' "$T/next.err")" "1:1"
+eq "next: a background task (in the transcript) is not a safe point" "$rc:$(grep -c 'build-hb/builder (background task)' "$T/next.err")" "1:1"
+cp "$T/bgtr.keep" "$bgtr"
 rm -f "${AS:?}"/*
 mkdir "$FLEET_STATE_DIR/next.build-hb.lock"
 "$SCRIPTS/next.sh" build-hb DEV-9 >/dev/null 2>"$T/next.err"; rc=$?

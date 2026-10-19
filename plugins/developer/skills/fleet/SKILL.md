@@ -144,7 +144,7 @@ keep their claim (a team waiting on a merge is still heartbeated). **Nothing wri
 `config.toml`. Off: `linear.sh` writes exit 3 like a missing key, tick skips the heartbeat and logs
 `claims_readonly` once, `next.sh` proceeds unclaimed, and boot treats it as keyless (with
 `machines > 1` it refuses `--issue`). `test:FT` writes only on issues of Linear team FT (and this
-machine's own label). Ivor sets `on`. On that event
+machine's own label). The user sets `on`. On that event
 you **must not renew** or fight back (no re-claim, no label swap): stop or hand off the team
 (`retire.sh`, after the summary in **F**), tell the user, and run
 `$F/registry.sh escalate <team>/lead P1 "claim taken over by <label>"`. An Orchestrator that is not
