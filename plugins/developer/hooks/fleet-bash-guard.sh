@@ -66,41 +66,52 @@ if printf '%s' "$flat" | grep -qiE '\.config/+fleet([^a-z0-9_.-]|$)|XDG_CONFIG_H
   deny "fleet bash guard: the command reaches the Linear key's directory (.config/fleet); only the Orchestrator reads it."
 fi
 recursive=false
-# A recursive tool is looked for in EVERY word of the command, not only at command position (so timeout, sudo -u me,
-# xargs -0, nice -n 5, env -i, if, !, { } and the like need no special handling): quoted strings are blanked out first
-# (`git commit -m "Find it" ~` names no tool), the shell's separators become a ";" word, and a lower-cased copy of
-# the same words (one tr, so the tokens line up 1:1) gives the tool NAME without regard to case (GREP, /opt/x/Find).
-# The tool's flags are read from the ORIGINAL words up to the next separator, exactly: ls -r is not ls -R.
-# Being conservative is accepted: `echo grep -r ~` is denied too. No subshell per word or per segment.
-nq="$(printf '%s' "$cmd" | sed -E "s/\"[^\"]*\"/ /g; s/'[^']*'/ /g; s/[;&|(){}<>]/ ; /g")"
-lq="$(printf '%s' "$nq" | LC_ALL=C tr ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz)"
-set -f; read -r -a ow <<<"$nq"; read -r -a lw <<<"$lq"; set +f
+# A recursive tool is looked for in EVERY word of the command, in one pass: no command-position parsing, so timeout,
+# sudo -u me, xargs -0, nice, env -i, if, !, { } and the like need nothing special. Newlines and the shell's separators
+# become a ";" word. A word's NAME is lower-cased once (one tr, so the tokens line up 1:1) and matched without regard
+# to case, anywhere and unquoted: GREP, Find, /opt/x/RG. A word with a path counts only under a bin or sbin directory.
+# A tool's flags are read exactly from the original words (ls -r is not ls -R) in a look-ahead of at most 20 words that
+# stops at a separator, so the scan is linear. Over 400 words the command is refused. Two copies are scanned and
+# either one denies: (1) quoted strings with a space in them are blanked (`git commit -m "Find it" ~` is prose) and
+# the quote marks of a single-word string are dropped (`"grep" -r x ~`); (2) the command as written, so a quote that
+# pairs oddly (awk -F'"' ...; grep -r x ~; echo "done") never hides a tool. Being conservative is accepted
+# (`echo Tree ~` and `echo grep -r ~` are denied; agents quote their prose).
 re_grep='^-[a-zA-Z]*[rR]'; re_ls='^-[a-zA-Z]*R'; re_cp='^-[a-zA-Z]*[rRa]'
-n="${#lw[@]}"; i=0
-while [ "$i" -lt "$n" ] && ! $recursive; do
-  tool="${lw[$i]##*/}"; kind=""
-  # Case is folded for the first word of a segment and for an all-capitals word (GREP, TREE); elsewhere the word
-  # must be lower case, so `echo Tree ~` names no tool. (timeout 5 Grep -r ~ is the accepted residual.)
-  ot="${ow[$i]##*/}"
-  if [ "$i" -gt 0 ] && [ "${ow[$((i - 1))]}" != ";" ] && [ "$ot" != "$tool" ] && [[ $ot == *[[:lower:]]* ]]; then tool=""; fi
-  case "$tool" in
-    rg | ag | ack | find | fd | tar | zip | rsync | du | tree | gfind | gtar) recursive=true ;;
-    grep | egrep | fgrep | zgrep | ggrep) kind=grep ;;
-    ls | gls) kind=ls ;;
-    cp | gcp) kind=cp ;;
-  esac
-  i=$((i + 1))
-  [ -n "$kind" ] || continue
-  j=$i
-  while [ "$j" -lt "$n" ] && [ "${ow[$j]}" != ";" ]; do
-    w="${ow[$j]}"; j=$((j + 1))
-    case "$kind" in
-      grep) if [[ $w =~ $re_grep ]] || [ "$w" = --recursive ] || [ "$w" = --dereference-recursive ] || { [ "$w" = -d ] && [ "${ow[$j]:-}" = recurse ]; }; then recursive=true; break; fi ;;
-      ls) if [[ $w =~ $re_ls ]]; then recursive=true; break; fi ;;
-      cp) if [[ $w =~ $re_cp ]]; then recursive=true; break; fi ;;
+scan_recursive() { # scan_recursive <text>: sets recursive=true when a recursive tool is found
+  local nq lq n i j w l tool kind
+  local -a ow lw
+  nq="$(printf '%s' "$1" | tr '\n' ';' | sed -E 's/[;&|(){}<>]/ ; /g')"
+  lq="$(printf '%s' "$nq" | LC_ALL=C tr ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz)"
+  set -f; read -r -a ow <<<"$nq"; read -r -a lw <<<"$lq"; set +f
+  n="${#lw[@]}"
+  [ "$n" -le 400 ] || deny "fleet bash guard: command too long for the fleet guard; split it."
+  i=0
+  while [ "$i" -lt "$n" ]; do
+    w="${ow[$i]}"; l="${lw[$i]}"; i=$((i + 1))
+    tool="${l##*/}"
+    case "$w" in */*) case "$w" in */bin/* | */sbin/*) ;; *) continue ;; esac ;; esac
+    kind=""
+    case "$tool" in
+      rg | ag | ack | find | fd | tar | zip | rsync | du | tree | gfind | gtar) recursive=true; return 0 ;;
+      grep | egrep | fgrep | zgrep | ggrep) kind=grep ;;
+      ls | gls) kind=ls ;;
+      cp | gcp) kind=cp ;;
+      *) continue ;;
     esac
+    j=$i
+    while [ "$j" -lt "$n" ] && [ "$j" -lt $((i + 20)) ] && [ "${ow[$j]}" != ";" ]; do
+      w="${ow[$j]}"; j=$((j + 1))
+      case "$kind" in
+        grep) if [[ $w =~ $re_grep ]] || [ "$w" = --recursive ] || [ "$w" = --dereference-recursive ] || { [ "$w" = -d ] && [ "${ow[$j]:-}" = recurse ]; }; then recursive=true; return 0; fi ;;
+        ls) if [[ $w =~ $re_ls ]]; then recursive=true; return 0; fi ;;
+        cp) if [[ $w =~ $re_cp ]]; then recursive=true; return 0; fi ;;
+      esac
+    done
   done
-done
+}
+blanked="$(printf '%s' "$cmd" | sed -E "s/\"([^\" ]*)\"/\1/g; s/'([^' ]*)'/\1/g; s/\"[^\"]*\"/ /g; s/'[^']*'/ /g")"
+scan_recursive "$blanked"
+$recursive || scan_recursive "$cmd"
 prev=""
 set -f # the words are looked at, never expanded: ~/.config/* stays a pattern
 for w in $(printf '%s' "$flat" | tr ';&|()<>' '       '); do
