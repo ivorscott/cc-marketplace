@@ -122,7 +122,7 @@ while IFS=$'\t' read -r t team name issue url eid; do
 done < <(printf '%s' "$out" | jq -r '
   def f($k): (.[$k] // "") | tostring | if . == "" then "-" else . end;
   .[] | select(type == "object")
-  | select((.type | IN("pr_ready", "pr_merged", "dead", "stalled", "claim_takeover", "needs_input", "brief_failed", "weekly_summary"))
+  | select((.type | IN("pr_ready", "pr_merged", "dead", "failed", "stalled", "claim_takeover", "needs_input", "brief_failed", "weekly_summary"))
       or (.type == "escalation" and (.severity | IN("P0", "P1", "P2")))
       or (.type == "pr_opened" and .lead_told == false))
   | [(.type | tostring), f("team"), f("name"), f("issue"), f("url"), f("id")] | @tsv')

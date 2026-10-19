@@ -263,7 +263,7 @@ tracker runs the fleet on one machine, and those parts are skipped.
   Linear's branch, and any open PR whose title or body names the issue key, whatever its branch) can
   be taken over with `linear.sh takeover`, which re-reads like claim (of two at once, one wins) and
   leaves one comment.
-- Nothing writes to Linear while `linear_writes = "off"` (the default); Ivor sets `on` after the FT proof.
+- Nothing writes to Linear while `linear_writes = "off"` (the default); the user sets `on` after the FT proof.
   Tick keeps heartbeating Done rows (a team waiting on a merge keeps its claim) and never migrates. `FLEET_FORCE=1` never bypasses a live claim.
 - **The tracker has no compare-and-swap.** The last writer wins and both machines re-read; that
   narrows the race, it does not remove it. A machine whose issue was taken over stops and tells

@@ -8,6 +8,7 @@
 # Events (each has type, team, name; url where a PR exists). Each is reported once; what has
 # been reported lives in $FLEET_STATE_DIR/tick.state.json.
 #   stalled         still Stalled a tick after the nudge (a newly Stalled agent gets one nudge, no event)
+#   failed          a row went Failed (a restart or a brief that did not arrive), once on the transition
 #   dead            status.sh says Zombie, on the transition; the row is also respawned (respawn.sh) within
 #                   a budget, and the second death inside the window escalates P1 instead
 #   needs_input     an agent stopped by an API error (expired login); status_detail on its row says which
@@ -148,6 +149,9 @@ targs=(); [ -n "$team" ] && targs=(--team "$team")
 if ! hd agent list >/dev/null 2>&1; then
   warn "herdr agent list failed; no classification or respawn this tick"
 elif rows="$("$FLEET_SCRIPTS/status.sh" ${targs[@]+"${targs[@]}"} --json 2>/dev/null)" && printf '%s' "$rows" | jq -e 'type == "array"' >/dev/null 2>&1; then
+  add_events "$(jq -cn --argjson rows "$rows" --slurpfile stf "$STATE_FILE" '
+    [$rows[] | select(.tier != "Orchestrator" and .status == "Failed" and (($stf[0].status // {})[.name] != .status))
+      | {type: "failed", team, name, status}]')"
   while IFS= read -r r; do
     [ -n "$r" ] || continue
     sname="$(printf '%s' "$r" | jq -r .name)"
@@ -187,21 +191,20 @@ elif rows="$("$FLEET_SCRIPTS/status.sh" ${targs[@]+"${targs[@]}"} --json 2>/dev/
         + [$rows[] | select(.status == "Needs input" and (.status_detail // "") != "") | .name + "|" + .status_detail])}'
   # A brief that did not arrive: the row stays Failed (status.sh). Re-send the pointer to the same brief file
   # once; if that does not arrive either, one brief_failed event (a wake).
-  while IFS=$'\t' read -r fname fbrief fresent; do
+  while IFS=$'\t' read -r fname fbrief fresent fissue cissue; do
     [ -n "$fname" ] || continue
-    if [ -z "$fresent" ] && [ -n "$fbrief" ] && [ -f "$fbrief" ]; then
+    # Re-send only the brief of the issue the row is on now (a brief for an issue it has left is never re-sent).
+    if [ -z "$fresent" ] && [ -n "$fbrief" ] && [ -f "$fbrief" ] && [ "$fissue" = "$cissue" ]; then
       "$registry" set "$fname" brief_resent="$now_iso" >/dev/null 2>&1 || true
-      if "$FLEET_SCRIPTS/tell.sh" "$fname" - --brief-file "$fbrief" >/dev/null 2>&1; then
-        "$registry" set "$fname" status=Working brief_resent= >/dev/null 2>&1 || true
-        continue
-      fi
+      # tell.sh brings the row back (lead Working, worker Idle) when the pointer arrives.
+      if "$FLEET_SCRIPTS/tell.sh" "$fname" - --brief-file "$fbrief" >/dev/null 2>&1; then continue; fi
     fi
     if [ "$(jq --arg k "$fname|$fbrief" '(.brief_failed_emitted // []) | index($k) == null' "$STATE_FILE")" = true ]; then
       add_events "$(jq -cn --arg n "$fname" --arg f "$fbrief" '[{type: "brief_failed", team: ($n | split("/")[0]), name: $n, detail: $f}]')"
       st_upd --arg k "$fname|$fbrief" '$st + {brief_failed_emitted: ((($st.brief_failed_emitted // []) + [$k]) | unique)}'
     fi
   done < <(printf '%s' "$rows" | jq -r '.[] | select(.tier != "Orchestrator" and .status == "Failed" and (.brief_failed_at // "") != "")
-    | [.name, (.last_brief // ""), (.brief_resent // "")] | @tsv')
+    | [.name, (.last_brief // ""), (.brief_resent // ""), (.brief_failed_issue // ""), (.issue // "")] | @tsv')
   rwin="$(cfg_int respawn_window_hours 6)"; rmax="$(cfg_int respawn_max 1)"
   while IFS= read -r zname; do
     [ -n "$zname" ] || continue
@@ -388,7 +391,7 @@ while IFS=$'\t' read -r etype eteam ename eurl esha; do
   [ -n "$etype" ] || continue
   [ "$eurl" != - ] || eurl=""; [ "$esha" != - ] || esha=""; [ "$eteam" != - ] || eteam=""
   ev_log "$etype" team="$eteam" name="$ename" pr="$eurl" sha="$esha"
-done < <(jq -r '.[] | select(.type | IN("pr_opened", "pr_ready", "pr_merged", "stalled", "dead", "needs_input", "stale_version")) | [.type, (.team // "-" | if . == "" then "-" else . end), .name, (.url // "-"), (.sha // "-")] | @tsv' "$EVENTS_FILE")
+done < <(jq -r '.[] | select(.type | IN("pr_opened", "pr_ready", "pr_merged", "stalled", "dead", "failed", "needs_input", "stale_version")) | [.type, (.team // "-" | if . == "" then "-" else . end), .name, (.url // "-"), (.sha // "-")] | @tsv' "$EVENTS_FILE")
 
 # The state is rebuilt from what is live, so it cannot grow without bound: reported-once keys survive only while
 # the thing they describe (a PR on a row, an open escalation, a claimed issue, a recent respawn) still exists.

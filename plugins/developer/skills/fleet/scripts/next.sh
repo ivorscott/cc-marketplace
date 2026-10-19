@@ -3,7 +3,8 @@
 #
 #   next.sh <team> <issue> [--brief TEXT] [--assignment TEXT] [--issue-url URL]
 #
-#   0. one next per team at a time: a second call while one runs exits 4 and changes nothing
+#   0. one next per team at a time: a second call while one runs exits 4 and changes nothing (the lock holds
+#      the pid; a lock whose process is gone, e.g. after SIGKILL, is taken over)
 #   1. safe point: every agent of the team must be idle (not mid-turn) with no background task running;
 #      otherwise nothing changes, it says who is busy and exits 1 (run it again later)
 #   2. claim the issue through linear.sh; a claim that fails aborts before any row changes. When claims are
@@ -13,9 +14,11 @@
 #      assignment (--assignment, default the issue), a clean outcome/PR/sign-off, its open escalations closed
 #      ("closed at next"); workers go Idle, the lead Working
 #   4. every agent is restarted (respawn.sh --restart): /exit, then a fresh start in its pane with a new
-#      --session-id and its full brief as a file (tell.sh --brief). Workers first, then the lead, whose brief
+#      --session-id and its full brief as a file (tell.sh --brief). The workers restart in parallel, then the
+#      lead (so the whole move takes about two restarts, not one per agent). The lead's brief
 #      also carries --brief TEXT (default "New issue: <issue>."). No /clear and no /compact: a fresh session
 #      also picks up an updated plugin.
+# It can take a few minutes: run it in the background (Bash run_in_background) and wait for its completion.
 # An agent whose restart fails (it did not exit, did not start, or its brief did not arrive) is set Failed and
 # next exits 1 naming it; the others are restarted. UNVERIFIED against real herdr: `herdr agent start` after
 # /exit in the same pane.
@@ -41,9 +44,15 @@ done
 mkdir -p "$FLEET_STATE_DIR"
 lock="$FLEET_STATE_DIR/next.$(printf '%s' "$team" | tr -c 'A-Za-z0-9_-' '_').lock"
 if ! mkdir "$lock" 2>/dev/null; then
-  printf 'fleet: next_skipped: another next.sh is moving %s\n' "$team" >&2
-  exit 4
+  holder="$(cat "$lock/pid" 2>/dev/null || true)"
+  if [ -n "$holder" ] && ! kill -0 "$holder" 2>/dev/null; then # its next.sh is gone (SIGKILL, power cut): take over
+    rm -rf "$lock"; mkdir "$lock" 2>/dev/null || { printf 'fleet: next_skipped: another next.sh is moving %s\n' "$team" >&2; exit 4; }
+  else
+    printf 'fleet: next_skipped: another next.sh is moving %s (pid %s)\n' "$team" "${holder:-unknown}" >&2
+    exit 4
+  fi
 fi
+printf '%s\n' "$$" >"$lock/pid"
 trap 'rm -rf "$lock"' EXIT
 
 rows="$("$registry" list --team "$team" | jq -c '[.[] | select(.status != "Retired" and .tier != "Orchestrator")]')"
@@ -92,16 +101,22 @@ ev_log next team="$team" issue="$issue"
 
 # 4. Restart every agent with its full brief: workers first, so the lead's brief names live workers.
 failed=()
-restart() { # restart <row name> [brief text]
-  local args=("$1" --restart); [ -z "${2:-}" ] || args+=(--brief-text "$2")
-  if ! "$FLEET_SCRIPTS/respawn.sh" "${args[@]}" >/dev/null 2>"$FLEET_STATE_DIR/next.err"; then
-    warn "could not restart $1: $(head -n 1 "$FLEET_STATE_DIR/next.err" 2>/dev/null)"
+restart() { # restart <row name> [brief text]: failures are reported on stdout as the name
+  local args=("$1" --restart) errf; [ -z "${2:-}" ] || args+=(--brief-text "$2")
+  errf="$FLEET_STATE_DIR/next.$$.$(printf '%s' "$1" | tr -c 'A-Za-z0-9_-' '_').err"
+  if ! "$FLEET_SCRIPTS/respawn.sh" "${args[@]}" >/dev/null 2>"$errf"; then
+    warn "could not restart $1: $(head -n 1 "$errf" 2>/dev/null)"
     "$registry" set "$1" status=Failed >/dev/null 2>&1 || true
-    failed+=("$1")
+    printf '%s\n' "$1"
   fi
+  rm -f "$errf"
 }
-for n in $(printf '%s' "$rows" | jq -r '.[] | select(.tier != "Lead") | .name'); do restart "$n"; done
-for n in $(printf '%s' "$rows" | jq -r '.[] | select(.tier == "Lead") | .name'); do restart "$n" "$brief_text"; done
+wfail="$FLEET_STATE_DIR/next.$$.failed"; : >"$wfail"
+for n in $(printf '%s' "$rows" | jq -r '.[] | select(.tier != "Lead") | .name'); do restart "$n" >>"$wfail" & done
+wait
+for n in $(printf '%s' "$rows" | jq -r '.[] | select(.tier == "Lead") | .name'); do restart "$n" "$brief_text" >>"$wfail"; done
+while IFS= read -r n; do [ -z "$n" ] || failed+=("$n"); done <"$wfail"
+rm -f "$wfail"
 
 if [ "${#failed[@]}" -gt 0 ]; then
   warn "not restarted: ${failed[*]} (rows set to Failed)"
