@@ -10,9 +10,15 @@
     ],
     "PreToolUse": [
       {
-        "matcher": "Read|Write|Edit|MultiEdit|NotebookEdit",
+        "matcher": "Read|Write|Edit|MultiEdit|NotebookEdit|Grep|Glob",
         "hooks": [
           { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/fleet-scope-guard.sh\"", "timeout": 10 }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/fleet-bash-guard.sh\"", "timeout": 10 }
         ]
       }
     ]

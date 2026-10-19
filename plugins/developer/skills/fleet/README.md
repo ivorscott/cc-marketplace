@@ -265,8 +265,16 @@ tracker runs the fleet on one machine, and those parts are skipped.
 - `status --all` builds one table from `linear.sh peers` and this machine's registry. Other
   machines' health is not probed: their rows show `Claimed`, the issue and the heartbeat age.
 - The Linear API key lives only on the Orchestrator machine (`~/.config/fleet/linear_api_key`,
-  mode 600, or `LINEAR_API_KEY` in its shell). Agents never get it. Without it claims are
-  unavailable (`linear.sh` exits 3), not fatal.
+  mode 600, or `LINEAR_API_KEY` in its shell). Boot gives it to no agent: panes start with
+  `LINEAR_API_KEY` unset, the scope guard denies Read, Grep and Glob of the file, and the Bash guard
+  denies any command naming it and any `herdr pane run|send-text|send-keys`. **Residual risk:**
+  these hooks are a guardrail, not a boundary. Agents run as the same user (same-uid), and a
+  same-uid process can read a mode-600 file, so a determined or prompt-injected agent could still
+  reach it. Closing that needs the key outside the agents' reach (a Keychain item or another OS
+  user), which is a follow-up. Without it claims are unavailable (`linear.sh` exits 3), not fatal.
+- Agents get an allowlist of herdr subcommands, not `herdr:*`: workers `agent get|read|list|wait`,
+  leads also `agent prompt|send-keys`; the Bash guard holds `agent read|prompt|send-keys` to the
+  agent's own team.
 
 ### Cloned machine id
 

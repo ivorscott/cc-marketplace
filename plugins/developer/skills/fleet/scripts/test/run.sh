@@ -260,6 +260,8 @@ case "$1 $2" in
     else echo '{"result":{"process_info":{"foreground_process_group_id":2,"shell_pid":1}}}'; fi ;;
   # Per-agent state in $AS: "agent get" reports it (idle when unset), a prompt makes the agent
   # working unless PROMPT_NOSTATE is set, and `agent read` prints $AS/<agent>.read.
+  # A pane started by the shim runs what boot types into it, so its env can be dumped: $AS/<pane>.env.
+  "pane run") ( eval "${*:4}"; env ) >"$AS/$3.env" 2>/dev/null; echo '{}' ;;
   "agent start") rm -f "$AS/$3" "$AS/$3.read"; echo '{}' ;;
   "agent get") echo "{\"result\":{\"agent\":{\"agent_status\":\"$(cat "$AS/$3" 2>/dev/null || echo idle)\",\"state_change_seq\":$(cat "$AS/$3.seq" 2>/dev/null || echo 0)}}}" ;;
   "agent wait") [ ! -e "$AS/$3" ] || echo idle >"$AS/$3"; echo '{}' ;;
@@ -287,6 +289,7 @@ eq "boot: every pane split gets KUBECONFIG" "$(grep '^pane split' "$HERDR_LOG" |
 check "boot: env dir exists but no kubeconfig file yet" test -d "$FLEET_STATE_DIR/env/build-envt" -a ! -e "$FLEET_STATE_DIR/env/build-envt/kubeconfig"
 eq "boot: no cluster created" "$(calls up)" 0
 check "boot: tester allow has env.sh up with the scripts path" grep -q "env.sh up" <(grep '^agent start build-envt-tester' "$HERDR_LOG")
+eq "boot: the Linear key is dropped in each claude pane before its agent starts" "$(awk '/^pane run .*unset LINEAR_API_KEY/ {u++} /^agent start/ {if (u <= a) bad++; a++} END {print a + 0, bad + 0}' "$HERDR_LOG")" "$(grep -c '^agent start' "$HERDR_LOG") 0"
 eq "boot: no unsubstituted {{scripts}}" "$(grep -c '{{scripts}}' "$HERDR_LOG")" 0
 check "boot: tester allow has the team-scoped kubectl context" grep -q -- "kubectl --context fleet-build-envt get" <(grep '^agent start build-envt-tester' "$HERDR_LOG")
 eq "boot: no unsubstituted {{team}} or {{worktree}} in an allow list" "$(grep '^agent start' "$HERDR_LOG" | grep -c '{{team}}\|{{worktree}}')" 0
@@ -295,6 +298,14 @@ eq "boot: every agent gets forge_allow" "$(grep '^agent start' "$HERDR_LOG" | gr
 # Permission mode: every agent starts in auto unless FLEET_PERMISSION_MODE or config.toml say otherwise
 eq "boot: every agent starts in --permission-mode auto" "$(grep '^agent start' "$HERDR_LOG" | grep -c -- '--permission-mode auto')" "$(grep -c '^agent start' "$HERDR_LOG")"
 eq "boot: nobody starts in acceptEdits by default" "$(grep -c -- '--permission-mode acceptEdits' "$HERDR_LOG")" 0
+: >"$HERDR_LOG"; rm -f "$AS"/*.env; LINEAR_API_KEY=KEYFIXTURE "$SCRIPTS/boot.sh" build envk "$T/repo" task >/dev/null 2>&1
+check "boot: the shim panes did see the exported key's removal (env dumped)" test -n "$(ls "$AS"/*.env 2>/dev/null)"
+eq "boot: no started pane's env carries the Linear key" "$(cat "$AS"/*.env | grep -c 'LINEAR_API_KEY')" 0
+eq "boot: and the key never reached herdr's argv log" "$(grep -c KEYFIXTURE "$HERDR_LOG")" 0
+eq "boot: the lead may prompt and send-keys to its workers" "$(grep '^agent start build-envk-lead' "$HERDR_LOG" | grep -c 'herdr agent prompt:\*.*herdr agent send-keys:\*\|herdr agent send-keys:\*.*herdr agent prompt:\*')" 1
+eq "boot: workers get get|read|list|wait and no prompt or send-keys" "$(grep '^agent start build-envk-[bt]' "$HERDR_LOG" | grep -c 'herdr agent \(prompt\|send-keys\)')" 0
+eq "boot: workers do get herdr agent read" "$(grep '^agent start build-envk-builder' "$HERDR_LOG" | grep -c 'herdr agent read:\*')" 1
+eq "boot: no blanket herdr allow in any agent start" "$(grep '^agent start' "$HERDR_LOG" | grep -c 'Bash(herdr:\*)')" 0
 : >"$HERDR_LOG"; FLEET_PERMISSION_MODE=acceptEdits "$SCRIPTS/boot.sh" build envm "$T/repo" task >/dev/null 2>&1
 agents_per_boot="$(grep -c '^agent start' "$HERDR_LOG")"
 eq "boot: FLEET_PERMISSION_MODE overrides the default" "$(grep '^agent start' "$HERDR_LOG" | grep -c -- '--permission-mode acceptEdits')" "$(grep -c '^agent start' "$HERDR_LOG")"
@@ -1424,6 +1435,10 @@ eq "claim: no comment was posted" "$(ncomments)" 0
 check "claim: a foreign label refuses (exit 1) and names the holder" bash -c "! '$LIN' claim DEV-2 2>'$T/c.err'; grep -q 'DEV-2 is claimed by fleet:other' '$T/c.err'"
 eq "claim: and the foreign issue is unchanged" "$(labels_of DEV-2)" "fleet:other"
 "$LIN" claim DEV-1 >/dev/null 2>&1; eq "claim: claiming our own issue again is fine" "$?" 0
+cp "$FLEET_CONFIG_DIR/config.toml" "$T/config.legacy.bak"; echo 'machine_legacy_label = "fleet:other"' >>"$FLEET_CONFIG_DIR/config.toml"
+eq "holder: an issue with the legacy label has no foreign holder" "$("$LIN" holder DEV-2 | jq -c '.holder')" null
+"$LIN" claim DEV-2 >/dev/null 2>"$T/legacy.err"; eq "claim: this machine's legacy label is ours, not a foreign holder" "$?:$(grep -c 'is claimed by' "$T/legacy.err")" "0:0"
+cp "$T/config.legacy.bak" "$FLEET_CONFIG_DIR/config.toml"
 eq "claim: and does not create a second label" "$(jq --arg n "$ml" '[.labels[] | select(.name == $n)] | length' "$LINEAR_DB")" 1
 # an existing label with an empty description is filled in; a non-empty one is not overwritten
 dbreset; jq --arg n "$ml" '.labels += [{id: "L9", name: $n, description: "", parent: {id: "L1", name: "fleet"}}]' "$LINEAR_DB" >"$T/db.tmp" && mv "$T/db.tmp" "$LINEAR_DB"
@@ -1632,7 +1647,7 @@ cp "$T/config.b.bak" "$FLEET_CONFIG_DIR/config.toml"; printf 'claim_settle_secs 
 printf '%s\n' "$LINEAR_STUB_KEY" >"$FLEET_CONFIG_DIR/linear_api_key"; chmod 600 "$FLEET_CONFIG_DIR/linear_api_key"
 LINEAR_API_KEY="$LINEAR_STUB_KEY" bt --issue DEV-82 --claimed-by test build lk1 "$T/plain" t
 eq "boot: with a key it boots" "$BTRC" 0
-eq "boot: no herdr command line holds the key or its file name" "$(grep -c "KEYFIXTURE\|linear_api_key\|LINEAR_API_KEY" "$HERDR_LOG")" 0
+eq "boot: no herdr command line holds the key or its file name" "$(grep -v '^pane run [^ ]* unset LINEAR_API_KEY$' "$HERDR_LOG" | grep -c "KEYFIXTURE\|linear_api_key\|LINEAR_API_KEY")" 0
 rm -f "$FLEET_CONFIG_DIR/linear_api_key"
 
 # -- the key is never in an argv, a log or an output
@@ -1670,6 +1685,42 @@ eq "guard: an ordinary file beside the key is allowed to a lead" "$(gin Read "$F
 eq "guard: a worker's symlink out of the worktree is resolved and denied for writes" "$(ln -s "$T/elsewhere2.txt" "$T/wtg/out.txt"; gin Write "$T/wtg/out.txt" | FLEET_ROLE=worker FLEET_WORKTREE="$T/wtg" "$GUARD" | dec)" deny
 eq "guard: .. out of the worktree is denied for a worker's write" "$(gin Write "$T/wtg/../escape.txt" | FLEET_ROLE=worker FLEET_WORKTREE="$T/wtg" "$GUARD" | dec)" deny
 rm -f "$T/wtg/innocent.txt" "$T/wtg/cfg" "$T/wtg/out.txt" "$FLEET_CONFIG_DIR/k3"
+gg() { jq -nc --arg t "$1" --argjson i "$2" '{tool_name: $t, tool_input: $i}'; } # gg <tool> <input json>
+eq "guard: Grep of the key file is denied" "$(gg Grep "$(jq -nc --arg p "$FLEET_CONFIG_DIR/$kf" '{pattern: ".", path: $p}')" | FLEET_ROLE=worker FLEET_WORKTREE="$T/wtg" "$GUARD" | dec)" deny
+eq "guard: Grep rooted at the key's directory is denied" "$(gg Grep "$(jq -nc --arg p "$FLEET_CONFIG_DIR" '{pattern: ".", path: $p}')" | FLEET_ROLE=lead "$GUARD" | dec)" deny
+eq "guard: Grep rooted above the key's directory is denied" "$(gg Grep "$(jq -nc --arg p "$(dirname "$FLEET_CONFIG_DIR")" '{pattern: ".", path: $p}')" | FLEET_ROLE=lead "$GUARD" | dec)" deny
+eq "guard: Grep through a symlink to the key is denied" "$(ln -s "$FLEET_CONFIG_DIR/$kf" "$T/wtg/g.txt"; gg Grep "$(jq -nc --arg p "$T/wtg/g.txt" '{pattern: ".", path: $p}')" | FLEET_ROLE=worker FLEET_WORKTREE="$T/wtg" "$GUARD" | dec; rm -f "$T/wtg/g.txt")" deny
+eq "guard: Grep with the key's name in the glob is denied" "$(gg Grep "$(jq -nc --arg p "$T/wtg" '{pattern: "x", path: $p, glob: "linear_api_key*"}')" | FLEET_ROLE=lead "$GUARD" | dec)" deny
+eq "guard: Glob of the key by an absolute pattern is denied" "$(gg Glob "$(jq -nc --arg p "$FLEET_CONFIG_DIR/$kf" '{pattern: $p}')" | FLEET_ROLE=lead "$GUARD" | dec)" deny
+eq "guard: Glob naming the key is denied" "$(gg Glob '{"pattern": "**/linear_api_key"}' | FLEET_ROLE=worker FLEET_WORKTREE="$T/wtg" "$GUARD" | dec)" deny
+eq "guard: Grep in the worktree is allowed" "$(gg Grep "$(jq -nc --arg p "$T/wtg" '{pattern: "foo", path: $p}')" | FLEET_ROLE=worker FLEET_WORKTREE="$T/wtg" "$GUARD" | dec)" allow
+eq "guard: Glob with no path is allowed" "$(gg Glob '{"pattern": "**/*.sh"}' | FLEET_ROLE=worker FLEET_WORKTREE="$T/wtg" "$GUARD" | dec)" allow
+eq "guard: Grep of the key is allowed outside a fleet agent" "$(gg Grep "$(jq -nc --arg p "$FLEET_CONFIG_DIR/$kf" '{pattern: ".", path: $p}')" | env -u FLEET_ROLE "$GUARD" | dec)" allow
+check "hooks.json sends Grep and Glob to the scope guard" bash -c "jq -e '.hooks.PreToolUse[] | select(.matcher | test(\"Grep\") and test(\"Glob\"))' '$SCRIPTS/../../../hooks/hooks.json' >/dev/null"
+check "hooks.json runs the bash guard for Bash" bash -c "jq -e '.hooks.PreToolUse[] | select(.matcher == \"Bash\") | .hooks[].command | test(\"fleet-bash-guard\")' '$SCRIPTS/../../../hooks/hooks.json' >/dev/null"
+BG="$SCRIPTS/../../../hooks/fleet-bash-guard.sh"
+bg() { jq -nc --arg c "$1" '{tool_name: "Bash", tool_input: {command: $c}}' | FLEET_ROLE="${2:-worker}" FLEET_TEAM=build-ft FLEET_NAME=build-ft/builder "$BG" | dec; }
+eq "bash guard: cat of the key file is denied" "$(bg "cat ~/.config/fleet/$kf")" deny
+eq "bash guard: the key variable is denied" "$(bg "echo \$LINEAR_API""_KEY")" deny
+eq "bash guard: the key variable is denied for a lead" "$(bg "printenv LINEAR_API""_KEY" lead)" deny
+eq "bash guard: herdr pane run is denied" "$(bg "herdr pane run p1 'ls'")" deny
+eq "bash guard: herdr pane run is denied for a lead too" "$(bg "herdr pane send-text p1 hi" lead)" deny
+eq "bash guard: herdr pane send-keys behind a pipe or && is denied" "$(bg "true && herdr --session s pane send-keys p1 enter" lead)" deny
+eq "bash guard: herdr pane run inside bash -c is denied" "$(bg "bash -c 'herdr pane run p1 id'")" deny
+eq "bash guard: a worker may read its own team's agent" "$(bg "herdr agent read build-ft-tester --source visible")" allow
+eq "bash guard: a worker may not read another team's agent" "$(bg "herdr agent read build-other-lead")" deny
+eq "bash guard: a worker may not prompt even its own team" "$(bg "herdr agent prompt build-ft-lead hi")" deny
+eq "bash guard: a lead may prompt its own worker" "$(bg "herdr agent prompt build-ft-builder 'do it'" lead)" allow
+eq "bash guard: a lead may send-keys to its own worker" "$(bg "herdr --session s agent send-keys build-ft-builder enter" lead)" allow
+eq "bash guard: a lead may not prompt another team's agent" "$(bg "herdr agent prompt build-other-builder hi" lead)" deny
+eq "bash guard: a team that only shares a prefix is another team" "$(bg "herdr agent prompt build-ftx-builder hi" lead)" deny
+eq "bash guard: an unreadable target is denied" "$(bg 'herdr agent prompt $T hi' lead)" deny
+eq "bash guard: herdr agent get and list are not restricted" "$(bg "herdr agent get build-other-lead; herdr agent list")" allow
+eq "bash guard: an ordinary command is allowed" "$(bg "git status && ls")" allow
+eq "bash guard: the Orchestrator is never restricted" "$(jq -nc '{tool_name: "Bash", tool_input: {command: "herdr pane run p1 ls"}}' | env -u FLEET_ROLE "$BG" | dec)" allow
+check "boot: workers get no blanket Bash(herdr:*)" bash -c "! grep -q 'Bash(herdr:\*)' '$SCRIPTS/boot.sh'"
+check "SKILL.md states the same-uid residual risk" grep -qi 'same-uid\|same user' "$SCRIPTS/../SKILL.md"
+check "README states the same-uid residual risk" grep -qi 'same-uid\|same user' "$SCRIPTS/../README.md"
 check "hooks.json runs the guard for Read" grep -q '"matcher": "Read|' "$SCRIPTS/../../../hooks/hooks.json"
 check "linear.sh keeps reads and writes apart (gql_read and gql_write)" bash -c "grep -q '^gql_read()' '$LIN' && grep -q '^gql_write()' '$LIN'"
 realkey="config/fleet/""linear_api_key"

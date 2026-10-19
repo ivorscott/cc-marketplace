@@ -87,8 +87,10 @@ plus the first 8 hex characters of the machine's own id. No tracker lookup, noth
 With several machines on one Linear workspace, claim an issue before you boot a team for it, so
 two machines never work it. On one machine, skip this section. Claims need a Linear API key,
 `~/.config/fleet/linear_api_key` (mode 600) or `LINEAR_API_KEY` in your own shell; **read the
-`linear.sh` header before you use it, and never read, print or pass the key yourself**. Agents
-never get it. Without a key `linear.sh` exits 3 ("no Linear key"): claims are unavailable, not
+`linear.sh` header before you use it, and never read, print or pass the key yourself**. Boot gives
+it to no agent, and the hooks deny agents its file and name (Read, Grep, Glob, Bash). That is a
+guardrail, not a boundary: agents run as the same user (same-uid), and a same-uid process can
+read a mode-600 file, so a determined or prompt-injected agent may still reach it. Without a key `linear.sh` exits 3 ("no Linear key"): claims are unavailable, not
 fatal.
 
 A claim is this machine's label on the issue; liveness is one `heartbeat=<ISO>` line in that
