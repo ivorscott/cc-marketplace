@@ -48,6 +48,7 @@ if [ -x "$FLEET_SCRIPTS/linear.sh" ]; then
 fi
 
 "$registry" reassign "$team" "$issue" >/dev/null
+ev_log next team="$team" issue="$issue"
 
 failed=()
 send() { # send <row name> <text> [--no-confirm]
@@ -101,7 +102,7 @@ if [ -n "$lead" ]; then
     hd agent wait "$ref" --until idle --timeout 120000 >/dev/null 2>&1 || true
   fi
   ex="$(printf '%s' "$rows" | jq -r --arg n "$lead" '.[] | select(.name == $n) | .expertise_file // ""')"
-  case " ${failed[*]:-} " in *" $lead "*) ;; *) send "$lead" "$(build_brief "$lead" "$ex" "$brief_text")" || true ;; esac
+  case " ${failed[*]:-} " in *" $lead "*) ;; *) send "$lead" "$(build_brief "$lead" "$ex" "$brief_text")" --brief || true ;; esac
 fi
 
 if [ "${#failed[@]}" -gt 0 ]; then

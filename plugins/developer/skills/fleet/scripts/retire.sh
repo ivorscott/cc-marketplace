@@ -198,6 +198,7 @@ while IFS=$'\t' read -r wt repo wname; do
 done < <(printf '%s' "$rows" | jq -r '.[] | select((.worktree // "") != "") | [.worktree, .repo, .name] | @tsv')
 
 if [ -n "$outcome" ]; then "$registry" retire "$target" --outcome "$outcome"; else "$registry" retire "$target"; fi
+for n in $(printf '%s' "$rows" | jq -r '.[].name'); do ev_log retired team="$(printf '%s' "$rows" | jq -r --arg n "$n" '.[] | select(.name == $n) | .team')" name="$n"; done
 "$registry" archive >/dev/null || warn "archive failed; retired rows stay in the live registry"
 printf '%s' "$rows" | jq --argjson kept "$kept" --argjson ke "$kept_envs" --argjson ku "$kept_untracked" \
   --argjson kp "$kept_unpushed" --argjson km "$kept_modified" --argjson ar "$archived" "$ESC_DEFS"'{retired: [.[].name], kept_worktrees: $kept}
