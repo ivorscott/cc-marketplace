@@ -52,6 +52,7 @@ reinvent it here. This skill adds only what herdr doesn't have:
 | `status`, "how is the fleet", "what's running", "any problems" | **B. Status** |
 | `tell …`, "ask the build team to …", "reassign", "add a worker" | **C. Steer** |
 | `watch`, "keep an eye on it" | **D. Watch** |
+| a loop tick, "run the fleet" | **Tick** |
 | `escalate …` | **E. Escalate** |
 | `retire …`, "stop the race", "shut the team down" | **F. Retire** |
 | `prime`, or you have lost track after a compaction | **G. Prime** |
@@ -158,7 +159,7 @@ machine holds a claim for (registry rows with `issue` and `lease_expires`):
 2. Otherwise renew: `$F/claim.sh renew <your claim comment body>` and write the result back with
    the tracker's comment-update tool, then `$F/registry.sh set <team>/lead lease_expires=<new lease>`.
 
-Scripts cannot renew, because they never call a tracker. An Orchestrator that is not running
+Scripts cannot renew, because they never call a tracker (they call the forge, read-only, only through `FLEET_GH`; see Tick). An Orchestrator that is not running
 stops renewing, and that is exactly when a takeover is allowed. Say so when a user closes it with
 teams still running.
 
@@ -257,6 +258,39 @@ with `run_in_background: true`. It exits as soon as a new escalation lands in th
 (`escalations.jsonl` in the state dir) and prints the new lines, which re-invokes you; re-arm it
 after every wake and every tick. A persisted cursor means one filed between two arms is delivered
 by the next arm, never lost. Never rely on the tick alone: a P0/P1 must reach the user within a minute.
+
+## Tick
+
+In a loop run `$F/tick.sh` once per tick (add `--team T` to limit it). It prints a JSON array of
+what changed, or **nothing** when nothing did; a quiet tick is answered in one line. Each event
+has `type`, `team`, `name` and, where a PR exists, the full `url`. Act on each:
+
+- `pr_ready`: send ONE `PushNotification` with the full PR URL (it is emitted once per PR and head SHA).
+- `pr_merged`: run `$F/next.sh <team> <next issue> [--brief TEXT]`. It reassigns every row, sends workers
+  `/clear`, compacts the lead when its context is large, and briefs the lead.
+- `pr_opened`: a builder opened a PR without running done; tick recorded it on the row and told the lead.
+- `escalation`, `stalled`, `dead`, `repo_without_team`, `disk`, `disk_ok`: as in routes B, E and F.
+
+`$F/tell.sh <team/role> <text>` is how you (and boot and next) send text: it checks the message
+arrived (first a new `user` line in the agent's Claude Code transcript, then herdr's `state_change_seq` or status, last the pane text) and exits 1 (not delivered) or 2 (pane at the shell or agent gone) when it did not. Never
+treat an undelivered message as sent. The tester records the PR and the exact SHA it verified with
+`registry.sh signoff <name> <PR URL|N> <sha>`; `tick.sh` only calls a PR ready when that SHA is the PR head.
+
+Boot starts every claude agent with `--session-id` and records the transcript path on its row; `next.sh` re-points it after `/clear` (a new session file) and reads the lead's context from the transcript against `[context_window]` in config.toml (default 200000 tokens). Once a week tick also runs `registry.sh archive`.
+
+Scripts now call the forge: `tick.sh` runs read-only `gh pr view` through `FLEET_GH` (default `gh`).
+A repo whose PRs have no CI is listed in `no_pr_ci = ["repo"]` in config.toml. UNVERIFIED: herdr's `state_change_seq` is observed, not documented; the window size per model; the transcript format across Claude Code updates; the pane-text handling.
+
+One tick runs at a time (`tick.lock` in the state dir, `tick_lock_stale_secs`, default 900); a second one
+exits quietly. An agent with a background task running (a started task with no notification in its
+transcript, or "N shell(s)" / "N monitor(s)" in the pane footer when there is no transcript) counts as
+Working, not Stalled; a task older than `bg_task_max_hours` (default 6) is aged out.
+
+`pr_ready` holds a draft PR, and a PR whose body says "stacked on", "merge after" or "merge before" (a stacked
+child must not go ready before its parent). PR discovery reads the builder's branch from its worktree
+(`git branch --show-current`), writes it back to the row, and ignores fork PRs. Every path the scripts use comes
+from `FLEET_STATE_DIR` (there is no `FLEET_REGISTRY`, `FLEET_INBOX` or `FLEET_WORKTREES`); an agent (`FLEET_ROLE`
+set) cannot run `add`, `retire`, `archive`, `reassign`, `resolve` or `close-stale`.
 
 ## E. Escalate
 
@@ -416,6 +450,7 @@ sink failure is a one-line warning, never a reason to stop. With no sink file, s
 ## References
 
 - `scripts/claim.sh` and `scripts/chat.sh`: pure helpers for claim comments and chat lines; they never call a tracker or chat tool
+- `scripts/tick.sh`, `scripts/tell.sh`, `scripts/next.sh`: the loop tick, checked delivery and moving a team to its next issue (see Tick). `tick.sh` is the only script that calls the forge: read-only `gh pr view`, through `FLEET_GH`
 - `references/herdr-patterns.md`: the four herdr pitfalls and the safe call pattern for each
 - `references/registry.md`: row fields, the done contract, the sink format
 - `references/experts.md`: expertise files and how debrief proposes changes

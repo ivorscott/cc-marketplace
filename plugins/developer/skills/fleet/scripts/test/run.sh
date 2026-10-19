@@ -14,9 +14,12 @@ check() { # check <desc> <cmd...>
 eq() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1 (got '$2', want '$3')"; fi; }
 
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
-export FLEET_STATE_DIR="$T/state" FLEET_CONFIG_DIR="$T/config" FLEET_REGISTRY="$T/state/fleet.json" FLEET_WORKTREES="$T/state/worktrees"
+# The suite never touches the live fleet: FLEET_TEST=1 makes common.sh refuse a registry, state dir or inbox under the
+# live default, computed from the real HOME captured here, before HOME is overridden below.
+export FLEET_REAL_HOME="$HOME" FLEET_TEST=1
+export FLEET_STATE_DIR="$T/state" FLEET_CONFIG_DIR="$T/config" FLEET_REGISTRY="$T/state/fleet.json" FLEET_INBOX="$T/state/escalations.jsonl" FLEET_WORKTREES="$T/state/worktrees"
 export FLEET_SESSION=test FLEET_MACHINE=test HOME="$T/home"; mkdir -p "$HOME" "$FLEET_CONFIG_DIR" "$T/bin"
-unset FLEET_WORKTREE KUBECONFIG
+unset FLEET_WORKTREE KUBECONFIG FLEET_ROLE FLEET_NAME FLEET_TEAM
 REG="$SCRIPTS/registry.sh"; ENV="$SCRIPTS/env.sh"
 
 # Docker is always a stub: FLEET_DOCKER points at it, and a docker shim first on PATH records
@@ -255,12 +258,26 @@ case "$1 $2" in
   "pane process-info")
     if [ -n "${DEAD_ONCE:-}" ] && [ -e "$DEAD_ONCE" ]; then rm -f "$DEAD_ONCE"; echo '{"result":{"process_info":{"foreground_process_group_id":1,"shell_pid":1}}}'
     else echo '{"result":{"process_info":{"foreground_process_group_id":2,"shell_pid":1}}}'; fi ;;
-  "agent get") echo '{"result":{"agent":{"agent_status":"idle"}}}' ;;
+  # Per-agent state in $AS: "agent get" reports it (idle when unset), a prompt makes the agent
+  # working unless PROMPT_NOSTATE is set, and `agent read` prints $AS/<agent>.read.
+  "agent start") rm -f "$AS/$3" "$AS/$3.read"; echo '{}' ;;
+  "agent get") echo "{\"result\":{\"agent\":{\"agent_status\":\"$(cat "$AS/$3" 2>/dev/null || echo idle)\",\"state_change_seq\":$(cat "$AS/$3.seq" 2>/dev/null || echo 0)}}}" ;;
+  "agent wait") [ ! -e "$AS/$3" ] || echo idle >"$AS/$3"; echo '{}' ;;
+  "agent prompt")
+    [ -z "${PROMPT_FAIL:-}" ] || exit 1
+    [ -n "${PROMPT_NOSTATE:-}" ] || echo working >"$AS/$3"
+    [ -z "${PROMPT_SEQ:-}" ] || echo $(( $(cat "$AS/$3.seq" 2>/dev/null || echo 0) + 1 )) >"$AS/$3.seq"
+    [ -z "${PROMPT_TRANSCRIPT:-}" ] || jq -nc --arg c "$4" '{type: "user", message: {role: "user", content: $c}}' >>"$PROMPT_TRANSCRIPT"
+    [ -z "${PROMPT_NEWSESSION_DIR:-}" ] || [ "$4" != /clear ] || echo '{}' >"$PROMPT_NEWSESSION_DIR/new-$RANDOM$RANDOM.jsonl"
+    [ -z "${PROMPT_ECHO:-}" ] || printf '%s\n> %s\n\n────────\n❯ \n────────\n' "$(cat "$AS/$3.read" 2>/dev/null)" "$4" >"$AS/$3.read"
+    echo '{}' ;;
+  "agent send-keys") [ -z "${ENTER_WORKS:-}" ] || echo working >"$AS/$3"; echo '{}' ;;
+  "agent read") cat "$AS/$3.read" 2>/dev/null || true ;;
   "notification show") if [ -n "${NOTIFY_FAIL:-}" ]; then echo "herdr: no server" >&2; exit 1; fi; echo '{}' ;;
   *) echo '{}' ;;
 esac
 S
-chmod +x "$T/bin/herdr"; export HERDR_LOG="$T/herdr.log"
+chmod +x "$T/bin/herdr"; export HERDR_LOG="$T/herdr.log" AS="$T/as"; mkdir -p "$AS"
 export PATH="$T/bin:$PATH"; export FLEET_FORCE=1
 
 : >"$HERDR_LOG"; "$SCRIPTS/boot.sh" build envt "$T/repo" task >/dev/null 2>&1
@@ -764,8 +781,10 @@ eq "inbox line has the six fields" "$(jq -c 'keys' "$INBOX")" '["at","id","messa
 eq "inbox line carries the team and message" "$(jq -r '[.team, .name, .severity, .message] | join("|")' "$INBOX")" "esc|esc/builder|P1|which db?"
 "$REG" escalate esc/builder P2 "naming?" >/dev/null 2>&1
 eq "two escalates make two inbox lines" "$(wc -l <"$INBOX" | tr -d ' ')" 2
-eq "an unwritable inbox warns and still exits 0" "$(FLEET_INBOX=/nonexistent/dir/in.jsonl "$REG" escalate esc/builder P2 "x" 2>&1 >/dev/null | grep -c 'cannot write the escalation inbox')" 1
-FLEET_INBOX=/nonexistent/dir/in.jsonl "$REG" escalate esc/builder P2 "x" >/dev/null 2>&1; eq "unwritable inbox exits 0" "$?" 0
+mv "$INBOX" "$INBOX.hold"; mkdir "$INBOX" # (the inbox path comes from the state root: make it unwritable by putting a directory there)
+eq "an unwritable inbox warns and still exits 0" "$("$REG" escalate esc/builder P2 "x" 2>&1 >/dev/null | grep -c 'cannot write the escalation inbox')" 1
+"$REG" escalate esc/builder P2 "x" >/dev/null 2>&1; eq "unwritable inbox exits 0" "$?" 0
+rmdir "$INBOX"; mv "$INBOX.hold" "$INBOX"
 AT_P1="$("$REG" escalations --team esc | jq -r '[.[] | select(.severity == "P1")][0].at')"
 eq ".escalation is the highest open severity" "$("$REG" get esc/builder | jq -r .escalation)" P1
 "$REG" resolve esc/builder "$AT_P1" --note "use pg" >/dev/null 2>&1
@@ -815,7 +834,7 @@ eq "wait: a second run does not replay it" "$("$EW" --timeout 1 --every 1)" ""
 eq "wait: one filed between arms is delivered by the next" "$("$EW" --timeout 5 --every 1 | jq -r .message)" "between arms"
 eq "wait: --from-start replays the inbox" "$("$EW" --from-start --timeout 1 --every 1 | wc -l | tr -d ' ')" "$(wc -l <"$INBOX" | tr -d ' ')"
 check "wait: rejects an unknown option" bash -c "! '$EW' --bogus"
-for f in registry.sh status.sh watch.sh retire.sh escalation-wait.sh common.sh boot.sh; do check "bash -n $f" bash -n "$SCRIPTS/$f"; done
+for f in registry.sh status.sh watch.sh retire.sh escalation-wait.sh common.sh boot.sh tell.sh tick.sh next.sh; do check "bash -n $f" bash -n "$SCRIPTS/$f"; done
 SKD0="$SCRIPTS/.."
 check "SKILL.md mentions escalation-wait.sh" grep -q 'escalation-wait.sh' "$SKD0/SKILL.md"
 check "SKILL.md documents resolve" grep -q 'registry.sh resolve' "$SKD0/SKILL.md"
@@ -823,7 +842,7 @@ check "SKILL.md has the Orchestrator send a push" grep -q 'PushNotification' "$S
 check "build lead brief says P1 is only for a user decision" grep -q 'P1 is only for a decision the user must make' "$SKD0/templates/build.json"
 check "build lead brief no longer files an escalation for UNVERIFIED" test -z "$(grep 'UNVERIFIED with an escalation filed' "$SKD0/templates/build.json")"
 check "lead agent says P1 is only for a user decision" grep -q 'P1 is only for a decision the' "$SKD0/../../agents/lead.md"
-check "agent fleet rules say P1 is only for a user decision" grep -q 'P1 is only for a decision the user must make' "$SCRIPTS/boot.sh"
+check "agent fleet rules say P1 is only for a user decision" grep -q 'P1 is only for a decision the user must make' "$SCRIPTS/common.sh"
 check "registry.md documents the inbox and resolved_at" grep -q 'resolved_at' "$SKD0/references/registry.md"
 
 # Retire closes escalations, resolve by id, defensive reads (DEV-367)
@@ -959,11 +978,503 @@ eq "a debrief-queue row is still found after an archive run" "$("$REG" list | jq
 export FLEET_STATE_DIR="$_cstate" FLEET_REGISTRY="$_creg"; [ -n "$_cinbox" ] && export FLEET_INBOX="$_cinbox" || unset FLEET_INBOX
 check "SKILL.md documents the registry archive" grep -q 'registry.sh archive' "$SCRIPTS/../SKILL.md"
 check "registry.md documents archive_after_days" grep -q 'archive_after_days' "$SCRIPTS/../references/registry.md"
+# ---- DEV-368 A: tell, boot delivery, signoff, reassign/next, tick ---------------------------------
+export FLEET_TELL_POLL=0.05
+cp "$FLEET_CONFIG_DIR/config.toml" "$T/config.a.bak"; printf 'tell_confirm_secs = 3\n' >>"$FLEET_CONFIG_DIR/config.toml"
+GH_DIR="$T/gh"; mkdir -p "$GH_DIR"; export GH_DIR GH_LOG="$T/gh.log" REAL_GH_LOG="$T/realgh.log"; : >"$GH_LOG"; : >"$REAL_GH_LOG"
+cat >"$T/bin/gh" <<'S'
+#!/usr/bin/env bash
+echo "$*" >>"$REAL_GH_LOG"; exit 1
+S
+cat >"$T/gh-shim" <<'S'
+#!/usr/bin/env bash
+echo "$*" >>"$GH_LOG"
+[ -z "${GH_SLEEP:-}" ] || sleep "$GH_SLEEP"
+if [ "$2" = list ]; then # gh pr list --head <branch> ...
+  b="${4//\//-}"; [ ! -e "$GH_DIR/list.$b.fail" ] || { echo "HTTP 502" >&2; exit 1; }
+  cat "$GH_DIR/list.$b.json" 2>/dev/null || echo '[]'; exit 0
+fi
+n="${3##*/}"
+[ ! -e "$GH_DIR/$n.fail" ] || { echo "HTTP 502: bad gateway" >&2; exit 1; }
+cat "$GH_DIR/$n.json"
+S
+chmod +x "$T/bin/gh" "$T/gh-shim"; export FLEET_GH="$T/gh-shim"
+ghset() { # ghset <pr number> <state> <mergeable> <rollup json> <head> <body> [isDraft true|false]
+  jq -cn --arg s "$2" --arg m "$3" --argjson r "$4" --arg h "$5" --arg b "$6" --arg u "https://github.com/o/r/pull/$1" --argjson d "${7:-false}" \
+    '{state: $s, mergeable: $m, statusCheckRollup: $r, headRefOid: $h, body: $b, url: $u, isDraft: $d}' >"$GH_DIR/$1.json"; rm -f "$GH_DIR/$1.fail"
+}
+GREEN='[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"}]'
+RED='[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"FAILURE"}]'
+PEND='[{"__typename":"CheckRun","status":"IN_PROGRESS","conclusion":null}]'
+H1="$(printf 'a%.0s' $(seq 1 40))"; H2="$(printf 'b%.0s' $(seq 1 40))"
+
+# Fresh registry, state dir and inbox for this block.
+_ostate="$FLEET_STATE_DIR"; _oreg="$FLEET_REGISTRY"; _oinbox="${FLEET_INBOX:-}"
+export FLEET_STATE_DIR="$T/astate" FLEET_REGISTRY="$T/astate/fleet.json" FLEET_INBOX="$T/astate/escalations.jsonl"; mkdir -p "$FLEET_STATE_DIR"
+git init -q "$T/ra"; git -C "$T/ra" remote add origin git@github.com:o/r.git
+arow() { # arow <team/role> <tier> <herdr ref> [status]
+  "$REG" add "$(jq -cn --arg n "$1" --arg t "${1%%/*}" --arg tier "$2" --arg r "$T/ra" --arg ref "$3" --arg st "${4:-Idle}" \
+    '{name: $n, team: $t, repo: $r, tier: $tier, status: $st, herdr_ref: $ref, pane: "p"}')"
+}
+evc() { printf '%s' "$1" | jq -s --arg t "$2" '[.[][]? | select(.type == $t)] | length'; }
+
+# -- tell
+arow tl/builder Worker tl-b
+rm -f "$AS"/*
+out="$("$SCRIPTS/tell.sh" tl/builder "do the thing" 2>/dev/null)"; rc=$?
+eq "tell: delivered when the agent goes working" "$rc:$(printf '%s' "$out" | jq -r .delivered)" "0:true"
+rm -f "$AS"/*; : >"$AS/tl-b.read"
+out="$(PROMPT_NOSTATE=1 PROMPT_ECHO=1 "$SCRIPTS/tell.sh" tl/builder "echoed into the transcript only" 2>/dev/null)"; rc=$?
+eq "tell: delivered when the text is echoed in the transcript" "$rc:$(printf '%s' "$out" | jq -r .delivered)" "0:true"
+rm -f "$AS"/*; printf '● earlier output\n────────\n❯ Try: ship the thing to prod next\n────────\n' >"$AS/tl-b.read"
+out="$(PROMPT_NOSTATE=1 "$SCRIPTS/tell.sh" tl/builder "Try: ship the thing to prod next" 2>/dev/null)"; rc=$?
+eq "tell: ghost text in the input box is not delivery (exit 1)" "$rc:$(printf '%s' "$out" | jq -r .delivered)" "1:false"
+rm -f "$AS"/*; : >"$HERDR_LOG"
+out="$(PROMPT_NOSTATE=1 ENTER_WORKS=1 "$SCRIPTS/tell.sh" tl/builder "needs an enter" 2>/dev/null)"; rc=$?
+eq "tell: retry once (enter) succeeds on the second poll" "$rc:$(printf '%s' "$out" | jq -r .delivered)" "0:true"
+check "tell: the retry pressed enter" grep -q '^agent send-keys tl-b enter' "$HERDR_LOG"
+rm -f "$AS"/*
+out="$(PROMPT_NOSTATE=1 "$SCRIPTS/tell.sh" tl/builder "never arrives" --no-confirm 2>/dev/null)"; rc=$?
+eq "tell: --no-confirm needs only herdr's acceptance" "$rc:$(printf '%s' "$out" | jq -r .delivered)" "0:true"
+out="$(PROMPT_FAIL=1 "$SCRIPTS/tell.sh" tl/builder "x" 2>/dev/null)"; rc=$?
+eq "tell: a send herdr rejects is exit 1" "$rc:$(printf '%s' "$out" | jq -r .delivered)" "1:false"
+export DEAD_ONCE="$T/dead_once_a"; : >"$DEAD_ONCE"
+out="$("$SCRIPTS/tell.sh" tl/builder "x" 2>/dev/null)"; rc=$?
+unset DEAD_ONCE
+eq "tell: a pane back at the shell exits 2" "$rc:$(printf '%s' "$out" | jq -r .reason)" "2:pane is a shell"
+echo gone >"$AS/tl-b"; "$SCRIPTS/tell.sh" tl/builder "x" >/dev/null 2>&1; eq "tell: an agent herdr cannot find exits 2" "$?" 2
+rm -f "$AS"/*
+check "tell: bad option fails" bash -c "! '$SCRIPTS/tell.sh' tl/builder x --bogus"
+
+# -- boot: an undelivered brief is a failure (AC4)
+: >"$HERDR_LOG"; rm -f "$AS"/*
+export FLEET_STATE_DIR="$_ostate" FLEET_REGISTRY="$_oreg"; [ -n "$_oinbox" ] && export FLEET_INBOX="$_oinbox" || unset FLEET_INBOX
+PROMPT_NOSTATE=1 "$SCRIPTS/boot.sh" build nodeliver "$T/repo" task >"$T/nd.out" 2>"$T/nd.err"; rc=$?
+eq "boot: a brief that never lands makes boot exit non-zero" "$((rc != 0))" 1
+eq "boot: no row of that team stays Working" "$("$REG" list --team build-nodeliver | jq '[.[] | select(.status == "Working")] | length')" 0
+eq "boot: every row of that team is Failed" "$("$REG" list --team build-nodeliver | jq '[.[] | select(.status == "Failed")] | length')" "$("$REG" list --team build-nodeliver | jq length)"
+check "boot: the error names the failed agents" grep -q 'not delivered to' "$T/nd.err"
+: >"$HERDR_LOG"; "$SCRIPTS/boot.sh" build delivered "$T/repo" task >/dev/null 2>&1; rc=$?
+eq "boot: confirmed briefs exit 0" "$rc" 0
+eq "boot: every claude agent starts with --session-id" "$(grep '^agent start' "$HERDR_LOG" | grep -c -- '--session-id [0-9a-f-]\{36\}')" "$(grep -c '^agent start' "$HERDR_LOG")"
+eq "boot: each row records transcript <projects>/<slug>/<session id>.jsonl" "$(grep '^agent start' "$HERDR_LOG" | sed -n 's/.*--session-id \([0-9a-f-]*\).*/\1/p' | sort | tr '\n' ' ')" "$("$REG" list --team build-delivered | jq -r '.[].transcript | split("/") | last | sub("\\.jsonl$"; "")' | sort | tr '\n' ' ')"
+check "boot: the transcript path is under the (fixture) projects dir" bash -c "'$REG' list --team build-delivered | jq -e --arg p \"\$HOME/.claude/projects/\" 'all(.[]; .transcript | startswith(\$p))' >/dev/null"
+eq "boot: confirmed rows are Working" "$("$REG" list --team build-delivered | jq '[.[] | select(.status == "Working")] | length')" "$("$REG" list --team build-delivered | jq length)"
+export FLEET_STATE_DIR="$T/astate" FLEET_REGISTRY="$T/astate/fleet.json" FLEET_INBOX="$T/astate/escalations.jsonl"
+
+# -- signoff
+arow sg/tester Worker sg-t
+"$REG" signoff sg/tester https://github.com/o/r/pull/12 abc1234 >/dev/null
+eq "signoff: records the PR and the SHA" "$("$REG" get sg/tester | jq -c '[.pr, .signoff.pr, .signoff.sha, (.signoff.at | length > 0)]')" '["https://github.com/o/r/pull/12","https://github.com/o/r/pull/12","abc1234",true]'
+"$REG" signoff sg/tester 7 "$H1" >/dev/null
+eq "signoff: a bare number takes the repo from the origin remote" "$("$REG" get sg/tester | jq -r .pr)" https://github.com/o/r/pull/7
+check "signoff: a bad sha is refused" bash -c "! '$REG' signoff sg/tester 7 zzz"
+check "signoff: a short sha is refused" bash -c "! '$REG' signoff sg/tester 7 abc12"
+check "signoff: a non-URL, non-number PR is refused" bash -c "! '$REG' signoff sg/tester seven abc1234"
+"$REG" retire sg/tester >/dev/null
+check "signoff: a Retired row is refused" bash -c "! '$REG' signoff sg/tester 7 abc1234"
+
+# -- reassign and next
+arow tn/lead Lead tn-l; arow tn/w1 Worker tn-w1; arow tn/w2 Worker tn-w2
+for r in tn/lead tn/w1 tn/w2; do "$REG" done "$r" --outcome Shipped --summary "PR ready" >/dev/null 2>&1; "$REG" signoff "$r" https://github.com/o/r/pull/5 abc1234 >/dev/null; done
+"$REG" escalate tn/w1 P1 "old question" >/dev/null 2>&1
+"$REG" set tn/w2 lessons=learned >/dev/null
+"$REG" reassign tn DEV-9 >/dev/null
+eq "reassign: every row gets the issue and status Working" "$("$REG" list --team tn | jq -c '[.[] | [.issue, .status] | join(":")] | unique')" '["DEV-9:Working"]'
+eq "reassign: outcome, summary, PR, sign-off and lessons are cleared" "$("$REG" list --team tn | jq '[.[] | select(.outcome != null or .summary != null or .done_at != null or .pr != null or .signoff != null or .lessons != null)] | length')" 0
+eq "reassign: the open escalation is closed with the note" "$("$REG" get tn/w1 | jq -c '[.escalation, .escalations[0].resolution, (.escalations[0].resolved_at != null)]')" '["","closed at next",true]'
+check "reassign: an unknown team is refused" bash -c "! '$REG' reassign nosuchteam DEV-1"
+
+for r in tn/lead tn/w1 tn/w2; do "$REG" done "$r" --outcome Shipped --summary x >/dev/null 2>&1; done
+: >"$HERDR_LOG"; rm -f "$AS"/*; printf 'chat\n20%% context used\n' >"$AS/tn-l.read"
+"$SCRIPTS/next.sh" tn DEV-10 --brief "Work on DEV-10 now" >"$T/next.out" 2>&1; rc=$?
+eq "next: exits 0" "$rc" 0
+eq "next: each worker is told /clear" "$(grep -c '^agent prompt tn-w[12] /clear' "$HERDR_LOG")" 2
+eq "next: the lead is not compacted below the threshold" "$(grep -c '^agent prompt tn-l /compact' "$HERDR_LOG")" 0
+eq "next: the lead gets the brief" "$(grep -c '^agent prompt tn-l Work on DEV-10 now' "$HERDR_LOG")" 1
+check "next: the brief carries the fleet rules" grep -q 'Fleet rules for tn/lead' "$HERDR_LOG"
+eq "next: rows moved to the new issue" "$("$REG" list --team tn | jq -c '[.[].issue] | unique')" '["DEV-10"]'
+: >"$HERDR_LOG"; printf 'chat\n80%% context used\n' >"$AS/tn-l.read"
+"$SCRIPTS/next.sh" tn DEV-11 >/dev/null 2>&1
+eq "next: the lead is compacted above the threshold" "$(grep -c '^agent prompt tn-l /compact' "$HERDR_LOG")" 1
+eq "next: the default brief names the issue" "$(grep -c 'New issue: DEV-11' "$HERDR_LOG")" 1
+: >"$HERDR_LOG"; printf 'nothing to see\n' >"$AS/tn-l.read"
+"$SCRIPTS/next.sh" tn DEV-12 >/dev/null 2>&1
+eq "next: an unreadable context percentage compacts" "$(grep -c '^agent prompt tn-l /compact' "$HERDR_LOG")" 1
+PROMPT_FAIL=1 "$SCRIPTS/next.sh" tn DEV-13 >/dev/null 2>&1; rc=$?
+eq "next: an undelivered message exits non-zero" "$((rc != 0))" 1
+eq "next: and the row is Failed, not Working" "$("$REG" get tn/lead | jq -r .status)" Failed
+# a failed claim aborts before any row changes (linear.sh arrives in a later slice; this stub stands in for it)
+cp -R "$SCRIPTS" "$T/sc"; printf '#!/usr/bin/env bash\nexit 1\n' >"$T/sc/linear.sh"; chmod +x "$T/sc/linear.sh"
+"$REG" reassign tn DEV-20 >/dev/null; : >"$HERDR_LOG"
+"$T/sc/next.sh" tn DEV-21 >/dev/null 2>&1; rc=$?
+eq "next: a failed claim exits non-zero" "$((rc != 0))" 1
+eq "next: a failed claim leaves the old issue" "$("$REG" list --team tn | jq -c '[.[].issue] | unique')" '["DEV-20"]'
+eq "next: a failed claim sends nothing" "$(grep -c '^agent prompt' "$HERDR_LOG")" 0
+printf '#!/usr/bin/env bash\nexit 3\n' >"$T/sc/linear.sh"
+"$T/sc/next.sh" tn DEV-22 >/dev/null 2>&1; eq "next: no Linear key (exit 3) proceeds unclaimed" "$?" 0
+eq "next: without linear.sh the claim step is skipped" "$("$SCRIPTS/next.sh" tn DEV-23 >/dev/null 2>&1; echo $?)" 0
+rm -rf "$T/sc"
+
+# -- tick
+rm -f "$FLEET_STATE_DIR/tick.state.json" "$AS"/*
+export FLEET_STATE_DIR="$T/tstate" FLEET_REGISTRY="$T/tstate/fleet.json" FLEET_INBOX="$T/tstate/escalations.jsonl"; mkdir -p "$FLEET_STATE_DIR"
+arow tk/lead Lead tk-l; arow tk/builder Worker tk-b; arow tk/tester Worker tk-t
+: >"$GH_LOG"
+out="$("$SCRIPTS/tick.sh" 2>"$T/tick.err")"; rc=$?
+eq "tick: a quiet tick prints nothing" "$out" ""
+eq "tick: a quiet tick exits 0" "$rc" 0
+eq "tick: a quiet tick logs nothing" "$(wc -c <"$T/tick.err" | tr -d ' ')" 0
+eq "tick: gh is not called when no row has a PR" "$(wc -l <"$GH_LOG" | tr -d ' ')" 0
+tkr() { rm -f "$FLEET_STATE_DIR/tick.state.json"; "$SCRIPTS/tick.sh" 2>"$T/tick.err"; }
+ready() { evc "$(tkr)" pr_ready; } # fresh state each time: how many pr_ready events would this PR produce
+"$REG" signoff tk/tester https://github.com/o/r/pull/12 "${H1:0:7}" >/dev/null
+ghset 12 OPEN MERGEABLE "$GREEN" "$H1" "Closes https://linear.app/devpies/issue/DEV-1"
+eq "tick: all conditions met → ready" "$(ready)" 1
+ghset 12 OPEN CONFLICTING "$GREEN" "$H1" ok;       eq "tick: not mergeable → not ready" "$(ready)" 0
+ghset 12 OPEN MERGEABLE "$RED" "$H1" ok;           eq "tick: CI red → not ready" "$(ready)" 0
+ghset 12 OPEN MERGEABLE "$PEND" "$H1" ok;          eq "tick: CI pending → not ready" "$(ready)" 0
+ghset 12 OPEN MERGEABLE '[]' "$H1" ok;             eq "tick: no checks and repo not in no_pr_ci → not ready" "$(ready)" 0
+printf 'no_pr_ci = ["ra"]\n' >>"$FLEET_CONFIG_DIR/config.toml"
+eq "tick: no checks and repo in no_pr_ci → ready" "$(ready)" 1
+ghset 12 OPEN MERGEABLE "$GREEN" "$H2" ok;         eq "tick: sign-off SHA not the head → not ready" "$(ready)" 0
+ghset 12 CLOSED MERGEABLE "$GREEN" "$H1" ok;       eq "tick: closed PR → not ready" "$(ready)" 0
+for body in "DO NOT MERGE yet" "do not merge" "Merge order: B before C" "before/after screenshots"; do
+  ghset 12 OPEN MERGEABLE "$GREEN" "$H1" "$body";  eq "tick: body '$body' → not ready" "$(ready)" 0
+done
+ghset 12 OPEN MERGEABLE "$GREEN" "$H1" ok
+rm -f "$FLEET_STATE_DIR/tick.state.json"
+t1="$("$SCRIPTS/tick.sh" 2>/dev/null)"; t2="$("$SCRIPTS/tick.sh" 2>/dev/null)"; t3="$("$SCRIPTS/tick.sh" 2>/dev/null)"
+eq "tick: ready is emitted on the first tick" "$(evc "$t1" pr_ready)" 1
+eq "tick: and not on the second or third" "$(evc "$t2$t3" pr_ready)" 0
+eq "tick: the event carries the full PR URL" "$(printf '%s' "$t1" | jq -r '.[] | select(.type == "pr_ready") | .url')" https://github.com/o/r/pull/12
+eq "tick: the event names team and agent" "$(printf '%s' "$t1" | jq -r '.[] | select(.type == "pr_ready") | .team + " " + .name')" "tk tk/tester"
+"$REG" signoff tk/tester https://github.com/o/r/pull/12 "${H2:0:7}" >/dev/null; ghset 12 OPEN MERGEABLE "$GREEN" "$H2" ok
+eq "tick: a new head SHA re-arms ready" "$(evc "$("$SCRIPTS/tick.sh" 2>/dev/null)" pr_ready)" 1
+eq "tick: and it is then quiet again" "$("$SCRIPTS/tick.sh" 2>/dev/null)" ""
+ghset 12 MERGED UNKNOWN "$GREEN" "$H2" ok
+m1="$("$SCRIPTS/tick.sh" 2>/dev/null)"; m2="$("$SCRIPTS/tick.sh" 2>/dev/null)"
+eq "tick: a merged PR is reported" "$(evc "$m1" pr_merged)" 1
+eq "tick: once" "$(evc "$m2" pr_merged)" 0
+eq "tick: the merged event carries the URL and team" "$(printf '%s' "$m1" | jq -c '[.[] | select(.type == "pr_merged") | .url, .team]')" '["https://github.com/o/r/pull/12","tk"]'
+# gh failure: skipped, logged, never a fake "not ready" or "merged"
+rm -f "$FLEET_STATE_DIR/tick.state.json"; ghset 12 OPEN MERGEABLE "$GREEN" "$H2" ok; touch "$GH_DIR/12.fail"
+out="$("$SCRIPTS/tick.sh" 2>"$T/tick.err")"; rc=$?
+eq "tick: a gh failure emits no PR event" "$(evc "$out" pr_ready)$(evc "$out" pr_merged)" 00
+check "tick: a gh failure is logged on stderr" grep -q 'gh could not read https://github.com/o/r/pull/12' "$T/tick.err"
+eq "tick: a gh failure still exits 0" "$rc" 0
+rm -f "$GH_DIR/12.fail"
+out="$(FLEET_GH=nosuchgh "$SCRIPTS/tick.sh" 2>"$T/tick.err")"
+eq "tick: no gh at all → one warning" "$(grep -c 'not found; no PR events' "$T/tick.err")" 1
+eq "tick: no gh at all → no PR events" "$(evc "$out" pr_ready)" 0
+# escalation, once
+"$REG" escalate tk/builder P1 "which db?" >/dev/null 2>&1
+e1="$("$SCRIPTS/tick.sh" 2>/dev/null)"; e2="$("$SCRIPTS/tick.sh" 2>/dev/null)"
+eq "tick: an open escalation is reported" "$(printf '%s' "$e1" | jq -r '[.[] | select(.type == "escalation")] | .[0].message')" "which db?"
+eq "tick: once" "$(evc "$e2" escalation)" 0
+# disk
+DF_GB=10 "$SCRIPTS/tick.sh" >"$T/d1.out" 2>/dev/null; DF_GB=10 "$SCRIPTS/tick.sh" >"$T/d2.out" 2>/dev/null; DF_GB=500 "$SCRIPTS/tick.sh" >"$T/d3.out" 2>/dev/null
+eq "tick: disk below warn_free_gb is reported once" "$(evc "$(cat "$T/d1.out")" disk)$(evc "$(cat "$T/d2.out")" disk)" 10
+eq "tick: recovery is reported" "$(evc "$(cat "$T/d3.out")" disk_ok)" 1
+# repos without a team
+printf 'repos = ["ra", "rb"]\n' >>"$FLEET_CONFIG_DIR/config.toml"
+r1="$("$SCRIPTS/tick.sh" 2>/dev/null)"; r2="$("$SCRIPTS/tick.sh" 2>/dev/null)"
+eq "tick: a configured repo with no team is reported" "$(printf '%s' "$r1" | jq -r '[.[] | select(.type == "repo_without_team") | .name] | join(",")')" rb
+eq "tick: once" "$(evc "$r2" repo_without_team)" 0
+# stalled and dead, on transition
+"$REG" set tk/builder status=Working >/dev/null
+s1="$("$SCRIPTS/tick.sh" 2>/dev/null)"; s2="$("$SCRIPTS/tick.sh" 2>/dev/null)"
+eq "tick: a stalled agent is reported" "$(printf '%s' "$s1" | jq -r '[.[] | select(.type == "stalled") | .name] | join(",")')" tk/builder
+eq "tick: once" "$(evc "$s2" stalled)" 0
+echo gone >"$AS/tk-t"
+d1="$("$SCRIPTS/tick.sh" 2>/dev/null)"
+eq "tick: an agent herdr cannot find is reported dead" "$(printf '%s' "$d1" | jq -r '[.[] | select(.type == "dead") | .name] | join(",")')" tk/tester
+eq "tick: --team limits the events" "$(evc "$("$SCRIPTS/tick.sh" --team nosuch 2>/dev/null)" dead)" 0
+check "tick: bad option fails" bash -c "! '$SCRIPTS/tick.sh' --bogus"
+eq "tick: only gh shim calls were made through FLEET_GH" "$(grep -vc '^pr view https://github.com/o/r/pull/12 --json state,mergeable,statusCheckRollup,headRefOid,body,url,isDraft$' "$GH_LOG" | tr -d ' ')" 0
+eq "tick: an escalation event carries its id" "$(printf '%s' "$e1" | jq -r '[.[] | select(.type == "escalation") | .id] | first | test("^[0-9TZ]+-[0-9]+$")')" true
+eq "no real gh call was made" "$(wc -l <"$REAL_GH_LOG" | tr -d ' ')" 0
+
+# -- structured delivery: transcript user line, then herdr state, then the screen
+export FLEET_STATE_DIR="$T/a2state" FLEET_REGISTRY="$T/a2state/fleet.json" FLEET_INBOX="$T/a2state/escalations.jsonl"; mkdir -p "$FLEET_STATE_DIR"
+TRD="$HOME/.claude/projects/fixture"; mkdir -p "$TRD"
+arow2() { "$REG" add "$(jq -cn --arg n "$1" --arg t "${1%%/*}" --arg tier "$2" --arg ref "$3" --arg cwd "${4:-}" --arg tr "${5:-}" --arg br "${6:-}" --arg r "$T/ra" \
+  '{name: $n, team: $t, repo: $r, tier: $tier, status: "Idle", herdr_ref: $ref, pane: "p", cwd: $cwd, transcript: $tr, branch: $br}')"; }
+arow2 sd/builder Worker sd-b "" "$TRD/b.jsonl"
+rm -f "$AS"/*; : >"$TRD/b.jsonl"
+out="$(PROMPT_NOSTATE=1 PROMPT_TRANSCRIPT="$TRD/b.jsonl" "$SCRIPTS/tell.sh" sd/builder "ship the transcript line please" 2>/dev/null)"; rc=$?
+eq "tell: a user line in the transcript is delivery" "$rc:$(printf '%s' "$out" | jq -r .delivered)" "0:true"
+jq -nc '{type: "user", message: {content: "an old message that must not count"}}' >>"$TRD/b.jsonl"
+out="$(PROMPT_NOSTATE=1 "$SCRIPTS/tell.sh" sd/builder "an old message that must not count" 2>/dev/null)"; rc=$?
+eq "tell: a matching line from before the send is not delivery" "$rc:$(printf '%s' "$out" | jq -r .delivered)" "1:false"
+jq -nc '{type: "assistant", message: {content: "a reply that starts with the text"}}' >>"$TRD/b.jsonl"
+out="$(PROMPT_NOSTATE=1 "$SCRIPTS/tell.sh" sd/builder "a reply that starts with the text" 2>/dev/null)"; rc=$?
+eq "tell: only type user counts, not assistant" "$rc:$(printf '%s' "$out" | jq -r .delivered)" "1:false"
+rm -f "$AS"/*
+out="$(PROMPT_NOSTATE=1 PROMPT_SEQ=1 "$SCRIPTS/tell.sh" sd/builder "state change seq only" 2>/dev/null)"; rc=$?
+eq "tell: an increased state_change_seq is delivery" "$rc:$(printf '%s' "$out" | jq -r .delivered)" "0:true"
+
+# -- lead context from transcript usage
+LT="$TRD/lead.jsonl"; arow2 sd/lead Lead sd-l "" "$LT"; arow2 sd/w1 Worker sd-w1 "" "$TRD/w1.jsonl"
+usage() { jq -nc --argjson i "$1" --argjson r "$2" --argjson c "$3" --arg m "$4" '{type: "assistant", message: {model: $m, usage: {input_tokens: $i, cache_read_input_tokens: $r, cache_creation_input_tokens: $c, output_tokens: 9}}}'; }
+{ usage 1 1 1 claude-x; usage 10000 130000 10000 claude-x; } >"$LT"
+eq "context_window: default 200000" "$(. "$SCRIPTS/common.sh"; context_window claude-x)" 200000
+eq "context: latest assistant turn / default window" "$(. "$SCRIPTS/common.sh"; transcript_context_pct "$LT")" 75
+printf '[context_window]\n"claude-x" = 400000\nother = 1000\n' >>"$FLEET_CONFIG_DIR/config.toml"
+eq "context_window: read from the [context_window] table" "$(. "$SCRIPTS/common.sh"; context_window claude-x)" 400000
+eq "context: uses the model's window" "$(. "$SCRIPTS/common.sh"; transcript_context_pct "$LT")" 37
+eq "context: an unreadable transcript prints nothing" "$(. "$SCRIPTS/common.sh"; transcript_context_pct "$TRD/nope.jsonl")" ""
+for r in sd/lead sd/w1; do "$REG" done "$r" --outcome Shipped --summary x >/dev/null 2>&1; done
+: >"$HERDR_LOG"; rm -f "$AS"/*; printf 'chat\n80%% context used\n' >"$AS/sd-l.read"
+"$SCRIPTS/next.sh" sd DEV-30 >/dev/null 2>&1
+eq "next: transcript says 37%, so the lead is not compacted even though the screen says 80%" "$(grep -c '^agent prompt sd-l /compact' "$HERDR_LOG")" 0
+usage 100000 100000 20000 claude-x >>"$LT"
+: >"$HERDR_LOG"; "$SCRIPTS/next.sh" sd DEV-31 >/dev/null 2>&1
+eq "next: transcript at 55% compacts the lead" "$(grep -c '^agent prompt sd-l /compact' "$HERDR_LOG")" 1
+sed -i.bak '/context_window/,$d' "$FLEET_CONFIG_DIR/config.toml"; rm -f "$FLEET_CONFIG_DIR/config.toml.bak"
+
+# -- /clear starts a new session file: next re-resolves the row's transcript
+arow2 sc/lead Lead sc-l "/work/sc/lead" ""; arow2 sc/w1 Worker sc-w "/work/sc/w.1" "$HOME/.claude/projects/-work-sc-w-1/old.jsonl"
+SD="$HOME/.claude/projects/-work-sc-w-1"; mkdir -p "$SD"; echo '{}' >"$SD/old.jsonl"
+for r in sc/lead sc/w1; do "$REG" done "$r" --outcome Shipped --summary x >/dev/null 2>&1; done
+rm -f "$AS"/*; printf 'chat\n20%% context used\n' >"$AS/sc-l.read"
+PROMPT_NEWSESSION_DIR="$SD" "$SCRIPTS/next.sh" sc DEV-40 >/dev/null 2>&1
+new="$("$REG" get sc/w1 | jq -r .transcript)"
+check "next: the worker's row points at the new session file" bash -c "[ '$new' != '$SD/old.jsonl' ] && [ -f '$new' ] && case '$new' in '$SD'/*) true ;; *) false ;; esac"
+rm -f "$AS"/*; for r in sc/lead sc/w1; do "$REG" done "$r" --outcome Shipped --summary x >/dev/null 2>&1; done
+"$REG" set sc/w1 transcript="$SD/old.jsonl" >/dev/null
+err="$(FLEET_TELL_POLL=0.01 "$SCRIPTS/next.sh" sc DEV-41 2>&1 >/dev/null)"
+check "next: no new session file after /clear is warned about" grep -q 'no new transcript for sc/w1' <<<"$err"
+eq "next: and the old path is left alone" "$("$REG" get sc/w1 | jq -r .transcript)" "$SD/old.jsonl"
+eq "scripts reach Claude's projects dir only through projects_dir" "$(grep -l 'claude/projects' "$SCRIPTS"/*.sh | xargs -n1 basename | tr '\n' ' ')" "common.sh "
+eq "projects_dir follows HOME" "$(HOME=/nowhere-x . "$SCRIPTS/common.sh"; HOME=/nowhere-x projects_dir)" /nowhere-x/.claude/projects
+
+# -- PR discovery (builder skipped done): the branch is read from the worktree, same-repo PRs only
+git init -q "$T/pdwt"; git -C "$T/pdwt" checkout -q -b fleet/dev-9-thing; git -C "$T/pdwt" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+arow2 pd/lead Lead pd-l "" ""
+# boot's real row shape: the row says fleet/<team>/<role>, the worktree is on the branch the builder pushed
+"$REG" add "$(jq -cn --arg wt "$T/pdwt" --arg r "$T/ra" '{name: "pd/builder", team: "pd", repo: $r, tier: "Worker", status: "Idle", herdr_ref: "pd-b", pane: "p", worktree: $wt, cwd: $wt, branch: "fleet/pd/builder"}')"
+: >"$GH_LOG"; : >"$HERDR_LOG"; rm -f "${AS:?}"/*
+out="$("$SCRIPTS/tick.sh" 2>/dev/null)"
+eq "tick: no PR yet → no pr_opened" "$(evc "$out" pr_opened)" 0
+eq "tick: the branch is looked up from the worktree, not the row (and asks for isCrossRepository)" "$(grep -c '^pr list --head fleet/dev-9-thing --json number,url,headRefOid,state,isCrossRepository$' "$GH_LOG")" 1
+eq "tick: the row's boot-time branch was never used" "$(grep -c 'fleet/pd/builder' "$GH_LOG" || true)" 0
+eq "tick: the real branch is written back to the row" "$("$REG" get pd/builder | jq -r .branch)" fleet/dev-9-thing
+echo '[{"number":9,"url":"https://github.com/o/r/pull/9","headRefOid":"abc","state":"CLOSED","isCrossRepository":false}]' >"$GH_DIR/list.fleet-dev-9-thing.json"
+eq "tick: a closed PR on the branch is ignored" "$(evc "$("$SCRIPTS/tick.sh" 2>/dev/null)" pr_opened)" 0
+echo '[{"number":8,"url":"https://github.com/fork/r/pull/8","headRefOid":"abc","state":"OPEN","isCrossRepository":true}]' >"$GH_DIR/list.fleet-dev-9-thing.json"
+fk="$("$SCRIPTS/tick.sh" 2>/dev/null)"
+eq "tick: a fork PR on the same branch name is skipped" "$(evc "$fk" pr_opened):$("$REG" get pd/builder | jq -r '.pr // ""')" "0:"
+echo '[{"number":8,"url":"https://github.com/fork/r/pull/8","headRefOid":"abc","state":"OPEN","isCrossRepository":true},{"number":9,"url":"https://github.com/o/r/pull/9","headRefOid":"abc","state":"OPEN","isCrossRepository":false}]' >"$GH_DIR/list.fleet-dev-9-thing.json"
+ghset 9 OPEN MERGEABLE "$GREEN" "abc" ok
+o1="$("$SCRIPTS/tick.sh" 2>/dev/null)"; o2="$("$SCRIPTS/tick.sh" 2>/dev/null)"
+eq "tick: the same-repo PR is chosen over the fork's and reported as pr_opened with its URL" "$(printf '%s' "$o1" | jq -c '[.[] | select(.type == "pr_opened") | .url, .name, .team]')" '["https://github.com/o/r/pull/9","pd/builder","pd"]'
+eq "tick: pr_opened is emitted once (a second run is quiet)" "$(evc "$o2" pr_opened)" 0
+eq "tick: the PR is recorded on the builder's row" "$("$REG" get pd/builder | jq -r .pr)" https://github.com/o/r/pull/9
+eq "tick: the branch write-back is stable across runs" "$("$REG" get pd/builder | jq -r .branch)" fleet/dev-9-thing
+check "tick: the lead was told to start the tester" grep -q '^agent prompt pd-l PR https://github.com/o/r/pull/9 is open; start the tester' "$HERDR_LOG"
+touch "$GH_DIR/list.fleet-dev-9-thing.fail"; "$REG" set pd/builder pr= >/dev/null
+err="$("$SCRIPTS/tick.sh" 2>&1 >/dev/null)"
+check "tick: a gh pr list failure (the dependency is down) is logged, not fatal" grep -q 'gh could not list PRs for fleet/dev-9-thing' <<<"$err"
+rm -f "$GH_DIR/list.fleet-dev-9-thing.fail"
+echo 'this is not json {' >"$GH_DIR/list.fleet-dev-9-thing.json"
+bad="$("$SCRIPTS/tick.sh" 2>"$T/bad.err")"; rc=$?
+eq "tick: unparseable gh output (bad input) is skipped, exit 0, no event" "$rc:$(evc "$bad" pr_opened)" "0:0"
+echo '[{"number":9,"url":"https://github.com/o/r/pull/9","headRefOid":"abc","state":"OPEN","isCrossRepository":"maybe"}]' >"$GH_DIR/list.fleet-dev-9-thing.json"
+eq "tick: a non-boolean isCrossRepository does not pick a PR it cannot vouch for" "$(evc "$("$SCRIPTS/tick.sh" 2>/dev/null)" pr_opened)" 0
+rm -f "$GH_DIR/list.fleet-dev-9-thing.json"
+git -C "$T/pdwt" checkout -q --detach
+"$SCRIPTS/tick.sh" >/dev/null 2>&1; eq "tick: a detached worktree falls back to the row's branch" "$("$REG" get pd/builder | jq -r .branch)" fleet/dev-9-thing
+git -C "$T/pdwt" checkout -q fleet/dev-9-thing
+# escalations are keyed by id: same-second twins are two events
+"$REG" escalate pd/builder P2 "twin a" >/dev/null 2>&1; "$REG" escalate pd/builder P2 "twin b" >/dev/null 2>&1
+tw="$("$SCRIPTS/tick.sh" 2>/dev/null)"
+eq "tick: two escalations on one agent are two events with distinct ids" "$(printf '%s' "$tw" | jq '[.[] | select(.type == "escalation") | .id] | (length == 2 and (unique | length) == 2)')" true
+eq "tick: and neither is repeated" "$(evc "$("$SCRIPTS/tick.sh" 2>/dev/null)" escalation)" 0
+# schema: every write A makes leaves valid rows
+eq "A's writes (signoff, reassign, set pr) leave every row valid" "$(jq "$(. "$SCRIPTS/common.sh"; printf '%s' "$ESC_DEFS")"'[.agents[] | row_ok] | all' "$FLEET_REGISTRY")" true
+# weekly archive
+jq 'del(.archive_week)' "$FLEET_STATE_DIR/tick.state.json" >"$T/ts.tmp" && mv "$T/ts.tmp" "$FLEET_STATE_DIR/tick.state.json"
+"$REG" add '{"name":"wk/old","team":"wk","tier":"Worker","status":"Retired","outcome":"Shipped","lessons":"l","ended":"2020-01-01T00:00:00Z"}'
+"$SCRIPTS/tick.sh" >/dev/null 2>&1
+eq "tick: the first tick of a week archives retired rows with lessons" "$("$REG" list --team wk | jq length)" 0
+eq "tick: and they are in the archive" "$("$REG" get --archived wk/old | jq -r .name)" wk/old
+"$REG" add '{"name":"wk/two","team":"wk","tier":"Worker","status":"Retired","outcome":"Shipped","lessons":"l","ended":"2020-01-01T00:00:00Z"}'
+"$SCRIPTS/tick.sh" >/dev/null 2>&1
+eq "tick: a second tick in the same week does not archive again" "$("$REG" list --team wk | jq length)" 1
+jq '.archive_week = "1999-W01"' "$FLEET_STATE_DIR/tick.state.json" >"$T/ts.tmp" && mv "$T/ts.tmp" "$FLEET_STATE_DIR/tick.state.json"
+"$SCRIPTS/tick.sh" >/dev/null 2>&1
+eq "tick: a new week archives again" "$("$REG" list --team wk | jq length)" 0
+
+export FLEET_STATE_DIR="$_ostate" FLEET_REGISTRY="$_oreg"; [ -n "$_oinbox" ] && export FLEET_INBOX="$_oinbox" || unset FLEET_INBOX
+cp "$T/config.a.bak" "$FLEET_CONFIG_DIR/config.toml"; unset FLEET_TELL_POLL
+SKA="$SCRIPTS/.."
+check "SKILL.md documents tick.sh" grep -q 'tick.sh' "$SKA/SKILL.md"
+check "SKILL.md documents tell.sh and next.sh" bash -c "grep -q 'tell.sh' '$SKA/SKILL.md' && grep -q 'next.sh' '$SKA/SKILL.md'"
+check "registry.md documents signoff and pr" grep -q 'signoff' "$SKA/references/registry.md"
+check "tester brief runs signoff" grep -q 'signoff {{name}}' "$SKA/templates/build.json"
+check "orchestrator agent runs tick.sh" grep -q 'tick.sh' "$SKA/../../agents/orchestrator.md"
+check "watch.sh header says tick.sh supersedes it" grep -q 'tick.sh' "$SCRIPTS/watch.sh"
+
+# ---- DEV-368 A review fixes: F5 tick lock, F3 registry guards, F8 live-path guard, A2, A3, F7, background work ------------
+_afs="$FLEET_STATE_DIR"; _afr="$FLEET_REGISTRY"; _afi="$FLEET_INBOX"
+LIVE="$FLEET_REAL_HOME/.local/state/fleet"
+# One state root: every path comes from FLEET_STATE_DIR. With FLEET_TEST=1 a script that sources common.sh also
+# refuses the live default root, so this suite cannot touch it.
+out="$(env "FLEET_STATE_DIR=$LIVE" "$SCRIPTS/registry.sh" path 2>"$T/f8.err")"; rc=$?
+eq "state root: FLEET_STATE_DIR at the live default is refused before any write under FLEET_TEST=1 ($rc)" "$rc:$out" "1:"
+check "state root: and says why" grep -q 'is the live fleet state' "$T/f8.err"
+eq "state root: FLEET_REGISTRY is ignored (the path is FLEET_STATE_DIR/fleet.json)" "$(FLEET_REGISTRY="$LIVE/fleet.json" "$SCRIPTS/registry.sh" path)" "$FLEET_STATE_DIR/fleet.json"
+eq "state root: FLEET_INBOX is ignored too" "$(FLEET_INBOX="$LIVE/escalations.jsonl" bash -c ". '$SCRIPTS/common.sh'; echo \"\$FLEET_INBOX\"")" "$FLEET_STATE_DIR/escalations.jsonl"
+eq "state root: and FLEET_WORKTREES, and FLEET_ARCHIVE" "$(FLEET_WORKTREES=/x FLEET_ARCHIVE=/y bash -c ". '$SCRIPTS/common.sh'; echo \"\$FLEET_WORKTREES \$FLEET_ARCHIVE\"")" "$FLEET_STATE_DIR/worktrees $FLEET_STATE_DIR/fleet-archive.json"
+under_t() { case "$1" in "$T"/*) return 0 ;; esac; return 1; } # (a case inside $( ) does not parse on bash 3.2)
+eq "state root: this suite runs with every path under its temp dir" "$(under_t "$FLEET_REGISTRY" && under_t "$FLEET_STATE_DIR" && under_t "$FLEET_INBOX" && echo yes)" yes
+: >"$HERDR_LOG"; env FLEET_STATE_DIR="$T/bootchk" "$SCRIPTS/boot.sh" build st1 "$T/repo" task >/dev/null 2>&1
+eq "state root: boot passes FLEET_STATE_DIR to every pane it makes" "$(grep '^workspace create\|^pane split' "$HERDR_LOG" | grep -c -- "--env FLEET_STATE_DIR=$T/bootchk")" "$(grep -c '^workspace create\|^pane split' "$HERDR_LOG")"
+eq "state root: and no pane gets FLEET_REGISTRY" "$(grep -c 'FLEET_REGISTRY' "$HERDR_LOG" || true)" 0
+# The reviewer incident: an agent pane inherited FLEET_REGISTRY (the live registry) and ran a scratch experiment with its own
+# FLEET_STATE_DIR. The live registry must stay byte-identical, and nobody may be notified.
+mkdir -p "$T/fakelive" "$T/scratch"; printf '{"agents":{"live/row":{"name":"live/row","team":"live","tier":"Worker","status":"Working","herdr_ref":"x","pane":"p"}}}\n' >"$T/fakelive/fleet.json"; : >"$T/fakelive/escalations.jsonl"
+livesum="$(cksum <"$T/fakelive/fleet.json")"; : >"$HERDR_LOG"
+inc() { env FLEET_ROLE=worker FLEET_NAME=x/builder FLEET_STATE_DIR="$T/scratch" FLEET_REGISTRY="$T/fakelive/fleet.json" FLEET_INBOX="$T/fakelive/escalations.jsonl" HERDR_ENV=1 "$SCRIPTS/registry.sh" "$@"; }
+inc add '{"name":"x/builder","team":"x","tier":"Worker","status":"Working","herdr_ref":"x","pane":"p"}' >/dev/null 2>&1; eq "incident: an agent may not add a row" "$?" 1
+inc escalate x/builder P0 "fake P0" >/dev/null 2>&1; eq "incident: and its scratch P0 has no row to attach to" "$?" 1
+eq "incident: the live registry is byte-identical" "$(cksum <"$T/fakelive/fleet.json")" "$livesum"
+eq "incident: the live inbox is empty" "$(wc -c <"$T/fakelive/escalations.jsonl" | tr -d ' ')" 0
+eq "incident: nobody was notified" "$(grep -c '^notification show' "$HERDR_LOG" || true)" 0
+for c in "retire x" "archive" "reassign x DEV-1" "resolve x/builder abc" "close-stale"; do
+  # shellcheck disable=SC2086
+  inc $c >/dev/null 2>"$T/ag.err"; rc=$?
+  eq "agents are refused $c" "$rc" 1
+done
+check "the refusal says it is the Orchestrator's" grep -q "Orchestrator's" "$T/ag.err"
+eq "an agent may still report on itself (done, in its scratch root: no row, so it fails safe)" "$(inc done x/builder --outcome Shipped --summary s >/dev/null 2>&1; echo $?)" 1
+eq "F8: FLEET_ROLE and FLEET_NAME are not inherited by the suite" "${FLEET_ROLE:-}${FLEET_NAME:-}" ""
+
+export FLEET_STATE_DIR="$T/afix" FLEET_REGISTRY="$T/afix/fleet.json" FLEET_INBOX="$T/afix/escalations.jsonl"; mkdir -p "$FLEET_STATE_DIR"
+fxrow() { "$REG" add "$(jq -cn --arg n "$1" --arg t "${1%%/*}" --arg tier "$2" --arg ref "$3" --arg st "${4:-Idle}" --arg r "$T/ra" --arg tr "${5:-}" \
+  '{name: $n, team: $t, repo: $r, tier: $tier, status: $st, herdr_ref: $ref, pane: "p"} + (if $tr != "" then {transcript: $tr} else {} end)')"; }
+fxrow fx/builder Worker fx-b; fxrow fx/tester Worker fx-t
+
+# -- F5: one tick at a time
+LOCK="$FLEET_STATE_DIR/tick.lock"
+mkdir "$LOCK"; echo "$$" >"$LOCK/pid"; date +%s >"$LOCK/started"
+out="$("$SCRIPTS/tick.sh" 2>"$T/lk.err")"; rc=$?
+eq "tick lock: held by a live, recent tick: exit 0 and nothing printed" "$rc:$out" "0:"
+check "tick lock: it says tick_skipped on stderr" grep -q tick_skipped "$T/lk.err"
+check "tick lock: and leaves the holder's lock alone" test -d "$LOCK"
+rm -rf "$LOCK"
+mkdir "$LOCK"; echo 999999 >"$LOCK/pid"; date +%s >"$LOCK/started"
+out="$("$SCRIPTS/tick.sh" 2>"$T/lk.err")"; rc=$?
+eq "tick lock: a lock whose pid is gone is recovered" "$rc" 0
+check "tick lock: with a warning" grep -q 'stale tick lock' "$T/lk.err"
+check "tick lock: and the lock is released afterwards" test ! -d "$LOCK"
+mkdir "$LOCK"; echo "$$" >"$LOCK/pid"; echo 1000 >"$LOCK/started"
+"$SCRIPTS/tick.sh" >/dev/null 2>"$T/lk.err"; check "tick lock: a lock older than tick_lock_stale_secs is broken even if its pid lives" grep -q 'stale tick lock' "$T/lk.err"
+# two overlapping ticks report an event once
+"$REG" signoff fx/tester https://github.com/o/r/pull/41 "${H1:0:7}" >/dev/null; ghset 41 OPEN MERGEABLE "$GREEN" "$H1" ok
+GH_SLEEP=1 "$SCRIPTS/tick.sh" >"$T/ov1.out" 2>"$T/ov1.err" &
+sleep 0.4
+GH_SLEEP=1 "$SCRIPTS/tick.sh" >"$T/ov2.out" 2>"$T/ov2.err"
+wait
+eq "tick lock: two overlapping ticks report pr_ready exactly once" "$(evc "$(cat "$T/ov1.out" "$T/ov2.out")" pr_ready)" 1
+eq "tick lock: the second one skipped" "$(cat "$T/ov1.err" "$T/ov2.err" | grep -c tick_skipped)" 1
+check "tick lock: nothing is left behind" test ! -d "$LOCK"
+
+# -- F3: rows writable by an agent
+before="$(cat "$FLEET_REGISTRY")"
+FLEET_ROLE=worker FLEET_NAME=fx/builder "$REG" set fx/builder signoff=x >/dev/null 2>&1; eq "F3: an agent may not set signoff" "$?" 1
+FLEET_ROLE=worker FLEET_NAME=fx/builder "$REG" set fx/builder pr=https://github.com/o/r/pull/1 >/dev/null 2>&1; eq "F3: nor pr, nor other keys outside the allowlist" "$?" 1
+check "F3: the registry is untouched by the refusals" test "$(cat "$FLEET_REGISTRY")" = "$before"
+"$REG" set fx/builder signoff=x >/dev/null 2>&1; eq "F3: even the Orchestrator cannot make signoff a string (the reproduced DoS)" "$?" 1
+"$REG" set fx/builder pr=notaurl >/dev/null 2>&1; eq "F3: nor pr a non-URL" "$?" 1
+check "F3: still untouched" test "$(cat "$FLEET_REGISTRY")" = "$before"
+FLEET_ROLE=worker FLEET_NAME=fx/builder "$REG" set fx/builder summary="did it" status=Working >/dev/null 2>&1; eq "F3: an agent may set status and summary" "$?" 0
+FLEET_ROLE=worker FLEET_NAME=fx/builder "$REG" signoff fx/builder https://github.com/o/r/pull/43 abc1234 >/dev/null 2>&1; eq "F3: a builder's signoff is refused" "$?" 1
+FLEET_ROLE=worker FLEET_NAME=fx/tester "$REG" signoff fx/builder https://github.com/o/r/pull/43 abc1234 >/dev/null 2>&1; eq "F3: a tester may not sign off another row" "$?" 1
+FLEET_ROLE=worker FLEET_NAME=fx/tester "$REG" signoff fx/tester https://github.com/o/r/pull/43 ABCDEF1 >/dev/null 2>&1; eq "F3: the tester signs off for itself" "$?" 0
+eq "F3: the sha is stored lowercase" "$("$REG" get fx/tester | jq -r .signoff.sha)" abcdef1
+eq "F3: the Orchestrator (no FLEET_ROLE) may record a signoff" "$("$REG" signoff fx/tester https://github.com/o/r/pull/41 "${H1:0:7}" >/dev/null 2>&1; echo $?)" 0
+# a hand-written signoff on a builder row is ignored by the tick; a malformed row never stops it
+rm -f "$FLEET_STATE_DIR/tick.state.json"
+jq --arg h "${H1:0:7}" '.agents["fx/builder"] += {pr: "https://github.com/o/r/pull/45", signoff: {pr: "https://github.com/o/r/pull/45", sha: $h, at: "2026-10-19T10:00:00Z"}}' "$FLEET_REGISTRY" >"$T/r.tmp" && mv "$T/r.tmp" "$FLEET_REGISTRY"
+ghset 45 OPEN MERGEABLE "$GREEN" "$H1" ok
+out="$("$SCRIPTS/tick.sh" 2>"$T/tk.err")"
+eq "F3: a signoff on a non-tester row is ignored by the tick" "$(printf '%s' "$out" | jq -s '[.[][]? | select(.type == "pr_ready" and (.url | endswith("/45")))] | length')" 0
+jq '.agents["fx/bad"] = {name: "fx/bad", team: "fx", tier: "Worker", status: "Idle", herdr_ref: "fx-x", pane: "p", pr: 5, repo: 7, signoff: "x"}' "$FLEET_REGISTRY" >"$T/r.tmp" && mv "$T/r.tmp" "$FLEET_REGISTRY"
+rm -f "$FLEET_STATE_DIR/tick.state.json"
+out="$("$SCRIPTS/tick.sh" 2>"$T/tk.err")"; rc=$?
+eq "F3: a hand-corrupted row does not stop the tick" "$rc" 0
+check "F3: and it is named in a warning" grep -q 'malformed row' "$T/tk.err"
+eq "F3: and the good tester row still gets its pr_ready" "$(evc "$out" pr_ready)" 1
+jq 'del(.agents["fx/bad"])' "$FLEET_REGISTRY" >"$T/r.tmp" && mv "$T/r.tmp" "$FLEET_REGISTRY"
+
+# -- the ready gate: a draft, and the fleet's own "stacked on / merge after", are held
+rm -f "$FLEET_STATE_DIR/tick.state.json"
+rdy() { rm -f "$FLEET_STATE_DIR/tick.state.json"; evc "$("$SCRIPTS/tick.sh" 2>/dev/null)" pr_ready; }
+ghset 41 OPEN MERGEABLE "$GREEN" "$H1" "Closes https://linear.app/devpies/issue/DEV-1"; eq "ready gate: a plain open PR is ready (control)" "$(rdy)" 1
+ghset 41 OPEN MERGEABLE "$GREEN" "$H1" ok true; eq "ready gate: a draft PR is not ready" "$(rdy)" 0
+for body in "Stacked on #42 (C). Merge after #42; rebased onto main once #42 merges." "stacked on #3" "Merge before #9" "merge after the parent" "DO NOT MERGE" "merge order: b then c" "before/after screenshots"; do
+  ghset 41 OPEN MERGEABLE "$GREEN" "$H1" "$body"; eq "ready gate: body '$body' holds the PR" "$(rdy)" 0
+done
+ghset 41 OPEN MERGEABLE "$GREEN" "$H1" "Closes DEV-1; merged after review by Ivor" ; eq "ready gate: 'merged after' in prose is not 'merge after'" "$(rdy)" 1
+ghset 41 OPEN MERGEABLE "$GREEN" "$H1" ok
+
+# -- A2: the project directory name maps every non-alphanumeric character to "-"
+eq "A2: transcript_dir_for maps / . _ and spaces" "$(. "$SCRIPTS/common.sh"; transcript_dir_for "/a_b.c/d e-f" | sed "s#^$(projects_dir)/##")" "-a-b-c-d-e-f"
+
+# -- A3: the screen signal needs text that appears after the send
+AR="$AS/fx-b.read"; rm -f "${AS:?}"/*
+printf '● did something\n> repeated message text for A3\n\n────────\n❯ \n────────\n' >"$AR"
+out="$(PROMPT_NOSTATE=1 PROMPT_ECHO=1 "$SCRIPTS/tell.sh" fx/builder "repeated message text for A3" 2>/dev/null)"; rc=$?
+eq "A3: a text sent twice confirms on its second copy" "$rc:$(printf '%s' "$out" | jq -r .delivered)" "0:true"
+rm -f "${AS:?}"/*; printf '● did something\n> repeated message text for A3\n\n────────\n❯ \n────────\n' >"$AR"
+out="$(PROMPT_NOSTATE=1 "$SCRIPTS/tell.sh" fx/builder "repeated message text for A3" 2>/dev/null)"; rc=$?
+eq "A3: a copy that was already on screen is not delivery" "$rc:$(printf '%s' "$out" | jq -r .delivered)" "1:false"
+rm -f "${AS:?}"/*
+out="$(PROMPT_NOSTATE=1 "$SCRIPTS/tell.sh" fx/builder "   " 2>/dev/null)"; rc=$?
+eq "A3: an all-space text has no needle, so the screen cannot confirm it" "$rc:$(printf '%s' "$out" | jq -r .delivered)" "1:false"
+out="$("$SCRIPTS/tell.sh" fx/builder "   " 2>/dev/null)"; eq "A3: but herdr's state change still does" "$?:$(printf '%s' "$out" | jq -r .delivered)" "0:true"
+
+# -- F7: tick's gh temp file comes from mktemp
+check "F7: tick.sh uses mktemp for the gh error file" grep -q 'ghtmp="$(mktemp)"' "$SCRIPTS/tick.sh"
+eq "F7: and no fixed /tmp name remains" "$(grep -c 'fleet-tick-gh' "$SCRIPTS/tick.sh" || true)" 0
+
+# -- Amendment 2 item 2: an agent with a background task running is not Stalled
+rm -f "${AS:?}"/*
+TRB="$HOME/.claude/projects/fx"; mkdir -p "$TRB"
+export FLEET_NOW=2026-10-19T12:00:00Z
+bgfix() { # bgfix <file> <start timestamp> <tool name> <result text> [notification task id]
+  { jq -nc --arg t "$2" --arg n "$3" '{type: "assistant", timestamp: $t, message: {content: [{type: "tool_use", id: "toolu_1", name: $n, input: {command: "x", run_in_background: ($n == "Bash")}}]}}'
+    jq -nc --arg x "$4" '{type: "user", message: {content: [{type: "tool_result", tool_use_id: "toolu_1", content: $x}]}}'
+    [ -z "${5:-}" ] || jq -nc --arg i "$5" '{type: "user", message: {content: ("<task-notification><task-id>" + $i + "</task-id><status>completed</status></task-notification>")}}'
+  } >"$1"
+}
+bgstatus() { "$SCRIPTS/status.sh" --team fxbg --json 2>/dev/null | jq -r --arg n "$1" '.[] | select(.name == $n) | .status'; }
+bgfix "$TRB/running.jsonl" 2026-10-19T11:00:00Z Bash "Command running in background with ID: bgjob1. Output is being written to: /x"
+bgfix "$TRB/done.jsonl" 2026-10-19T11:00:00Z Bash "Command running in background with ID: bgjob1. Output is being written to: /x" bgjob1
+bgfix "$TRB/mon.jsonl" 2026-10-19T11:00:00Z Monitor "Monitor started · task mon1" 
+bgfix "$TRB/old.jsonl" 2026-10-19T03:00:00Z Bash "Command running in background with ID: bgjob1. Output is being written to: /x"
+fxrow fxbg/a Worker bg-a Working "$TRB/running.jsonl"; fxrow fxbg/b Worker bg-b Working "$TRB/done.jsonl"
+fxrow fxbg/c Worker bg-c Working "$TRB/mon.jsonl"; fxrow fxbg/d Worker bg-d Working "$TRB/old.jsonl"
+fxrow fxbg/e Worker bg-e Working; fxrow fxbg/f Worker bg-f Working
+printf 'working on it\n  1 shell still running\n' >"$AS/bg-e.read"; printf 'idle prompt\n' >"$AS/bg-f.read"
+out="$(for n in a b c d e f; do echo "$n=$(bgstatus fxbg/$n)"; done | paste -sd' ' -)"
+eq "background work: a started task with no notification is not Stalled" "$(printf '%s' "$out" | tr ' ' '\n' | grep '^a=')" "a=Working"
+eq "background work: the same task with its notification is Stalled (no done step)" "$(printf '%s' "$out" | tr ' ' '\n' | grep '^b=')" "b=Stalled"
+eq "background work: an unmatched Monitor start is not Stalled" "$(printf '%s' "$out" | tr ' ' '\n' | grep '^c=')" "c=Working"
+eq "background work: a task older than bg_task_max_hours is aged out, so Stalled" "$(printf '%s' "$out" | tr ' ' '\n' | grep '^d=')" "d=Stalled"
+eq "background work: with no transcript the pane footer counts" "$(printf '%s' "$out" | tr ' ' '\n' | grep '^e=')" "e=Working"
+eq "background work: and no footer, no transcript is Stalled" "$(printf '%s' "$out" | tr ' ' '\n' | grep '^f=')" "f=Stalled"
+unset FLEET_NOW
+
+export FLEET_STATE_DIR="$_afs" FLEET_REGISTRY="$_afr" FLEET_INBOX="$_afi"
 
 # version and docs
 SK="$SCRIPTS/.."; PLUGIN="$SK/../.."
-eq "plugin.json version" "$(jq -r .version "$PLUGIN/.claude-plugin/plugin.json")" 3.6.1
-eq "marketplace.json developer version" "$(jq -r '.plugins[] | select(.name == "developer") | .version' "$PLUGIN/../../.claude-plugin/marketplace.json")" 3.6.1
+pv="$(jq -r .version "$PLUGIN/.claude-plugin/plugin.json")"; mv_="$(jq -r '.plugins[] | select(.name == "developer") | .version' "$PLUGIN/../../.claude-plugin/marketplace.json")"
+eq "plugin.json and marketplace.json carry the same version" "$pv" "$mv_"
+check "the version looks like x.y.z" bash -c "printf '%s' '$pv' | grep -Eq '^[0-9]+[.][0-9]+[.][0-9]+\$'"
 for k in min_free_gb warn_free_gb fleet-archive; do
   check "SKILL.md mentions $k" grep -q "$k" "$SK/SKILL.md"; check "README mentions $k" grep -q "$k" "$SK/README.md"
 done

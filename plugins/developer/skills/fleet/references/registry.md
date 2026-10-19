@@ -4,8 +4,10 @@ One JSON file holds one row per agent identity. The identity is `<team>/<role>`,
 outlives any single session. The work an agent owes lives in its row (its "hook"), so a
 restarted, compacted or replaced agent picks up from the row, not from memory.
 
-- **Location:** `${XDG_STATE_HOME:-~/.local/state}/fleet/fleet.json`, overridable with
-  `FLEET_REGISTRY`. It is global, so one Orchestrator can span repositories.
+- **Location:** `fleet.json` in the state dir, `${XDG_STATE_HOME:-~/.local/state}/fleet` unless
+  `FLEET_STATE_DIR` says otherwise. Every other path (the escalation inbox, worktrees, the archive, tick
+  state) comes from the same root; there is no separate override for any of them, so one stray variable
+  cannot send a scratch run to the live registry. It is global, so one Orchestrator can span repositories.
 - **CLI:** `scripts/registry.sh`. Every agent in the fleet uses it, and writes are serialised
   with a lock directory next to the file.
 
@@ -23,6 +25,9 @@ restarted, compacted or replaced agent picks up from the row, not from memory.
 | `assignment` | the task it owes (the hook) |
 | `status` | Booting, Working, Needs input, Stalled, Zombie, Idle, Done, Retired |
 | `escalation`, `escalations[]` | `escalation` is derived: the highest severity among open entries, `""` when none. Each entry is `{id, severity, message, at}` (`id` is `<at compact>-<seq>`, seq the 1-based array position; entries filed before ids existed get the same derived id on read) plus `resolved_at` and `resolution` once `registry.sh resolve` closes it; `(name, id)` identifies one. Open entries survive `done`; `retire` closes them with resolution "closed at retire". A non-array `escalations` reads as empty and non-object elements are skipped |
+| `transcript` | path of the agent's Claude Code transcript (`<projects>/<cwd slug>/<session id>.jsonl`), set by boot (`--session-id`) and re-pointed by `next.sh` after `/clear` |
+| `pr`, `signoff` | `registry.sh signoff <name> <PR URL or N> <sha>` (the tester) sets `pr` and `signoff = {pr, sha, at}`; `tick.sh` reads them. `registry.sh reassign <team> <issue>` (run by `next.sh`) clears `outcome`, `summary`, `done_at`, `pr`, `signoff` and `lessons`, closes open escalations with `resolution: "closed at next"`, and sets `issue` and status Working |
+| `escalation`, `escalations[]` | `escalation` is derived: the highest severity among open entries, `""` when none. Each entry is `{severity, message, at}` plus `resolved_at` and `resolution` once `registry.sh resolve` closes it; `(name, at)` identifies one. Open entries survive `done` and `retire` |
 | `discovered[]` | unrelated work the agent filed instead of doing |
 | `expertise_file` | the role's expertise file, if the repo has one |
 | `started`, `done_at`, `ended` | lifecycle timestamps (UTC) |
@@ -32,7 +37,7 @@ restarted, compacted or replaced agent picks up from the row, not from memory.
 ## Escalation inbox
 
 `registry.sh escalate` also appends one JSON line `{at, id, name, team, severity, message}` to
-`escalations.jsonl` in the state dir (`FLEET_INBOX` overrides). It is append-only and never
+`escalations.jsonl` in the state dir. It is append-only and never
 rotated; resolving does not write to it. `scripts/escalation-wait.sh` reads it with a persisted
 cursor (`escalations.cursor`) so no arrival is missed between two arms.
 
@@ -48,6 +53,23 @@ state dir once `lessons` is written, no escalation is open, and `archive_after_d
 default 0) have passed since `ended`. Rows without lessons stay: they are the debrief queue.
 `list` and `status` read the live file only; `get --archived <name>`, `list --with-archived` and
 `retire.sh --summary` read both.
+## Who may write what
+
+`registry.sh set` from an agent (its pane has `FLEET_ROLE`) takes only `status`, `summary`, `nudged_at`,
+`branch` and `worktree`; the Orchestrator and the scripts (no `FLEET_ROLE`) can set any other key except
+`escalation(s)`. Every write is checked against the row schema (`row_ok`): `signoff` is an object with a
+lowercase hex `sha` of 7 to 40 characters, `pr` is empty or an `https://` URL, `repo`, `herdr_ref` and
+`transcript` are strings, and a new or changed `transcript` must sit under Claude's projects directory.
+`registry.sh signoff` is the tester's: an agent may sign off only as itself, and only when its `FLEET_NAME`
+ends in `/tester`; `tick.sh` ignores a sign-off on any row that is not a tester row of the PR's team.
+`FLEET_NAME` and `FLEET_ROLE` are environment conventions an agent could set, so this guards against
+mistakes, not against an adversary.
+
+## Tick state
+
+`tick.state.json` in the state dir remembers what `tick.sh` already reported (statuses, escalation
+keys (`name|id`), opened PRs, the archive week, `PR@sha` ready, merged PRs, disk state, repos without a team) so each event is emitted once.
+Deleting it replays the current events.
 
 ## Team environments
 

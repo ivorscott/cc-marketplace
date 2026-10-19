@@ -3,11 +3,26 @@
 
 FLEET_STATE_DIR="${FLEET_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/fleet}"
 FLEET_CONFIG_DIR="${FLEET_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/fleet}"
-FLEET_REGISTRY="${FLEET_REGISTRY:-$FLEET_STATE_DIR/fleet.json}"
-FLEET_WORKTREES="${FLEET_WORKTREES:-$FLEET_STATE_DIR/worktrees}"
-FLEET_INBOX="${FLEET_INBOX:-$FLEET_STATE_DIR/escalations.jsonl}"
+# One state root: every path below comes from FLEET_STATE_DIR. There are no overrides for the registry, the
+# inbox, the worktrees or the archive, so a stray FLEET_REGISTRY in an agent's environment cannot point a
+# scratch run at the live registry. (Set FLEET_STATE_DIR to a scratch directory to work in a sandbox.)
+FLEET_REGISTRY="$FLEET_STATE_DIR/fleet.json"
+FLEET_WORKTREES="$FLEET_STATE_DIR/worktrees"
+FLEET_INBOX="$FLEET_STATE_DIR/escalations.jsonl"
+FLEET_ARCHIVE="$FLEET_STATE_DIR/fleet-archive.json"
 FLEET_SCRIPTS="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FLEET_SKILL_DIR="$(dirname "$FLEET_SCRIPTS")"
+
+# The suite never touches the live fleet. With FLEET_TEST=1, any script that sources this file dies when
+# FLEET_STATE_DIR (the root of every path) is the live default, computed from the real HOME
+# (FLEET_REAL_HOME, captured by the suite before it overrides HOME).
+if [ "${FLEET_TEST:-}" = 1 ]; then
+  _live="${FLEET_REAL_HOME:-$HOME}/.local/state/fleet"
+  case "$FLEET_STATE_DIR" in
+    "$_live" | "$_live"/*) printf 'fleet: FLEET_TEST=1 but FLEET_STATE_DIR (%s) is the live fleet state (%s); refusing\n' "$FLEET_STATE_DIR" "$_live" >&2; exit 1 ;;
+  esac
+  unset _live
+fi
 
 die() { printf 'fleet: %s\n' "$*" >&2; exit 1; }
 warn() { printf 'fleet: warning: %s\n' "$*" >&2; }
@@ -26,6 +41,12 @@ ESC_DEFS='def norm: if (.escalations | type) != "array" then .escalations = [] e
     then . + {resolved_at: $t, resolution: $res} else . end);
   def row_ok: type == "object" and (.name | type == "string")
     and ((has("discovered") | not) or (.discovered | type == "array"))
+    and ((has("herdr_ref") | not) or (.herdr_ref | type == "string"))
+    and ((has("repo") | not) or (.repo | type == "string"))
+    and ((has("pr") | not) or (.pr | type == "string" and (. == "" or startswith("https://"))))
+    and ((has("signoff") | not) or (.signoff | type == "object" and (.sha | type == "string" and test("^[0-9a-f]{7,40}$"))
+         and ((has("pr") | not) or (.pr | type == "string"))))
+    and ((has("transcript") | not) or (.transcript | type == "string"))
     and ((has("escalations") | not) or ((.escalations | type == "array") and all(.escalations[];
       type == "object" and (.severity | IN("P0", "P1", "P2")) and (.message | type == "string") and (.at | type == "string")
       and ((has("id") | not) or (.id | type == "string")))));
@@ -163,3 +184,103 @@ cfg_str() {
 label_prefix() { printf '%s\n' "${FLEET_LABEL_PREFIX:-$(cfg_str label_prefix 'fleet:')}"; }
 machine_key() { "$FLEET_SCRIPTS/machine-id.sh" key; }
 machine_label() { printf '%s%s\n' "$(label_prefix)" "$(machine_key)"; }
+
+# contract <name> <expertise-file>: the fleet rules appended to every brief (boot, next).
+contract() {
+  local name="$1" expertise="$2" x="" registry="$FLEET_SCRIPTS/registry.sh"
+  [ -n "$expertise" ] && x=" Before you start, read your expertise file $expertise and follow it."
+  printf '%s' "
+
+Fleet rules for $name.$x Stay on this one task. If you notice unrelated work, run \`$registry note $name discovered \"<what>\"\` instead of doing it. If you need a decision you cannot make, run \`$registry escalate $name P1 \"<question>\"\` and wait. P1 is only for a decision the user must make; \"PR ready\" goes through done, not an escalation. If you stop to wait for instructions, first run \`$registry set $name status=Idle\`. Every commit carries the trailer \`Agent: $name\`. When your part is finished: push your branch if you have one, then run \`$registry done $name --outcome <Shipped|Partial|Failed> --summary \"<one line>\"\`, then stop. Going idle without that command marks you Stalled."
+}
+
+# build_brief <name> <expertise-file> <text>: a brief plus the fleet rules.
+build_brief() { printf '%s%s' "$3" "$(contract "$1" "$2")"; }
+
+# FLEET_GH: the GitHub CLI, overridable for tests. Scripts only ever make read-only calls (pr view).
+FLEET_GH="${FLEET_GH:-gh}"
+
+# tick_state_file, tick_state: the Orchestrator tick's memory of what it already reported.
+tick_state_file() { printf '%s\n' "$FLEET_STATE_DIR/tick.state.json"; }
+tick_state() {
+  local f; f="$(tick_state_file)"
+  if [ -f "$f" ] && jq -e 'type == "object"' "$f" >/dev/null 2>&1; then cat "$f"; else printf '{}\n'; fi
+}
+tick_state_write() { # tick_state_write <json>
+  local f tmp; f="$(tick_state_file)"; mkdir -p "$(dirname "$f")"
+  tmp="$(mktemp "$f.XXXXXX")"; printf '%s\n' "$1" >"$tmp" && mv "$tmp" "$f"
+}
+
+# forge_pr_json <pr url>: read-only PR state as JSON. Fails (stderr says why) when gh can't tell.
+forge_pr_json() {
+  "$FLEET_GH" pr view "$1" --json state,mergeable,statusCheckRollup,headRefOid,body,url,isDraft
+}
+
+# Claude Code transcripts. projects_dir is where Claude keeps them (tests point HOME at a fixture
+# tree); transcript_dir_for <cwd> is the project directory for a working directory (every character
+# of the cwd that is not a letter or digit becomes "-"). Observed for "/" and "."; UNVERIFIED for other
+# characters such as "_" (no existing project directory has one in its name, which is consistent). Scripts read them only through these helpers.
+projects_dir() { printf '%s\n' "${CLAUDE_PROJECTS_DIR:-$HOME/.claude/projects}"; }
+transcript_dir_for() { printf '%s/%s\n' "$(projects_dir)" "$(printf '%s' "$1" | sed 's/[^A-Za-z0-9]/-/g')"; }
+new_uuid() {
+  if command -v uuidgen >/dev/null 2>&1; then uuidgen | tr 'A-Z' 'a-z'
+  elif [ -r /proc/sys/kernel/random/uuid ]; then cat /proc/sys/kernel/random/uuid
+  else od -An -N16 -tx1 /dev/urandom | tr -d ' \n' | sed -E 's/(.{8})(.{4})(.{4})(.{4})(.{12})/\1-\2-\3-\4-\5/'; fi
+}
+
+# context_window <model>: the model's context window in tokens, from the [context_window] table
+# of config.toml (model = N lines, the model name optionally quoted); default 200000.
+# UNVERIFIED: the real window per model (DEV-368).
+context_window() {
+  local v="" f="$FLEET_CONFIG_DIR/config.toml"
+  [ -f "$f" ] && v="$(awk -v m="$1" '
+    /^[[:space:]]*\[/ { on = ($0 ~ /^[[:space:]]*\[context_window\]/); next }
+    on { k = $0; sub(/[[:space:]]*=.*/, "", k); gsub(/^[[:space:]]*"?|"?[[:space:]]*$/, "", k)
+         if (k == m) { v = $0; sub(/^[^=]*=[[:space:]]*/, "", v); sub(/[^0-9].*/, "", v); print v; exit } }' "$f")"
+  printf '%s\n' "${v:-200000}"
+}
+
+# transcript_context_pct <transcript file>: percent of the context window the latest assistant
+# turn used (input + cache read + cache creation tokens). Prints nothing when it can't be read.
+transcript_context_pct() {
+  [ -r "$1" ] || return 0
+  local last model tokens
+  last="$(grep -F '"type":"assistant"' "$1" 2>/dev/null | tail -n 1)" || true
+  [ -n "$last" ] || return 0
+  tokens="$(printf '%s' "$last" | jq -r '.message.usage | if type == "object" then ((.input_tokens // 0) + (.cache_read_input_tokens // 0) + (.cache_creation_input_tokens // 0)) else empty end' 2>/dev/null)" || return 0
+  [ -n "$tokens" ] || return 0
+  model="$(printf '%s' "$last" | jq -r '.message.model // ""' 2>/dev/null)"
+  printf '%s\n' $((tokens * 100 / $(context_window "$model")))
+}
+
+# transcript_bg_running <transcript file>: how many background tasks the agent has running: tool_use blocks
+# with input.run_in_background == true, or named Monitor, whose task id (in the matching tool_result text:
+# "...running in background with ID: <id>" or "Monitor started ... task <id>") has no later
+# <task-notification><task-id><id></task-id> line, and that started less than bg_task_max_hours (default 6)
+# ago (a task killed without a notification would otherwise count until the session ends). Observed shape of
+# Claude Code transcripts, not a documented contract: UNVERIFIED for stability. Unreadable: 0.
+transcript_bg_running() {
+  [ -r "$1" ] || { echo 0; return 0; }
+  local maxs now_e; maxs=$(($(cfg_int bg_task_max_hours 6) * 3600))
+  now_e="$(jq -rn --arg t "${FLEET_NOW:-$(now)}" '$t | fromdateiso8601')"
+  jq -nRr --argjson now "$now_e" --argjson max "$maxs" '
+    def ep: (. // "" | tostring | sub("\\.[0-9]+Z$"; "Z") | (try fromdateiso8601 catch null));
+    def body: if type == "string" then . elif type == "array" then
+        [.[]? | if type == "string" then . else (.text? // (if (.content | type) == "string" then .content else ([.content[]? | .text? // ""] | join("")) end) // "") end] | join(" ")
+      else "" end;
+    [inputs | fromjson? | select(type == "object")] as $L
+    | ([$L[] | select(.type == "assistant") | .timestamp as $t | (.message.content // [])[]?
+        | select(type == "object" and .type == "tool_use" and ((.input.run_in_background? == true) or .name == "Monitor"))
+        | {tool: .id, at: ($t | ep)}]) as $starts
+    | ([$L[] | select(.type == "user") | (.message.content // [])[]? | select(type == "object" and .type == "tool_result")
+        | {tool: .tool_use_id, text: (.content | body)}]) as $results
+    | ([$L[] | select(.type == "user") | (.message.content | body) | select(contains("<task-notification>"))
+        | scan("<task-id>([A-Za-z0-9_-]+)</task-id>") | .[0]] | unique) as $ended
+    | [$starts[] | . as $s | ($results | map(select(.tool == $s.tool)) | first | .text // "") as $x
+        | ($x | (try capture("running in background with ID: (?<id>[A-Za-z0-9_-]+)").id catch null)
+            // (try capture("Monitor started[^\n]*?task (?<id>[A-Za-z0-9_-]+)").id catch null)) as $id
+        | select($id != null and (($ended | index($id)) == null) and ($s.at == null or ($now - $s.at) <= $max))] | length' "$1" 2>/dev/null || echo 0
+}
+
+# footer_bg_running <screen text>: the pane footer says "N shell(s)" or "N monitor(s)" still running.
+footer_bg_running() { printf '%s\n' "$1" | tail -n 8 | grep -Eq '[0-9]+ (shell|monitor)s?([ ,.]|$)'; }

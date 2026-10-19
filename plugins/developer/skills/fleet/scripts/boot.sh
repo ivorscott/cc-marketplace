@@ -176,14 +176,6 @@ render() { # render <text> <name> <worktree> <workers>
   printf '%s' "$s"
 }
 
-contract() { # the done contract appended to every brief
-  local name="$1" expertise="$2" x=""
-  [ -n "$expertise" ] && x=" Before you start, read your expertise file $expertise and follow it."
-  printf '%s' "
-
-Fleet rules for $name.$x Stay on this one task. If you notice unrelated work, run \`$registry note $name discovered \"<what>\"\` instead of doing it. If you need a decision you cannot make, run \`$registry escalate $name P1 \"<question>\"\` and wait. P1 is only for a decision the user must make; \"PR ready\" goes through done, not an escalation. If you stop to wait for instructions, first run \`$registry set $name status=Idle\`. Every commit carries the trailer \`Agent: $name\`. When your part is finished: push your branch if you have one, then run \`$registry done $name --outcome <Shipped|Partial|Failed> --summary \"<one line>\"\`, then stop. Going idle without that command marks you Stalled."
-}
-
 claude_args() { # claude_args <model> <tier> <worktree> <allow-json>
   local settings extra="${4:-[]}"
   extra="${extra//\{\{scripts\}\}/$FLEET_SCRIPTS}"
@@ -194,6 +186,9 @@ claude_args() { # claude_args <model> <tier> <worktree> <allow-json>
   [ -n "$1" ] && printf '%s\0' --model "$1"
   [ "$2" = "Lead" ] && printf '%s\0' --agent developer:lead
   printf '%s\0' --permission-mode "$(permission_mode)"
+  # --session-id pins the transcript file name, so the row can record where the agent's
+  # transcript is (tell.sh and next.sh read it). boot sets session_id just before each start.
+  [ -z "${session_id:-}" ] || printf '%s\0' --session-id "$session_id"
 }
 
 # Answer Claude's folder-trust dialog, but only for directories this boot owns or was
@@ -261,7 +256,7 @@ start_agent() { # same arguments as start_agent_once
 lead_agent="$(agent_name "$team-lead")"
 lead_name="$team/lead"
 ws_json="$(hd workspace create --cwd "$repo" --label "$team" --no-focus \
-  --env FLEET_ROLE=lead --env "FLEET_NAME=$lead_name" --env "FLEET_TEAM=$team" --env "FLEET_REGISTRY=$FLEET_REGISTRY" ${env_args[@]+"${env_args[@]}"})"
+  --env FLEET_ROLE=lead --env "FLEET_NAME=$lead_name" --env "FLEET_TEAM=$team" --env "FLEET_STATE_DIR=$FLEET_STATE_DIR" ${env_args[@]+"${env_args[@]}"})"
 workspace="$(printf '%s' "$ws_json" | jq -r .result.workspace.workspace_id)"
 lead_pane="$(printf '%s' "$ws_json" | jq -r .result.root_pane.pane_id)"
 [ -n "$workspace" ] && [ "$workspace" != "null" ] || die "workspace create failed: $ws_json"
@@ -282,7 +277,7 @@ for i in $(seq 0 $((nworkers - 1))); do
   if [ -z "$prev" ]; then split=(--pane "$lead_pane" --direction right); else split=(--pane "$prev" --direction down); fi
   pane="$(hd pane split "${split[@]}" --cwd "$cwd" --no-focus \
     --env FLEET_ROLE=worker --env "FLEET_NAME=$name" --env "FLEET_TEAM=$team" \
-    --env "FLEET_WORKTREE=$worktree" --env "FLEET_REGISTRY=$FLEET_REGISTRY" \
+    --env "FLEET_WORKTREE=$worktree" --env "FLEET_STATE_DIR=$FLEET_STATE_DIR" \
     ${env_args[@]+"${env_args[@]}"} | jq -r .result.pane.pane_id)"
   prev="$pane"
   workers_json="$(printf '%s' "$workers_json" | jq -c --argjson w "$w" --arg n "$name" --arg a "$agent" \
@@ -296,14 +291,22 @@ row() { # row <name> <tier> <agent> <pane> <kind> <model> <status> <cwd> <worktr
   jq -cn --arg name "$1" --arg tier "$2" --arg ref "$3" --arg pane "$4" --arg harness "$5" --arg model "$6" \
     --arg status "$7" --arg cwd "$8" --arg wt "$9" --arg br "${10}" --arg ex "${11}" \
     --arg team "$team" --arg tpl "$template" --arg repo "$repo" --arg task "$task" --arg m "$machine" --arg ws "$workspace" \
-    --arg issue "$issue" --arg cb "$claimed_by" --argjson scope "$scope_json" --arg lease "$lease_new" --arg toof "$takeover_of" \
+    --arg tr "${row_transcript:-}" --arg issue "$issue" --arg cb "$claimed_by" --argjson scope "$scope_json" --arg lease "$lease_new" --arg toof "$takeover_of" \
     '{name: $name, team: $team, tier: $tier, template: $tpl, harness: $harness, model: $model, repo: $repo,
       machine: $m, status: $status, assignment: $task, herdr_ref: $ref, pane: $pane, workspace: $ws,
       cwd: $cwd, worktree: $wt, branch: $br, expertise_file: $ex}
+    + (if $tr != "" then {transcript: $tr} else {} end)
     + (if $issue != "" then {issue: $issue, claimed_by: $cb} else {} end)
     + (if $lease != "" then {lease_expires: $lease} else {} end)
     + (if $toof != "" then {takeover_of: $toof} else {} end)
     + (if $scope != null then {scope: $scope} else {} end)'
+}
+
+# deliver <name> <brief>: tell.sh sends it and checks it arrived. An undelivered brief marks the
+# row Failed (never Working) and boot exits non-zero once the team JSON is printed.
+failed_agents=()
+deliver() {
+  "$FLEET_SCRIPTS/tell.sh" "$1" "$2" >/dev/null || { "$registry" set "$1" status=Failed >/dev/null; failed_agents+=("$1"); }
 }
 
 expertise_for() { local f="$repo/.claude/experts/$1.md"; [ -f "$f" ] && printf '%s' "$f" || true; }
@@ -315,25 +318,37 @@ for i in $(seq 0 $((nworkers - 1))); do
   kind="$(get kind)"; kind="${kind:-claude}"
   if ! command -v "$kind" >/dev/null 2>&1; then warn "$kind not on PATH; $(get agent) falls back to claude"; kind=claude; fi
   allow="$(printf '%s' "$w" | jq -c '.allow // []')"
+  session_id=""; row_transcript=""
+  if [ "$kind" = "claude" ]; then
+    session_id="$(new_uuid)"; row_transcript="$(transcript_dir_for "$(get cwd)")/$session_id.jsonl"
+  fi
   status="$(start_agent "$(get agent)" "$kind" "$(get pane)" "$(get model)" Worker "$(get worktree)" "$allow")"
   ex="$(expertise_for "$(get role)")"
   "$registry" add "$(row "$(get name)" Worker "$(get agent)" "$(get pane)" "$kind" "$(get model)" "$status" "$(get cwd)" "$(get worktree)" "$(get branch)" "$ex")"
   if [ "$status" = "Working" ]; then
-    brief="$(render "$(get brief)" "$(get name)" "$(get worktree)" "$worker_agents")$(contract "$(get name)" "$ex")"
-    hd agent prompt "$(get agent)" "$brief" >/dev/null 2>&1 || "$registry" set "$(get name)" status="Needs input"
+    brief="$(build_brief "$(get name)" "$ex" "$(render "$(get brief)" "$(get name)" "$(get worktree)" "$worker_agents")")"
+    deliver "$(get name)" "$brief"
   fi
 done
 
 # 4. Start the lead last, so its brief can name live workers.
 lead_kind="$(jq -r '.lead.kind // "claude"' "$tpl")"; lead_model="$(jq -r '.lead.model // ""' "$tpl")"
 command -v "$lead_kind" >/dev/null 2>&1 || { warn "$lead_kind not on PATH; the lead falls back to claude"; lead_kind=claude; }
+session_id=""; row_transcript=""
+if [ "$lead_kind" = "claude" ]; then
+  session_id="$(new_uuid)"; row_transcript="$(transcript_dir_for "$repo")/$session_id.jsonl"
+fi
 status="$(start_agent "$lead_agent" "$lead_kind" "$lead_pane" "$lead_model" Lead "" "$(jq -c '.lead.allow // []' "$tpl")")"
 ex="$(expertise_for lead)"
 "$registry" add "$(row "$lead_name" Lead "$lead_agent" "$lead_pane" "$lead_kind" "$lead_model" "$status" "$repo" "" "" "$ex")"
 if [ "$status" = "Working" ]; then
-  brief="$(render "$(jq -r .lead.brief "$tpl")" "$lead_name" "" "$worker_agents")$(contract "$lead_name" "$ex")"
-  hd agent prompt "$lead_agent" "$brief" >/dev/null 2>&1 || "$registry" set "$lead_name" status="Needs input"
+  brief="$(build_brief "$lead_name" "$ex" "$(render "$(jq -r .lead.brief "$tpl")" "$lead_name" "" "$worker_agents")")"
+  deliver "$lead_name" "$brief"
 fi
 
 "$registry" list --team "$team" |
   jq --arg ws "$workspace" --arg team "$team" '{team: $team, workspace: $ws, agents: [.[] | {name, herdr_ref, pane, status, worktree}]}'
+if [ "${#failed_agents[@]}" -gt 0 ]; then
+  warn "brief not delivered to: ${failed_agents[*]} (rows set to Failed)"
+  exit 1
+fi

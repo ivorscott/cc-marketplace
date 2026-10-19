@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Live fleet monitor. Run it in its own herdr pane: it recomputes health every
+# Live fleet monitor for humans. (The Orchestrator loop uses tick.sh, which supersedes this.)
+# Run it in its own herdr pane: it recomputes health every
 # N seconds, prints each status transition, and raises a notification when an agent
 # becomes Stalled, Zombie or Needs input, or finishes.
 #
