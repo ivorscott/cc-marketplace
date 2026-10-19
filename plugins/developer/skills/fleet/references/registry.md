@@ -22,7 +22,7 @@ restarted, compacted or replaced agent picks up from the row, not from memory.
 | `lease_expires`, `takeover_of` | the claim's lease (UTC, renewed with `registry.sh set`) and, after a takeover, the key of the machine it replaced |
 | `assignment` | the task it owes (the hook) |
 | `status` | Booting, Working, Needs input, Stalled, Zombie, Idle, Done, Retired |
-| `escalation`, `escalations[]` | `escalation` is derived: the highest severity among open entries, `""` when none. Each entry is `{severity, message, at}` plus `resolved_at` and `resolution` once `registry.sh resolve` closes it; `(name, at)` identifies one. Open entries survive `done` and `retire` |
+| `escalation`, `escalations[]` | `escalation` is derived: the highest severity among open entries, `""` when none. Each entry is `{id, severity, message, at}` (`id` is `<at compact>-<seq>`, seq the 1-based array position; entries filed before ids existed get the same derived id on read) plus `resolved_at` and `resolution` once `registry.sh resolve` closes it; `(name, id)` identifies one. Open entries survive `done`; `retire` closes them with resolution "closed at retire". A non-array `escalations` reads as empty and non-object elements are skipped |
 | `discovered[]` | unrelated work the agent filed instead of doing |
 | `expertise_file` | the role's expertise file, if the repo has one |
 | `started`, `done_at`, `ended` | lifecycle timestamps (UTC) |
@@ -31,10 +31,23 @@ restarted, compacted or replaced agent picks up from the row, not from memory.
 
 ## Escalation inbox
 
-`registry.sh escalate` also appends one JSON line `{at, name, team, severity, message}` to
+`registry.sh escalate` also appends one JSON line `{at, id, name, team, severity, message}` to
 `escalations.jsonl` in the state dir (`FLEET_INBOX` overrides). It is append-only and never
 rotated; resolving does not write to it. `scripts/escalation-wait.sh` reads it with a persisted
 cursor (`escalations.cursor`) so no arrival is missed between two arms.
+
+## Schema check and the archive
+
+Every registry write is checked: a write that would leave a row malformed (name not a string,
+`escalations` not an array of entries with severity P0/P1/P2, `message` and `at`, `discovered` not
+an array) is refused and the file stays byte-identical. A row already malformed on disk is tolerated
+with a warning, so it cannot block other writes; `escalate`, `resolve` and `retire` repair it.
+
+`registry.sh archive` (run after every `retire.sh`) moves Retired rows to `fleet-archive.json` in the
+state dir once `lessons` is written, no escalation is open, and `archive_after_days` (config.toml,
+default 0) have passed since `ended`. Rows without lessons stay: they are the debrief queue.
+`list` and `status` read the live file only; `get --archived <name>`, `list --with-archived` and
+`retire.sh --summary` read both.
 
 ## Team environments
 

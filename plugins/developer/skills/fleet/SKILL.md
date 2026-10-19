@@ -228,8 +228,8 @@ probed: only what the claim comments say. Without `--claims` it says `peer claim
 A claim carrying this machine's key but no local team shows `SAME KEY?` with a warning: a cloned
 machine id (see the README), best effort. Run the heartbeat while you are at it.
 
-The table ends with an `open escalations:` block (name, severity, age, message), Done and
-Retired agents included, until each is resolved (E).
+The table ends with an `open escalations:` block (name, severity, age, message), Done agents
+included, Retired ones not (retire closes theirs), until each is resolved (E).
 
 Answer with the table (or just the problems) and one line per action you took.
 
@@ -271,8 +271,9 @@ severity and message, then handle it:
 - **P0:** stop and bring it to the user now. A P0 in a race also pauses the race
 
 An escalation stays open, even after its agent is Done, until you run
-`$F/registry.sh resolve <name> <at> --note "<decision>"` once the user's decision has reached the
-agent (`at` is the line's timestamp; `(name, at)` identifies it). `$F/registry.sh escalations --open`
+`$F/registry.sh resolve <name> <id> --note "<decision>"` once the user's decision has reached the
+agent (`id` is in the inbox line and in `escalations`; `(name, id)` identifies it, and `<at>`
+still works as the legacy form, ambiguous for two filed in the same second). `$F/registry.sh escalations --open`
 lists the open ones. Agents cannot close their own: `set escalation=` is refused. P1 is only for a
 decision the user must make; "PR ready" and UNVERIFIED belong in the done summary.
 
@@ -314,7 +315,9 @@ decision the user must make; "PR ready" and UNVERIFIED belong in the done summar
 1. Ask each live agent in the target to push work in progress and state where it stopped
    (`agent prompt … --wait`). Skip Zombies.
 2. `$F/retire.sh <team | team/role> [--outcome Shipped|Won race|Partial|Abandoned|Failed]`. It
-   closes only the fleet's own workspace or panes, frees disk, and marks the rows Retired.
+   closes only the fleet's own workspace or panes, frees disk, and marks the rows Retired. It also
+   closes the agents' open escalations with `resolution: "closed at retire"` (listed under
+   `closed_escalations`); the summary in step 0 already showed them.
    Worktrees hold `node_modules` and build output, so it removes them, after looking:
    build outputs (`node_modules/`, `*.tsbuildinfo`, `dist/`, `.next/`, `coverage/`) don't
    count; untracked reports (`*.md` at the worktree root or under `reports/`) are copied to
@@ -361,6 +364,10 @@ nothing changes. With it:
   cluster manager such as kind is one example) may ignore it, so the tester brief limits them to
   the tools the repo's `fleet-env.json` names and tells them to pass the cluster name
   `fleet-<team>` explicitly. The team kubeconfig's single context is renamed `fleet-<team>`.
+
+`registry.sh archive` runs after every retire: Retired rows with lessons written and no open
+escalation move to `fleet-archive.json` (`archive_after_days`, default 0); the rest stay for the debrief.
+`retire.sh --summary` and `registry.sh get --archived` still find archived rows.
 
 ## G. Prime
 

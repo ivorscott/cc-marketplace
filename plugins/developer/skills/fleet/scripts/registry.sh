@@ -4,21 +4,22 @@
 #
 #   registry.sh add '<json object with at least .name>'   upsert a row
 #   registry.sh set <name> key=value [key=value ...]      update fields
-#   registry.sh get <name>
+#   registry.sh get [--archived] <name>                    --archived also looks in fleet-archive.json
 #   registry.sh list [--team T] [--live] [--problems]
 #   registry.sh count-live                                 agents counted against max_agents
 #   registry.sh done <name> --outcome O --summary TEXT     the done contract (+ notification)
 #   registry.sh escalate <name> P0|P1|P2 TEXT              severity-routed escalation (+ notification + inbox line)
-#   registry.sh escalations [--open] [--team T]            every escalation, Done and Retired rows included
-#   registry.sh resolve <name> <at> [--note TEXT]          close one escalation (the Orchestrator does this; same-second twins close one per call)
+#   registry.sh escalations [--open] [--team T] [--not-retired]  every escalation, Done and Retired rows included unless --not-retired
+#   registry.sh resolve <name> <id|at> [--note TEXT]       close one escalation (the Orchestrator does this; <id> is unique, <at> is the legacy form)
 #   registry.sh note <name> discovered TEXT                file discovered work instead of fixing it
-#   registry.sh retire <name|team> [--outcome O]
+#   registry.sh retire <name|team> [--outcome O]           also closes the rows' open escalations ("closed at retire")
 #   registry.sh unsynced                                   rows changed since the sink last mirrored them
 #   registry.sh synced <name> [name ...]                   mark rows as mirrored
 #   registry.sh env-claim <team> <max> <cluster> [busy-slots]  atomically take the lowest free port slot
 #   registry.sh env-set <team> key=value ...               update a team environment
 #   registry.sh env-get <team>
 #   registry.sh env-release <team>                         mark the environment Down, freeing its slot
+#   registry.sh archive                                    move Retired rows to fleet-archive.json (lessons written, no open escalation, ended archive_after_days ago)
 #   registry.sh path
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
@@ -27,6 +28,7 @@ mkdir -p "$(dirname "$FLEET_REGISTRY")"
 [ -f "$FLEET_REGISTRY" ] || printf '{"agents":{}}\n' >"$FLEET_REGISTRY"
 
 LOCK="$FLEET_REGISTRY.lock"
+ARCHIVE="${FLEET_ARCHIVE:-$(dirname "$FLEET_REGISTRY")/fleet-archive.json}"
 lock() {
   local i=0
   until mkdir "$LOCK" 2>/dev/null; do
@@ -41,6 +43,17 @@ update() {
   lock
   local tmp; tmp="$(mktemp "$FLEET_REGISTRY.XXXXXX")"
   if jq "$@" "$FLEET_REGISTRY" >"$tmp" && jq -e '.agents | type == "object"' "$tmp" >/dev/null 2>&1; then
+    # Schema: a write may not make a row malformed (name a string, escalations an array of
+    # entries with severity P0/P1/P2, message and at, discovered an array). A row that was
+    # already malformed on disk is tolerated, with a warning, so it cannot block every other
+    # write; the escalate/resolve/retire paths repair it (norm).
+    local bad stale
+    bad="$(jq -nr --slurpfile o "$FLEET_REGISTRY" --slurpfile n "$tmp" "$ESC_DEFS"'($o[0].agents // {}) as $old
+      | [$n[0].agents | to_entries[] | select((.value | row_ok | not) and (($old[.key]) == null or ($old[.key] | row_ok)))
+        | .key] | join(", ")')"
+    if [ -n "$bad" ]; then rm -f "$tmp"; die "registry write refused: would leave malformed row(s): $bad; $FLEET_REGISTRY left unchanged"; fi
+    stale="$(jq -r "$ESC_DEFS"'[.agents | to_entries[] | select(.value | row_ok | not) | .key] | join(", ")' "$tmp")"
+    [ -z "$stale" ] || warn "malformed row(s) already in the registry: $stale (a repairing write: escalate, resolve or retire)"
     mv "$tmp" "$FLEET_REGISTRY"
   else
     rm -f "$tmp"; die "registry update failed; $FLEET_REGISTRY left unchanged"
@@ -59,9 +72,9 @@ notify() {
 }
 
 LIVE='(.status != "Done" and .status != "Retired")'
-OPEN_ESC='([(.escalations // [])[] | select(.resolved_at == null)] | length > 0)'
+OPEN_ESC='([escs[] | select(.resolved_at == null)] | length > 0)'
 # .escalation is derived from the open entries: the highest open severity, "" when none is open.
-DERIVE='def derive: ([(.escalations // [])[] | select(.resolved_at == null) | .severity]) as $o
+DERIVE="$ESC_DEFS"'def derive: ([escs[] | select(.resolved_at == null) | .severity]) as $o
   | .escalation = (if ($o | index("P0")) then "P0" elif ($o | index("P1")) then "P1" elif ($o | index("P2")) then "P2" else "" end);'
 PROBLEM='(.status == "Stalled" or .status == "Zombie" or .status == "Needs input" or (.escalation // "") != "")'
 
@@ -72,7 +85,7 @@ case "$cmd" in
     printf '%s' "$row" | jq -e 'type == "object" and (.name | type == "string")' >/dev/null || die "add needs a JSON object with .name"
     update --argjson r "$row" --arg t "$(now)" \
       '(.agents[$r.name] // {started: $t, discovered: [], escalations: []}) as $o
-       | .agents[$r.name] = (($o + $r + {updated_at: $t}) | .escalations = ($o.escalations // []))'
+       | .agents[$r.name] = (($o + $r + {updated_at: $t}) | .escalations = ($o.escalations | if type == "array" then . else [] end))'
     ;;
   set)
     name="${1:?usage: set <name> key=value ...}"; shift
@@ -81,26 +94,30 @@ case "$cmd" in
     i=0
     for kv in "$@"; do
       k="${kv%%=*}"; v="${kv#*=}"
-      case "$k" in escalation|escalations) die "cannot set $k: use 'resolve <name> <at>' to close an escalation" ;; esac
+      case "$k" in escalation|escalations) die "cannot set $k: use 'resolve <name> <id|at>' to close an escalation" ;; esac
       args+=(--arg "k$i" "$k" --arg "v$i" "$v"); prog="$prog | .[\$k$i] = \$v$i"; i=$((i + 1))
     done
     update "${args[@]}" --arg t "$(now)" ".agents[\$n] = ($prog | .updated_at = \$t)"
     ;;
   get)
-    jq -e --arg n "${1:?usage: get <name>}" '.agents[$n] // error("no such agent")' "$FLEET_REGISTRY"
+    files=("$FLEET_REGISTRY")
+    if [ "${1:-}" = "--archived" ]; then shift; [ ! -f "$ARCHIVE" ] || files+=("$ARCHIVE"); fi
+    jq -e -n --arg n "${1:?usage: get [--archived] <name>}" '[inputs.agents[$n] | select(. != null)] | first // error("no such agent")' "${files[@]}"
     ;;
   list)
-    team=""; filter="true"
+    team=""; filter="true"; archived=false
     if [ "${1:-}" = "--envs" ]; then jq '.envs // {}' "$FLEET_REGISTRY"; exit 0; fi
     while [ $# -gt 0 ]; do
       case "$1" in
         --team) team="$2"; shift 2 ;;
         --live) filter="$filter and $LIVE"; shift ;;
+        --with-archived) archived=true; shift ;;
         --problems) filter="$filter and (($LIVE and $PROBLEM) or $OPEN_ESC)"; shift ;;
         *) die "unknown list option: $1" ;;
       esac
     done
-    jq --arg t "$team" "[.agents[] | select((\$t == \"\" or .team == \$t) and $filter)]" "$FLEET_REGISTRY"
+    files=("$FLEET_REGISTRY"); $archived && [ -f "$ARCHIVE" ] && files+=("$ARCHIVE")
+    jq -n --arg t "$team" "${ESC_DEFS}[inputs.agents[] | select((\$t == \"\" or .team == \$t) and $filter)]" "${files[@]}"
     ;;
   count-live)
     jq "[.agents[] | select($LIVE and .tier != \"Orchestrator\")] | length" "$FLEET_REGISTRY"
@@ -126,30 +143,35 @@ case "$cmd" in
     exists "$name"
     at="$(now)"
     update --arg n "$name" --arg s "$sev" --arg m "$msg" --arg t "$at" \
-      "$DERIVE"'.agents[$n] |= (.status = "Needs input" | .escalations += [{severity: $s, message: $m, at: $t}] | derive | .updated_at = $t)'
+      "$DERIVE"'.agents[$n] |= (norm | .status = "Needs input"
+        | .escalations += [{id: (($t | gsub("[-:]"; "")) + "-" + ((.escalations | length) + 1 | tostring)), severity: $s, message: $m, at: $t}]
+        | derive | .updated_at = $t)'
+    # update() holds the lock until this process exits, so the new entry is still the last one.
+    id="$(jq -r --arg n "$name" '.agents[$n].escalations | last | .id' "$FLEET_REGISTRY")"
     # The inbox is what escalation-wait.sh delivers to the Orchestrator; the registry row stays the source of truth.
-    line="$(jq -nc --arg at "$at" --arg n "$name" --arg tm "$(jq -r --arg n "$name" '.agents[$n].team // ""' "$FLEET_REGISTRY")" --arg s "$sev" --arg m "$msg" \
-      '{at: $at, name: $n, team: $tm, severity: $s, message: $m}')"
+    line="$(jq -nc --arg at "$at" --arg id "$id" --arg n "$name" --arg tm "$(jq -r --arg n "$name" '.agents[$n].team // ""' "$FLEET_REGISTRY")" --arg s "$sev" --arg m "$msg" \
+      '{at: $at, id: $id, name: $n, team: $tm, severity: $s, message: $m}')"
     { printf '%s\n' "$line" >>"$FLEET_INBOX"; } 2>/dev/null || warn "cannot write the escalation inbox $FLEET_INBOX"
     notify "fleet $sev: $name" "$msg" request
     ;;
   escalations)
-    team=""; open=false
+    team=""; open=false; live=false
     while [ $# -gt 0 ]; do
       case "$1" in
         --open) open=true; shift ;;
+        --not-retired) live=true; shift ;;
         --team) team="$2"; shift 2 ;;
         *) die "unknown escalations option: $1" ;;
       esac
     done
-    jq --arg t "$team" --argjson open "$open" '
-      [.agents[] | select($t == "" or .team == $t) | . as $a | (.escalations // [])[]
+    jq --arg t "$team" --argjson open "$open" --argjson live "$live" "$ESC_DEFS"'
+      [.agents[] | select(($t == "" or .team == $t) and (($live | not) or .status != "Retired")) | . as $a | escs[]
         | select(($open | not) or .resolved_at == null)
-        | {name: $a.name, team: $a.team, at, severity, message, resolved_at: (.resolved_at // null), resolution: (.resolution // null)}]
+        | {name: $a.name, team: $a.team, id, at, severity, message, resolved_at: (.resolved_at // null), resolution: (.resolution // null)}]
       | sort_by(.at)' "$FLEET_REGISTRY"
     ;;
   resolve)
-    name="${1:?usage: resolve <name> <at> [--note TEXT]}"; at="${2:?usage: resolve <name> <at> [--note TEXT]}"; shift 2
+    name="${1:?usage: resolve <name> <id|at> [--note TEXT]}"; ref="${2:?usage: resolve <name> <id|at> [--note TEXT]}"; shift 2
     note=""
     while [ $# -gt 0 ]; do
       case "$1" in
@@ -158,15 +180,15 @@ case "$cmd" in
       esac
     done
     exists "$name"
-    jq -e --arg n "$name" --arg a "$at" '.agents[$n].escalations // [] | any(.at == $a)' "$FLEET_REGISTRY" >/dev/null ||
-      die "no escalation at '$at' on $name (see: escalations --open)"
-    if jq -e --arg n "$name" --arg a "$at" '.agents[$n].escalations | all(.at != $a or .resolved_at != null)' "$FLEET_REGISTRY" >/dev/null; then
-      warn "escalation $name $at is already resolved"; exit 0
-    fi
-    update --arg n "$name" --arg a "$at" --arg note "$note" --arg t "$(now)" \
+    # An id matches first, then (legacy) an at. seq is the first open match's array position; 0 when none is open.
+    seq="$(jq -r --arg n "$name" --arg a "$ref" "$ESC_DEFS"'.agents[$n] | [escs[]] as $e
+      | ($e | map(select(.id == $a)) | if length > 0 then . else ($e | map(select(.at == $a))) end) as $m
+      | if ($m | length) == 0 then "none" else ([$m[] | select(.resolved_at == null) | .seq] | first // 0) end' "$FLEET_REGISTRY")"
+    [ "$seq" != "none" ] || die "no escalation '$ref' on $name (see: escalations --open)"
+    [ "$seq" != "0" ] || { warn "escalation $name $ref is already resolved"; exit 0; }
+    update --arg n "$name" --argjson i "$((seq - 1))" --arg note "$note" --arg t "$(now)" \
       "$DERIVE"'.agents[$n] |= (
-        (.escalations | map(.at == $a and .resolved_at == null) | index(true)) as $i
-        | .escalations[$i] += {resolved_at: $t} + (if $note != "" then {resolution: $note} else {} end)
+        .escalations[$i] += {resolved_at: $t} + (if $note != "" then {resolution: $note} else {} end)
         | derive
         | if .escalation == "" and .status == "Needs input" then .status = "Working" else . end
         | .updated_at = $t)'
@@ -181,12 +203,41 @@ case "$cmd" in
     target="${1:?usage: retire <name|team> [--outcome O]}"; shift
     outcome=""
     [ "${1:-}" = "--outcome" ] && outcome="${2:-}"
-    update --arg x "$target" --arg o "$outcome" --arg t "$(now)" '
+    update --arg x "$target" --arg o "$outcome" --arg t "$(now)" "$DERIVE"'
       .agents |= with_entries(
         if (.key == $x or .value.team == $x) and .value.status != "Retired" then
-          .value |= (.status = "Retired" | .ended = $t | .updated_at = $t
+          .value |= (norm | esc_close("closed at retire"; $t)
+            | derive | .status = "Retired" | .ended = $t | .updated_at = $t
             | .outcome = (if .name == $x and $o != "" then $o else (.outcome // (if $o != "" then $o else "Abandoned" end)) end))
         else . end)'
+    ;;
+  archive)
+    # Retired rows leave the live file once their lessons exist (debrief reads rows with an outcome
+    # and no lessons, so those stay) and no escalation is open, archive_after_days after they ended.
+    # The archive is written and verified first, then the rows are removed, so a failure between the
+    # two leaves a row in both files and the next run finishes the move.
+    lock
+    days="$(archive_after_days)"
+    moved="$(jq -c --argjson d "$days" --arg now "$(now)" "$ESC_DEFS"'
+      [.agents | to_entries[] | select(.value.status == "Retired"
+        and ((.value.lessons // "") != "")
+        and ([.value | escs[] | select(.resolved_at == null)] | length == 0)
+        and ((.value.ended // "") != "" and (($now | fromdateiso8601) - (.value.ended | fromdateiso8601)) >= ($d * 86400)))
+        | .key]' "$FLEET_REGISTRY")"
+    if [ "$moved" != "[]" ]; then
+      [ -f "$ARCHIVE" ] || printf '{"agents":{}}\n' >"$ARCHIVE"
+      tmp="$(mktemp "$ARCHIVE.XXXXXX")"
+      jq --argjson names "$moved" --slurpfile live "$FLEET_REGISTRY" \
+        '.agents += ($live[0].agents | with_entries(select(.key | IN($names[]))))' "$ARCHIVE" >"$tmp" &&
+        jq -e --argjson names "$moved" '. as $a | $names | all(. as $n | $a.agents[$n] != null)' "$tmp" >/dev/null ||
+        { rm -f "$tmp"; die "archive write failed; $FLEET_REGISTRY left unchanged"; }
+      mv "$tmp" "$ARCHIVE"
+      tmp="$(mktemp "$FLEET_REGISTRY.XXXXXX")"
+      jq --argjson names "$moved" '.agents |= with_entries(select(.key | IN($names[]) | not))' "$FLEET_REGISTRY" >"$tmp" &&
+        jq -e '.agents | type == "object"' "$tmp" >/dev/null || { rm -f "$tmp"; die "archive: live registry write failed; rows are in $ARCHIVE and still live"; }
+      mv "$tmp" "$FLEET_REGISTRY"
+    fi
+    printf '%s\n' "$moved"
     ;;
   unsynced)
     jq '[.agents[] | select((.updated_at // "") > (.synced_at // ""))]' "$FLEET_REGISTRY"

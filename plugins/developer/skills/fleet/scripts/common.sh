@@ -13,6 +13,27 @@ die() { printf 'fleet: %s\n' "$*" >&2; exit 1; }
 warn() { printf 'fleet: warning: %s\n' "$*" >&2; }
 now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
+# jq definitions for an agent row's .escalations, prepended to programs by registry.sh,
+# status.sh and retire.sh. escs reads defensively: a non-array value is empty and non-object
+# elements are skipped (never rewritten, so positions stay stable). Each entry gets .seq,
+# its raw 1-based array position, and .id: the stored id, or for entries filed before ids
+# existed "<at compact>-<seq>", the same shape escalate writes. norm makes a write path's
+# non-array value []. esc_close($resolution; $at) closes every open entry of a row (the
+# shared close helper: retire uses "closed at retire", next's reassign "closed at next").
+# row_ok is the schema a registry write must keep (see registry.sh update).
+ESC_DEFS='def norm: if (.escalations | type) != "array" then .escalations = [] else . end;
+  def esc_close($res; $t): .escalations |= map(if type == "object" and .resolved_at == null
+    then . + {resolved_at: $t, resolution: $res} else . end);
+  def row_ok: type == "object" and (.name | type == "string")
+    and ((has("discovered") | not) or (.discovered | type == "array"))
+    and ((has("escalations") | not) or ((.escalations | type == "array") and all(.escalations[];
+      type == "object" and (.severity | IN("P0", "P1", "P2")) and (.message | type == "string") and (.at | type == "string")
+      and ((has("id") | not) or (.id | type == "string")))));
+  def escs: (if (.escalations | type) == "array" then .escalations else [] end) | to_entries
+    | map(select(.value | type == "object") | (.value + {seq: (.key + 1)})
+      | .id = (.id // (((.at // "") | tostring | gsub("[-:]"; "")) + "-" + (.seq | tostring))));
+  '
+
 need() { command -v "$1" >/dev/null 2>&1 || die "requires '$1' on PATH"; }
 need jq
 
@@ -61,6 +82,10 @@ warn_free_gb() { cfg_int warn_free_gb 75; }
 # lease_hours: how long a claim lease runs, and how long without PR activity before a lapsed
 # lease can be taken over (default 2).
 lease_hours() { cfg_int lease_hours 2; }
+
+# archive_after_days: how long a Retired row (with its lessons written and no open escalation)
+# stays in the live registry before `registry.sh archive` moves it to fleet-archive.json (default 0 = at once).
+archive_after_days() { cfg_int archive_after_days 0; }
 
 # free_gb: whole GiB free on the volume holding the fleet worktrees (the nearest existing
 # ancestor of $FLEET_WORKTREES). Prints nothing and returns 1 when df can't tell.
