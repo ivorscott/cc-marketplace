@@ -1165,9 +1165,11 @@ eq "tick: a stalled agent still stalled a tick later is reported" "$(printf '%s'
 eq "tick: once" "$(evc "$s3" stalled)" 0
 eq "tick: the nudge was sent exactly once" "$(grep -c '^agent prompt tk-b You went idle' "$HERDR_LOG" || true)" 1
 echo gone >"$AS/tk-t"
-d1="$("$SCRIPTS/tick.sh" 2>/dev/null)"
-eq "tick: an agent herdr cannot find is reported dead" "$(printf '%s' "$d1" | jq -r '[.[] | select(.type == "dead") | .name] | join(",")')" tk/tester
+d0="$("$SCRIPTS/tick.sh" 2>/dev/null)"
+eq "tick: a Zombie on one tick is not yet reported dead" "$(evc "$d0" dead)" 0
 eq "tick: --team limits the events" "$(evc "$("$SCRIPTS/tick.sh" --team nosuch 2>/dev/null)" dead)" 0
+d1="$("$SCRIPTS/tick.sh" 2>/dev/null)"
+eq "tick: an agent herdr cannot find on two ticks in a row is reported dead" "$(printf '%s' "$d1" | jq -r '[.[] | select(.type == "dead") | .name] | join(",")')" tk/tester
 check "tick: bad option fails" bash -c "! '$SCRIPTS/tick.sh' --bogus"
 eq "tick: only gh shim calls were made through FLEET_GH" "$(grep -vc '^pr view https://github.com/o/r/pull/12 --json state,mergeable,statusCheckRollup,headRefOid,body,url,isDraft$' "$GH_LOG" | tr -d ' ')" 0
 eq "tick: an escalation event carries its id" "$(printf '%s' "$e1" | jq -r '[.[] | select(.type == "escalation") | .id] | first | test("^[0-9TZ]+-[0-9]+$")')" true
@@ -1344,10 +1346,18 @@ check "tick lock: and leaves the holder's lock alone" test -d "$LOCK"
 rm -rf "$LOCK"
 mkdir "$LOCK"; echo 999999 >"$LOCK/pid"; date +%s >"$LOCK/started"
 out="$("$SCRIPTS/tick.sh" 2>"$T/lk.err")"; rc=$?
-eq "tick lock: a lock left by a dead tick is not broken (the trap frees locks): exit 0, nothing printed" "$rc:$out" "0:"
+eq "tick lock: a lock left by a dead pid (SIGKILL) is recovered and the tick runs" "$rc:$(grep -c tick_skipped "$T/lk.err" || true)" "0:0"
+check "tick lock: it says tick_lock_recovered" grep -q "tick_lock_recovered: the holder (pid 999999) is gone" "$T/lk.err"
+check "tick lock: and frees the lock and the mutex" bash -c "test ! -d '$LOCK' && test ! -d '$LOCK.recover'"
+mkdir "$LOCK"; out="$("$SCRIPTS/tick.sh" 2>"$T/lk.err")"; rc=$?
+eq "tick lock: a lock with no pid yet is not broken: exit 0, nothing printed" "$rc:$out" "0:"
 check "tick lock: the message names the directory to remove" grep -q "remove it if no tick is running" "$T/lk.err"
-check "tick lock: and the lock is left alone" test -d "$LOCK"
 rm -rf "$LOCK"
+# a SIGKILLed tick: its lock is recovered by the next tick
+( "$SCRIPTS/tick.sh" >/dev/null 2>&1 & tp=$!; for _ in 1 2 3 4 5 6 7 8 9 10; do [ -f "$LOCK/pid" ] && break; sleep 0.1; done; kill -KILL "$tp" 2>/dev/null; wait "$tp" 2>/dev/null )
+"$SCRIPTS/tick.sh" >/dev/null 2>"$T/lk.err"
+eq "tick lock: after a SIGKILLed tick the next tick runs" "$(grep -c tick_skipped "$T/lk.err" || true):$(test -d "$LOCK" && echo held || echo free)" "0:free"
+rm -f "$FLEET_STATE_DIR"/.tick-* # the killed tick's temp files (SIGKILL skips the trap)
 "$SCRIPTS/tick.sh" >/dev/null 2>&1; check "tick lock: a finished tick releases its lock" test ! -d "$LOCK"
 ( "$SCRIPTS/tick.sh" >/dev/null 2>&1 & tp=$!; sleep 0.2; kill -TERM "$tp" 2>/dev/null; wait "$tp" 2>/dev/null ); check "tick lock: a tick killed with TERM releases its lock" test ! -d "$LOCK"
 eq "tick lock: and leaves no temp file" "$(ls -A "$FLEET_STATE_DIR" | grep -c '^\.tick-' || true)" 0
@@ -2078,7 +2088,8 @@ eq "ev_log: empty fields are null" "$(tail -n 1 "$EVF" | jq -c '[.name, .issue, 
 eq "ev_log: any key but the eight is ignored (no brief text)" "$(grep -c 'must not be logged\|nor this' "$EVF" || true)" 0
 ( . "$SCRIPTS/common.sh"; ev_log x detail="$(printf 'z%.0s' $(seq 1 300))" )
 eq "ev_log: detail is cut at 120 characters" "$(tail -n 1 "$EVF" | jq '.detail | length')" 120
-eq "ev_log: an unwritable log is a warning, not a failure" "$( . "$SCRIPTS/common.sh"; FLEET_EVENTS="$T/rstate/events.jsonl/x/y.jsonl" ev_log boot team=t 2>/dev/null; echo $?)" 0
+eq "ev_log: an unwritable log is a warning, not a failure" "$( mkdir -p "$T/evbad/events.jsonl"; FLEET_STATE_DIR="$T/evbad"; . "$SCRIPTS/common.sh"; ev_log boot team=t 2>/dev/null; echo $?)" 0
+eq "ev_log: FLEET_EVENTS is no override; the log is the state dir's" "$( FLEET_STATE_DIR="$T/evown"; mkdir -p "$FLEET_STATE_DIR"; . "$SCRIPTS/common.sh"; FLEET_EVENTS="$T/evother.jsonl" ev_log boot team=t 2>/dev/null; test -f "$T/evother.jsonl" && echo other; wc -l <"$T/evown/events.jsonl" | tr -d ' ')" 1
 
 # -- the callers: boot, briefs, signoff, escalate/resolve, next, retire
 rm -f "$EVF"; : >"$HERDR_LOG"; rm -f "${AS:?}"/*
@@ -2132,9 +2143,10 @@ nstart() { grep -c "^agent start $1 " "$HERDR_LOG" || true; }
 export FLEET_NOW=2026-10-18T10:00:00Z
 echo gone >"$AS/build-rsp-builder"; echo PANETAILMARK >"$AS/build-rsp-builder.read"; : >"$HERDR_LOG"
 d1="$("$SCRIPTS/tick.sh" 2>"$T/rsp.err")"
-eq "respawn: the death is reported" "$(printf '%s' "$d1" | jq -r '[.[] | select(.type == "dead") | .name] | join(",")')" build-rsp/builder
+eq "respawn: no dead event on the first Zombie tick" "$(evc "$d1" dead)" 0
 eq "respawn: not on the first tick (a Zombie must be seen twice in a row)" "$(nstart build-rsp-builder)" 0
-"$SCRIPTS/tick.sh" >/dev/null 2>&1
+d2="$("$SCRIPTS/tick.sh" 2>/dev/null)"
+eq "respawn: the death is reported on the second, with the respawn" "$(printf '%s' "$d2" | jq -r '[.[] | select(.type == "dead") | .name] | join(",")')" build-rsp/builder
 eq "respawn: the agent is started again on the second" "$(nstart build-rsp-builder)" 1
 eq "respawn: with a new session id" "$(grep "^agent start build-rsp-builder " "$HERDR_LOG" | grep -c -- '--session-id')" 1
 check "respawn: the row has a new transcript path" bash -c "[ \"\$('$REG' get build-rsp/builder | jq -r .transcript)\" != '$OLDT' ]"
@@ -2174,6 +2186,8 @@ for i in 4 5; do PANE_GONE=1 "$SCRIPTS/tick.sh" >/dev/null 2>&1; echo gone >"$AS
 check "respawn failing: the builder was tried (twice per attempt: start retries once)" test "$n2" -eq 4
 eq "respawn failing: and not again after respawn_max attempts" "$(nstart build-rsf-builder)" "$n2"
 eq "respawn failing: every pane it split is closed again" "$(grep -c '^pane close' "$HERDR_LOG")" "$(grep -c '^pane split' "$HERDR_LOG")"
+check "respawn: a split pane gets FLEET_STATE_DIR (one state root)" grep -q "^pane split .*--env FLEET_STATE_DIR=$FLEET_STATE_DIR" "$HERDR_LOG"
+eq "respawn: and no FLEET_REGISTRY" "$(grep '^pane split' "$HERDR_LOG" | grep -c 'FLEET_REGISTRY=' || true)" 0
 eq "respawn failing: one P1 and no more" "$("$REG" escalations --open --team build-rsf | jq -c '[.[] | select(.name == "build-rsf/builder") | [.severity, .message]]')" '[["P1","build-rsf/builder could not be respawned in 6h"]]'
 rm -f "$FLEET_CONFIG_DIR/config.toml"; unset FLEET_NOW
 # Done and Retired rows are never respawned
@@ -2215,6 +2229,8 @@ eq "api error: no stall nudge" "$(grep -c 'went idle without running' "$HERDR_LO
 eq "api error: one continue" "$(grep -c '^agent prompt build-apx-builder continue' "$HERDR_LOG" || true)" 1
 export FLEET_NOW=2026-10-19T10:10:00Z; echo idle >"$AS/build-apx-builder"; a2="$("$SCRIPTS/tick.sh" 2>/dev/null)"
 eq "api error: a second needs_input is not reported" "$(evc "$a2" needs_input)" 0
+echo idle >"$AS/build-apx-builder"; "$SCRIPTS/tick.sh" --team nosuch >/dev/null 2>&1
+eq "api error: a --team tick keeps the other teams' reported keys" "$(jq -c '.needs_input_emitted' "$FLEET_STATE_DIR/tick.state.json")" '["build-apx/builder|login expired"]'
 eq "api error: no second continue within 30 minutes" "$(grep -c '^agent prompt build-apx-builder continue' "$HERDR_LOG" || true)" 1
 export FLEET_NOW=2026-10-19T10:31:00Z; echo idle >"$AS/build-apx-builder"; "$SCRIPTS/tick.sh" >/dev/null 2>&1
 eq "api error: another continue after 30 minutes" "$(grep -c '^agent prompt build-apx-builder continue' "$HERDR_LOG" || true)" 2
@@ -2283,6 +2299,18 @@ echo '{"type":"assistant","timestamp":"2026-10-12T10:30:00Z","message":{"usage":
 "$REG" add "$(jq -cn --arg tr "$TRD2/s1.jsonl" '{name: "mt/builder", team: "mt", tier: "Worker", status: "Done", transcript: $tr}')"
 "$REG" append mt/builder transcripts "$TRD2/s4.jsonl" >/dev/null; "$REG" append mt/builder transcripts "$TRD2/s4.jsonl" >/dev/null
 eq "registry append: a list without duplicates" "$("$REG" get mt/builder | jq -c .transcripts)" "[\"$TRD2/s4.jsonl\"]"
+# M2: the reviewer's case, a worker appending to another agent's row
+_mtb="$("$REG" get mt/builder | jq -cS 'del(.updated_at)')"
+check "registry append: a worker may not append to another row" bash -c "! FLEET_ROLE=worker FLEET_NAME=mt/tester '$REG' append mt/builder status Done 2>/dev/null"
+check "registry append: nor transcripts on another row" bash -c "! FLEET_ROLE=worker FLEET_NAME=mt/tester '$REG' append mt/builder transcripts '$TRD2/x.jsonl' 2>/dev/null"
+check "registry append: an agent may not append other keys to its own row" bash -c "! FLEET_ROLE=worker FLEET_NAME=mt/builder '$REG' append mt/builder outcome Shipped 2>/dev/null"
+check "registry append: a transcripts entry outside the projects dir is refused" bash -c "! '$REG' append mt/builder transcripts /etc/passwd 2>/dev/null"
+eq "registry append: and the row is unchanged" "$("$REG" get mt/builder | jq -cS 'del(.updated_at)')" "$_mtb"
+FLEET_ROLE=worker FLEET_NAME=mt/builder "$REG" append mt/builder transcripts "$TRD2/s5.jsonl" >/dev/null
+eq "registry append: an agent may append a transcript to its own row" "$("$REG" get mt/builder | jq -r '.transcripts | length')" 2
+FLEET_ROLE=lead FLEET_NAME=mt/builder "$REG" set mt/builder status_detail="login expired" >/dev/null
+eq "registry set: an agent may set status_detail (status.sh in its pane)" "$("$REG" get mt/builder | jq -r .status_detail)" "login expired"
+"$REG" set mt/builder status_detail= >/dev/null
 mj="$("$SCRIPTS/metrics.sh" --since 7d --json)"
 eq "metrics: one row for the PR in the window (the old one is out)" "$(printf '%s' "$mj" | jq length)" 1
 eq "metrics: time from boot to the first pr_ready" "$(printf '%s' "$mj" | jq '.[0].ready_minutes')" 120

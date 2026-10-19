@@ -236,7 +236,7 @@ resume_brief() {
 # {at, type, team, name, issue, pr, sha, detail}; empty values are null. detail is a short reason (cut
 # at 120 characters), never brief text and never the Linear key; any other key is ignored. One `>>`
 # write. A write that fails is a warning, never a failure of the caller.
-events_file() { printf '%s\n' "${FLEET_EVENTS:-$FLEET_STATE_DIR/events.jsonl}"; }
+events_file() { printf '%s\n' "$FLEET_STATE_DIR/events.jsonl"; } # no override: every path comes from FLEET_STATE_DIR
 ev_log() {
   local type="$1" kv k v line f; shift
   local a_team="" a_name="" a_issue="" a_pr="" a_sha="" a_detail=""

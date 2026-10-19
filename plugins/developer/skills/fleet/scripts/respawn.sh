@@ -6,9 +6,9 @@
 #   respawn.sh <team/role>
 #
 # The resume brief is `build_brief --resume`: the role brief, the assignment, the last report file,
-# `git status` and `git log` of its branch, its open escalations and the old pane's last lines (read
-# BEFORE the new agent starts). A lead also gets the plan path and the team's rows. The brief is
-# sent through tell.sh --brief, so a brief that does not arrive marks the row Failed. The row gets a
+# `git status` and `git log` of its branch and its open escalations (no pane text). A lead also gets
+# the plan path and the team's rows. The brief is sent through tell.sh --brief to an agent that comes up
+# Working or Idle, so a brief that does not arrive marks the row Failed. The row gets a
 # new session id, so its `transcript` path changes (the old one is kept in the row's `transcripts` list). Logs `respawned` to the event log.
 #
 # If the row's pane is gone, a new pane is split from the lead's pane in the same workspace.
@@ -42,7 +42,7 @@ else
 fi
 workers="$("$registry" list --team "$team" | jq -r '[.[] | select(.tier == "Worker") | .herdr_ref] | join(", ")')"
 
-# The resume brief first: the old pane's lines are gone once the new agent starts.
+# The resume brief is built before the new agent starts, from the row as it was.
 brief="$(build_brief --resume "$name" "$ex" "$(render "$brief_tpl" "$name" "$worktree" "$workers")")"
 
 # The pane: reuse the row's, or split a new one beside the lead in the same workspace.
@@ -52,7 +52,7 @@ if ! hd pane process-info --pane "$pane" >/dev/null 2>&1; then
   env_args=(); [ -z "$(env_config "$repo")" ] || env_args=(--env "KUBECONFIG=$(env_dir "$team")/kubeconfig")
   pane="$(hd pane split --pane "$lead_pane" --direction down --cwd "${cwd:-$repo}" --no-focus \
     --env "FLEET_ROLE=$(printf '%s' "$tier" | tr 'A-Z' 'a-z')" --env "FLEET_NAME=$name" --env "FLEET_TEAM=$team" \
-    --env "FLEET_WORKTREE=$worktree" --env "FLEET_REGISTRY=$FLEET_REGISTRY" ${env_args[@]+"${env_args[@]}"} | jq -r .result.pane.pane_id)"
+    --env "FLEET_WORKTREE=$worktree" --env "FLEET_STATE_DIR=$FLEET_STATE_DIR" ${env_args[@]+"${env_args[@]}"} | jq -r .result.pane.pane_id)"
   [ -n "$pane" ] && [ "$pane" != null ] || die "could not split a new pane for $name"
   split_new=1
 fi
@@ -75,7 +75,7 @@ fi
 "$registry" set "$name" "${set_args[@]}" >/dev/null
 ev_log respawned team="$team" name="$name" detail="new pane $pane"
 
-if [ "$new_status" = Working ]; then
+if [ "$new_status" = Working ] || [ "$new_status" = Idle ]; then
   "$FLEET_SCRIPTS/tell.sh" "$name" "$brief" --brief >/dev/null || { "$registry" set "$name" status=Failed >/dev/null; die "the resume brief did not reach $name; row set to Failed"; }
 fi
 jq -cn --arg n "$name" --arg s "$new_status" '{respawned: $n, status: $s}'
