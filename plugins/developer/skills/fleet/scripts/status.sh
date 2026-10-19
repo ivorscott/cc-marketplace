@@ -96,6 +96,8 @@ for name in $(printf '%s' "$rows" | jq -r '.[] | select(.tier != "Orchestrator")
   fi
 
   if [ "$herdr_state" = "gone" ] || ! $pane_alive; then new="Zombie"
+  elif [ "$old" = "Failed" ] && [ -n "$(printf '%s' "$r" | jq -r '.brief_failed_at // ""')" ]; then
+    new="Failed" # its brief never arrived: Failed until a brief is confirmed (tell.sh), whatever herdr shows
   elif [ -n "$detail" ]; then new="Needs input"
   else
     case "$herdr_state" in
@@ -103,6 +105,7 @@ for name in $(printf '%s' "$rows" | jq -r '.[] | select(.tier != "Orchestrator")
       blocked) new="Needs input" ;;
       idle|done)
         if [ -n "$esc" ] && [ "$old" = "Needs input" ]; then new="Needs input"
+        elif [ "$old" = "Failed" ]; then new="Failed" # a brief that never arrived: never turned into Stalled
         elif [ "$old" = "Idle" ]; then new="Idle"
         elif [ "$tier" = "Lead" ] && team_has_live_workers "$tm"; then new="Idle"
         elif bg_busy "$r" "$ref"; then new="Working"

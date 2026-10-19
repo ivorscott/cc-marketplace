@@ -9,6 +9,7 @@ render() { # render <text> <name> <worktree> <workers>
   s="${s//\{\{team\}\}/$team}"; s="${s//\{\{task\}\}/$task}"; s="${s//\{\{repo\}\}/$repo}"
   s="${s//\{\{name\}\}/$2}"; s="${s//\{\{name_slug\}\}/${2//\//-}}"; s="${s//\{\{worktree\}\}/$3}"
   s="${s//\{\{workers\}\}/$4}"; s="${s//\{\{registry\}\}/$registry}"; s="${s//\{\{scripts\}\}/$FLEET_SCRIPTS}"
+  s="${s//\{\{issue_url\}\}/${issue_url:-<the full URL of the issue>}}"
   printf '%s' "$s"
 }
 
@@ -23,7 +24,8 @@ claude_args() { # claude_args <model> <tier> <worktree> <allow-json>
   printf '%s\0' --settings "$settings"
   [ -n "$1" ] && printf '%s\0' --model "$1"
   [ "$2" = "Lead" ] && printf '%s\0' --agent developer:lead
-  printf '%s\0' --permission-mode "$(permission_mode)"
+  # perm_mode is checked up front by the caller (boot, respawn): a mode that turns checks off never gets here.
+  printf '%s\0' --permission-mode "${perm_mode:-$(permission_mode)}"
   # --session-id pins the transcript file name, so the row can record where the agent's
   # transcript is (tell.sh and next.sh read it). boot sets session_id just before each start.
   [ -z "${session_id:-}" ] || printf '%s\0' --session-id "$session_id"

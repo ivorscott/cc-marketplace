@@ -4,7 +4,7 @@
 #   boot.sh [--issue ID --claimed-by KEY --labels a,b --scope 'repo: p1, p2' --peer-claim ...]
 #           <template> <focus> <repo-dir> [task text...]
 #
-# <template> is a name from ../templates (build, race, review, research) or a path to a
+# <template> is a name from ../templates (build, review, research) or a path to a
 # template JSON file. <focus> becomes the team name <template>-<focus>. The task text
 # defaults to <focus>. Prints the booted team as JSON on stdout.
 #
@@ -22,6 +22,7 @@
 # Claims (see SKILL.md, "Claim"): boot never calls a tracker. The Orchestrator claims the issue
 # first (linear.sh claim) and passes the result in.
 #   --issue ID           the tracker issue this team works on
+#   --issue-url URL      the issue's full URL: briefs carry the exact "Fixes <URL>" line for the PR body
 #   --claimed-by KEY     the machine key (or label) that holds the claim
 #   --labels a,b,c       the issue's labels, as just re-read; any <label_prefix>* label that
 #                        is not this machine's is another machine's claim
@@ -47,10 +48,11 @@ have_key=0; "$FLEET_SCRIPTS/linear.sh" has-key >/dev/null 2>&1 && have_key=1
 claims_why="no Linear key"; if [ "$have_key" = 1 ] && [ "$(linear_writes)" = off ]; then have_key=0; claims_why="linear_writes = off"; fi
 unset LINEAR_API_KEY
 
-issue=""; claimed_by=""; labels=""; scope_arg=""
+issue=""; claimed_by=""; labels=""; scope_arg=""; issue_url=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --issue) issue="${2:?--issue needs a value}"; shift 2 ;;
+    --issue-url) issue_url="${2:?--issue-url needs a value}"; shift 2 ;;
     --claimed-by) claimed_by="${2:?--claimed-by needs a value}"; shift 2 ;;
     --labels) labels="${2:?--labels needs a value}"; shift 2 ;;
     --scope) scope_arg="${2:?--scope needs a value}"; shift 2 ;;
@@ -148,6 +150,12 @@ if [ -n "$(env_config "$repo")" ]; then
 fi
 
 tool_allow="$(jq -cn --argjson t "$(config_list tracker_allow)" --argjson f "$(config_list forge_allow)" '$t + $f | unique')"
+# The permission mode: the template's own permission_mode, else config/FLEET_PERMISSION_MODE, else auto. A mode
+# that turns permission checks off is refused here, before anything starts.
+tpl_mode="$(jq -r '.permission_mode // empty' "$tpl")"
+if [ -n "$tpl_mode" ]; then perm_mode="$(check_permission_mode "$tpl_mode")" || exit 1
+else perm_mode="$(permission_mode)" || exit 1; fi
+plugin_ver="$(plugin_version)"
 
 is_git=false; git -C "$repo" rev-parse --git-dir >/dev/null 2>&1 && is_git=true
 
@@ -173,6 +181,8 @@ for i in $(seq 0 $((nworkers - 1))); do
     worktree="$FLEET_WORKTREES/$team/$role"; branch="fleet/$team/$role"
     mkdir -p "$(dirname "$worktree")"
     git -C "$repo" worktree add -q -b "$branch" "$worktree" >/dev/null 2>&1 || die "git worktree add failed for $worktree"
+    # A force push with lease also has to include what the remote had when we last fetched (push.useForceIfIncludes).
+    git -C "$worktree" config push.useForceIfIncludes true >/dev/null 2>&1 || warn "could not set push.useForceIfIncludes in $worktree"
     cwd="$worktree"
   fi
   if [ -z "$prev" ]; then split=(--pane "$lead_pane" --direction right); else split=(--pane "$prev" --direction down); fi
@@ -193,10 +203,13 @@ row() { # row <name> <tier> <agent> <pane> <kind> <model> <status> <cwd> <worktr
     --arg status "$7" --arg cwd "$8" --arg wt "$9" --arg br "${10}" --arg ex "${11}" \
     --arg team "$team" --arg tpl "$template" --arg repo "$repo" --arg task "$task" --arg m "$machine" --arg ws "$workspace" \
     --arg tr "${row_transcript:-}" --arg issue "$issue" --arg cb "$claimed_by" --argjson scope "$scope_json" \
+    --arg pv "$plugin_ver" --arg iu "$issue_url" \
     '{name: $name, team: $team, tier: $tier, template: $tpl, harness: $harness, model: $model, repo: $repo,
       machine: $m, status: $status, assignment: $task, herdr_ref: $ref, pane: $pane, workspace: $ws,
       cwd: $cwd, worktree: $wt, branch: $br, expertise_file: $ex}
     + (if $tr != "" then {transcript: $tr} else {} end)
+    + (if $pv != "" then {plugin_version: $pv} else {} end)
+    + (if $iu != "" then {issue_url: $iu} else {} end)
     + (if $issue != "" then {issue: $issue, claimed_by: $cb} else {} end)
     + (if $scope != null then {scope: $scope} else {} end)'
 }
