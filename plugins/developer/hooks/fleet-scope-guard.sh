@@ -17,11 +17,16 @@ input="$(cat 2>/dev/null || true)"
 command -v jq >/dev/null 2>&1 || exit 0
 tool="$(printf '%s' "$input" | jq -r '.tool_name // empty')"
 path="$(printf '%s' "$input" | jq -r '.tool_input.file_path // .tool_input.notebook_path // .tool_input.path // empty')"
-# Grep and Glob also name files in their pattern and glob arguments.
-pats=""
-case "$tool" in Grep | Glob) pats="$(printf '%s' "$input" | jq -r '[.tool_input.pattern, .tool_input.glob] | map(strings) | .[]')" ;; esac
+# Grep and Glob also name files in their pattern and glob arguments; Glob's pattern and Grep's glob are paths.
+pats=""; globs=""
+case "$tool" in
+  Grep | Glob)
+    pats="$(printf '%s' "$input" | jq -r '[.tool_input.pattern, .tool_input.glob] | map(strings) | .[]')"
+    globs="$(printf '%s' "$input" | jq -r --arg t "$tool" '[if $t == "Glob" then .tool_input.pattern else empty end, .tool_input.glob] | map(strings) | .[]')" ;;
+esac
 [ -n "$path" ] || [ -n "$pats" ] || exit 0
-searched="$path"; case "$tool" in Grep | Glob) [ -n "$path" ] || path="$PWD" ;; esac
+# A Grep or Glob with no path searches the cwd.
+case "$tool" in Grep | Glob) [ -n "$path" ] || path="$PWD" ;; esac
 case "$path" in /*) ;; *) path="$PWD/$path" ;; esac
 
 deny() { jq -n --arg r "$1" '{hookSpecificOutput: {hookEventName: "PreToolUse", permissionDecision: "deny", permissionDecisionReason: $r}}'; exit 0; }
@@ -78,8 +83,19 @@ case "$tool" in
       case "$pt" in *linear_api_key*) deny "fleet scope guard: the $tool argument names the Linear key; only the Orchestrator reads it." ;; esac
       case "$pt" in /*) [ "$(resolve "$pt")" != "$keypath" ] || deny "fleet scope guard: the $tool argument leads to the Linear key; only the Orchestrator reads it." ;; esac
     done <<<"$pats"
-    # A search rooted at the key's directory, or above it, would read the file as part of the tree.
-    [ -z "$searched" ] || case "$keypath" in "$rp"/*) deny "fleet scope guard: searching $path would read the Linear key; search a narrower directory." ;; esac
+    # A search rooted at the key's directory, or above it (the cwd when no path is given: HOME, say), would read
+    # the file as part of the tree.
+    case "$keypath" in "$rp"/*) deny "fleet scope guard: searching $path would read the Linear key; search a narrower directory." ;; esac
+    # A path glob that can reach the key's directory: its fixed part (up to the first wildcard), taken from the
+    # search root when relative, is that directory or above it; or it spells .config/fleet.
+    while IFS= read -r g; do
+      [ -n "$g" ] || continue
+      case "$g" in *.config/fleet | *.config/fleet/* | *.config/fleet[*?[{]*) deny "fleet scope guard: the $tool pattern $g reaches the Linear key's directory." ;; esac
+      fixed="$g"; case "$g" in *[*?[{]*) fixed="${g%%[*?[{]*}"; case "$fixed" in */*) fixed="${fixed%/*}" ;; *) fixed="" ;; esac ;; esac
+      case "$fixed" in /*) ;; "") fixed="$rp" ;; *) fixed="$rp/$fixed" ;; esac
+      fr="$(resolve "$fixed")"
+      case "$keypath" in "$fr"/*) deny "fleet scope guard: the $tool pattern $g can reach the Linear key; search a narrower directory." ;; esac
+    done <<<"$globs"
     ;;
 esac
 

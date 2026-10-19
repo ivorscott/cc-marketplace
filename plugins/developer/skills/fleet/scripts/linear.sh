@@ -9,7 +9,7 @@
 #   linear.sh holder <ISSUE>                  JSON: who holds the issue and their last heartbeat   (read-only)
 #   linear.sh peers                           JSON: other machines' claims, for `status.sh --all`   (read-only)
 #   linear.sh takeover <ISSUE> [--repo OWNER/NAME]   take an issue over from a lapsed holder; refuses while an
-#                                             open PR exists on fleet/<slug> or the issue's Linear branch
+#                                             open PR exists for the issue (see Takeover below)
 #   linear.sh migrate [--dry-run]             delete this machine's old `fleet-claim:` comments, and rewrite our
 #                                             label's description if it still holds a full machine id (a write;
 #                                             --dry-run reports it as would_rewrite and mutates nothing)
@@ -18,10 +18,11 @@
 #
 # WRITES. `linear_writes = off | test:FT | on` in config.toml, default off. Off: every write, and every
 # subcommand that would write, exits 3 ("Linear writes are off") before any call, the same path as
-# having no key. test:FT: a write is refused unless the target issue is in Linear team FT, or the
-# write only touches this machine's own fleet:<key> label (heartbeat, its description); the issue's
-# team key is read first, so a refusal makes no mutation and names the team. on: no restriction.
-# Reads and --dry-runs never need it. Any write path the test guard has not cleared is refused too.
+# having no key. test:FT: each write is cleared on its own: an issue update or a comment only on an issue
+# of Linear team FT (the team key is read first, so a refusal makes no mutation and names the team), and a
+# label create or description update only of this machine's own fleet:<key> label. Nothing else is
+# written in test mode: not the workspace-wide `fleet` group label (create it in Linear first). on: no
+# restriction. Reads and --dry-runs never need it. A write the test guard has not cleared is refused.
 #
 # OWNER. The machine label's description carries `owner=<Linear user name>` (one `viewer` read,
 # cached for the tick in $FLEET_STATE_DIR/viewer.cache.json, keyed by FLEET_TICK_ID), kept next to
@@ -39,9 +40,16 @@
 # mutation and, in read-only mode (holder, peers, has-key and every --dry-run), refuses all of
 # them. A read-only subcommand cannot mutate even by mistake.
 #
-# Takeover needs the holder's heartbeat older than lease_hours (config.toml, default 2) AND no open PR:
-# it looks the PR up itself (gh pr list, read-only, in the current repo or --repo) on fleet/<slug> and on
-# the issue's Linear branch, and refuses while one is open or when it cannot look. FLEET_FORCE never bypasses.
+# Takeover needs the holder's heartbeat older than lease_hours (config.toml, default 2) AND no open PR. It
+# looks the PR up itself (gh, read-only, in the current repo or --repo; same-repo PRs only): any open PR on
+# fleet/<slug>[-/...] or on the issue's Linear branch, and any open PR whose title or body names the issue
+# key (`gh pr list --search '<KEY> in:title,body'`), whatever its branch: boot's fleet/<team>/<role> too.
+# It refuses while one is open or when it cannot look. FLEET_FORCE never bypasses. Like claim, it then
+# re-reads after claim_settle_secs: of two takeovers at once only the one whose label stayed wins and
+# comments; the other exits 1.
+#
+# Labels are looked up by name; when several match (an older team label beside the workspace one), the
+# workspace label (no team) is used, for the group and for each machine label alike.
 #
 # Claim race: the machine label is in a single-select group, and an issue update replaces the
 # issue's labels, so the last writer wins; both machines re-read after claim_settle_secs
@@ -61,7 +69,7 @@ READONLY=0
 KEY=""
 WMODE="$(linear_writes)"
 TEST_TEAM=""; case "$WMODE" in test:*) TEST_TEAM="${WMODE#test:}" ;; esac
-WRITE_OK=0
+CLEARED=""; ISSUES_OK=""; OWN_LID=""
 GROUP="fleet"
 
 # ---- key ---------------------------------------------------------------------------------------
@@ -105,8 +113,20 @@ gql_write() {
   [ "$WMODE" != off ] || writes_off
   case "$2" in mutation*) ;; *) die "internal: gql_write given a non-mutation ($1)" ;; esac
   [ "$READONLY" != 1 ] || die "internal: mutation $1 attempted in read-only mode"
-  [ -z "$TEST_TEAM" ] || [ "$WRITE_OK" = 1 ] || die "internal: write $1 was not cleared by the test-team guard (--test-team $TEST_TEAM)"
+  [ -z "$TEST_TEAM" ] || [ "$CLEARED" = "$1" ] || die "internal: write $1 was not cleared by the test-mode guard (linear_writes = test:$TEST_TEAM)"
+  CLEARED=""
   gql "$@"
+}
+# clear_write <operation> <issue id | label id | label name>: in test mode, let exactly this one write through when
+# it touches an issue that guard_issue cleared, or this machine's own label; refuse anything else, before any call.
+clear_write() {
+  CLEARED="$1"; [ -n "$TEST_TEAM" ] || return 0
+  case "$1" in
+    IssueUpdate | CommentCreate | CommentDelete) case " $ISSUES_OK " in *" $2 "*) return 0 ;; esac ;;
+    IssueLabelUpdate) [ -z "$OWN_LID" ] || [ "$2" != "$OWN_LID" ] || return 0 ;;
+    IssueLabelCreate) [ "$2" != "$(machine_label)" ] || return 0 ;;
+  esac
+  die "test mode (linear_writes = test:$TEST_TEAM): $1 on $2 is outside team $TEST_TEAM and this machine's own label. Nothing was written"
 }
 
 # ---- reads (queries only) ------------------------------------------------------------------------
@@ -114,9 +134,9 @@ q_issue() { # q_issue <ISSUE> → {id, identifier, team, labels[{id,name}], stat
   gql_read Issue 'query Issue($id: String!) { issue(id: $id) { id identifier team { id } state { id name } labels { nodes { id name } } } }' \
     "$(jq -nc --arg id "$1" '{id: $id}')" | jq -c '.data.issue // error("no such issue")' 2>/dev/null || die "no such issue: $1"
 }
-q_labels_named() { # q_labels_named <name> → [{id, name, description, parent}]
-  gql_read IssueLabels 'query IssueLabels($n: String!) { issueLabels(filter: { name: { eq: $n } }) { nodes { id name description parent { id name } } } }' \
-    "$(jq -nc --arg n "$1" '{n: $n}')" | jq -c '.data.issueLabels.nodes // []'
+q_labels_named() { # q_labels_named <name> → [{id, name, description, parent, team}], workspace labels (team null) first
+  gql_read IssueLabels 'query IssueLabels($n: String!) { issueLabels(filter: { name: { eq: $n } }) { nodes { id name description parent { id name } team { id } } } }' \
+    "$(jq -nc --arg n "$1" '{n: $n}')" | jq -c '(.data.issueLabels.nodes // []) | map(select(.team == null)) + map(select(.team != null))'
 }
 q_state_id() { # q_state_id <team id> <state name> → the id, empty when the team has no such state
   gql_read WorkflowStates 'query WorkflowStates($t: ID!, $n: String!) { workflowStates(filter: { team: { id: { eq: $t } }, name: { eq: $n } }) { nodes { id name } } }' \
@@ -141,24 +161,29 @@ q_viewer() { # the Linear user behind the key
 
 # ---- writes (mutations only) ---------------------------------------------------------------------
 m_label_create() { # m_label_create <name> <description> <parent id | ""> → the new label's id (a workspace label, no team)
+  clear_write IssueLabelCreate "$1"
   gql_write IssueLabelCreate 'mutation IssueLabelCreate($input: IssueLabelCreateInput!) { issueLabelCreate(input: $input) { success issueLabel { id } } }' \
     "$(jq -nc --arg n "$1" --arg d "$2" --arg p "$3" \
       '{input: ({name: $n, description: $d} + (if $p != "" then {parentId: $p} else {} end))}')" |
     jq -r '.data.issueLabelCreate.issueLabel.id // empty'
 }
 m_label_describe() { # m_label_describe <label id> <description>
+  clear_write IssueLabelUpdate "$1"
   gql_write IssueLabelUpdate 'mutation IssueLabelUpdate($id: String!, $input: IssueLabelUpdateInput!) { issueLabelUpdate(id: $id, input: $input) { success } }' \
     "$(jq -nc --arg id "$1" --arg d "$2" '{id: $id, input: {description: $d}}')" >/dev/null
 }
 m_issue_update() { # m_issue_update <issue id> <label ids json array> <state id | "">
+  clear_write IssueUpdate "$1"
   gql_write IssueUpdate 'mutation IssueUpdate($id: String!, $input: IssueUpdateInput!) { issueUpdate(id: $id, input: $input) { success } }' \
     "$(jq -nc --arg id "$1" --argjson l "$2" --arg s "$3" '{id: $id, input: ({labelIds: $l} + (if $s != "" then {stateId: $s} else {} end))}')" >/dev/null
 }
 m_comment_create() { # m_comment_create <issue id> <body>
+  clear_write CommentCreate "$1"
   gql_write CommentCreate 'mutation CommentCreate($input: CommentCreateInput!) { commentCreate(input: $input) { success } }' \
     "$(jq -nc --arg i "$1" --arg b "$2" '{input: {issueId: $i, body: $b}}')" >/dev/null
 }
-m_comment_delete() { # m_comment_delete <comment id>
+m_comment_delete() { # m_comment_delete <comment id> <issue id>
+  clear_write CommentDelete "$2"
   gql_write CommentDelete 'mutation CommentDelete($id: String!) { commentDelete(id: $id) { success } }' \
     "$(jq -nc --arg id "$1" '{id: $id}')" >/dev/null
 }
@@ -180,30 +205,41 @@ say() { jq -nc "$@"; }
 # legacy_ids_hashed <description>: the description with every full machine id (a UUID or 32 hex
 # characters) replaced by sha256:<first 12 hex of its sha256>. Older versions published the full
 # hardware id; the rest of the text, the heartbeat= line included, is kept as it was.
+# Fails closed: when machine-id.sh hash fails or gives no 12 hex characters it prints nothing and returns 1, and
+# the caller writes nothing (never `sha256:` with an empty hash).
 legacy_ids_hashed() {
   local d="$1" id h re='([0-9A-Fa-f]{8}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{4}-[0-9A-Fa-f]{12})|([0-9A-Fa-f]{32})'
   while [[ "$d" =~ $re ]]; do
-    id="${BASH_REMATCH[0]}"; h="$("$FLEET_SCRIPTS/machine-id.sh" hash "$id")"
+    id="${BASH_REMATCH[0]}"; h="$("$FLEET_SCRIPTS/machine-id.sh" hash "$id" 2>/dev/null)" || h=""
+    [[ "$h" =~ ^[0-9a-f]{12}$ ]] || { printf 'fleet: cannot hash a machine id in the label description; not writing it\n' >&2; return 1; }
     d="${d/"$id"/sha256:$h}"
   done
   printf '%s' "$d"
 }
 
-# open_pr <ISSUE> <repo | ""> → the URL of an open same-repo PR on fleet/<slug>[-...] (slug = the lowercase
-# issue key) or on the issue's Linear branch; nothing when there is none. Returns 2 when gh cannot answer.
+# open_pr <ISSUE> <repo | ""> → the URL of an open same-repo PR for the issue; nothing when there is none. Returns 2
+# when gh cannot answer. A PR counts when its branch is fleet/<slug>[-/...] (slug = the lowercase issue key) or the
+# issue's Linear branch, or when its title or body names the issue key, whatever the branch (boot's
+# fleet/<team>/<role>, say): a second, search-based `gh pr list`.
 open_pr() {
-  local issue="$1" repo="$2" slug b prs
+  local issue="$1" repo="$2" slug b prs hit
   command -v "$FLEET_GH" >/dev/null 2>&1 || return 2
   b="$(q_issue_branch "$issue")"
   slug="fleet/$(printf '%s' "$issue" | tr '[:upper:]' '[:lower:]')"
   prs="$("$FLEET_GH" pr list --state open --limit 200 --json url,headRefName,isCrossRepository ${repo:+--repo "$repo"} 2>/dev/null)" || return 2
-  printf '%s' "$prs" | jq -r --arg s "$slug" --arg b "$b" '
-    .[] | select((.isCrossRepository // false) | not)
+  hit="$(printf '%s' "$prs" | jq -r --arg s "$slug" --arg b "$b" '
+    .[]? | select((.isCrossRepository // false) | not)
         | select(.headRefName == $s or (.headRefName | startswith($s + "-")) or (.headRefName | startswith($s + "/")) or ($b != "" and .headRefName == $b))
-        | .url' | head -n 1
+        | .url' | head -n 1)" || return 2
+  if [ -z "$hit" ]; then
+    prs="$("$FLEET_GH" pr list --state open --limit 200 --search "$issue in:title,body" --json number,url,headRefName,isCrossRepository ${repo:+--repo "$repo"} 2>/dev/null)" || return 2
+    hit="$(printf '%s' "$prs" | jq -r '.[]? | select((.isCrossRepository // false) | not) | .url' | head -n 1)" || return 2
+  fi
+  printf '%s' "$hit"
 }
 
-# guard_issue <ISSUE...>: in test mode, every issue must be in team $TEST_TEAM or nothing is written.
+# guard_issue <ISSUE...>: in test mode, every issue must be in team $TEST_TEAM or nothing is written. The cleared
+# issues' ids (and identifiers) go into ISSUES_OK, which clear_write checks per write.
 guard_issue() {
   [ -n "$TEST_TEAM" ] || return 0
   local i k
@@ -211,10 +247,8 @@ guard_issue() {
     k="$(q_issue_team_key "$i")"
     [ "$k" = "$TEST_TEAM" ] || die "test mode (linear_writes = test:$TEST_TEAM): $i is in team ${k:-unknown}; writes are allowed only on team $TEST_TEAM. Nothing was written"
   done
-  WRITE_OK=1
+  for i in "$@"; do ISSUES_OK="$ISSUES_OK $i $(q_issue "$i" | jq -r .id)"; done
 }
-# guard_own_label: label writes in this script only ever touch this machine's own fleet:<key> label.
-guard_own_label() { [ -z "$TEST_TEAM" ] || WRITE_OK=1; }
 
 # viewer: {id, name} of the key's user, read once per tick (FLEET_TICK_ID, set by tick.sh) and cached.
 viewer() {
@@ -240,32 +274,38 @@ describe_with_owner() {
 # An empty description is filled; a non-empty one is never overwritten.
 ensure_label() {
   local dry="$1" mine desc found lid gid grp now_iso cur new owner
-  mine="$(machine_label)"; desc="$("$FLEET_SCRIPTS/machine-id.sh" description)"; now_iso="${FLEET_NOW:-$(now)}"
+  mine="$(machine_label)"; desc="$("$FLEET_SCRIPTS/machine-id.sh" description)" || return 1; now_iso="${FLEET_NOW:-$(now)}"
   owner="$(owner_name)"
-  found="$(q_labels_named "$mine")"
+  found="$(q_labels_named "$mine")" || return 1
   lid="$(printf '%s' "$found" | jq -r '.[0].id // empty')"
   if [ -n "$lid" ]; then
+    OWN_LID="$lid"
     cur="$(printf '%s' "$found" | jq -r '.[0].description // ""')"
     if [ -z "$cur" ]; then
       if [ "$dry" = 1 ]; then say --arg l "$mine" '{would: "fill the empty description", label: $l}' >&2
-      else m_label_describe "$lid" "$(describe_with_hb "$(describe_with_owner "$desc" "$owner")" "$now_iso")"; fi
+      else m_label_describe "$lid" "$(describe_with_hb "$(describe_with_owner "$desc" "$owner")" "$now_iso")" || return 1; fi
     else
-      new="$(describe_with_owner "$(legacy_ids_hashed "$cur")" "$owner")"
+      new="$(legacy_ids_hashed "$cur")" || exit 1; new="$(describe_with_owner "$new" "$owner")"
       if [ "$new" != "$cur" ]; then
         if [ "$dry" = 1 ]; then say --arg l "$mine" '{would_rewrite: "hash the machine id and set the owner line", label: $l}' >&2
-        else m_label_describe "$lid" "$new"; fi
+        else m_label_describe "$lid" "$new" || return 1; fi
       fi
     fi
     printf '%s\n' "$lid"; return 0
   fi
-  gid="$(q_labels_named "$GROUP" | jq -r '[.[] | select(.parent == null)][0].id // empty')"
+  gid="$(q_labels_named "$GROUP" | jq -r '[.[] | select(.parent == null)][0].id // empty')" || return 1 # workspace group first
   if [ "$dry" = 1 ]; then
     [ -n "$gid" ] || say --arg g "$GROUP" '{would: "create the group label", label: $g}' >&2
     say --arg l "$mine" '{would: "create the machine label", label: $l}' >&2
     printf 'dry-run-label\n'; return 0
   fi
-  [ -n "$gid" ] || gid="$(m_label_create "$GROUP" "fleet machines" "")"
-  m_label_create "$mine" "$(describe_with_hb "$(describe_with_owner "$desc" "$owner")" "$now_iso")" "$gid"
+  # ensure_label runs inside $( ), where set -e does not hold: every failure returns explicitly, so a refused or
+  # failed group create never goes on to a label without its group.
+  if [ -z "$gid" ]; then gid="$(m_label_create "$GROUP" "fleet machines" "")" || return 1; fi
+  [ -n "$gid" ] || die "could not create the $GROUP label group"
+  lid="$(m_label_create "$mine" "$(describe_with_hb "$(describe_with_owner "$desc" "$owner")" "$now_iso")" "$gid")" || return 1
+  [ -n "$lid" ] || die "could not create the label $mine"
+  OWN_LID="$lid"; printf '%s\n' "$lid"
 }
 
 # ---- subcommands ---------------------------------------------------------------------------------
@@ -341,9 +381,10 @@ case "$cmd" in
     found="$(q_labels_named "$mine")"
     lid="$(printf '%s' "$found" | jq -r '.[0].id // empty')"
     if [ -z "$lid" ]; then say '{heartbeat: false, reason: "no machine label yet; nothing claimed"}'; exit 0; fi
-    ts="${FLEET_NOW:-$(now)}"
-    guard_own_label
-    m_label_describe "$lid" "$(describe_with_hb "$(describe_with_owner "$(printf '%s' "$found" | jq -r '.[0].description // ""')" "$(owner_name)")" "$ts")"
+    ts="${FLEET_NOW:-$(now)}"; OWN_LID="$lid"
+    # A description an older version wrote still holds the full machine id: hashed here too, or nothing is written.
+    cur="$(legacy_ids_hashed "$(printf '%s' "$found" | jq -r '.[0].description // ""')")" || exit 1
+    m_label_describe "$lid" "$(describe_with_hb "$(describe_with_owner "$cur" "$(owner_name)")" "$ts")"
     say --arg t "$ts" '{heartbeat: true, at: $t}' ;;
 
   takeover)
@@ -375,6 +416,13 @@ case "$cmd" in
     sid="$(q_state_id "$team" "In Progress")"
     keep="$(printf '%s' "$iss" | jq -c --arg p "$(label_prefix)" '[.labels.nodes[] | select(.name | startswith($p) | not) | .id]')"
     m_issue_update "$iid" "$(jq -cn --argjson k "$keep" --arg l "$lid" '$k + [$l] | unique')" "$sid"
+    # Settle and re-read, as claim does: when two machines take over at once, the last writer's label stays.
+    sleep "$(cfg_int claim_settle_secs 5)"
+    after="$(q_issue "$issue")"
+    if ! printf '%s' "$after" | jq -e --arg m "$mine" 'any(.labels.nodes[]; .name == $m)' >/dev/null; then
+      who="$(other_fleet_labels "$after" | head -n 1)"
+      printf 'fleet: lost the takeover of %s to %s\n' "$issue" "${who:-another machine}" >&2; exit 1
+    fi
     m_comment_create "$iid" "fleet: taken over from $holder (heartbeat $hb, no open PR)"
     say --arg i "$issue" --arg f "$holder" --arg m "$mine" '{taken_over: true, issue: $i, from: $f, by: $m}' ;;
 
@@ -391,16 +439,17 @@ case "$cmd" in
     victims="$(q_open_issues_labelled "$mine" eq | jq -c --arg k "$key" '
       [.[] | . as $i | .comments.nodes[]
         | select((.body | startswith("fleet-claim:")) and (([.body | split("\n")[0] | scan("machine=([^ ]+)")[0]] | first) == $k))
-        | {id, issue: $i.identifier}]')"
+        | {id, issue: $i.identifier, iid: $i.id}]')"
     # An existing label that still holds a full machine id is rewritten to the hashed form.
     found="$(q_labels_named "$mine")"
     lid="$(printf '%s' "$found" | jq -r '.[0].id // empty')"; cur="$(printf '%s' "$found" | jq -r '.[0].description // ""')"
-    new="$(describe_with_owner "$(legacy_ids_hashed "$cur")" "$(owner_name)")"; rewrite=false; { [ -n "$lid" ] && [ "$new" != "$cur" ]; } && rewrite=true
+    OWN_LID="$lid"; new="$(legacy_ids_hashed "$cur")" || exit 1
+    new="$(describe_with_owner "$new" "$(owner_name)")"; rewrite=false; { [ -n "$lid" ] && [ "$new" != "$cur" ]; } && rewrite=true
     if [ "$dry" = 1 ]; then say --argjson v "$victims" --argjson r "$rewrite" '{would_delete: $v, would_rewrite: $r}'; exit 0; fi
     # Test mode: every issue a comment would be deleted from must be in the test team, or nothing is written.
     # shellcheck disable=SC2046
     guard_issue $(printf '%s' "$victims" | jq -r '[.[].issue] | unique[]')
-    for id in $(printf '%s' "$victims" | jq -r '.[].id'); do m_comment_delete "$id"; done
+    while IFS=$'\t' read -r id iid; do [ -z "$id" ] || m_comment_delete "$id" "$iid"; done < <(printf '%s' "$victims" | jq -r '.[] | [.id, .iid] | @tsv')
     if $rewrite; then m_label_describe "$lid" "$new"; fi
     say --argjson v "$victims" --argjson r "$rewrite" '{deleted: ($v | length), rewrote_label: $r}' ;;
 

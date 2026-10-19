@@ -121,11 +121,13 @@ issue forever. Only a heartbeat older than `lease_hours` (default 2) **and** no 
 `FLEET_FORCE=1` never bypasses it.
 
 1. `$F/linear.sh takeover <ISSUE> [--repo OWNER/NAME]`. It looks the PR up itself (`gh pr list`,
-   read-only) on `fleet/<slug>` and on the issue's Linear branch, and refuses, saying why, while
+   read-only, same-repo PRs only) on `fleet/<slug>`, on the issue's Linear branch and by searching open
+   PRs' titles and bodies for the issue key (so a PR on boot's `fleet/<team>/<role>` counts), and refuses, saying why, while
    the heartbeat is fresh, an open PR exists (a PR waiting on a merge counts: the taker's push
    would overwrite it), gh cannot answer, or the holder has no heartbeat. On success it swaps the
    label, sets In Progress and posts **one** comment (`fleet: taken over from … (heartbeat …, no
-   open PR)`), the only comment the scripts ever post. It needs `linear_writes` on (below). Boot as the winner as above, tell the
+   open PR)`), the only comment the scripts ever post. Like claim it re-reads after the update; of two
+   takeovers at once only the one whose label stayed comments, the other exits 1. It needs `linear_writes` on (below). Boot as the winner as above, tell the
    user, and post a `takeover` chat line (**A0c**).
 
 ### Heartbeat

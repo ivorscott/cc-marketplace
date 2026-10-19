@@ -258,8 +258,10 @@ tracker runs the fleet on one machine, and those parts are skipped.
   description, rewritten by the Orchestrator's tick (one API call per tick). No claim or lease
   comments. Scripts cannot heartbeat: an Orchestrator that is not running stops, and that is when a
   takeover is allowed.
-- A heartbeat older than `lease_hours` (default 2) with no open PR (looked up on `fleet/<slug>` and
-  Linear's branch) can be taken over with `linear.sh takeover`, which leaves one comment.
+- A heartbeat older than `lease_hours` (default 2) with no open PR (looked up on `fleet/<slug>`,
+  Linear's branch, and any open PR whose title or body names the issue key, whatever its branch) can
+  be taken over with `linear.sh takeover`, which re-reads like claim (of two at once, one wins) and
+  leaves one comment.
 - Nothing writes to Linear while `linear_writes = "off"` (the default); Ivor sets `on` after the FT proof.
   Tick keeps heartbeating Done rows (a team waiting on a merge keeps its claim) and never migrates. `FLEET_FORCE=1` never bypasses a live claim.
 - **The tracker has no compare-and-swap.** The last writer wins and both machines re-read; that
@@ -269,15 +271,18 @@ tracker runs the fleet on one machine, and those parts are skipped.
   machines' health is not probed: their rows show `Claimed`, the issue and the heartbeat age.
 - The Linear API key lives only on the Orchestrator machine (`~/.config/fleet/linear_api_key`,
   mode 600, or `LINEAR_API_KEY` in its shell). Boot gives it to no agent: panes start with
-  `LINEAR_API_KEY` unset, the scope guard denies Read, Grep and Glob of the file, and the Bash guard
-  denies any command naming it and any `herdr pane run|send-text|send-keys`. **Residual risk:**
+  `LINEAR_API_KEY` unset, the scope guard denies Read, Grep and Glob of the file (and a Grep or Glob,
+  with or without a path, that searches its directory or above it), and the Bash guard denies any
+  command naming the file or reaching its directory (`~/.config/fleet`, `$HOME/.config/fleet`,
+  `${XDG_CONFIG_HOME}/fleet`, `$FLEET_CONFIG_DIR`, the absolute path, a glob or a recursive search
+  that can reach it), and any `herdr pane run|send-text|send-keys`. **Residual risk:**
   these hooks are a guardrail, not a boundary. Agents run as the same user (same-uid), and a
   same-uid process can read a mode-600 file, so a determined or prompt-injected agent could still
   reach it. Closing that needs the key outside the agents' reach (a Keychain item or another OS
   user), which is a follow-up. Without it claims are unavailable (`linear.sh` exits 3), not fatal.
 - Agents get an allowlist of herdr subcommands, not `herdr:*`: workers `agent get|read|list|wait`,
   leads also `agent prompt|send-keys`; the Bash guard holds `agent read|prompt|send-keys` to the
-  agent's own team.
+  agent's own team: the exact herdr names of its rows in the registry.
 
 ### Cloned machine id
 

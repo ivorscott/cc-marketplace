@@ -41,7 +41,7 @@ case "$op" in
   IssueBranch)
     ok "$(db --argjson v "$vars" '{issue: ((.issues[] | select(.identifier == $v.id)) | {identifier, branchName: (.branchName // "")})}')" ;;
   IssueLabels)
-    ok "$(db --argjson v "$vars" '{issueLabels: {nodes: [.labels[] | select(.name == $v.n)]}}')" ;;
+    ok "$(db --argjson v "$vars" '{issueLabels: {nodes: [.labels[] | select(.name == $v.n) | . + {team: (if (.teamId // null) != null then {id: .teamId} else null end)} | del(.teamId)]}}')" ;;
   WorkflowStates)
     ok "$(db --argjson v "$vars" '{workflowStates: {nodes: [(.states[$v.n] // empty) | {id: ., name: $v.n}]}}')" ;;
   IssueLabelCreate)
