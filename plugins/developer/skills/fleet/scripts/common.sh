@@ -179,7 +179,7 @@ config_warn_unknown() {
 live_team_count() {
   "$FLEET_SCRIPTS/registry.sh" list --live | jq -r --arg x "${1:-}" --argjson repos "$(config_list repos)" '
     [.[] | select(.tier != "Orchestrator" and .team != $x)
-      | select(($repos | length) == 0 or (.repo // "") as $r | any($repos[]; . == $r or (split("/") | last) == ($r | split("/") | last)))
+      | select(($repos | length) == 0 or ((.repo // "") as $r | any($repos[]; . == $r or (split("/") | last) == ($r | split("/") | last))))
       | .team] | unique | length'
 }
 # teams_per_repo: live teams on one repo, default 1.

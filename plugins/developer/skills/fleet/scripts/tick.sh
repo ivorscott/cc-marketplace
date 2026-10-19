@@ -64,9 +64,12 @@ done
 # break it. A lock with no pid yet, or a live one, is left alone.
 lockdir="$FLEET_STATE_DIR/tick.lock"
 mkdir -p "$FLEET_STATE_DIR"
+# pid_gone <pid>: true only when kill -0 says there is no such process. "Not permitted" (another user's
+# process, or a sandbox that denies the probe) and any other answer count as alive, so a live lock is never broken.
+pid_gone() { local e; e="$(kill -0 "$1" 2>&1)" && return 1; case "$e" in *"No such process"*) return 0 ;; *) return 1 ;; esac; }
 if ! mkdir "$lockdir" 2>/dev/null; then
   lpid="$(cat "$lockdir/pid" 2>/dev/null || true)"
-  if [[ "$lpid" =~ ^[0-9]+$ ]] && ! ps -p "$lpid" >/dev/null 2>&1 && mkdir "$lockdir.recover" 2>/dev/null; then
+  if [[ "$lpid" =~ ^[0-9]+$ ]] && pid_gone "$lpid" && mkdir "$lockdir.recover" 2>/dev/null; then
     # Re-read under the mutex: another tick may have recovered it and taken a new lock meanwhile.
     if [ "$(cat "$lockdir/pid" 2>/dev/null || true)" = "$lpid" ]; then
       rm -rf "$lockdir"; printf 'fleet: tick_lock_recovered: the holder (pid %s) is gone\n' "$lpid" >&2

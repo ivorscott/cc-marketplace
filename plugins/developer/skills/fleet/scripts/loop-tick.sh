@@ -36,8 +36,10 @@ mkdir -p "$FLEET_STATE_DIR"
 LS="$FLEET_STATE_DIR/loop.state.json"
 now_iso="${FLEET_NOW:-$(now)}"; now_epoch="$(jq -rn --arg t "$now_iso" '$t | fromdateiso8601')"
 jq -e 'type == "object"' "$LS" >/dev/null 2>&1 || echo '{}' >"$LS"
-ls_set() { jq -c "$@" "$LS" >"$LS.new" && mv "$LS.new" "$LS"; } # ls_set <jq args> <program on the state>
-trap 'rm -f "$LS.new" "${errf:-}"' EXIT
+# ls_set <jq args> <program on the state>. Each run writes its own temp file, so two overlapping runs never
+# interleave writes into one file (the last rename wins, and the state stays valid JSON).
+ls_set() { jq -c "$@" "$LS" >"$LS.$$.new" && mv "$LS.$$.new" "$LS"; }
+trap 'rm -f "$LS.$$.new" "${errf:-}"' EXIT
 
 # alert <cause> <message>: notify with alert_cmd, at most once per cause per 4 hours.
 alert() {
