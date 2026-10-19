@@ -2533,6 +2533,7 @@ export FLEET_TELL_POLL=0.05 FLEET_EXIT_WAIT_SECS=1
 SKD_="$SCRIPTS/.."
 modeof() { stat -c %a "$1" 2>/dev/null || stat -f %Lp "$1"; }
 lastbrief() { cat "$("$REG" get "$1" | jq -r '.last_brief // "/nonexistent"')" 2>/dev/null; }
+briefmode() { case "$1" in "$FLEET_STATE_DIR"/briefs/build-hb/*.md) modeof "$1" ;; *) echo "$1" ;; esac; }
 rm -f "${AS:?}"/*; : >"$HERDR_LOG"
 
 # -- house rules: in every brief once, then the repo's own rules; no trailer; generic text
@@ -2561,7 +2562,7 @@ eq "boot: no brief text is typed into a pane" "$(grep -c 'Fleet rules for\|House
 eq "boot: no Agent: anywhere in the herdr log" "$(grep -c 'Agent:' "$HERDR_LOG" || true)" 0
 for r in $("$REG" list --team build-hb | jq -r '.[].name'); do
   bf="$("$REG" get "$r" | jq -r .last_brief)"
-  eq "boot: $r's brief is a mode-600 file in the state dir" "$(case "$bf" in "$FLEET_STATE_DIR"/briefs/build-hb/*.md) modeof "$bf" ;; *) echo "$bf" ;; esac)" 600
+  eq "boot: $r's brief is a mode-600 file in the state dir" "$(briefmode "$bf")" 600
   eq "boot: $r's brief carries the house rules once and no trailer" "$(grep -c '^House rules (fleet)' "$bf"):$(grep -c 'Agent:' "$bf" || true)" "1:0"
 done
 check "boot: the builder's brief carries the exact Fixes line" grep -q 'Fixes https://tracker.example/issue/DEV-7' <<<"$(lastbrief build-hb/builder)"
