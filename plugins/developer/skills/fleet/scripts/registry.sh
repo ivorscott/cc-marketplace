@@ -164,6 +164,7 @@ case "$cmd" in
     line="$(jq -nc --arg at "$at" --arg id "$id" --arg n "$name" --arg tm "$(jq -r --arg n "$name" '.agents[$n].team // ""' "$FLEET_REGISTRY")" --arg s "$sev" --arg m "$msg" \
       '{at: $at, id: $id, name: $n, team: $tm, severity: $s, message: $m}')"
     { printf '%s\n' "$line" >>"$FLEET_INBOX"; } 2>/dev/null || warn "cannot write the escalation inbox $FLEET_INBOX"
+    ev_log escalation_raised team="$(jq -r --arg n "$name" '.agents[$n].team // ""' "$FLEET_REGISTRY")" name="$name" detail="$sev $id"
     notify "fleet $sev: $name" "$msg" request
     ;;
   escalations)
@@ -204,6 +205,7 @@ case "$cmd" in
         | derive
         | if .escalation == "" and .status == "Needs input" then .status = "Working" else . end
         | .updated_at = $t)'
+    ev_log escalation_resolved team="$(jq -r --arg n "$name" '.agents[$n].team // ""' "$FLEET_REGISTRY")" name="$name" detail="$ref"
     ;;
   note)
     name="${1:?usage: note <name> discovered TEXT}"; kind="${2:?}"; msg="${3:?}"
@@ -276,6 +278,7 @@ case "$cmd" in
     esac
     update --arg n "$name" --arg pr "$pr" --arg sha "$sha" --arg t "$(now)" \
       '.agents[$n] += {pr: $pr, signoff: {pr: $pr, sha: $sha, at: $t}, updated_at: $t}'
+    ev_log signoff team="$(jq -r --arg n "$name" '.agents[$n].team // ""' "$FLEET_REGISTRY")" name="$name" pr="$pr" sha="$sha"
     ;;
   reassign)
     team="${1:?usage: reassign <team> <issue>}"; issue="${2:?usage: reassign <team> <issue>}"

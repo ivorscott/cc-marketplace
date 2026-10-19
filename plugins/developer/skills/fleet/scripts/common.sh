@@ -193,7 +193,68 @@ Fleet rules for $name.$x Stay on this one task. If you notice unrelated work, ru
 }
 
 # build_brief <name> <expertise-file> <text>: a brief plus the fleet rules.
-build_brief() { printf '%s%s' "$3" "$(contract "$1" "$2")"; }
+# build_brief --resume <name> <expertise-file> <role brief>: the brief for a respawned agent.
+build_brief() {
+  if [ "${1:-}" = "--resume" ]; then shift; resume_brief "$@"; return; fi
+  printf '%s%s' "$3" "$(contract "$1" "$2")"
+}
+
+# resume_brief <name> <expertise-file> <role brief>: what a respawned agent needs to carry on: its role
+# brief, its assignment, the last report file of its role, `git status` and `git log` of its branch,
+# its open escalations and the old pane's last lines (if herdr can still read them). A lead also gets
+# the plan path (the planner's summary) and the team's rows.
+resume_brief() {
+  local name="$1" ex="$2" role_brief="$3" row dir role team report="" gs="" gl="" esc="" pane="" ref plan="" rows=""
+  row="$("$FLEET_SCRIPTS/registry.sh" get "$name")" || return 1
+  dir="$(printf '%s' "$row" | jq -r 'if (.worktree // "") != "" then .worktree else (.cwd // "") end')"
+  role="${name#*/}"; team="${name%%/*}"
+  [ -z "$dir" ] || [ ! -d "$dir" ] || {
+    report="$(ls -t "$dir"/reports/*-"$role"*.md "$dir"/*-"$role"*.md 2>/dev/null | head -n 1 || true)"
+    gs="$(git -C "$dir" status --short 2>/dev/null | head -n 30 || true)"
+    gl="$(git -C "$dir" log -5 --oneline 2>/dev/null || true)"
+  }
+  esc="$("$FLEET_SCRIPTS/registry.sh" escalations --open | jq -r --arg n "$name" '.[] | select(.name == $n) | "- [\(.severity)] \(.message)"')"
+  ref="$(printf '%s' "$row" | jq -r '.herdr_ref // ""')"
+  [ -z "$ref" ] || pane="$(hd agent read "$ref" --source recent-unwrapped 2>/dev/null | tail -n 40 || true)"
+  if [ "$(printf '%s' "$row" | jq -r .tier)" = "Lead" ]; then
+    plan="$("$FLEET_SCRIPTS/registry.sh" list --team "$team" | jq -r '[.[] | select(.name | endswith("/planner")) | .summary // ""] | first // ""')"
+    rows="$("$FLEET_SCRIPTS/registry.sh" list --team "$team" | jq -r '.[] | "- \(.name): \(.status)\(if (.summary // "") != "" then " (\(.summary))" else "" end)"')"
+  fi
+  printf '%s\n\nYou are being respawned: your previous session died. Carry on from where the record below says you were; do not start over.\nAssignment: %s\n' \
+    "$role_brief" "$(printf '%s' "$row" | jq -r '.assignment // ""')"
+  [ -z "$report" ] || printf 'Your last report file: %s\n' "$report"
+  [ -z "$gl" ] || printf '\ngit log -5 --oneline:\n%s\n' "$gl"
+  printf '\ngit status --short:\n%s\n' "${gs:-(clean)}"
+  [ -z "$esc" ] || printf '\nYour open escalations:\n%s\n' "$esc"
+  [ -z "$plan" ] || printf '\nThe plan (from the planner summary): %s\n' "$plan"
+  [ -z "$rows" ] || printf '\nThe team:\n%s\n' "$rows"
+  [ -z "$pane" ] || printf '\nThe old pane, last lines:\n%s\n' "$pane"
+  contract "$name" "$ex"
+}
+
+# --- the event log: one append-only JSON line per thing that happened ---------------------------------
+# ev_log <type> [team=T] [name=N] [issue=I] [pr=URL] [sha=S] [detail=SHORT REASON]
+# {at, type, team, name, issue, pr, sha, detail}; empty values are null. detail is a short reason (cut
+# at 120 characters), never brief text and never the Linear key; any other key is ignored. One `>>`
+# write. A write that fails is a warning, never a failure of the caller.
+events_file() { printf '%s\n' "${FLEET_EVENTS:-$FLEET_STATE_DIR/events.jsonl}"; }
+ev_log() {
+  local type="$1" kv k v line f; shift
+  local a_team="" a_name="" a_issue="" a_pr="" a_sha="" a_detail=""
+  for kv in "$@"; do
+    k="${kv%%=*}"; v="${kv#*=}"
+    case "$k" in
+      team) a_team="$v" ;; name) a_name="$v" ;; issue) a_issue="$v" ;; pr) a_pr="$v" ;; sha) a_sha="$v" ;;
+      detail) a_detail="${v:0:120}" ;;
+    esac
+  done
+  line="$(jq -nc --arg at "${FLEET_NOW:-$(now)}" --arg type "$type" --arg team "$a_team" --arg name "$a_name" --arg issue "$a_issue" \
+    --arg pr "$a_pr" --arg sha "$a_sha" --arg detail "$a_detail" \
+    '{at: $at, type: $type, team: $team, name: $name, issue: $issue, pr: $pr, sha: $sha, detail: $detail} | with_entries(if .value == "" then .value = null else . end)')" || return 0
+  f="$(events_file)"
+  { mkdir -p "$(dirname "$f")" && printf '%s\n' "$line" >>"$f"; } 2>/dev/null || warn "cannot write the event log $f"
+  return 0
+}
 
 # linear_writes: whether anything may write to Linear. off (the default; anything unrecognised too),
 # test:<TEAM> (writes only on issues of that Linear team) or on. Checked by linear.sh before any write.

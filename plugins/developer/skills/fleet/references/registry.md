@@ -23,6 +23,7 @@ restarted, compacted or replaced agent picks up from the row, not from memory.
 | `status` | Booting, Working, Needs input, Stalled, Zombie, Idle, Done, Retired |
 | `escalation`, `escalations[]` | `escalation` is derived: the highest severity among open entries, `""` when none. Each entry is `{id, severity, message, at}` (`id` is `<at compact>-<seq>`, seq the 1-based array position; entries filed before ids existed get the same derived id on read) plus `resolved_at` and `resolution` once `registry.sh resolve` closes it; `(name, id)` identifies one. Open entries survive `done`; `retire` closes them with resolution "closed at retire". A non-array `escalations` reads as empty and non-object elements are skipped |
 | `transcript` | path of the agent's Claude Code transcript (`<projects>/<cwd slug>/<session id>.jsonl`), set by boot (`--session-id`) and re-pointed by `next.sh` after `/clear` |
+| `nudged_at` | set by `tick.sh` when it nudged a Stalled agent; cleared when the agent stops being Stalled |
 | `pr`, `signoff` | `registry.sh signoff <name> <PR URL or N> <sha>` (the tester) sets `pr` and `signoff = {pr, sha, at}`; `tick.sh` reads them. `registry.sh reassign <team> <issue>` (run by `next.sh`) clears `outcome`, `summary`, `done_at`, `pr`, `signoff` and `lessons`, closes open escalations with `resolution: "closed at next"`, and sets `issue` and status Working |
 | `escalation`, `escalations[]` | `escalation` is derived: the highest severity among open entries, `""` when none. Each entry is `{severity, message, at}` plus `resolved_at` and `resolution` once `registry.sh resolve` closes it; `(name, at)` identifies one. Open entries survive `done` and `retire` |
 | `discovered[]` | unrelated work the agent filed instead of doing |
@@ -61,6 +62,14 @@ lowercase hex `sha` of 7 to 40 characters, `pr` is empty or an `https://` URL, `
 ends in `/tester`; `tick.sh` ignores a sign-off on any row that is not a tester row of the PR's team.
 `FLEET_NAME` and `FLEET_ROLE` are environment conventions an agent could set, so this guards against
 mistakes, not against an adversary.
+
+## The event log
+
+`events.jsonl` in the state dir (`FLEET_EVENTS` overrides) is append-only, one JSON object per line:
+`{at, type, team, name, issue, pr, sha, detail}` (empty fields are null). Types: `boot`, `brief_delivered`,
+`brief_failed`, `signoff`, `escalation_raised`, `escalation_resolved`, `next`, `pr_opened`, `pr_ready`,
+`pr_merged`, `stalled`, `dead`, `respawned`, `retired`. `detail` is a short reason (cut at 120
+characters), never brief text and never the Linear key. `metrics.sh` reads it.
 
 ## Tick state
 
