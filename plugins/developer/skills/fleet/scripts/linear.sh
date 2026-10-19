@@ -8,18 +8,20 @@
 #   linear.sh heartbeat                       rewrite the heartbeat line of this machine's label (ONE mutation)
 #   linear.sh holder <ISSUE>                  JSON: who holds the issue and their last heartbeat   (read-only)
 #   linear.sh peers                           JSON: other machines' claims, for `status.sh --all`   (read-only)
-#   linear.sh takeover <ISSUE> [--last-activity ISO]   take an issue over from a lapsed holder
+#   linear.sh takeover <ISSUE> [--repo OWNER/NAME]   take an issue over from a lapsed holder; refuses while an
+#                                             open PR exists on fleet/<slug> or the issue's Linear branch
 #   linear.sh migrate [--dry-run]             delete this machine's old `fleet-claim:` comments, and rewrite our
 #                                             label's description if it still holds a full machine id (a write;
 #                                             --dry-run reports it as would_rewrite and mutates nothing)
 #   linear.sh whoami                          JSON: the key's Linear user {id, name}   (read-only)
 #   linear.sh has-key                         exit 0 when a key is configured, 3 when not (reads nothing)
 #
-# TEST MODE. `linear.sh --test-team FT <subcommand>` (or FLEET_LINEAR_TEST_TEAM=FT) refuses every
-# write unless the target issue is in team FT, or the write only touches this machine's own
-# fleet:<key> label (heartbeat, its description). The check reads the issue's team key first, so a
-# refusal makes no mutation at all; the refusal names the team. Reads are unrestricted. Any write
-# path the guard has not cleared is refused too (fail closed).
+# WRITES. `linear_writes = off | test:FT | on` in config.toml, default off. Off: every write, and every
+# subcommand that would write, exits 3 ("Linear writes are off") before any call, the same path as
+# having no key. test:FT: a write is refused unless the target issue is in Linear team FT, or the
+# write only touches this machine's own fleet:<key> label (heartbeat, its description); the issue's
+# team key is read first, so a refusal makes no mutation and names the team. on: no restriction.
+# Reads and --dry-runs never need it. Any write path the test guard has not cleared is refused too.
 #
 # OWNER. The machine label's description carries `owner=<Linear user name>` (one `viewer` read,
 # cached for the tick in $FLEET_STATE_DIR/viewer.cache.json, keyed by FLEET_TICK_ID), kept next to
@@ -37,8 +39,9 @@
 # mutation and, in read-only mode (holder, peers, has-key and every --dry-run), refuses all of
 # them. A read-only subcommand cannot mutate even by mistake.
 #
-# Takeover needs the holder's heartbeat older than lease_hours (config.toml, default 2) AND a quiet
-# PR (the Orchestrator reads the PR's last activity and passes it in); FLEET_FORCE never bypasses.
+# Takeover needs the holder's heartbeat older than lease_hours (config.toml, default 2) AND no open PR:
+# it looks the PR up itself (gh pr list, read-only, in the current repo or --repo) on fleet/<slug> and on
+# the issue's Linear branch, and refuses while one is open or when it cannot look. FLEET_FORCE never bypasses.
 #
 # Claim race: the machine label is in a single-select group, and an issue update replaces the
 # issue's labels, so the last writer wins; both machines re-read after claim_settle_secs
@@ -56,7 +59,8 @@ FLEET_CURL="${FLEET_CURL:-curl}"
 LINEAR_URL="${LINEAR_URL:-https://api.linear.app/graphql}"
 READONLY=0
 KEY=""
-TEST_TEAM="${FLEET_LINEAR_TEST_TEAM:-}"
+WMODE="$(linear_writes)"
+TEST_TEAM=""; case "$WMODE" in test:*) TEST_TEAM="${WMODE#test:}" ;; esac
 WRITE_OK=0
 GROUP="fleet"
 
@@ -96,7 +100,9 @@ gql() { # gql <operation name> <query> <variables json> → the response, errors
   printf '%s' "$resp"
 }
 gql_read() { case "$2" in query*) ;; *) die "internal: gql_read given a non-query ($1)" ;; esac; gql "$@"; }
+writes_off() { printf 'fleet: Linear writes are off (set linear_writes = "on", or "test:FT", in config.toml)\n' >&2; exit 3; }
 gql_write() {
+  [ "$WMODE" != off ] || writes_off
   case "$2" in mutation*) ;; *) die "internal: gql_write given a non-mutation ($1)" ;; esac
   [ "$READONLY" != 1 ] || die "internal: mutation $1 attempted in read-only mode"
   [ -z "$TEST_TEAM" ] || [ "$WRITE_OK" = 1 ] || die "internal: write $1 was not cleared by the test-team guard (--test-team $TEST_TEAM)"
@@ -125,15 +131,19 @@ q_issue_team_key() { # q_issue_team_key <ISSUE> → the team key of the issue, e
   gql_read IssueTeamKey 'query IssueTeamKey($id: String!) { issue(id: $id) { identifier team { key } } }' \
     "$(jq -nc --arg id "$1" '{id: $id}')" | jq -r '.data.issue.team.key // empty'
 }
+q_issue_branch() { # q_issue_branch <ISSUE> → Linear's suggested git branch for the issue, empty when unknown
+  gql_read IssueBranch 'query IssueBranch($id: String!) { issue(id: $id) { identifier branchName } }' \
+    "$(jq -nc --arg id "$1" '{id: $id}')" | jq -r '.data.issue.branchName // empty'
+}
 q_viewer() { # the Linear user behind the key
   gql_read Viewer 'query Viewer { viewer { id name } }' '{}' | jq -c '.data.viewer // error("no viewer")' 2>/dev/null || die "cannot read the Linear viewer"
 }
 
 # ---- writes (mutations only) ---------------------------------------------------------------------
-m_label_create() { # m_label_create <name> <description> <parent id | ""> <team id | ""> → the new label's id
+m_label_create() { # m_label_create <name> <description> <parent id | ""> → the new label's id (a workspace label, no team)
   gql_write IssueLabelCreate 'mutation IssueLabelCreate($input: IssueLabelCreateInput!) { issueLabelCreate(input: $input) { success issueLabel { id } } }' \
-    "$(jq -nc --arg n "$1" --arg d "$2" --arg p "$3" --arg t "$4" \
-      '{input: ({name: $n, description: $d} + (if $p != "" then {parentId: $p} else {} end) + (if $t != "" then {teamId: $t} else {} end))}')" |
+    "$(jq -nc --arg n "$1" --arg d "$2" --arg p "$3" \
+      '{input: ({name: $n, description: $d} + (if $p != "" then {parentId: $p} else {} end))}')" |
     jq -r '.data.issueLabelCreate.issueLabel.id // empty'
 }
 m_label_describe() { # m_label_describe <label id> <description>
@@ -179,13 +189,27 @@ legacy_ids_hashed() {
   printf '%s' "$d"
 }
 
+# open_pr <ISSUE> <repo | ""> → the URL of an open same-repo PR on fleet/<slug>[-...] (slug = the lowercase
+# issue key) or on the issue's Linear branch; nothing when there is none. Returns 2 when gh cannot answer.
+open_pr() {
+  local issue="$1" repo="$2" slug b prs
+  command -v "$FLEET_GH" >/dev/null 2>&1 || return 2
+  b="$(q_issue_branch "$issue")"
+  slug="fleet/$(printf '%s' "$issue" | tr '[:upper:]' '[:lower:]')"
+  prs="$("$FLEET_GH" pr list --state open --limit 200 --json url,headRefName,isCrossRepository ${repo:+--repo "$repo"} 2>/dev/null)" || return 2
+  printf '%s' "$prs" | jq -r --arg s "$slug" --arg b "$b" '
+    .[] | select((.isCrossRepository // false) | not)
+        | select(.headRefName == $s or (.headRefName | startswith($s + "-")) or (.headRefName | startswith($s + "/")) or ($b != "" and .headRefName == $b))
+        | .url' | head -n 1
+}
+
 # guard_issue <ISSUE...>: in test mode, every issue must be in team $TEST_TEAM or nothing is written.
 guard_issue() {
   [ -n "$TEST_TEAM" ] || return 0
   local i k
   for i in "$@"; do
     k="$(q_issue_team_key "$i")"
-    [ "$k" = "$TEST_TEAM" ] || die "test mode (--test-team $TEST_TEAM): $i is in team ${k:-unknown}; writes are allowed only on team $TEST_TEAM. Nothing was written"
+    [ "$k" = "$TEST_TEAM" ] || die "test mode (linear_writes = test:$TEST_TEAM): $i is in team ${k:-unknown}; writes are allowed only on team $TEST_TEAM. Nothing was written"
   done
   WRITE_OK=1
 }
@@ -212,10 +236,10 @@ describe_with_owner() {
     END { if (!d) print o }'
 }
 
-# ensure_label <team id> <dry>: prints our label id (creating the group and the label as needed).
+# ensure_label <dry>: prints our label id (creating the group and the label as needed).
 # An empty description is filled; a non-empty one is never overwritten.
 ensure_label() {
-  local team="$1" dry="$2" mine desc found lid gid grp now_iso cur new owner
+  local dry="$1" mine desc found lid gid grp now_iso cur new owner
   mine="$(machine_label)"; desc="$("$FLEET_SCRIPTS/machine-id.sh" description)"; now_iso="${FLEET_NOW:-$(now)}"
   owner="$(owner_name)"
   found="$(q_labels_named "$mine")"
@@ -240,12 +264,11 @@ ensure_label() {
     say --arg l "$mine" '{would: "create the machine label", label: $l}' >&2
     printf 'dry-run-label\n'; return 0
   fi
-  [ -n "$gid" ] || gid="$(m_label_create "$GROUP" "fleet machines" "" "$team")"
-  m_label_create "$mine" "$(describe_with_hb "$(describe_with_owner "$desc" "$owner")" "$now_iso")" "$gid" "$team"
+  [ -n "$gid" ] || gid="$(m_label_create "$GROUP" "fleet machines" "")"
+  m_label_create "$mine" "$(describe_with_hb "$(describe_with_owner "$desc" "$owner")" "$now_iso")" "$gid"
 }
 
 # ---- subcommands ---------------------------------------------------------------------------------
-if [ "${1:-}" = "--test-team" ]; then TEST_TEAM="${2:?--test-team needs a team key (e.g. FT)}"; shift 2; fi
 cmd="${1:-}"; [ $# -gt 0 ] && shift
 # Every API subcommand needs the key; check it here, at the top level, so a missing key is exit 3
 # and not an error swallowed inside a command substitution.
@@ -287,13 +310,14 @@ case "$cmd" in
       esac
     done
     [ -n "$issue" ] || die "usage: claim <ISSUE> [--dry-run]"
+    [ "$dry" = 1 ] || [ "$WMODE" != off ] || writes_off
     mine="$(machine_label)"
     iss="$(q_issue "$issue")"
     iid="$(printf '%s' "$iss" | jq -r .id)"; team="$(printf '%s' "$iss" | jq -r .team.id)"
     holder="$(other_fleet_labels "$iss" | head -n 1)"
     if [ -n "$holder" ]; then die "$issue is claimed by $holder; this machine is $mine. Not claiming"; fi
     [ "$dry" = 1 ] || guard_issue "$issue"
-    lid="$(ensure_label "$team" "$dry")"
+    lid="$(ensure_label "$dry")"
     sid="$(q_state_id "$team" "In Progress")"
     keep="$(printf '%s' "$iss" | jq -c --arg p "$(label_prefix)" '[.labels.nodes[] | select(.name | startswith($p) | not) | .id]')"
     ids="$(jq -cn --argjson k "$keep" --arg l "$lid" '$k + [$l] | unique')"
@@ -312,6 +336,7 @@ case "$cmd" in
     fi ;;
 
   heartbeat)
+    [ "$WMODE" != off ] || writes_off
     mine="$(machine_label)"
     found="$(q_labels_named "$mine")"
     lid="$(printf '%s' "$found" | jq -r '.[0].id // empty')"
@@ -322,15 +347,16 @@ case "$cmd" in
     say --arg t "$ts" '{heartbeat: true, at: $t}' ;;
 
   takeover)
-    issue=""; act=""
+    issue=""; repo=""
     while [ $# -gt 0 ]; do
       case "$1" in
-        --last-activity) act="${2:?--last-activity needs a value}"; shift 2 ;;
+        --repo) repo="${2:?--repo needs OWNER/NAME}"; shift 2 ;;
         -*) die "unknown option: $1" ;;
         *) issue="$1"; shift ;;
       esac
     done
-    [ -n "$issue" ] || die "usage: takeover <ISSUE> [--last-activity ISO]"
+    [ -n "$issue" ] || die "usage: takeover <ISSUE> [--repo OWNER/NAME]"
+    [ "$WMODE" != off ] || writes_off
     mine="$(machine_label)"
     iss="$(q_issue "$issue")"
     guard_issue "$issue"
@@ -339,14 +365,17 @@ case "$cmd" in
     hb="$(hb_of "$(q_labels_named "$holder" | jq -r '.[0].description // ""')")"
     [ -n "$hb" ] || die "$holder has no heartbeat; cannot show its claim lapsed. Not taking over"
     lease="$("$FLEET_SCRIPTS/claim.sh" lease --now "$hb")"
-    eargs=(expired --lease "$lease" --now "${FLEET_NOW:-$(now)}"); [ -z "$act" ] || eargs+=(--last-activity "$act")
-    why="$("$FLEET_SCRIPTS/claim.sh" "${eargs[@]}" 2>&1)" || die "$issue is claimed by $holder ($why). Not taking over"
+    why="$("$FLEET_SCRIPTS/claim.sh" expired --lease "$lease" --now "${FLEET_NOW:-$(now)}" 2>&1)" || die "$issue is claimed by $holder ($why). Not taking over"
+    # A PR waiting on a merge is not "quiet": taking over would let the taker overwrite it.
+    pr=""; rc=0; pr="$(open_pr "$issue" "$repo")" || rc=$?
+    [ "$rc" = 0 ] || die "cannot look up open PRs for $issue (gh failed or is missing); not taking over"
+    [ -z "$pr" ] || die "$issue has an open PR ($pr); not taking over while it is open"
     iid="$(printf '%s' "$iss" | jq -r .id)"; team="$(printf '%s' "$iss" | jq -r .team.id)"
-    lid="$(ensure_label "$team" 0)"
+    lid="$(ensure_label 0)"
     sid="$(q_state_id "$team" "In Progress")"
     keep="$(printf '%s' "$iss" | jq -c --arg p "$(label_prefix)" '[.labels.nodes[] | select(.name | startswith($p) | not) | .id]')"
     m_issue_update "$iid" "$(jq -cn --argjson k "$keep" --arg l "$lid" '$k + [$l] | unique')" "$sid"
-    m_comment_create "$iid" "fleet: taken over from $holder (heartbeat $hb, PR quiet since ${act:-no PR})"
+    m_comment_create "$iid" "fleet: taken over from $holder (heartbeat $hb, no open PR)"
     say --arg i "$issue" --arg f "$holder" --arg m "$mine" '{taken_over: true, issue: $i, from: $f, by: $m}' ;;
 
   migrate)
@@ -357,6 +386,7 @@ case "$cmd" in
         *) die "unknown option: $1" ;;
       esac
     done
+    [ "$dry" = 1 ] || [ "$WMODE" != off ] || writes_off
     mine="$(machine_label)"; key="$(machine_key)"
     victims="$(q_open_issues_labelled "$mine" eq | jq -c --arg k "$key" '
       [.[] | . as $i | .comments.nodes[]

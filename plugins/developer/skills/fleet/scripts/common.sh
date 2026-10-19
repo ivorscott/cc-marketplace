@@ -197,6 +197,16 @@ Fleet rules for $name.$x Stay on this one task. If you notice unrelated work, ru
 # build_brief <name> <expertise-file> <text>: a brief plus the fleet rules.
 build_brief() { printf '%s%s' "$3" "$(contract "$1" "$2")"; }
 
+# linear_writes: whether anything may write to Linear. off (the default; anything unrecognised too),
+# test:<TEAM> (writes only on issues of that Linear team) or on. Checked by linear.sh before any write.
+linear_writes() {
+  local v; v="$(cfg_str linear_writes off)"
+  case "$v" in
+    off | on | test:?*) printf '%s\n' "$v" ;;
+    *) warn "linear_writes = '$v' is not off, test:<TEAM> or on; treating it as off"; printf 'off\n' ;;
+  esac
+}
+
 # FLEET_GH: the GitHub CLI, overridable for tests. Scripts only ever make read-only calls (pr view).
 FLEET_GH="${FLEET_GH:-gh}"
 
