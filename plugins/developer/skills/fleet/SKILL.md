@@ -243,6 +243,8 @@ by the next arm, never lost. Never rely on the tick alone: a P0/P1 must reach th
 
 ## Tick
 
+**The scheduled loop:** `$F/schedule.sh status` says whether launchd runs `loop-tick.sh` every `tick_secs` (default 300). The user installs it (`schedule.sh install`; `uninstall` removes it); you never do. When it is installed, the loop owns the tick: do not call `tick.sh` yourself, and expect a wake message only for a ready or merged PR, a P0/P1 escalation, a dead agent, a taken-over claim or a failed respawn. Everything else waits in `events.jsonl`. With no schedule installed, run `tick.sh` per tick as below.
+
 In a loop run `$F/tick.sh` once per tick (add `--team T` to limit it). It prints a JSON array of
 what changed, or **nothing** when nothing did; a quiet tick is answered in one line. Each event
 has `type`, `team`, `name` and, where a PR exists, the full `url`. Act on each:
