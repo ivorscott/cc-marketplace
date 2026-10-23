@@ -96,7 +96,13 @@ chmod +x "$T/up.sh" "$T/down.sh" "$T/bin/nc"; export PATH="$T/bin:$PATH"
 cat >"$T/bin/herdr" <<'S'
 #!/usr/bin/env bash
 shift 2 # --session <name>
-echo "$*" >>"$HERDR_LOG"
+# Log a --settings file by its content, so allow-list checks read what the agent gets.
+logged=(); prev=""
+for a in "$@"; do
+  if [ "$prev" = "--settings" ] && [ -f "$a" ]; then logged+=("$(cat "$a")"); else logged+=("$a"); fi
+  prev="$a"
+done
+echo "${logged[*]}" >>"$HERDR_LOG"
 case "$1 $2" in
   "workspace create") echo '{"result":{"workspace":{"workspace_id":"w1"},"root_pane":{"pane_id":"p0"}}}' ;;
   "pane split") n=$(( $(grep -c '^pane split' "$HERDR_LOG") )); echo "{\"result\":{\"pane\":{\"pane_id\":\"p$n\"}}}" ;;
@@ -438,6 +444,8 @@ eq "boot: a codex agent's pane gets the key unset before its agent starts (every
 unset DEAD_ONCE
 eq "boot: a dead pane after start is started again once" "$(grep -c '^agent start' "$HERDR_LOG")" "$((agents_per_boot + 1))"
 eq "boot: the retried agent is not a Zombie" "$(grep -c Zombie "$T/envr.out")" 0
+eq "boot: the retry first clears a half-typed line" "$(grep -c '^pane send-keys .* ctrl+c' "$HERDR_LOG")" 1
+eq "boot: --settings is a file, not inline JSON" "$(jq -r '.permissions.allow | length > 0' "$(ls "$FLEET_STATE_DIR"/settings/*.json | head -1)")" true
 eq "templates name no tracker or forge tool" "$(cat "$SCRIPTS"/../templates/*.json | grep -ciE 'linear|jira|gh pr|glab')" 0
 
 : >"$HERDR_LOG"; "$SCRIPTS/boot.sh" build plainbt "$T/plain" task >/dev/null 2>&1
