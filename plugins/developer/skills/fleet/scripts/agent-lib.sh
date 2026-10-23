@@ -21,7 +21,12 @@ claude_args() { # claude_args <model> <tier> <worktree> <allow-json>
   extra="${extra//\{\{team\}\}/$team}"; extra="${extra//\{\{worktree\}\}/$3}"
   settings="$(jq -cn --arg r "$registry" --argjson extra "$extra" --argjson tools "$tool_allow" --argjson h "$herdr_allow" \
     '{permissions: {allow: (["Bash(\($r):*)"] + $h + $extra + $tools | unique)}}')"
-  printf '%s\0' --settings "$settings"
+  # A file keeps the typed start command short: a long inline JSON outlasted herdr's startup wait.
+  local dir="$FLEET_STATE_DIR/settings" file
+  mkdir -p "$dir"
+  file="$dir/$(printf '%s' "$settings" | shasum -a 256 | cut -c1-16).json"
+  [ -f "$file" ] || printf '%s\n' "$settings" >"$file"
+  printf '%s\0' --settings "$file"
   [ -n "$1" ] && printf '%s\0' --model "$1"
   [ "$2" = "Lead" ] && printf '%s\0' --agent developer:lead
   # perm_mode is checked up front by the caller (boot, respawn): a mode that turns checks off never gets here.
@@ -107,6 +112,8 @@ start_agent() { # same arguments as start_agent_once
   status="$(start_agent_once "$@")"
   if [ "$status" = "Zombie" ]; then
     warn "agent $1 did not start; retrying once"
+    # Clear a half-typed start command, or the retry types into it.
+    hd pane send-keys "$3" ctrl+c >/dev/null 2>&1 || true
     status="$(start_agent_once "$@")"
   fi
   printf '%s' "$status"
