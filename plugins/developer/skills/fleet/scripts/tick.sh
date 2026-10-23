@@ -329,26 +329,13 @@ if [ "$(printf '%s' "$prs" | jq length)" != 0 ]; then
       if ! printf '%s' "$j" | jq -e 'type == "object" and (.state | type == "string")' >/dev/null 2>&1; then
         warn "gh returned no PR state for $url"; continue
       fi
-      ev="$(jq -cn --argjson p "$p" --argjson g "$j" --slurpfile stf "$STATE_FILE" --argjson noci "$no_ci" '
-        ($p.repo | split("/") | last) as $base
-        | ($p.pr | sub("^https?://[^/]+/"; "") | sub("/(pull|merge_requests)/.*$"; "")) as $slug
-        | (($noci | index($base)) != null or ($noci | index($slug)) != null or ($noci | index($p.repo)) != null) as $nociok
-        | ($g.statusCheckRollup // []) as $checks
-        | ($checks | map(if .__typename == "StatusContext" or (.conclusion == null and .state != null)
-              then (if .state == "SUCCESS" then "ok" elif (.state == "PENDING" or .state == "EXPECTED") then "pending" else "red" end)
-              else (if .status != "COMPLETED" then "pending"
-                    elif (.conclusion | IN("SUCCESS", "NEUTRAL", "SKIPPED")) then "ok" else "red" end) end)) as $cs
-        | (if ($cs | length) == 0 then (if $nociok then "none" else "unknown" end)
-           elif ($cs | index("red")) then "red" elif ($cs | index("pending")) then "pending" else "green" end) as $ci
-        | ($p.signoff // "" | ascii_downcase) as $so | ($g.headRefOid // "" | ascii_downcase) as $head
-        | ($so != "" and $head != "" and ($head | startswith($so))) as $signed
-        | (($g.body // "") | test("DO NOT MERGE|merge order|before/after|merge (after|before)|stacked on"; "i")) as $held
-        | ($g.isDraft // false) as $draft
-        | if $g.state == "MERGED" then
+      # Ready is one rule (common.sh PR_DEFS), shared with the merge queue.
+      ev="$(jq -cn --argjson p "$p" --argjson g "$j" --slurpfile stf "$STATE_FILE" --argjson noci "$no_ci" "$PR_DEFS"'
+        $g | pr_noci_ok($noci; $p.repo; $p.pr) as $nociok | ((.headRefOid // "") | ascii_downcase) as $head
+        | if .state == "MERGED" then
             (if (($stf[0].pr_merged_emitted // []) | index($p.pr)) == null then {type: "pr_merged", team: $p.team, name: $p.name, url: $p.pr} + (if $p.park_after_merge != null then {parks: $p.park_after_merge} else {} end) else null end)
-          elif $g.state == "OPEN" and ($draft | not) and $g.mergeable == "MERGEABLE" and ($ci == "green" or $ci == "none") and $signed and ($held | not)
-               and (($stf[0].pr_ready_emitted // []) | index($p.pr + "@" + $head)) == null
-          then {type: "pr_ready", team: $p.team, name: $p.name, url: $p.pr, sha: $head, ci: $ci}
+          elif (pr_missing($p.signoff; $nociok) | length) == 0 and (($stf[0].pr_ready_emitted // []) | index($p.pr + "@" + $head)) == null
+          then {type: "pr_ready", team: $p.team, name: $p.name, url: $p.pr, sha: $head, ci: pr_ci($nociok)}
           else null end')"
       [ "$ev" != "null" ] || continue
       add_events "[$ev]"

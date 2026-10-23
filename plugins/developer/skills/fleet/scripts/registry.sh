@@ -12,7 +12,10 @@
 #   registry.sh escalate <name> P0|P1|P2 TEXT              severity-routed escalation (+ notification + inbox line)
 #   registry.sh escalations [--open] [--team T] [--not-retired]  every escalation, Done and Retired rows included unless --not-retired
 #   registry.sh resolve <name> <id|at> [--note TEXT]       close one escalation (the Orchestrator does this; <id> is unique, <at> is the legacy form)
-#   registry.sh note <name> discovered TEXT                file discovered work instead of fixing it
+#   registry.sh note <name> discovered|decision|picked TEXT   discovered: work filed instead of done (the row's
+#                                                          `discovered`); decision: the option an agent took on its own
+#                                                          (overnight mode); picked: the search behind a boot (the
+#                                                          Orchestrator, on the lead's row). The last two go to `notes`
 #   registry.sh retire <name|team> [--outcome O]           also closes the rows' open escalations ("closed at retire")
 #   registry.sh signoff <name> <pr-url|N> <sha>            the tester's sign-off: records the PR and the exact SHA verified
 #   registry.sh reassign <team> <issue> [--assignment TEXT] [--issue-url URL]
@@ -29,11 +32,13 @@
 #   registry.sh env-release <team>                         mark the environment Down, freeing its slot
 #   registry.sh archive                                    move Retired rows to fleet-archive.json (lessons written, no open escalation, ended archive_after_days ago)
 #   registry.sh orchestrator here [--transcript PATH]   the Orchestrator registers its pane as the loop's wake target
+#   registry.sh pref <key> [value]                         a fleet-wide choice (the top-level `prefs`): print it (nothing
+#                                                          when unset), or set it
 #   registry.sh path
 #
 # Every path comes from FLEET_STATE_DIR (fleet.json, escalations.jsonl, worktrees/, fleet-archive.json); there
 # is no FLEET_REGISTRY or FLEET_INBOX override. Agents (FLEET_ROLE set) are refused add, retire, archive,
-# reassign, resolve, close-stale and orchestrator.
+# reassign, resolve, close-stale, orchestrator and pref.
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
 
@@ -96,7 +101,7 @@ cmd="${1:-}"; shift || true
 # Agents (FLEET_ROLE set in their pane) can report on themselves (set, done, escalate, note, signoff for the
 # tester) but cannot create, retire, archive, move or resolve: those are the Orchestrator's.
 case "$cmd" in
-  add | retire | archive | reassign | resolve | close-stale | orchestrator | park | park-mark)
+  add | retire | archive | reassign | resolve | close-stale | orchestrator | park | park-mark | pref)
     [ -z "${FLEET_ROLE:-}" ] || die "$cmd is the Orchestrator's; an agent (FLEET_ROLE=$FLEET_ROLE) may not run it" ;;
 esac
 case "$cmd" in
@@ -233,10 +238,16 @@ case "$cmd" in
     ev_log escalation_resolved team="$(jq -r --arg n "$name" '.agents[$n].team // ""' "$FLEET_REGISTRY")" name="$name" detail="$ref"
     ;;
   note)
-    name="${1:?usage: note <name> discovered TEXT}"; kind="${2:?}"; msg="${3:?}"
-    [ "$kind" = "discovered" ] || die "only 'discovered' notes are supported"
+    name="${1:?usage: note <name> discovered|decision|picked TEXT}"; kind="${2:?usage: note <name> discovered|decision|picked TEXT}"
+    msg="${3:?usage: note <name> discovered|decision|picked TEXT}"
+    case "$kind" in discovered | decision | picked) ;; *) die "a note is discovered, decision or picked, not '$kind'" ;; esac
     exists "$name"
-    update --arg n "$name" --arg m "$msg" --arg t "$(now)" '.agents[$n] |= (.discovered += [{message: $m, at: $t}] | .updated_at = $t)'
+    if [ "$kind" = discovered ]; then
+      update --arg n "$name" --arg m "$msg" --arg t "$(now)" '.agents[$n] |= (.discovered += [{message: $m, at: $t}] | .updated_at = $t)'
+    else
+      update --arg n "$name" --arg k "$kind" --arg m "$msg" --arg t "$(now)" \
+        '.agents[$n] |= (.notes = ((.notes // []) + [{kind: $k, message: $m, at: $t}]) | .updated_at = $t)'
+    fi
     ;;
   retire)
     target="${1:?usage: retire <name|team> [--outcome O]}"; shift
@@ -414,7 +425,9 @@ case "$cmd" in
     ;;
   orchestrator)
     # The Orchestrator registers its own pane as the loop's wake target, once per session. The row is
-    # replaced whole, so an older session's pane and transcript never linger.
+    # replaced whole, so an older session's pane and transcript never linger; only the standing goal
+    # `target_teams` ("keep N teams running") carries over, so a new session or a compaction keeps it. `cwd` is
+    # where the session runs: the morning report goes to its reports/.
     [ "${1:-}" = here ] || die "usage: orchestrator here [--transcript PATH]"; shift
     otr=""
     while [ $# -gt 0 ]; do
@@ -429,11 +442,22 @@ case "$cmd" in
     # No --transcript: the newest session file of this directory's Claude project (UNVERIFIED: the
     # newest file is this session's when one Claude Code session runs in the directory).
     if [ -z "$otr" ]; then otr="$(ls -t "$(transcript_dir_for "$PWD")"/*.jsonl 2>/dev/null | head -n 1 || true)"; fi
-    update --arg r "$oref" --arg p "$opane" --arg tr "$otr" --arg m "$(machine_key 2>/dev/null || true)" --arg t "$(now)" \
-      '.agents.orchestrator = {name: "orchestrator", team: "orchestrator", tier: "Orchestrator", status: "Working", herdr_ref: $r, pane: $p,
-         machine: $m, at: $t, started: $t, updated_at: $t, discovered: [], escalations: []} + (if $tr != "" then {transcript: $tr} else {} end)'
+    update --arg r "$oref" --arg p "$opane" --arg tr "$otr" --arg m "$(machine_key 2>/dev/null || true)" --arg cwd "$PWD" --arg t "$(now)" \
+      '(.agents.orchestrator.target_teams // null) as $goal
+       | .agents.orchestrator = {name: "orchestrator", team: "orchestrator", tier: "Orchestrator", status: "Working", herdr_ref: $r, pane: $p,
+         machine: $m, cwd: $cwd, at: $t, started: $t, updated_at: $t, discovered: [], escalations: []} + (if $tr != "" then {transcript: $tr} else {} end)
+         + (if $goal != null then {target_teams: $goal} else {} end)'
     "$0" get orchestrator
     ;;
+  pref)
+    k="${1:?usage: pref <key> [value]}"
+    case "$k" in [!a-z]* | *[!a-z0-9_]*) die "a pref key is lower case letters, digits and _: $k" ;; esac
+    if [ $# -ge 2 ]; then
+      update --arg k "$k" --arg v "$2" '.prefs = ((.prefs // {}) + {($k): $v})'
+    else
+      jq -r --arg k "$k" '.prefs[$k] // empty' "$FLEET_REGISTRY"
+    fi
+    ;;
   path) printf '%s\n' "$FLEET_REGISTRY" ;;
-  *) sed -n '2,22p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
+  *) sed -n '2,/^set -euo/p' "$0" | sed '$d' | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

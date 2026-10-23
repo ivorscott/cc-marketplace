@@ -3124,5 +3124,173 @@ eq "CI jobs have a timeout" "$(grep -c 'timeout-minutes: ' "$WF")" 3
 eq "CI has no install step" "$(grep -ciE 'brew |apt|apt-get|npm i|pip install' "$WF")" 0
 check "run.sh exits non-zero on a failed assertion" bash -c "tail -n 1 '$HERE/run.sh' | grep -qx '\[ \"\$failn\" = 0 \]'"
 
+# ---- DEV-408 (4.1) ------------------------------------------------------------------------------------------
+# One group per item (dev408-<item> ...; dev408-0 is the groundwork several items share). The section sets up its
+# own state root, config, Linear stub and gh shim, so it also runs on its own after the harness.
+export FLEET_STATE_DIR="$T/d408" FLEET_REGISTRY="$T/d408/fleet.json" FLEET_INBOX="$T/d408/escalations.jsonl" FLEET_WORKTREES="$T/d408/worktrees"
+unset FLEET_NOW FLEET_FORCE FLEET_GH
+D4="$T/d408x"; mkdir -p "$FLEET_STATE_DIR" "$D4"
+cp "$FLEET_CONFIG_DIR/config.toml" "$D4/config.bak" 2>/dev/null || : >"$D4/config.bak"
+d4cfg() { cp "$D4/config.bak" "$FLEET_CONFIG_DIR/config.toml"; [ $# = 0 ] || printf '%s\n' "$@" >>"$FLEET_CONFIG_DIR/config.toml"; } # d4cfg ['key = value'...]
+printf 'BBBBBBBB-1111-4222-8333-444455556666\n' >"$FLEET_STATE_DIR/machine-id" # a fixture id, never this machine's
+LIN="$SCRIPTS/linear.sh"
+export LINEAR_DB="$D4/linear.json" LINEAR_LOG="$D4/linear.log" LINEAR_ARGV_LOG="$D4/linear.argv" LINEAR_STUB_KEY="KEYFIXTURE-408" FLEET_CURL="$HERE/linear-stub.sh" FLEET_CLAIM_SETTLE_SECS=0
+printf '%s\n' "$LINEAR_STUB_KEY" >"$FLEET_CONFIG_DIR/linear_api_key"; chmod 600 "$FLEET_CONFIG_DIR/linear_api_key"
+d4db() { # issues: DEV-1 free; DEV-2 another machine's (heartbeat 06:00); DEV-3 ours (08:30), blocks DEV-1 and DEV-4; DEV-4 a holder with
+  # no heartbeat; DEV-5 our legacy label, in Linear team FT
+  cat >"$LINEAR_DB" <<'J'
+{"team": "T1", "states": {"In Progress": "S1", "Done": "S2", "Todo": "S3"}, "next": 100,
+ "labels": [{"id": "L1", "name": "fleet", "description": "", "parent": null},
+            {"id": "L2", "name": "fleet:other", "description": "other host\nheartbeat=2026-10-18T06:00:00Z", "parent": {"id": "L1", "name": "fleet"}},
+            {"id": "L3", "name": "bug", "description": "", "parent": null},
+            {"id": "L4", "name": "fleet:test", "description": "this box\nheartbeat=2026-10-18T08:30:00Z", "parent": {"id": "L1", "name": "fleet"}},
+            {"id": "L5", "name": "fleet:nohb", "description": "no heartbeat line", "parent": {"id": "L1", "name": "fleet"}},
+            {"id": "L6", "name": "fleet:old", "description": "", "parent": {"id": "L1", "name": "fleet"}}],
+ "issues": [{"id": "I1", "identifier": "DEV-1", "team": {"id": "T1"}, "state": {"id": "S3", "name": "Todo"}, "labelIds": ["L3"], "comments": []},
+            {"id": "I2", "identifier": "DEV-2", "team": {"id": "T1"}, "state": {"id": "S1", "name": "In Progress"}, "labelIds": ["L2", "L3"], "comments": []},
+            {"id": "I3", "identifier": "DEV-3", "team": {"id": "T1"}, "state": {"id": "S1", "name": "In Progress"}, "labelIds": ["L4", "L3"], "comments": [], "blocks": ["DEV-1", "DEV-4"], "related": ["DEV-2"]},
+            {"id": "I4", "identifier": "DEV-4", "team": {"id": "T1"}, "state": {"id": "S1", "name": "In Progress"}, "labelIds": ["L5"], "comments": []},
+            {"id": "I5", "identifier": "DEV-5", "team": {"id": "T1", "key": "FT"}, "state": {"id": "S1", "name": "In Progress"}, "labelIds": ["L6", "L3"], "comments": []}]}
+J
+  : >"$LINEAR_LOG"; : >"$LINEAR_ARGV_LOG"
+}
+d4labels() { jq -r --arg i "$1" '. as $r | .issues[] | select(.identifier == $i) | [.labelIds[] as $l | $r.labels[] | select(.id == $l) | .name] | sort | join(",")' "$LINEAR_DB"; }
+d4state() { jq -r --arg i "$1" '.issues[] | select(.identifier == $i) | .state.name' "$LINEAR_DB"; }
+d4mut() { grep -c '^mutation' "$LINEAR_LOG"; }
+# gh: `pr view <url>` answers $D4/gh/<N>.json; `pr list` answers D4GH_LIST (the --search form: D4GH_SEARCH), else []
+mkdir -p "$D4/gh"; printf '[]' >"$D4/gh-none.json"; export D4GH_LOG="$D4/gh.log" D4GH_DIR="$D4/gh" D4GH_NONE="$D4/gh-none.json"; : >"$D4GH_LOG"
+cat >"$D4/gh-shim" <<'S'
+#!/usr/bin/env bash
+echo "$*" >>"$D4GH_LOG"
+[ -z "${D4GH_FAIL:-}" ] || exit 1
+case "$1 $2" in "pr view") cat "$D4GH_DIR/${3##*/}.json"; exit ;; esac
+case " $* " in *" --search "*) cat "${D4GH_SEARCH:-$D4GH_NONE}"; exit 0 ;; esac
+cat "${D4GH_LIST:-$D4GH_NONE}"
+S
+chmod +x "$D4/gh-shim"; G4="$D4/gh-shim"
+
+# -- dev408-1: holder says whether a claim lapsed, with takeover's own check
+d4cfg 'linear_writes = "on"'; d4db
+eq "dev408-1 pick: holder lapsed: another machine's heartbeat older than lease_hours is lapsed" "$(FLEET_NOW=2026-10-18T09:00:00Z "$LIN" holder DEV-2 | jq -c '[.holder, .ours, .lapsed]')" '["fleet:other",false,true]'
+eq "dev408-1 pick: holder lapsed: inside lease_hours it is live" "$(FLEET_NOW=2026-10-18T07:00:00Z "$LIN" holder DEV-2 | jq -c '.lapsed')" false
+eq "dev408-1 pick: holder lapsed: a holder with no heartbeat is null, never proven lapsed" "$(FLEET_NOW=2026-10-18T09:00:00Z "$LIN" holder DEV-4 | jq -c '[.holder, .heartbeat, .lapsed]')" '["fleet:nohb",null,null]'
+eq "dev408-1 pick: holder lapsed: an unclaimed issue has no holder and null" "$("$LIN" holder DEV-1 | jq -c '[.holder, .lapsed]')" '[null,null]'
+eq "dev408-1 pick: holder lapsed: our own live claim" "$(FLEET_NOW=2026-10-18T09:00:00Z "$LIN" holder DEV-3 | jq -c '[.holder, .ours, .lapsed]')" '["fleet:test",true,false]'
+d4cfg 'linear_writes = "on"' 'lease_hours = 4'
+eq "dev408-1 pick: holder lapsed: lease_hours from config.toml decides" "$(FLEET_NOW=2026-10-18T09:00:00Z "$LIN" holder DEV-2 | jq -c '.lapsed')" false
+d4cfg 'linear_writes = "on"'
+eq "dev408-1 pick: holder stays read-only" "$(d4mut)" 0
+
+# -- dev408-0: linear.sh blocks (read-only, one query for all the issues)
+d4db
+eq "dev408-0 groundwork: blocks maps each issue to the issues it blocks (not other relations), in one query" "$("$LIN" blocks DEV-3 DEV-1 | jq -c .):$(grep -c '^query' "$LINEAR_LOG"):$(grep -c '^query Blocks$' "$LINEAR_LOG")" '{"DEV-3":["DEV-1","DEV-4"],"DEV-1":[]}:1:1'
+eq "dev408-0 groundwork: blocks of an unknown issue is empty" "$("$LIN" blocks DEV-99 | jq -c .)" '{"DEV-99":[]}'
+: >"$LINEAR_LOG"; "$LIN" blocks 'DEV-1) { x' >/dev/null 2>&1; eq "dev408-0 groundwork: blocks refuses a malformed key before any call" "$?:$(wc -l <"$LINEAR_LOG" | tr -d ' ')" "1:0"
+eq "dev408-0 groundwork: blocks makes no mutation" "$(d4mut)" 0
+mv "$FLEET_CONFIG_DIR/linear_api_key" "$D4/key.off"; "$LIN" blocks DEV-3 >/dev/null 2>&1; eq "dev408-0 groundwork: blocks without a key exits 3" "$?" 3
+mv "$D4/key.off" "$FLEET_CONFIG_DIR/linear_api_key"
+
+# -- dev408-0: linear.sh release (this machine's claim, or with --lapsed a lapsed machine's)
+d4cfg; d4db; "$LIN" release DEV-3 >/dev/null 2>&1
+eq "dev408-0 groundwork: release with linear_writes off exits 3 and writes nothing" "$?:$(d4mut)" "3:0"
+d4cfg 'linear_writes = "on"'; d4db
+out="$("$LIN" release DEV-3 2>/dev/null)"; rc=$?
+eq "dev408-0 groundwork: release drops this machine's label and keeps the rest" "$rc:$(d4labels DEV-3)" "0:bug"
+eq "dev408-0 groundwork: release leaves the state, in one issue update" "$(d4state DEV-3):$(d4mut):$(grep -c '^mutation IssueUpdate' "$LINEAR_LOG")" "In Progress:1:1"
+eq "dev408-0 groundwork: release says what it dropped" "$(printf '%s' "$out" | jq -c '[.released, .labels]')" '[true,["fleet:test"]]'
+d4db; "$LIN" release DEV-1 >/dev/null 2>"$D4/e"; rc=$?
+eq "dev408-0 groundwork: release refuses an issue this machine does not hold" "$rc:$(grep -c 'not claimed by this machine' "$D4/e"):$(d4mut)" "1:1:0"
+"$LIN" release DEV-2 >/dev/null 2>&1; eq "dev408-0 groundwork: plain release never drops another machine's label" "$?:$(d4labels DEV-2):$(d4mut)" "1:bug,fleet:other:0"
+d4cfg 'linear_writes = "on"' 'machine_legacy_label = "fleet:old"'; d4db
+"$LIN" release DEV-5 >/dev/null 2>&1; eq "dev408-0 groundwork: release drops this machine's legacy label too" "$?:$(d4labels DEV-5)" "0:bug"
+d4cfg 'linear_writes = "test:FT"' 'machine_legacy_label = "fleet:old"'; d4db
+"$LIN" release DEV-3 >/dev/null 2>"$D4/e"; eq "dev408-0 groundwork: test mode refuses an issue outside team FT, writing nothing" "$?:$(grep -c 'test mode' "$D4/e"):$(d4mut)" "1:1:0"
+"$LIN" release DEV-5 >/dev/null 2>&1; eq "dev408-0 groundwork: test mode lets a release on team FT through" "$?:$(d4labels DEV-5)" "0:bug"
+d4cfg 'linear_writes = "on"'; d4db
+rl() { FLEET_GH="$G4" FLEET_NOW="${RLNOW:-2026-10-18T09:00:00Z}" "$LIN" release "$@"; }
+out="$(rl DEV-2 --lapsed 2>"$D4/e")"; rc=$?
+eq "dev408-0 groundwork: release --lapsed drops a lapsed machine's label (no open PR), keeping the rest" "$rc:$(d4labels DEV-2):$(d4state DEV-2)" "0:bug:In Progress"
+eq "dev408-0 groundwork: release --lapsed posts nothing and says whose label it was" "$(grep -c '^mutation Comment' "$LINEAR_LOG"):$(printf '%s' "$out" | jq -r .from)" "0:fleet:other"
+d4db; RLNOW=2026-10-18T07:00:00Z rl DEV-2 --lapsed >/dev/null 2>"$D4/e"; rc=$?
+eq "dev408-0 groundwork: release --lapsed refuses a live claim, writing nothing" "$rc:$(grep -c 'lease is live' "$D4/e"):$(d4mut)" "1:1:0"
+printf '[{"url": "https://github.com/o/r/pull/9", "headRefName": "fleet/dev-2-x", "isCrossRepository": false}]' >"$D4/gh-open.json"
+D4GH_LIST="$D4/gh-open.json" rl DEV-2 --lapsed >/dev/null 2>"$D4/e"; rc=$?
+eq "dev408-0 groundwork: release --lapsed refuses while a PR is open, naming it" "$rc:$(grep -c 'open PR (https://github.com/o/r/pull/9)' "$D4/e"):$(d4mut)" "1:1:0"
+D4GH_FAIL=1 rl DEV-2 --lapsed >/dev/null 2>"$D4/e"; eq "dev408-0 groundwork: release --lapsed refuses when gh cannot look" "$?:$(grep -c 'cannot look up open PRs' "$D4/e")" "1:1"
+rl DEV-4 --lapsed >/dev/null 2>"$D4/e"; eq "dev408-0 groundwork: release --lapsed refuses a holder with no heartbeat" "$?:$(grep -c 'no heartbeat' "$D4/e"):$(d4mut)" "1:1:0"
+rl DEV-3 --lapsed >/dev/null 2>"$D4/e"; eq "dev408-0 groundwork: release --lapsed refuses our own claim" "$?:$(grep -c 'not claimed by another machine' "$D4/e")" "1:1"
+"$LIN" release DEV-3 --repo o/r >/dev/null 2>&1; eq "dev408-0 groundwork: --repo goes only with --lapsed" "$?:$(d4mut)" "1:0"
+FLEET_FORCE=1 RLNOW=2026-10-18T07:00:00Z rl DEV-2 --lapsed >/dev/null 2>&1; eq "dev408-0 groundwork: FLEET_FORCE does not bypass release --lapsed" "$?:$(d4mut)" "1:0"
+
+# -- dev408-0: linear.sh state (labels untouched; refuses another machine's issue)
+d4cfg; d4db; "$LIN" state DEV-1 Done >/dev/null 2>&1; eq "dev408-0 groundwork: state with linear_writes off exits 3" "$?:$(d4mut)" "3:0"
+d4cfg 'linear_writes = "on"'; d4db
+out="$("$LIN" state DEV-1 Done 2>/dev/null)"; rc=$?
+eq "dev408-0 groundwork: state moves the issue and leaves its labels" "$rc:$(d4state DEV-1):$(d4labels DEV-1):$(d4mut)" "0:Done:bug:1"
+eq "dev408-0 groundwork: the update carries no labelIds" "$(grep -c 'labelIds' "$LINEAR_ARGV_LOG")" 0
+eq "dev408-0 groundwork: state says it changed" "$(printf '%s' "$out" | jq -c '[.state, .changed]')" '["Done",true]'
+eq "dev408-0 groundwork: the same state again changes nothing" "$("$LIN" state DEV-1 Done | jq -c .changed):$(d4mut)" "false:1"
+"$LIN" state DEV-3 Verify >/dev/null 2>"$D4/e"; eq "dev408-0 groundwork: a team without the state refuses, writing nothing" "$?:$(grep -c 'no workflow state named Verify' "$D4/e"):$(d4mut)" "1:1:1"
+jq '.states.Verify = "S4"' "$LINEAR_DB" >"$D4/db.tmp" && mv "$D4/db.tmp" "$LINEAR_DB"
+"$LIN" state DEV-3 Verify >/dev/null 2>&1; eq "dev408-0 groundwork: Verify, and our claim label stays" "$?:$(d4state DEV-3):$(d4labels DEV-3)" "0:Verify:bug,fleet:test"
+d4db; "$LIN" state DEV-2 Todo >/dev/null 2>"$D4/e"; eq "dev408-0 groundwork: state refuses another machine's issue" "$?:$(grep -c 'claimed by fleet:other' "$D4/e"):$(d4mut)" "1:1:0"
+"$LIN" state DEV-1 Doing >/dev/null 2>&1; eq "dev408-0 groundwork: state is Done, Verify or Todo" "$?:$(d4mut)" "1:0"
+d4cfg 'linear_writes = "test:FT"'; d4db; "$LIN" state DEV-1 Done >/dev/null 2>&1; eq "dev408-0 groundwork: state in test mode refuses another team's issue" "$?:$(d4mut)" "1:0"
+
+# -- dev408-0: registry notes, prefs, orchestrator here
+d4cfg
+"$REG" add '{"name":"g4/lead","team":"g4","tier":"Lead","status":"Working","herdr_ref":"g4-lead","pane":"pg"}' >/dev/null
+"$REG" note g4/lead decision "took A: one PR" >/dev/null; "$REG" note g4/lead picked "Todo search: DEV-7 unblocked, P1" >/dev/null
+eq "dev408-0 groundwork: decision and picked notes go to notes, in order, with their kind" "$("$REG" get g4/lead | jq -c '[.notes[] | [.kind, .message]]')" '[["decision","took A: one PR"],["picked","Todo search: DEV-7 unblocked, P1"]]'
+"$REG" note g4/lead discovered "a flaky test" >/dev/null
+eq "dev408-0 groundwork: a discovered note still goes to discovered" "$("$REG" get g4/lead | jq -c '[(.discovered | length), (.notes | length)]')" '[1,2]'
+"$REG" note g4/lead idea "x" >/dev/null 2>&1; eq "dev408-0 groundwork: an unknown note kind is refused" "$?:$("$REG" get g4/lead | jq '.notes | length')" "1:2"
+FLEET_ROLE=lead FLEET_NAME=g4/lead "$REG" note g4/lead decision "its own call" >/dev/null 2>&1; eq "dev408-0 groundwork: an agent may note its own decision" "$?" 0
+v="$("$REG" pref slim)"; eq "dev408-0 groundwork: an unset pref prints nothing" "$?:$v" "0:"
+"$REG" pref slim off >/dev/null; eq "dev408-0 groundwork: pref writes the top-level prefs and reads it back" "$("$REG" pref slim):$(jq -c .prefs "$FLEET_REGISTRY")" 'off:{"slim":"off"}'
+"$REG" pref slim on >/dev/null; eq "dev408-0 groundwork: a second pref write replaces it" "$("$REG" pref slim)" on
+FLEET_ROLE=lead FLEET_NAME=g4/lead "$REG" pref slim off >/dev/null 2>&1; eq "dev408-0 groundwork: an agent may not set a pref" "$?:$("$REG" pref slim)" "1:on"
+"$REG" pref Bad-Key x >/dev/null 2>&1; eq "dev408-0 groundwork: a pref key is lower case" "$?" 1
+echo orch-408 >"$AS/p408.name"; echo orch-409 >"$AS/p409.name"; mkdir -p "$D4/orchcwd"
+(cd "$D4" && HERDR_PANE_ID=p408 "$REG" orchestrator here >/dev/null)
+eq "dev408-0 groundwork: orchestrator here starts with no target" "$("$REG" get orchestrator | jq -c 'has("target_teams")')" false
+"$REG" set orchestrator target_teams=3 >/dev/null
+(cd "$D4/orchcwd" && HERDR_PANE_ID=p409 "$REG" orchestrator here >/dev/null)
+eq "dev408-0 groundwork: orchestrator here keeps target_teams and records the new pane and its cwd" "$("$REG" get orchestrator | jq -r '[.target_teams, .herdr_ref, .pane, .cwd] | join("|")')" "3|orch-409|p409|$D4/orchcwd"
+
+# -- dev408-0: one readiness rule (common.sh PR_DEFS) for tick's pr_ready and the merge queue
+cat >"$D4/prm" <<S
+#!/usr/bin/env bash
+. '$SCRIPTS/common.sh'
+jq -rn --argjson g "\$1" --arg so "\$2" --argjson ok "\${3:-false}" "\$PR_DEFS"'\$g | pr_missing(\$so; \$ok) | join(", ")'
+S
+chmod +x "$D4/prm"
+PG='{"state":"OPEN","mergeable":"MERGEABLE","statusCheckRollup":[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"}],"headRefOid":"ABC1234def","body":"Fixes x","isDraft":false}'
+pgx() { jq -c "$1" <<<"$PG"; }
+eq "dev408-0 groundwork: ready: open, signed head (a short SHA, any case), CI green, mergeable" "$("$D4/prm" "$PG" abc1234)" ""
+eq "dev408-0 groundwork: not ready: no sign-off" "$("$D4/prm" "$PG" "")" "no sign-off"
+eq "dev408-0 groundwork: not ready: signed another SHA" "$("$D4/prm" "$PG" 9999999aaa)" "signed 9999999 ≠ head"
+eq "dev408-0 groundwork: not ready: CI pending" "$("$D4/prm" "$(pgx '.statusCheckRollup[0].status = "IN_PROGRESS"')" abc1234)" "CI pending"
+eq "dev408-0 groundwork: not ready: CI red" "$("$D4/prm" "$(pgx '.statusCheckRollup[0].conclusion = "FAILURE"')" abc1234)" "CI red"
+eq "dev408-0 groundwork: not ready: no checks, outside no_pr_ci" "$("$D4/prm" "$(pgx '.statusCheckRollup = []')" abc1234)" "no CI checks"
+eq "dev408-0 groundwork: ready: no checks in a no_pr_ci repo" "$("$D4/prm" "$(pgx '.statusCheckRollup = []')" abc1234 true)" ""
+eq "dev408-0 groundwork: not ready: conflicting" "$("$D4/prm" "$(pgx '.mergeable = "CONFLICTING"')" abc1234)" "conflicting"
+eq "dev408-0 groundwork: not ready: mergeable UNKNOWN is 'mergeable unknown', never conflicting" "$("$D4/prm" "$(pgx '.mergeable = "UNKNOWN"')" abc1234):$("$D4/prm" "$(pgx 'del(.mergeable)')" abc1234)" "mergeable unknown:mergeable unknown"
+eq "dev408-0 groundwork: not ready: draft, held" "$("$D4/prm" "$(pgx '.isDraft = true')" abc1234):$("$D4/prm" "$(pgx '.body = "merge after #12"')" abc1234)" "draft:held"
+eq "dev408-0 groundwork: not ready: closed, and every reason at once in a fixed order" "$("$D4/prm" "$(pgx '.state = "CLOSED"')" abc1234):$("$D4/prm" "$(pgx '.isDraft = true | .mergeable = "CONFLICTING"')" "")" "closed:no sign-off, conflicting, draft"
+eq "dev408-0 groundwork: no_pr_ci matches the repo name, owner/name or path" "$(bash -c ". '$SCRIPTS/common.sh'; jq -rn \"\$PR_DEFS\"'[([\"api\"], [\"o/api\"], [\"/x/api\"], [\"web\"]) as \$n | pr_noci_ok(\$n; \"/x/api\"; \"https://github.com/o/api/pull/1\")] | map(tostring) | join(\",\")'")" "true,true,true,false"
+# tick reads the same rule: an UNKNOWN mergeable never fires pr_ready; once GitHub says MERGEABLE it does, once
+git init -q -b main "$D4/repo"
+for r in builder tester; do "$REG" add "$(jq -cn --arg r "$r" --arg repo "$D4/repo" '{name: ("q4/" + $r), team: "q4", repo: $repo, tier: "Worker", status: "Done", herdr_ref: ("q4-" + $r), pane: ("pq-" + $r)}')" >/dev/null; done
+"$REG" set q4/builder pr=https://github.com/o/r/pull/77 >/dev/null; "$REG" signoff q4/tester https://github.com/o/r/pull/77 abc1234 >/dev/null
+pgx '.mergeable = "UNKNOWN" | .url = "https://github.com/o/r/pull/77"' >"$D4/gh/77.json"
+nready() { FLEET_GH="$G4" "$SCRIPTS/tick.sh" 2>/dev/null | jq -s '[.[][]? | select(.type == "pr_ready")] | length'; }
+eq "dev408-0 groundwork: tick: a signed, green PR whose mergeable is UNKNOWN is not ready" "$(nready)" 0
+pgx '.url = "https://github.com/o/r/pull/77"' >"$D4/gh/77.json"
+eq "dev408-0 groundwork: tick: once MERGEABLE it is ready, once" "$(nready):$(nready)" "1:0"
+d4cfg
+
+# ---- end DEV-408 ----
+
 printf '\n%d passed, %d failed\n' "$pass" "$failn"
 [ "$failn" = 0 ]

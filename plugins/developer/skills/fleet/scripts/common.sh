@@ -41,6 +41,7 @@ ESC_DEFS='def norm: if (.escalations | type) != "array" then .escalations = [] e
     then . + {resolved_at: $t, resolution: $res} else . end);
   def row_ok: type == "object" and (.name | type == "string")
     and ((has("discovered") | not) or (.discovered | type == "array"))
+    and ((has("notes") | not) or (.notes | type == "array"))
     and ((has("herdr_ref") | not) or (.herdr_ref | type == "string"))
     and ((has("repo") | not) or (.repo | type == "string"))
     and ((has("pr") | not) or (.pr | type == "string" and (. == "" or startswith("https://"))))
@@ -383,6 +384,37 @@ tick_state_write() { # tick_state_write <json>
 forge_pr_json() {
   "$FLEET_GH" pr view "$1" --json state,mergeable,statusCheckRollup,headRefOid,body,url,isDraft
 }
+
+# PR_DEFS: jq definitions for whether a PR is ready to merge, the one rule tick's pr_ready and the merge queue
+# share. Input: the PR as forge_pr_json prints it.
+#   pr_noci_ok($noci; $repo; $url)  the repo is in no_pr_ci ($noci: config_list no_pr_ci), by name, owner/name or path
+#   pr_ci($nociok)                  green, pending, red, none (no checks, and the repo needs none) or unknown (no checks)
+#   pr_held                         the body asks to hold it: DO NOT MERGE, merge order, before/after, merge
+#                                   after/before, stacked on (a stacked child must not go ready before its parent)
+#   pr_missing($signoff; $nociok)   what keeps it from being ready, [] when it is ready: its state when not open,
+#                                   "no sign-off", "signed <sha7> ≠ head", "CI pending", "CI red", "no CI checks",
+#                                   "conflicting", "mergeable unknown" (GitHub still computing: never read as
+#                                   conflicting), "draft", "held". Ready: open, the tester's signed SHA is the head
+#                                   (a short SHA counts as the full one it starts), CI green or none, mergeable, not a
+#                                   draft, not held.
+PR_DEFS='def pr_noci_ok($noci; $repo; $url): ($repo | split("/") | last) as $base
+    | ($url | sub("^https?://[^/]+/"; "") | sub("/(pull|merge_requests)/.*$"; "")) as $slug
+    | (($noci | index($base)) != null or ($noci | index($slug)) != null or ($noci | index($repo)) != null);
+  def pr_ci($nociok): ((.statusCheckRollup // []) | map(if .__typename == "StatusContext" or (.conclusion == null and .state != null)
+        then (if .state == "SUCCESS" then "ok" elif (.state == "PENDING" or .state == "EXPECTED") then "pending" else "red" end)
+        else (if .status != "COMPLETED" then "pending" elif (.conclusion | IN("SUCCESS", "NEUTRAL", "SKIPPED")) then "ok" else "red" end) end)) as $cs
+    | if ($cs | length) == 0 then (if $nociok then "none" else "unknown" end)
+      elif ($cs | index("red")) then "red" elif ($cs | index("pending")) then "pending" else "green" end;
+  def pr_held: (.body // "") | test("DO NOT MERGE|merge order|before/after|merge (after|before)|stacked on"; "i");
+  def pr_missing($signoff; $nociok): (($signoff // "") | ascii_downcase) as $so | ((.headRefOid // "") | ascii_downcase) as $head
+    | pr_ci($nociok) as $ci
+    | [(if .state != "OPEN" then ((.state // "unknown") | ascii_downcase) else empty end),
+       (if $so == "" then "no sign-off" elif ($head != "" and ($head | startswith($so))) | not then "signed \($so[0:7]) ≠ head" else empty end),
+       (if $ci == "pending" then "CI pending" elif $ci == "red" then "CI red" elif $ci == "unknown" then "no CI checks" else empty end),
+       (if .mergeable == "CONFLICTING" then "conflicting" elif .mergeable != "MERGEABLE" then "mergeable unknown" else empty end),
+       (if .isDraft == true then "draft" else empty end),
+       (if pr_held then "held" else empty end)];
+  '
 
 # Claude Code transcripts. projects_dir is where Claude keeps them (tests point HOME at a fixture
 # tree); transcript_dir_for <cwd> is the project directory for a working directory (every character

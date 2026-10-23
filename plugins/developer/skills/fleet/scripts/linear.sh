@@ -6,10 +6,20 @@
 #
 #   linear.sh claim <ISSUE> [--dry-run]       label the issue with this machine's label, set In Progress
 #   linear.sh heartbeat                       rewrite the heartbeat line of this machine's label (ONE mutation)
-#   linear.sh holder <ISSUE>                  JSON: who holds the issue and their last heartbeat   (read-only)
+#   linear.sh holder <ISSUE>                  JSON: who holds the issue, their last heartbeat and whether it lapsed
+#                                             (`lapsed`: older than lease_hours, takeover's own check; null without a
+#                                             heartbeat)   (read-only)
 #   linear.sh peers                           JSON: other machines' claims, for `status.sh --all`   (read-only)
+#   linear.sh blocks <ISSUE...>               JSON: {"<ISSUE>": [issues it blocks]} from Linear's `blocks` relations,
+#                                             one query for all of them   (read-only)
 #   linear.sh takeover <ISSUE> [--repo OWNER/NAME]   take an issue over from a lapsed holder; refuses while an
 #                                             open PR exists for the issue (see Takeover below)
+#   linear.sh release <ISSUE> [--lapsed [--repo OWNER/NAME]]   remove this machine's label (and its legacy label) from
+#                                             the issue, keeping the rest; refuses an issue this machine does not hold.
+#                                             --lapsed removes another machine's label instead, only with takeover's
+#                                             guards (heartbeat older than lease_hours, no open PR); nothing is posted
+#   linear.sh state <ISSUE> <Done|Verify|Todo>   move the issue to that workflow state, labels untouched; refuses an
+#                                             issue another machine holds
 #   linear.sh migrate [--dry-run]             delete this machine's old `fleet-claim:` comments, and rewrite our
 #                                             label's description if it still holds a full machine id (a write;
 #                                             --dry-run reports it as would_rewrite and mutates nothing)
@@ -50,7 +60,7 @@
 # key (`gh pr list --search '<KEY> in:title,body'`), whatever its branch: boot's fleet/<team>/<role> too.
 # It refuses while one is open or when it cannot look. FLEET_FORCE never bypasses. Like claim, it then
 # re-reads after claim_settle_secs: of two takeovers at once only the one whose label stayed wins and
-# comments; the other exits 1.
+# comments; the other exits 1. `release --lapsed` makes the same checks and removes the label without taking it.
 #
 # Labels are looked up by name; when several match (an older team label beside the workspace one), the
 # workspace label (no team) is used, for the group and for each machine label alike.
@@ -62,8 +72,9 @@
 # UNVERIFIED against the real API: only the endpoint, the Authorization header, issue(id:) and
 # issueUpdate with stateId were confirmed from Linear's public docs. The label operations
 # (issueLabels filter, issueLabelCreate, issueLabelUpdate), labelIds on issueUpdate,
-# workflowStates, commentCreate/commentDelete, and the issues filters are written from memory of
-# the schema; the tests prove our calls against a stub only (DEV-368 decision 13).
+# workflowStates, commentCreate/commentDelete, the issues filters and the issue `relations` read by
+# `blocks` are written from memory of the schema; the tests prove our calls against a stub only
+# (DEV-368 decision 13).
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
 
@@ -204,6 +215,15 @@ q_issue_branch() { # q_issue_branch <ISSUE> → Linear's suggested git branch fo
 q_viewer() { # the Linear user behind the key
   gql_read Viewer 'query Viewer { viewer { id name } }' '{}' | jq -c '.data.viewer // error("no viewer")' 2>/dev/null || die "cannot read the Linear viewer"
 }
+q_blocks() { # q_blocks <ISSUE...> → {"<ISSUE>": [identifiers it blocks]}, one query (an aliased issue(id:) per issue)
+  local q="" d="" v='{}' i=0 x
+  for x in "$@"; do
+    q="$q i$i: issue(id: \$i$i) { identifier relations(first: 50) { nodes { type relatedIssue { identifier } } } }"
+    d="$d${d:+, }\$i$i: String!"; v="$(jq -c --arg k "i$i" --arg x "$x" '. + {($k): $x}' <<<"$v")"; i=$((i + 1))
+  done
+  gql_read Blocks "query Blocks($d) {$q }" "$v" | jq -c --argjson v "$v" '.data as $d | [$v | to_entries[] | {(.value):
+    [($d[.key].relations.nodes // [])[] | select(.type == "blocks") | .relatedIssue.identifier // empty]}] | add // {}'
+}
 
 # ---- writes (mutations only) ---------------------------------------------------------------------
 m_label_create() { # m_label_create <name> <description> <parent id | ""> → the new label's id (a workspace label, no team)
@@ -218,10 +238,10 @@ m_label_describe() { # m_label_describe <label id> <description>
   gql_write IssueLabelUpdate 'mutation IssueLabelUpdate($id: String!, $input: IssueLabelUpdateInput!) { issueLabelUpdate(id: $id, input: $input) { success } }' \
     "$(jq -nc --arg id "$1" --arg d "$2" '{id: $id, input: {description: $d}}')" >/dev/null
 }
-m_issue_update() { # m_issue_update <issue id> <label ids json array> <state id | "">
+m_issue_update() { # m_issue_update <issue id> <label ids json array | ""> <state id | "">: an empty one is left as it is
   clear_write IssueUpdate "$1"
   gql_write IssueUpdate 'mutation IssueUpdate($id: String!, $input: IssueUpdateInput!) { issueUpdate(id: $id, input: $input) { success } }' \
-    "$(jq -nc --arg id "$1" --argjson l "$2" --arg s "$3" '{id: $id, input: ({labelIds: $l} + (if $s != "" then {stateId: $s} else {} end))}')" >/dev/null
+    "$(jq -nc --arg id "$1" --arg l "$2" --arg s "$3" '{id: $id, input: ((if $l != "" then {labelIds: ($l | fromjson)} else {} end) + (if $s != "" then {stateId: $s} else {} end))}')" >/dev/null
 }
 m_comment_create() { # m_comment_create <issue id> <body>
   clear_write CommentCreate "$1"
@@ -282,6 +302,31 @@ open_pr() {
     hit="$(printf '%s' "$prs" | jq -r '.[]? | select((.isCrossRepository // false) | not) | .url' | head -n 1)" || return 2
   fi
   printf '%s' "$hit"
+}
+
+# claim_lapsed <heartbeat ISO>: exit 0 when the heartbeat is older than lease_hours (the claim lapsed); exit 1 while
+# the lease is live, claim.sh saying why on stderr, or when the heartbeat is not a time (never proven lapsed).
+claim_lapsed() {
+  local lease
+  lease="$("$FLEET_SCRIPTS/claim.sh" lease --now "$1")" || return 1
+  "$FLEET_SCRIPTS/claim.sh" expired --lease "$lease" --now "${FLEET_NOW:-$(now)}"
+}
+
+# lapsed_claim <ISSUE> <issue json> <repo | ""> <refusal>: prints "<holder label><TAB><heartbeat>" when another
+# machine's claim on the issue may be taken from it: its heartbeat is older than lease_hours AND no PR is open for
+# the issue (a PR waiting on a merge is not quiet). Otherwise it dies naming why, ending with <refusal> ("Not
+# taking over"), before anything is written. takeover and release --lapsed share it; FLEET_FORCE never bypasses it.
+lapsed_claim() {
+  local issue="$1" iss="$2" repo="$3" no="$4" holder hb why pr="" rc=0
+  holder="$(other_fleet_labels "$iss" | head -n 1)"
+  [ -n "$holder" ] || die "$issue is not claimed by another machine. $no"
+  hb="$(hb_of "$(q_labels_named "$holder" | jq -r '.[0].description // ""')")"
+  [ -n "$hb" ] || die "$holder has no heartbeat; cannot show its claim lapsed. $no"
+  why="$(claim_lapsed "$hb" 2>&1)" || die "$issue is claimed by $holder ($why). $no"
+  pr="$(open_pr "$issue" "$repo")" || rc=$?
+  [ "$rc" = 0 ] || die "cannot look up open PRs for $issue (gh failed or is missing). $no"
+  [ -z "$pr" ] || die "$issue has an open PR ($pr). $no while it is open"
+  printf '%s\t%s\n' "$holder" "$hb"
 }
 
 # guard_issue <ISSUE...>: in test mode, every issue must be in team $TEST_TEAM or nothing is written. The cleared
@@ -358,7 +403,7 @@ ensure_label() {
 cmd="${1:-}"; [ $# -gt 0 ] && shift
 # Every API subcommand needs the key; check it here, at the top level, so a missing key is exit 3
 # and not an error swallowed inside a command substitution.
-case "$cmd" in claim | heartbeat | holder | peers | whoami | takeover | migrate) load_key ;; esac
+case "$cmd" in claim | heartbeat | holder | peers | blocks | whoami | takeover | release | state | migrate) load_key ;; esac
 case "$cmd" in
   has-key)
     has_key || no_key ;;
@@ -370,10 +415,17 @@ case "$cmd" in
     other="$(other_fleet_labels "$iss" | head -n 1)"
     mine="$(machine_label)"
     label="$other"; [ -n "$label" ] || label="$(printf '%s' "$iss" | jq -r --arg m "$mine" '.labels.nodes[] | select(.name == $m) | .name')"
-    hb=""
+    hb=""; lapsed=null
     if [ -n "$label" ]; then hb="$(hb_of "$(q_labels_named "$label" | jq -r '.[0].description // ""')")"; fi
-    say --arg i "$issue" --arg h "$label" --arg m "$mine" --arg hb "$hb" \
-      '{issue: $i, holder: (if $h == "" then null else $h end), ours: ($h == $m), heartbeat: (if $hb == "" then null else $hb end)}' ;;
+    if [ -n "$hb" ]; then if claim_lapsed "$hb" 2>/dev/null; then lapsed=true; else lapsed=false; fi; fi
+    say --arg i "$issue" --arg h "$label" --arg m "$mine" --arg hb "$hb" --argjson l "$lapsed" \
+      '{issue: $i, holder: (if $h == "" then null else $h end), ours: ($h == $m), heartbeat: (if $hb == "" then null else $hb end), lapsed: $l}' ;;
+
+  blocks)
+    READONLY=1
+    [ $# -gt 0 ] || die "usage: blocks <ISSUE...>"
+    for x in "$@"; do [[ "$x" =~ ^[A-Za-z][A-Za-z0-9]*-[0-9]+$ ]] || die "not an issue key: $x"; done
+    q_blocks "$@" ;;
 
   whoami)
     READONLY=1
@@ -447,16 +499,9 @@ case "$cmd" in
     mine="$(machine_label)"
     iss="$(q_issue "$issue")"
     guard_issue "$issue"
-    holder="$(other_fleet_labels "$iss" | head -n 1)"
-    [ -n "$holder" ] || die "$issue is not claimed by another machine; claim it instead"
-    hb="$(hb_of "$(q_labels_named "$holder" | jq -r '.[0].description // ""')")"
-    [ -n "$hb" ] || die "$holder has no heartbeat; cannot show its claim lapsed. Not taking over"
-    lease="$("$FLEET_SCRIPTS/claim.sh" lease --now "$hb")"
-    why="$("$FLEET_SCRIPTS/claim.sh" expired --lease "$lease" --now "${FLEET_NOW:-$(now)}" 2>&1)" || die "$issue is claimed by $holder ($why). Not taking over"
     # A PR waiting on a merge is not "quiet": taking over would let the taker overwrite it.
-    pr=""; rc=0; pr="$(open_pr "$issue" "$repo")" || rc=$?
-    [ "$rc" = 0 ] || die "cannot look up open PRs for $issue (gh failed or is missing); not taking over"
-    [ -z "$pr" ] || die "$issue has an open PR ($pr); not taking over while it is open"
+    hold="$(lapsed_claim "$issue" "$iss" "$repo" "Not taking over")" || exit 1
+    holder="${hold%%$'\t'*}"; hb="${hold#*$'\t'}"
     iid="$(printf '%s' "$iss" | jq -r .id)"; team="$(printf '%s' "$iss" | jq -r .team.id)"
     lid="$(ensure_label 0)"
     sid="$(q_state_id "$team" "In Progress")"
@@ -471,6 +516,52 @@ case "$cmd" in
     fi
     m_comment_create "$iid" "fleet: taken over from $holder (heartbeat $hb, no open PR)"
     say --arg i "$issue" --arg f "$holder" --arg m "$mine" '{taken_over: true, issue: $i, from: $f, by: $m}' ;;
+
+  release)
+    # One issue update that keeps every other label. Like claim it is not compare-and-swap: a label another machine
+    # puts on the issue between the read and the update is dropped with ours.
+    issue=""; lapsed=0; repo=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --lapsed) lapsed=1; shift ;;
+        --repo) repo="${2:?--repo needs OWNER/NAME}"; shift 2 ;;
+        -*) die "unknown option: $1" ;;
+        *) issue="$1"; shift ;;
+      esac
+    done
+    [ -n "$issue" ] || die "usage: release <ISSUE> [--lapsed [--repo OWNER/NAME]]"
+    [ -z "$repo" ] || [ "$lapsed" = 1 ] || die "--repo goes with --lapsed (it is where the open PR is looked up)"
+    [ "$WMODE" != off ] || writes_off
+    iss="$(q_issue "$issue")"
+    guard_issue "$issue"
+    if [ "$lapsed" = 1 ]; then
+      hold="$(lapsed_claim "$issue" "$iss" "$repo" "Not releasing")" || exit 1
+      from="${hold%%$'\t'*}"; drop="$(jq -cn --arg l "$from" '[$l]')"
+    else
+      from=""; mine="$(machine_label)"; legacy="$(cfg_str machine_legacy_label '')"
+      drop="$(printf '%s' "$iss" | jq -c --arg m "$mine" --arg l "$legacy" '[.labels.nodes[] | select(.name == $m or ($l != "" and .name == $l)) | .name]')"
+      [ "$drop" != "[]" ] || die "$issue is not claimed by this machine ($mine). Not releasing"
+    fi
+    m_issue_update "$(printf '%s' "$iss" | jq -r .id)" \
+      "$(printf '%s' "$iss" | jq -c --argjson d "$drop" '[.labels.nodes[] | select(.name as $n | $d | index($n) | not) | .id]')" ""
+    say --arg i "$issue" --argjson d "$drop" --arg f "$from" '{released: true, issue: $i, labels: $d} + (if $f != "" then {from: $f} else {} end)' ;;
+
+  state)
+    issue="${1:-}"; want="${2:-}"
+    [ -n "$issue" ] && [ -n "$want" ] && [ $# = 2 ] || die "usage: state <ISSUE> <Done|Verify|Todo>"
+    case "$want" in Done | Verify | Todo) ;; *) die "state is Done, Verify or Todo, not '$want'" ;; esac
+    [ "$WMODE" != off ] || writes_off
+    iss="$(q_issue "$issue")"
+    holder="$(other_fleet_labels "$iss" | head -n 1)"
+    [ -z "$holder" ] || die "$issue is claimed by $holder; not changing its state"
+    if [ "$(printf '%s' "$iss" | jq -r '.state.name // ""')" = "$want" ]; then
+      say --arg i "$issue" --arg s "$want" '{issue: $i, state: $s, changed: false}'; exit 0
+    fi
+    guard_issue "$issue"
+    sid="$(q_state_id "$(printf '%s' "$iss" | jq -r .team.id)" "$want")"
+    [ -n "$sid" ] || die "the team of $issue has no workflow state named $want"
+    m_issue_update "$(printf '%s' "$iss" | jq -r .id)" "" "$sid"
+    say --arg i "$issue" --arg s "$want" '{issue: $i, state: $s, changed: true}' ;;
 
   migrate)
     dry=0

@@ -36,10 +36,15 @@ restarted, compacted or replaced agent picks up from the row, not from memory.
 | `pr`, `signoff` | `registry.sh signoff <name> <PR URL or N> <sha>` (the tester) sets `pr` and `signoff = {pr, sha, at}`; `tick.sh` reads them. `registry.sh reassign <team> <issue>` (run by `next.sh`) clears `outcome`, `summary`, `done_at`, `pr`, `signoff` and `lessons`, closes open escalations with `resolution: "closed at next"`, sets `issue`, rewrites `assignment`, and sets the lead Working and the workers Idle; it logs `issue_done` (the old issue, PR and outcome) to the event log first |
 | `escalation`, `escalations[]` | `escalation` is derived: the highest severity among open entries, `""` when none. Each entry is `{severity, message, at}` plus `resolved_at` and `resolution` once `registry.sh resolve` closes it; `(name, at)` identifies one. Open entries survive `done` and `retire` |
 | `discovered[]` | unrelated work the agent filed instead of doing |
+| `notes[]` | `{kind, message, at}` from `registry.sh note <name> decision\|picked TEXT`: `decision` is an option an agent took on its own (overnight mode), `picked` the search behind a boot (the Orchestrator, on the lead's row); the morning report reads both |
+| `cwd`, `target_teams` (the `orchestrator` row) | where the Orchestrator's session runs, recorded by `registry.sh orchestrator here`, which replaces the rest of the row but keeps `target_teams`, the "keep N teams running" goal |
 | `expertise_file` | the role's expertise file, if the repo has one |
 | `started`, `done_at`, `ended` | lifecycle timestamps (UTC) |
 | `outcome`, `summary`, `lessons` | how it ended, its one-line summary, and debrief lessons |
 | `updated_at`, `synced_at` | change tracking for the sink |
+
+Beside the rows, the top-level `prefs` object keeps the user's fleet-wide choices (such as `slim`), written and read with
+`registry.sh pref <key> [value]` (the Orchestrator's only).
 
 ## Escalation inbox
 
@@ -51,7 +56,7 @@ new line starts a tick within seconds.
 ## Schema check and the archive
 
 Every registry write is checked: a write that would leave a row malformed (name not a string,
-`escalations` not an array of entries with severity P0/P1/P2, `message` and `at`, `discovered` not
+`escalations` not an array of entries with severity P0/P1/P2, `message` and `at`, `discovered` or `notes` not
 an array) is refused and the file stays byte-identical. A row already malformed on disk is tolerated
 with a warning, so it cannot block other writes; `escalate`, `resolve` and `retire` repair it.
 
