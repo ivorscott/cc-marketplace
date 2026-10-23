@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+# The fleet's one command: it runs the script behind each user-facing command, so `/fleet <command>` and a shell
+# call the same code.
+#
+#   fleet <command> [args...]     run the command with its arguments, unchanged (its output and exit status are its own)
+#   fleet help                    the table | Command | What it does | Example |, one row per command
+#   fleet help <command>          that command's usage: its script's # header, unchanged
+#
+# A command is a script in this directory whose header has the line `# Command: <what it does> · e.g. fleet <example>`.
+# help reads those lines, so the list is what the scripts say and cannot drift from them. A script without the line
+# (common.sh, agent-lib.sh, loop-tick.sh, registry.sh, tick.sh, linear.sh, ...) is internal and stays out of it.
+# A few commands have no script of their own and run a subcommand of an internal script: escalate, escalations and
+# resolve (registry.sh), claim, takeover and holder (linear.sh); their help is that script's usage lines for the
+# subcommand. An unknown command exits 2 and prints the list on stderr. Agents keep calling the .sh scripts by
+# absolute path (their allow lists name them); this is for the user and the Orchestrator.
+set -euo pipefail
+
+src="${BASH_SOURCE[0]}"
+while [ -L "$src" ]; do t="$(readlink "$src")"; case "$t" in /*) src="$t" ;; *) src="$(dirname "$src")/$t" ;; esac; done
+D="$(cd "$(dirname "$src")" && pwd)"
+
+aliases() { # <name> <script> <subcommand> <what it does · e.g. example>, for the commands with no script of their own
+  printf '%s\t%s\t%s\t%s\n' \
+    escalate registry escalate 'Raise a question by severity; it stays open until resolved · e.g. fleet escalate build-api/lead P1 "which database?"' \
+    escalations registry escalations 'List escalations, the open ones or all · e.g. fleet escalations --open' \
+    resolve registry resolve 'Close an escalation once its answer reached the agent · e.g. fleet resolve build-api/lead 20261024T090000Z-1 --note "use pg"' \
+    claim linear claim 'Claim an issue on Linear for this machine · e.g. fleet claim DEV-123' \
+    takeover linear takeover 'Take an issue over from a machine whose claim lapsed · e.g. fleet takeover DEV-123' \
+    holder linear holder 'Say which machine holds an issue, and whether its claim lapsed · e.g. fleet holder DEV-123'
+}
+
+commands() { # one line per command, by name: <name> TAB <script> TAB <subcommand or -> TAB <what it does · e.g. example>
+  local f n line
+  {
+    for f in "$D"/*.sh; do
+      line="$(awk 'NR == 1 { next } !/^#/ { exit } sub(/^# Command: /, "") { print; exit }' "$f")"
+      n="$(basename "$f" .sh)"
+      [ -z "$line" ] || printf '%s\t%s\t-\t%s\n' "$n" "$n" "$line"
+    done
+    aliases
+    printf '%s\t-\t-\t%s\n' help "List the commands, or show one command's usage · e.g. fleet help status"
+  } | LC_ALL=C sort -t "$(printf '\t')" -k1,1
+}
+
+list() {
+  local n s sub line what ex
+  printf '| Command | What it does | Example |\n|---|---|---|\n'
+  while IFS=$'\t' read -r n s sub line; do
+    what="${line%% · e.g. *}"; ex=""; [ "$what" = "$line" ] || ex="${line#* · e.g. }"
+    printf '| `%s` | %s | `%s` |\n' "$n" "$what" "$ex"
+  done < <(commands)
+}
+
+header() { awk 'NR == 1 { next } !/^#/ { exit } { sub(/^# ?/, ""); print }' "$1"; } # a script's # header, comment marks off
+
+usage() { # usage <command>: 1 when there is no such command
+  local row n s sub line
+  row="$(commands | awk -F'\t' -v c="$1" '$1 == c')"
+  [ -n "$row" ] || return 1
+  IFS=$'\t' read -r n s sub line <<<"$row"
+  if [ "$n" = help ]; then header "$D/fleet"
+  elif [ "$sub" = - ]; then header "$D/$s.sh"
+  else
+    header "$D/$s.sh" | awk -v p="  $s.sh $sub" '
+      index($0, p) == 1 && (length($0) == length(p) || substr($0, length(p) + 1, 1) == " ") { on = 1; print; next }
+      on && /^          / { print; next }
+      { on = 0 }'
+    printf 'Command: %s\n' "$line"
+  fi
+}
+
+unknown() { printf "fleet: unknown command '%s'. Run fleet help.\n\n" "$1" >&2; list >&2; exit 2; }
+
+cmd="${1:-}"; [ $# = 0 ] || shift
+case "$cmd" in
+  "") list >&2; exit 2 ;;
+  help)
+    if [ $# = 0 ]; then list; exit 0; fi
+    usage "$1" || unknown "$1"
+    exit 0 ;;
+esac
+row="$(commands | awk -F'\t' -v c="$cmd" '$1 == c')"
+[ -n "$row" ] || unknown "$cmd"
+IFS=$'\t' read -r n s sub line <<<"$row"
+if [ "$sub" = - ]; then exec "$D/$s.sh" "$@"; else exec "$D/$s.sh" "$sub" "$@"; fi

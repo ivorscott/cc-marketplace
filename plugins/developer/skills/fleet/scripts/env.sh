@@ -32,6 +32,7 @@
 #
 # Exit codes: 0 ok, 1 error, 75 queued (max_envs reached; retry `up` once an env is down).
 # Env: FLEET_WORKTREE (default source of {{branch}}), FLEET_DOCKER (docker binary, for tests), max_envs in config.toml (default 3).
+# Command: Create, remove or list a team's test cluster · e.g. fleet env status
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
 registry="$FLEET_SCRIPTS/registry.sh"

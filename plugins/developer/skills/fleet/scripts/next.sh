@@ -22,6 +22,7 @@
 # An agent whose restart fails (it did not exit, did not start, or its brief did not arrive) is set Failed and
 # next exits 1 naming it; the others are restarted. UNVERIFIED against real herdr: `herdr agent start` after
 # /exit in the same pane.
+# Command: Move a team to its next issue after its PR merged · e.g. fleet next build-api DEV-124
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
 require_herdr

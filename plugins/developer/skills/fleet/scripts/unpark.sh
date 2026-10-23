@@ -6,6 +6,7 @@
 # Nothing is charged to the respawn budget. It refuses at once, with the team still Parked, when the team
 # is not Parked, when max_teams live teams already run, or when another live team works the same repo
 # (FLEET_FORCE=1 overrides the last two). A row that does not start stays Parked; run unpark.sh again for it.
+# Command: Bring a parked team back · e.g. fleet unpark build-api
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
 require_herdr

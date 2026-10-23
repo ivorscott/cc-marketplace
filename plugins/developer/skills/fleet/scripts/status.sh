@@ -38,6 +38,7 @@
 #                `status_detail` on the row says "login expired" or "API error" (and the status shows it)
 #   Zombie       the agent is gone: herdr can't find it, or its pane is back at the shell
 #                (herdr can still report a dead pane as idle, so the process is checked)
+# Command: Show each team's health and what needs you · e.g. fleet status --problems
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
 require_herdr

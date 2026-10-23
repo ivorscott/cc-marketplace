@@ -13,6 +13,7 @@
 # --after-merge parks nothing now: the team's rows are marked, and tick parks the team when its PR merges
 # instead of the Orchestrator giving it the next issue. Bring a team back with unpark.sh.
 # Internal: --reason <focus:team> (focus.sh) sets the parked_reason / the mark.
+# Command: Free a team's slot and keep its work · e.g. fleet park build-api
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
 require_herdr

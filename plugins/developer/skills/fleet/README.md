@@ -57,17 +57,34 @@ This skill builds the rest on top of it.
 
 ## Commands
 
-| Command | What it does |
-|---|---|
-| `/fleet boot <template> <focus> <dir> [task]` | Creates the herdr workspace `<template>-<focus>` (the team name), starts a lead and its workers in split panes, gives every writer its own git worktree on branch `fleet/<team>/<role>`, sends each agent its brief and registers it. `<template>` is `build`, `review`, `research` or a path to your own template JSON |
-| `/fleet status [--problems] [--team T] [--json] [--all]` | Shows each live agent's health (see below) and its team's test cluster, under a disk line (free GiB, `LOW` below `warn_free_gb`). `--problems` lists only agents that need you, `--team` limits it to one team, `--json` gives machine-readable output. `--all` adds one row per claim other machines hold, with a MACHINE and a LEASE column (Linear only; see "Several machines") |
-| `/fleet tell <team\|agent> <msg>` | Sends a message to the team's lead, or to one agent if you name it, then quotes a line of its reply so you know it arrived |
-| `/fleet escalate <P0\|P1\|P2> <msg>` | Raises a question by severity (also appended to the escalation inbox, which the loop job watches, so the Orchestrator hears within seconds). It stays open until the Orchestrator runs `registry.sh resolve <name> <id|at>`, or the team is retired. The Orchestrator answers P2 itself, brings P1 to you with a recommendation, and stops for P0 and brings it to you immediately |
-| `/fleet retire <team\|team/role> [--outcome O]` | Shuts down a whole team or a single agent. Live agents are asked to push their work first, then only the fleet's own panes are closed, worktrees are removed (build outputs ignored, untracked reports copied to `reports/fleet-archive/<team>-<role>/`; one with unpushed commits, untracked source or uncommitted edits is kept and the files or commits named), the team's test cluster and images are deleted, and its open escalations are closed ("closed at retire"). `O` is `Shipped`, `Partial`, `Abandoned` or `Failed` |
-| `/fleet prime` | Rebuilds the Orchestrator's picture of the fleet from the registry (which teams exist, who is doing what, what needs attention). Use it after a context compaction or in a new session |
-| `/fleet debrief` | For each retired team: records one or two lessons per agent and *proposes* (never applies) diffs to `.claude/experts/<role>.md` and to the template, plus a list of discovered follow-up work |
+Each command works the same from Claude Code (`/fleet <command>`) and from a shell (`scripts/fleet <command>`). `fleet help` prints this table from the scripts' own headers, so it cannot drift from them, and `fleet help <command>` prints one command's full usage:
 
-Plain language works too: "how is the fleet", "ask the build team to …", "shut the team down".
+| Command | What it does | Example |
+|---|---|---|
+| `boot` | Boot a team on a task or an issue | `fleet boot build export ~/code/api "add CSV invoice export"` |
+| `claim` | Claim an issue on Linear for this machine | `fleet claim DEV-123` |
+| `debrief` | List the retired teams whose lessons are still to be written | `fleet debrief` |
+| `env` | Create, remove or list a team's test cluster | `fleet env status` |
+| `escalate` | Raise a question by severity; it stays open until resolved | `fleet escalate build-api/lead P1 "which database?"` |
+| `escalations` | List escalations, the open ones or all | `fleet escalations --open` |
+| `focus` | Park every other team so one team gets the slots | `fleet focus build-api --now` |
+| `help` | List the commands, or show one command's usage | `fleet help status` |
+| `holder` | Say which machine holds an issue, and whether its claim lapsed | `fleet holder DEV-123` |
+| `metrics` | Show per-PR metrics from the event log | `fleet metrics --since 7d` |
+| `next` | Move a team to its next issue after its PR merged | `fleet next build-api DEV-124` |
+| `park` | Free a team's slot and keep its work | `fleet park build-api` |
+| `prime` | Pick the fleet up again after a compaction or in a new session | `fleet prime` |
+| `resolve` | Close an escalation once its answer reached the agent | `fleet resolve build-api/lead 20261024T090000Z-1 --note "use pg"` |
+| `respawn` | Start a dead agent again from its row | `fleet respawn build-api/builder` |
+| `retire` | Shut a team (or one agent) down safely | `fleet retire build-api --outcome Shipped` |
+| `sandbox` | Run a reproduction away from the live fleet | `fleet sandbox --keep` |
+| `schedule` | Install, remove or check the launchd loop | `fleet schedule status` |
+| `status` | Show each team's health and what needs you | `fleet status --problems` |
+| `takeover` | Take an issue over from a machine whose claim lapsed | `fleet takeover DEV-123` |
+| `tell` | Send a team's lead (or one agent) a message and check it arrived | `fleet tell build-api/lead "focus on token expiry"` |
+| `unpark` | Bring a parked team back | `fleet unpark build-api` |
+
+Plain language works too: "how is the fleet", "ask the build team to …", "shut the team down". An escalation stays open until the Orchestrator runs `fleet resolve <name> <id|at>`, or the team is retired; a retire asks live agents to push first, archives their reports, removes clean worktrees and the team's test cluster, and closes open escalations ("closed at retire").
 
 ## Templates
 
@@ -331,6 +348,8 @@ in 4.1. Anything that newly exposes the key is a blocker; the items that touch t
 |---|---|
 | `SKILL.md` | routes and rules the Orchestrator follows |
 | `templates/*.json` | team shapes: roles, agent kind, model, worktree, briefs, exit criteria |
+| `scripts/fleet` | the one command: runs each user-facing script by its command name; `help` reads the scripts' `# Command:` lines |
+| `scripts/prime.sh`, `debrief.sh` | the read-only parts of prime (counts and the status table) and debrief (the teams whose lessons are due) |
 | `scripts/boot.sh` | one-command team boot |
 | `scripts/claim.sh` | lease arithmetic: lease, heartbeat parse, expiry test |
 | `scripts/linear.sh` | claims and heartbeat on the Linear API |

@@ -15,6 +15,7 @@
 #                   its merge (or now); lines are parsed one at a time and unparsable ones skipped
 # Reads $FLEET_STATE_DIR/events.jsonl and the registry; writes nothing.
 # UNVERIFIED: the transcript line shape (`.timestamp`, `.type == "assistant"`, `.message.usage`).
+# Command: Show per-PR metrics from the event log · e.g. fleet metrics --since 7d
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
 

@@ -37,6 +37,7 @@
 # Env: FLEET_SESSION (named herdr session, for isolated runs), FLEET_FORCE=1 (ignore
 # max_teams and min_free_gb), FLEET_MACHINE (replaces this machine's key, see machine-id.sh),
 # FLEET_LABEL_PREFIX (claim label prefix, default "fleet:").
+# Command: Boot a team on a task or an issue · e.g. fleet boot build export ~/code/api "add CSV invoice export"
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
 require_herdr

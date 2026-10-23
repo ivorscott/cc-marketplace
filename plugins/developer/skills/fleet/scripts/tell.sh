@@ -35,6 +35,7 @@
 # herdr (`herdr --skill`), so they are a signal, not a contract; the transcript format may change
 # between Claude Code versions; the screen handling encodes what Claude Code's screen is expected
 # to look like (DEV-368).
+# Command: Send a team's lead (or one agent) a message and check it arrived · e.g. fleet tell build-api/lead "focus on token expiry"
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
 require_herdr

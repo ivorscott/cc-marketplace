@@ -17,6 +17,7 @@
 # It refuses, before running anything, when a resolved root is the live one: the state root
 # ${XDG_STATE_HOME:-~/.local/state}/fleet, the config root ${XDG_CONFIG_HOME:-~/.config}/fleet, or anything
 # under them. House rule: reproductions run only here.
+# Command: Run a reproduction away from the live fleet · e.g. fleet sandbox --keep
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 

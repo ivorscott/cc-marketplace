@@ -22,6 +22,7 @@
 # If the row's pane is gone, a new pane is split from the lead's pane in the same workspace.
 # UNVERIFIED against real herdr: that `herdr agent start <same name>` is accepted for an agent whose
 # pane died (DEV-368).
+# Command: Start a dead agent again from its row · e.g. fleet respawn build-api/builder
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
 require_herdr

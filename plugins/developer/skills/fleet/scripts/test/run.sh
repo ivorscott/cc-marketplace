@@ -163,7 +163,7 @@ if [ "${1:-}" = --smoke ]; then
   GREEN='[{"__typename":"CheckRun","status":"COMPLETED","conclusion":"SUCCESS"}]'
   ghset() { jq -cn --arg s "$2" --arg m "$3" --argjson r "$4" --arg h "$5" --arg b "$6" --arg u "https://github.com/o/r/pull/$1" '{state: $s, mergeable: $m, statusCheckRollup: $r, headRefOid: $h, body: $b, url: $u, isDraft: false}' >"$GH_DIR/$1.json"; }
   # every script parses, under this bash and under /bin/bash
-  for f in "$SCRIPTS"/*.sh "$SCRIPTS"/../../../hooks/*.sh; do check "smoke: bash -n $(basename "$f")" bash -n "$f"; done
+  for f in "$SCRIPTS"/*.sh "$SCRIPTS/fleet" "$SCRIPTS"/../../../hooks/*.sh; do check "smoke: bash -n $(basename "$f")" bash -n "$f"; done
   eq "smoke: plugin.json and marketplace.json carry the same version" "$(jq -r .version "$SCRIPTS/../../../.claude-plugin/plugin.json")" "$(jq -r '.plugins[] | select(.name == "developer") | .version' "$SCRIPTS/../../../../../.claude-plugin/marketplace.json")"
   # a fake fleet: boot one team, then status, tick and next run once
   git init -q -b main "$SM/repo"; git -C "$SM/repo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
@@ -237,6 +237,15 @@ J
   eq "smoke: guard: a quoted commit message is allowed" "$(sbg 'git commit -m "Find it; npm install foo"')" allow
   check "smoke: the tester brief says never run the full suite locally" bash -c "jq -r '.workers[] | select(.role == \"tester\") | .brief' '$SCRIPTS/../templates/build.json' | grep -q 'Never run the full suite locally'"
   check "smoke: the house rules hold the one-test-run rule" grep -q 'One test run per PR head, and it is CI' "$SCRIPTS/../rules/house.md"
+  # dev408-16: the dispatcher lists every command once, with an example, no internal script, every Step 0 route
+  FL="$SCRIPTS/fleet"; hl="$("$FL" help | sed -n '3,$p')"; sc="$(printf '%s\n' "$hl" | cut -d'`' -f2)"
+  eq "smoke: dev408-16 fleet help lists each command once, each with a fleet example" "$(printf '%s\n' "$sc" | sort | uniq -d | wc -l | tr -d ' '):$(printf '%s\n' "$hl" | grep -vc ' | `fleet ')" "0:0"
+  eq "smoke: dev408-16 no internal script is a command" "$(printf '%s\n' "$sc" | grep -cxE 'common|agent-lib|loop-tick|registry|tick|linear|machine-id|chat')" 0
+  miss=""; for r in $(awk '/^## Step 0/ { on = 1; next } on && /^## / { exit } on' "$SCRIPTS/../SKILL.md" | grep -o '`/fleet [a-z][a-z-]*' | sed 's#`/fleet ##' | sort -u); do
+    printf '%s\n' "$sc" | grep -qx "$r" || miss="$miss $r"; done
+  eq "smoke: dev408-16 every SKILL.md Step 0 route is a command" "$miss" ""
+  "$FL" bogus >/dev/null 2>&1; eq "smoke: dev408-16 an unknown command exits 2" "$?" 2
+  eq "smoke: dev408-16 fleet status prints what status.sh prints" "$(FLEET_NOW=2026-10-24T09:00:00Z "$FL" status 2>&1)" "$(FLEET_NOW=2026-10-24T09:00:00Z "$SCRIPTS/status.sh" 2>&1)"
   printf '\n%d passed, %d failed\n' "$pass" "$failn"
   [ "$failn" = 0 ]; exit
 fi
@@ -907,7 +916,7 @@ eq "a working notification logs nothing" "$("$REG" escalate esc/builder P2 "n2" 
 for f in registry.sh status.sh retire.sh common.sh boot.sh tell.sh tick.sh next.sh linear.sh claim.sh respawn.sh metrics.sh agent-lib.sh schedule.sh loop-tick.sh sandbox.sh park.sh unpark.sh focus.sh; do check "bash -n $f" bash -n "$SCRIPTS/$f"; done
 SKD0="$SCRIPTS/.."
 eq "SKILL.md no longer routes through escalation-wait.sh" "$(grep -c 'escalation-wait' "$SKD0/SKILL.md" || true)" 0
-check "SKILL.md documents resolve" grep -q 'registry.sh resolve' "$SKD0/SKILL.md" "$SKD0/references/operations.md"
+check "SKILL.md documents resolve" grep -q 'fleet resolve' "$SKD0/SKILL.md" "$SKD0/references/operations.md"
 check "SKILL.md has the Orchestrator send a push" grep -q 'PushNotification' "$SKD0/SKILL.md" "$SKD0/references/operations.md"
 check "build lead brief says P1 is only for a user decision" grep -q 'P1 is only for a decision the user must make' "$SKD0/templates/build.json"
 check "build lead brief no longer files an escalation for UNVERIFIED" test -z "$(grep 'UNVERIFIED with an escalation filed' "$SKD0/templates/build.json")"
@@ -3290,6 +3299,67 @@ pgx '.url = "https://github.com/o/r/pull/77"' >"$D4/gh/77.json"
 eq "dev408-0 groundwork: tick: once MERGEABLE it is ready, once" "$(nready):$(nready)" "1:0"
 d4cfg
 
+# -- dev408-16: one dispatcher; help comes from the scripts' own headers
+FL="$SCRIPTS/fleet"
+"$FL" help >"$D4/help.out"; rc=$?
+eq "dev408-16 commands: fleet help exits 0 and prints the table" "$rc:$(sed -n 1,2p "$D4/help.out" | paste -sd' ' -)" "0:| Command | What it does | Example | |---|---|---|"
+cmds="$(sed -n '3,$p' "$D4/help.out" | cut -d'`' -f2)"
+eq "dev408-16 commands: each command is listed once" "$(printf '%s\n' "$cmds" | sort | uniq -d | wc -l | tr -d ' ')" 0
+bad=""; while IFS= read -r row; do
+  c="$(printf '%s' "$row" | cut -d'`' -f2)"; ex="$(printf '%s' "$row" | awk -F' [|] ' '{ print $3 }')"
+  case "$ex" in "\`fleet $c\`"* | "\`fleet $c "*) ;; *) bad="$bad $c" ;; esac
+done < <(sed -n '3,$p' "$D4/help.out")
+eq "dev408-16 commands: every row has an example that runs that command" "$bad" ""
+eq "dev408-16 commands: no internal script is listed" "$(printf '%s\n' "$cmds" | grep -cxE 'common|agent-lib|loop-tick|registry|tick|linear|machine-id|chat|fleet')" 0
+eq "dev408-16 commands: the commands (scripts with a Command line, the aliases, help)" "$(printf '%s\n' "$cmds" | paste -sd' ' -)" "boot claim debrief env escalate escalations focus help holder metrics next park prime resolve respawn retire sandbox schedule status takeover tell unpark"
+bad=""; for f in "$SCRIPTS"/*.sh; do
+  grep -q '^# Command: ' "$f" || continue; n="$(basename "$f" .sh)"
+  awk 'NR == 1 { next } !/^#/ { exit } { print }' "$f" | grep -qE "^#   $n\.sh( |$)" || bad="$bad $n:usage"
+  awk 'NR == 1 { next } !/^#/ { exit } { print }' "$f" | grep -q '^# Command: ' || bad="$bad $n:outside-header"
+done
+eq "dev408-16 commands: every command script's header has its usage line and its Command line" "$bad" ""
+check "dev408-16 commands: fleet help status prints status.sh's header unchanged" diff <("$FL" help status) <(sed -n '2,/^set -euo/p' "$SCRIPTS/status.sh" | sed '$d' | sed 's/^# \{0,1\}//')
+eq "dev408-16 commands: help for an alias prints its script's usage line and the Command line" "$("$FL" help escalate | grep -c '^  registry.sh escalate <name> P0|P1|P2 TEXT'):$("$FL" help escalate | grep -c '^Command: Raise a question')" "1:1"
+eq "dev408-16 commands: an alias's help keeps the usage line's continuation lines" "$("$FL" help holder | grep -c '^ ')" 3
+routes="$(awk '/^## Step 0/ { on = 1; next } on && /^## / { exit } on' "$SCRIPTS/../SKILL.md" | grep -o '`/fleet [a-z][a-z-]*' | sed 's#`/fleet ##' | sort -u)"
+missing=""; for r in $routes; do printf '%s\n' "$cmds" | grep -qx "$r" || missing="$missing $r"; done
+eq "dev408-16 commands: every SKILL.md Step 0 route is a command" "$missing" ""
+eq "dev408-16 commands: the Step 0 routes" "$(printf '%s\n' "$routes" | paste -sd' ' -)" "boot debrief escalate escalations focus help park prime resolve retire status tell unpark"
+check "dev408-16 commands: the README's Commands table is fleet help's output" diff <("$FL" help) <(awk '/^\| Command \| What it does \| Example \|$/ { on = 1 } on && !/^\|/ { exit } on' "$SCRIPTS/../README.md")
+"$FL" bogus >"$D4/u.out" 2>"$D4/u.err"; rc=$?
+eq "dev408-16 commands: an unknown command exits 2, nothing on stdout, the list on stderr" "$rc:$(wc -c <"$D4/u.out" | tr -d ' '):$(grep -c '^| `status` |' "$D4/u.err")" "2:0:1"
+"$FL" help bogus >/dev/null 2>&1; eq "dev408-16 commands: help for an unknown command exits 2" "$?" 2
+"$FL" >/dev/null 2>&1; eq "dev408-16 commands: no command at all exits 2" "$?" 2
+"$FL" ../registry list >/dev/null 2>&1; eq "dev408-16 commands: a path is never run" "$?" 2
+"$FL" common >/dev/null 2>&1; eq "dev408-16 commands: an internal script is not a command" "$?" 2
+check "dev408-16 commands: fleet parses under bash and /bin/bash" bash -c "bash -n '$FL' && /bin/bash -n '$FL' && test -x '$FL'"
+ln -s "$FL" "$D4/fleet-link"; eq "dev408-16 commands: a symlink to fleet finds its scripts" "$("$D4/fleet-link" help | sed -n 3p | cut -d'`' -f2)" boot
+FLEET_NOW=2026-10-24T09:00:00Z "$SCRIPTS/status.sh" >/dev/null 2>&1
+a="$(FLEET_NOW=2026-10-24T09:00:00Z "$FL" status 2>&1; echo "rc=$?")"; b="$(FLEET_NOW=2026-10-24T09:00:00Z "$SCRIPTS/status.sh" 2>&1; echo "rc=$?")"
+eq "dev408-16 commands: fleet status prints what status.sh prints, with its exit status" "$a" "$b"
+check "dev408-16 commands: and that output is a team table" grep -q '^TEAM' <<<"$a"
+eq "dev408-16 commands: arguments pass through unchanged" "$("$FL" status --json | jq -c '[.[].name] | sort')" "$("$SCRIPTS/status.sh" --json | jq -c '[.[].name] | sort')"
+"$FL" escalate g4/lead P2 "which port?" >/dev/null 2>&1
+eid="$("$FL" escalations --open | jq -r '[.[] | select(.message == "which port?")][0].id')"
+"$FL" resolve g4/lead "$eid" --note 8080 >/dev/null 2>&1
+eq "dev408-16 commands: escalate, escalations and resolve run registry.sh's" "$("$REG" escalations --team g4 | jq -r '[.[] | select(.message == "which port?")][0] | [.resolution, (.resolved_at != null)] | map(tostring) | join("|")')" "8080|true"
+d4cfg 'linear_writes = "on"'; d4db
+eq "dev408-16 commands: fleet holder runs linear.sh holder" "$(FLEET_NOW=2026-10-18T09:00:00Z "$FL" holder DEV-2)" "$(FLEET_NOW=2026-10-18T09:00:00Z "$LIN" holder DEV-2)"
+d4cfg
+# prime: the counts, then the status output
+"$REG" escalate g4/lead P1 "need a decision" >/dev/null 2>&1
+FLEET_NOW=2026-10-24T09:00:00Z "$FL" prime >"$D4/prime.out" 2>/dev/null; rc=$?
+eq "dev408-16 commands: prime counts teams, open escalations and problems" "$rc:$(head -n 1 "$D4/prime.out")" "0:Fleet on fleet:test: 2 teams, 1 open escalations, 1 problems."
+eq "dev408-16 commands: then prints the status output" "$(sed 1d "$D4/prime.out")" "$(FLEET_NOW=2026-10-24T09:00:00Z "$SCRIPTS/status.sh" 2>/dev/null)"
+d4cfg 'machine_name = "test box"'; eq "dev408-16 commands: prime names the machine by machine_name when set" "$("$FL" prime 2>/dev/null | head -n 1 | cut -d: -f1)" "Fleet on test box"; d4cfg
+# debrief: the retired teams whose lessons are due
+eq "dev408-16 commands: debrief with nothing waiting" "$("$FL" debrief)" "Nothing to debrief."
+for r in lead builder tester; do "$REG" add "$(jq -cn --arg r "$r" '{name: ("r4/" + $r), team: "r4", tier: (if $r == "lead" then "Lead" else "Worker" end), status: "Working", herdr_ref: ("r4-" + $r), pane: ("pr4-" + $r)}')" >/dev/null; done
+"$REG" note r4/builder discovered "flaky ci" >/dev/null
+"$REG" retire r4/lead --outcome Shipped >/dev/null; "$REG" retire r4/builder --outcome Partial >/dev/null; "$REG" retire r4/tester --outcome Shipped >/dev/null
+"$REG" set r4/tester lessons="sign the exact head" >/dev/null
+eq "dev408-16 commands: debrief lists the team, its outcomes and the agents whose lessons are due, then discovered work" "$("$FL" debrief)" "r4 (Partial/Shipped): lessons due from lead, builder
+Discovered work: flaky ci (r4/builder)"
 # ---- end DEV-408 ----
 
 printf '\n%d passed, %d failed\n' "$pass" "$failn"

@@ -27,6 +27,7 @@
 # Orchestrator's own reports/). Retiring a
 # whole team also runs `env.sh down <team>` for its test cluster (only one the registry
 # created); if that fails the env is kept and reported.
+# Command: Shut a team (or one agent) down safely · e.g. fleet retire build-api --outcome Shipped
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
 registry="$FLEET_SCRIPTS/registry.sh"

@@ -8,6 +8,7 @@
 # The output lists "parked" (--now) or "marked" teams. A team that cannot be parked (uncommitted work, herdr down) or unparked (the caps are full) is named in the
 # output's "refused" list and stays as it was; the others go through, and focus.sh exits 1. The focus is one line
 # in the status.
+# Command: Park every other team so one team gets the slots · e.g. fleet focus build-api --now
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
 require_herdr

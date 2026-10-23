@@ -19,6 +19,7 @@
 # FLEET_INSTALLED_PLUGINS (default ~/.claude/plugins/installed_plugins.json), FLEET_UID.
 # Linux: no code here; see the README (systemd user timer).
 # UNVERIFIED until the user runs install: real launchd behaviour (DEV-368).
+# Command: Install, remove or check the launchd loop · e.g. fleet schedule status
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
 
