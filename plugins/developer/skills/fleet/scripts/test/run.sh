@@ -3520,6 +3520,12 @@ Reply A or B."
 s1="$("$SCRIPTS/status.sh" 2>/dev/null)"; s2="$("$SCRIPTS/status.sh" 2>/dev/null)"
 nl="$(printf '%s\n' "$s1" | grep -n '^P2 g4/lead: use the cache?$' | cut -d: -f1)"; tl="$(printf '%s\n' "$s1" | grep -n '^| Team |' | cut -d: -f1)"
 eq "dev408-17 output: status prints the notice above the table, then never again" "$([ -n "$nl" ] && [ -n "$tl" ] && [ "$nl" -lt "$tl" ] && echo above):$(printf '%s\n' "$s2" | grep -c 'use the cache')" "above:0"
+# R12: a tick killed while it held the notices lock leaves the lock behind; later notices are not dropped forever.
+mkdir "$FLEET_STATE_DIR/notices.log.lock"; touch -t 202001010000 "$FLEET_STATE_DIR/notices.log.lock"
+bash -c '. "$1/common.sh"; notice_add "after the stale lock"' _ "$SCRIPTS" 2>"$T/n12.err"
+eq "dev408-R12 notices: a lock left over a minute ago is removed and the notice is kept; status shows it" \
+  "$(tail -n 1 "$FLEET_STATE_DIR/notices.log" | jq -r .text):$([ -d "$FLEET_STATE_DIR/notices.log.lock" ] && echo locked || echo free):$(grep -c 'removed a stale notices lock' "$T/n12.err"):$("$SCRIPTS/status.sh" 2>/dev/null | grep -c '^after the stale lock$')" \
+  "after the stale lock:free:1:1"
 # every entry, rendered from the golden fixture (FLEET_NOW, a seeded registry and event log, the herdr shim)
 gfix; gcfg; export FLEET_NOW=2026-10-24T09:00:00Z DF_GB=500
 gold help "$("$FL" help)"

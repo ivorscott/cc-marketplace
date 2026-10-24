@@ -906,9 +906,17 @@ WAKE_JQ='select(type == "object") | select((.type as $t | $wake | split(" ") | i
 
 # Notices: the wake replies tick renders for the Orchestrator. notices.log in the state dir holds one JSON line
 # each, {at, text}; `status` prints the ones not shown yet, once, above its table (notices.shown counts them), so
-# the answer to any wake is one `fleet status`. A short mkdir lock keeps an append and a show from crossing.
+# the answer to any wake is one `fleet status`. A short mkdir lock keeps an append and a show from crossing. It is held
+# for one append or one show, so a lock older than a minute was left by a process killed while holding it (launchd
+# kills a tick hard): it is removed, once, and taken.
 notices_file() { printf '%s\n' "$FLEET_STATE_DIR/notices.log"; }
-notices_lock() { local i=0; until mkdir "$(notices_file).lock" 2>/dev/null; do i=$((i + 1)); [ "$i" -lt 50 ] || return 1; sleep 0.1; done; }
+notices_lock() {
+  local i=0 l; l="$(notices_file).lock"
+  until mkdir "$l" 2>/dev/null; do
+    if [ -n "$(find "$l" -maxdepth 0 -mmin +1 2>/dev/null)" ] && rmdir "$l" 2>/dev/null; then warn "removed a stale notices lock"; continue; fi
+    i=$((i + 1)); [ "$i" -lt 50 ] || return 1; sleep 0.1
+  done
+}
 notices_unlock() { rmdir "$(notices_file).lock" 2>/dev/null || true; }
 notice_add() { # notice_add <text>: one notice (it may span lines)
   local f; f="$(notices_file)"; mkdir -p "$(dirname "$f")"
