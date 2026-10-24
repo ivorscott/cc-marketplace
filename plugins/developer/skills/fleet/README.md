@@ -393,10 +393,12 @@ in 4.1. Anything that newly exposes the key is a blocker; the items that touch t
    blockers are not Done, orders the rest by priority then series, takes over a lapsed claim with no open PR, and
    notes the search on the lead's row (`registry.sh note <team>/lead picked`). The user is asked only for a cap or a P0/P1.
 2. **Keep N teams running.** `target_teams` on the Orchestrator's row; tick wakes it with `slot_free` while fewer
-   teams run; a signed-off team whose agents are all Done or Idle parks to free its slot; "Nothing bootable" lists
-   what each candidate needs.
+   teams run; a signed-off team whose agents are all Done or Idle parks to free its slot (tried on every tick while
+   that holds; the tester's untracked report under `reports/` does not stop it); "Nothing bootable" lists what each
+   candidate needs.
 3. **Lapsed claims are swept.** Tick releases another machine's lapsed claim with no open PR (`claim_released`),
-   leaves one with an open PR alone (`claim_held_pr`) and reports the rest read-only (`claim_lapsed`).
+   leaves one with an open PR alone (`claim_held_pr`) and reports the rest read-only (`claim_lapsed`); a machine whose
+   own lapsed claim was released hears it (`claim_lost`).
 4. **Wakes without typing.** The loop appends fixed-template lines to `wakes.log`; the Orchestrator follows it with
    `Monitor`. No wake is typed into a pane, queued or retried; the no-reply alert stays.
 5. **The redact check exists.** `redact-check.sh --range <base>..<head>` counts private terms from
@@ -405,8 +407,9 @@ in 4.1. Anything that newly exposes the key is a blocker; the items that touch t
 7. **A stale PR head nudges the lead** once per head when the builder is idle and the tester has not signed it.
 8. **An interrupted boot undoes itself.** Rows are written first; a boot that fails or is interrupted closes its
    workspace, removes its worktrees and branches and retires its rows; leftovers block the name until `retire` tidies them.
-9. **Retire tidies Linear and the disk.** The issue follows the outcome (`--verify` for Verify), reports are archived
-   into the team repo, more build output is ignored, the empty team directory goes.
+9. **Retire tidies Linear and the disk.** The issue follows the outcome (`--verify` for Verify; Shipped only once its
+   PR merged), reports are archived into the team repo (out of its git) also when tidying leftovers, more build output
+   is ignored, the empty team directory goes.
 10. **A plugin version switch waits for the user.** `stale_version` is a decision; `next` and `respawn --restart`
     refuse with exit 5 until `FLEET_VERSION_OK=1`.
 11. **Overnight mode.** `overnight = true`: a lead takes its own recommendation for a decision inside the issue's scope
