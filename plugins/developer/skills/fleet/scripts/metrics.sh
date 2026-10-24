@@ -68,8 +68,8 @@ if $morning; then
     | ([$rows[] | select(.name == ($t + "/lead")) | (.notes // [])[] | select(.kind == "picked") | .message] | last) as $why
     | "- \($t)\(if (.issue // "") != "" then " on " + .issue else "" end): \($why // "named by the user")"' <<<"$events")"
   section "Merge-order conflicts" "$( { jq -r "$RENDER_DEFS"'.[] | select(.type == "pr_conflicting")
-      | ((.detail // "") | sub("^after "; "") | split(", ") | map(select(. != "") | pr_cell(.)) | join(", ")) as $after
-      | "- \(pr_cell(.pr)): conflicts after \(if $after == "" then "a merge" else $after end)"' <<<"$events"
+      | ((.detail // "") | sub("^after "; "") | split(", ") | map(select(test("^https?://\\S+/[0-9]+$")) | pr_cell(.)) | join(", ")) as $after
+      | "- \(pr_cell(.pr)): conflicts \(if $after == "" then "with main" else "after " + $after end)"' <<<"$events"
     jq -r '.not_ready[] | select((.missing | index("conflicting")) != null) | "- \(.pr): conflicting now"' <<<"$q"; } )"
   exit 0
 fi

@@ -3688,6 +3688,27 @@ eq "dev408-18 queue: its parked team is unparked first" "$("$REG" list --team tb
 eq "dev408-18 queue: and its lead is told exactly once to catch up and re-sign" "$(grep -c '^agent prompt tb-lead PR https://github.com/acme/app-api/pull/51 conflicts after https://github.com/acme/app-api/pull/50 merged' "$HERDR_LOG"):$(printf '%s' "$t2" | jq -r '.[] | select(.type == "pr_conflicting") | .lead_told')" "1:true"
 eq "dev408-18 queue: the conflict is in the event log for the morning report" "$(jq -r 'select(.type == "pr_conflicting") | .pr' "$FLEET_STATE_DIR/events.jsonl")" "https://github.com/acme/app-api/pull/51"
 eq "dev408-18 queue: and the PR has left the queue" "$(nr 51)" "conflicting"
+# R7: a PR merged on an earlier tick, still on its row, is never named as the cause of a later conflict. R6: a ready PR
+# that reads mergeable unknown for a tick keeps its place, so its conflict on the next tick is still told.
+qfresh conflict2; git init -q -b main "$QD/repo2" 2>/dev/null
+for t in td te tf; do for r in lead builder tester; do
+  "$REG" add "$(jq -cn --arg t "$t" --arg r "$r" --arg repo "$QD/repo2" '{name: ($t + "/" + $r), team: $t, tier: (if $r == "lead" then "Lead" else "Worker" end), template: "build",
+    harness: "claude", status: (if $r == "lead" then "Working" else "Done" end), herdr_ref: ($t + "-" + $r), pane: ("p" + $t + $r), workspace: "w", repo: $repo, cwd: $repo, assignment: "task", issue: ($t | ascii_upcase)}')" >/dev/null
+done; done
+for n in 53 54 55; do t="$(printf 'td\nte\ntf\n' | sed -n "$((n - 52))p")"; "$REG" set "$t/builder" pr="https://github.com/acme/app-api/pull/$n" >/dev/null
+  "$REG" signoff "$t/tester" "https://github.com/acme/app-api/pull/$n" "aaaaaaa$n" >/dev/null; qpr app-api "$n" "fleet/dev-$n" main 2026-10-18T10:00:00Z "[\"f$n.go\"]" x; done
+qset() { jq --arg m "$2" '.mergeable = $m' "$QGHD/app-api-$1.json" >"$QD/m.json" && mv "$QD/m.json" "$QGHD/app-api-$1.json"; }
+jq '.state = "MERGED"' "$QGHD/app-api-53.json" >"$QD/m.json" && mv "$QD/m.json" "$QGHD/app-api-53.json"; qt >/dev/null # 53's merge is reported now
+qset 54 CONFLICTING; qset 55 UNKNOWN; : >"$HERDR_LOG"; c1="$(qt)"
+eq "dev408-R7 queue: a conflict on a later tick never names a PR merged long ago; it says main" \
+  "$(printf '%s' "$c1" | jq -r '[.[] | select(.type == "pr_conflicting") | .url + " " + .detail] | join(",")'):$(grep -c '^agent prompt te-lead PR https://github.com/acme/app-api/pull/54 conflicts with main now' "$HERDR_LOG")" \
+  "https://github.com/acme/app-api/pull/54 with main:1"
+qset 55 CONFLICTING; c2="$(qt)"
+eq "dev408-R6 queue: a ready PR that read mergeable unknown for a tick, then conflicts, is still told" \
+  "$(printf '%s' "$c2" | jq -r '[.[] | select(.type == "pr_conflicting") | .url] | join(",")')" "https://github.com/acme/app-api/pull/55"
+eq "dev408-R6 queue: a lead that could not be told is named so in the notice" \
+  "$(bash -c '. "$1/common.sh"; render_notice "$2"' _ "$SCRIPTS" '{"type":"pr_conflicting","team":"te","name":"te/lead","url":"https://github.com/acme/app-api/pull/54","merged":"","lead_told":false}')" \
+  "Conflicting te/lead: [app-api #54](https://github.com/acme/app-api/pull/54) conflicts with main. Lead not reached: tell it to bring it up to date with main and have the tester sign off again."
 
 # -- dev408-5: the redact check (counts only; exit 0 clean, 1 a match, 2 cannot run)
 RR="$T/r408"; rfix "$RR"; RS="$T/rs408"; rterms "$RS"; RTF="$RS/private/redact_terms.txt"

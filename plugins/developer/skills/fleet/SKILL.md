@@ -141,8 +141,9 @@ question box (AskUserQuestion): the wakes queue behind it. Ask in plain text and
   another machine's, treat it as `claim_takeover`.
 - `claim_released`: tick freed another machine's lapsed claim; the issue can be picked (A, step 0). `claim_held_pr`
   and `claim_lapsed`: tick left another machine's claim alone (an open PR, writes off, or no heartbeat); relay it.
-- `pr_conflicting`: a merge made a ready PR conflict; tick unparked its team and told its lead. Act only when the
-  notice says the unpark was refused (a cap is full): unpark the team when a slot frees.
+- `pr_conflicting`: a ready PR conflicts now (after a merge, or a change on main); tick unparked its team and told its
+  lead. Act only when the notice says the unpark was refused (a cap is full: unpark the team when a slot frees) or
+  that the lead was not reached (tell it).
 
 The tester records its verdict with `registry.sh signoff <name> <PR URL|N> <sha>`; tick calls a PR ready only when
 that SHA is the PR head. Details (tick lock, background tasks, event log, metrics): `references/operations.md`.

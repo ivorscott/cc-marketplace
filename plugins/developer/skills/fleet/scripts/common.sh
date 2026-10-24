@@ -853,8 +853,9 @@ render_notice() {
     pr_conflicting) d="$(jq -r '.unpark_refused // ""' <<<"$e")"
       o="$(jq -r '.merged // ""' <<<"$e" | tr ',' '\n' | sed 's/^ *//' | while IFS= read -r u; do [ -z "$u" ] || pr_link "$u"; done | paste -sd, - | sed 's/,/, /g')"
       if [ -n "$d" ]; then n="Unpark refused ($d): unpark it when a slot frees, then tell its lead"
+      elif [ "$(jq -r '.lead_told == false' <<<"$e")" = true ]; then n="Lead not reached: tell it to bring it up to date with main and have the tester sign off again"
       else n="Lead told to bring it up to date with main and have the tester sign off again"; fi
-      render_line event event=Conflicting name="$name" what="$(pr_link "$url") conflicts after $o" next="$n" ;;
+      render_line event event=Conflicting name="$name" what="$(pr_link "$url") conflicts $(if [ -n "$o" ]; then printf 'after %s' "$o"; else printf 'with main'; fi)" next="$n" ;;
     pr_opened) render_line pr_opened pr="$(pr_link "$url")" issue="$(team_issue "$team")" told="Lead not reached: tell it to start the tester" ;;
     dead) render_line event event=Dead name="$name" what="its agent is gone" next="Tick respawns it once in $(const_int RESPAWN_WINDOW_HOURS 6)h, then escalates P1" ;;
     failed) render_line event event=Failed name="$name" what="a restart or its brief did not arrive" next="Re-send its brief or re-boot the team" ;;

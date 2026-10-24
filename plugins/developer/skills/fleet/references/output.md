@@ -383,9 +383,10 @@ Merged [repo #N](url). Next: <move <team> to its next issue, or retire it|<team>
 Conflicting <team>/lead: [repo #N](url) conflicts after [repo #M](url). Lead told to bring it up to date with main and have the tester sign off again.
 ```
 
-After a merge, a PR that was ready on the tick before and conflicts now: it leaves the queue, its team is unparked
-first when parked, and its lead is told once per (PR, head). When the unpark is refused: `Unpark refused (<why>):
-unpark it when a slot frees, then tell its lead.`
+A PR that was ready and conflicts now: it leaves the queue, its team is unparked first when parked, and its lead is
+told once per (PR, head). With no merge seen since the last tick it says `conflicts with main`. When the unpark is
+refused: `Unpark refused (<why>): unpark it when a slot frees, then tell its lead.` When the lead could not be told:
+`Lead not reached: tell it to bring it up to date with main and have the tester sign off again.`
 
 ### wake pr_opened
 
