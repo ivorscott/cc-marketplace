@@ -2787,7 +2787,7 @@ eq "house rules: a resume brief carries them once too" "$(. "$SCRIPTS/common.sh"
 eq "skill text names no person or company (rules, templates, SKILL.md, README.md, references, agents, the scripts)" "$(grep -rliE 'ivor|devpie' "$SKD_/rules" "$SKD_/templates" "$SKD_/SKILL.md" "$SKD_/README.md" "$SKD_/references" "$SKD_/../../agents" "$SKD_"/scripts/*.sh "$SKD_/scripts/fleet" | wc -l | tr -d ' ')" 0
 eq "no Agent: trailer anywhere in skill text, templates or scripts" "$(grep -rl 'Agent: ' "$SKD_/rules" "$SKD_/templates" "$SKD_/SKILL.md" "$SKD_/references" "$SKD_/../../agents" "$SCRIPTS"/*.sh | wc -l | tr -d ' ')" 0
 check "the race template is gone" test ! -e "$SKD_/templates/race.json"
-check "the builder brief rebases and pushes with lease, never merges the default branch" bash -c "jq -r '.workers[] | select(.role == \"builder\") | .brief' '$SKD_/templates/build.json' | grep -q 'git push --force-with-lease origin fleet/<slug>' && ! jq -r '.workers[] | select(.role == \"builder\") | .brief' '$SKD_/templates/build.json' | grep -q 'merge origin/main'"
+check "the builder brief rebases and pushes with lease ({{catch_up}} outside overnight mode), never merges the default branch" bash -c "jq -r '.workers[] | select(.role == \"builder\") | .brief' '$SKD_/templates/build.json' | grep -qF '{{catch_up}}' && . '$SCRIPTS/common.sh' && catch_up | grep -q 'git push --force-with-lease origin fleet/<slug>' && ! catch_up | grep -q 'merge origin/main'"
 
 # -- boot: briefs as files with pointers; the Fixes line; push.useForceIfIncludes; plugin_version
 : >"$HERDR_LOG"; rm -f "${AS:?}"/*
