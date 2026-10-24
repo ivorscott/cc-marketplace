@@ -66,7 +66,7 @@ from="$(printf '%s' "$rows" | jq -r '[.[] | select((.issue // "") != "")] | firs
 version_switch_check "$rows" "$team"
 
 # 1. Safe point. herdr must answer (a failed call is not "idle"), every agent must be idle or done, and no
-# background task may be running (its transcript; the pane footer when there is no transcript).
+# background task may be running (its transcript says; the screen is never read).
 hd agent list >/dev/null 2>&1 || die "herdr is not answering; $team is unchanged"
 busy=()
 while IFS= read -r r; do
@@ -78,11 +78,7 @@ while IFS= read -r r; do
     *) busy+=("$n ($st)"); continue ;;
   esac
   tr_="$(printf '%s' "$r" | jq -r '.transcript // ""')"
-  if type transcript_bg_running >/dev/null 2>&1 && [ -n "$tr_" ] && [ -r "$tr_" ]; then
-    [ "$(transcript_bg_running "$tr_")" = 0 ] || busy+=("$n (background task)")
-  elif hd agent read "$ref" --source visible 2>/dev/null | tail -n 8 | grep -Eq '[0-9]+ (shell|monitor)s?([ ,.]|$)'; then
-    busy+=("$n (background task)")
-  fi
+  if [ -n "$tr_" ] && [ -r "$tr_" ] && [ "$(transcript_bg_running "$tr_")" != 0 ]; then busy+=("$n (background task)"); fi
 done < <(printf '%s' "$rows" | jq -c '.[]')
 if [ "${#busy[@]}" -gt 0 ]; then
   ev_log next_deferred team="$team" issue="$issue" detail="not at a safe point"

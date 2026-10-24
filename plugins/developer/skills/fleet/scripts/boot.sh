@@ -170,6 +170,10 @@ is_git=false; git -C "$repo" rev-parse --git-dir >/dev/null 2>&1 && is_git=true
 
 . "$FLEET_SCRIPTS/agent-lib.sh" # render, claude_args, start_agent (needs team, task, repo, registry, tool_allow)
 
+# Agent state (tell's delivery check, status's health) comes from herdr's Claude integration: boot goes on without
+# it, saying so once. Its first herdr call, after every refusal.
+herdr_integration_ok || warn "herdr's Claude integration is not current, so agent state may be wrong; run herdr integration install claude"
+
 # 1. Workspace with the lead in its root pane.
 lead_agent="$(agent_name "$team-lead")"
 lead_name="$team/lead"

@@ -154,9 +154,9 @@ state and config root, shims for herdr, gh and curl, no session, no tracker key 
 to run when a root is the live one. Never point a scratch run at the live fleet.
 
 One tick runs at a time (`tick.lock` in the state dir, `tick_lock_stale_secs`, default 900); a second one
-exits quietly. An agent with a background task running (a started task with no notification in its
-transcript, or "N shell(s)" / "N monitor(s)" in the pane footer when there is no transcript) counts as
-Working, not Stalled; a task older than `bg_task_max_hours` (default 6) is aged out.
+exits quietly. An agent with a background task running (a task its transcript started, with no
+notification and no KillShell or TaskStop yet) counts as Working, not Stalled; a task older than
+`bg_task_max_hours` (default 6) is aged out. The screen is never read for it: with no transcript there is none.
 
 ### The event log and metrics
 

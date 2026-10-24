@@ -25,8 +25,8 @@
 #   Idle         herdr says idle/done and the agent declared it is waiting (status=Idle),
 #                or it is a lead whose team still has live workers
 #   Stalled      herdr says idle/done, but the agent neither finished nor declared waiting, and it has no
-#                background task running (a started task with no notification yet, or "N shell(s)" /
-#                "N monitor(s)" in the pane footer when there is no transcript, counts as Working)
+#                background task running (a task its transcript started, with no notification and no stop
+#                yet, counts as Working; the screen is never read, so with no transcript there is none)
 #   Needs input  also: the newest assistant line of its transcript is an API error (isApiErrorMessage);
 #                `status_detail` on the row says "login expired" or "API error" (and the status shows it)
 #   Zombie       the agent is gone: herdr can't find it, or its pane is back at the shell
@@ -67,15 +67,14 @@ team_has_live_workers() {
     '[.[] | select(.team == $t and .tier == "Worker" and .status != "Done" and .status != "Retired")] | length > 0' >/dev/null
 }
 
-# bg_busy <row json> <herdr ref>: the agent has a background task running, so idle is not Stalled. The
-# transcript says first (started minus notified tasks, aged out after bg_task_max_hours); the pane footer
-# ("1 shell still running", "1 shell, 3 monitors") only when there is no readable transcript. herdr has no
-# field for it.
+# bg_busy <row json>: the agent has a background task running, so idle is not Stalled. Only its transcript says
+# (started minus notified or stopped tasks, aged out after bg_task_max_hours); herdr has no field for it, and the
+# screen is never read, so with no readable transcript there is none.
 bg_busy() {
   local tr n
   tr="$(printf '%s' "$1" | jq -r '.transcript // ""')"
-  if [ -n "$tr" ] && [ -r "$tr" ]; then n="$(transcript_bg_running "$tr")"; [ "${n:-0}" -gt 0 ]; return; fi
-  footer_bg_running "$(hd agent read "$2" --source visible 2>/dev/null || true)"
+  [ -n "$tr" ] && [ -r "$tr" ] || return 1
+  n="$(transcript_bg_running "$tr")"; [ "${n:-0}" -gt 0 ]
 }
 
 for name in $(printf '%s' "$rows" | jq -r '.[] | select(.tier != "Orchestrator") | .name'); do
@@ -108,7 +107,7 @@ for name in $(printf '%s' "$rows" | jq -r '.[] | select(.tier != "Orchestrator")
         if [ -n "$esc" ] && [ "$old" = "Needs input" ]; then new="Needs input"
         elif [ "$old" = "Idle" ]; then new="Idle"
         elif [ "$tier" = "Lead" ] && team_has_live_workers "$tm"; then new="Idle"
-        elif bg_busy "$r" "$ref"; then new="Working"
+        elif bg_busy "$r"; then new="Working"
         else new="Stalled"; fi ;;
       *) new="$old" ;;
     esac
@@ -167,4 +166,6 @@ if [ -x "$FLEET_STATE_DIR/bin/fleet-tick" ] && [ -z "$(cfg_str orchestrator_ref 
   [ -z "$("$registry" get orchestrator 2>/dev/null | jq -r '.herdr_ref // ""' 2>/dev/null)" ]; then
   blocks+=("$(render_line loop_unregistered)")
 fi
+# Agent state comes from herdr's Claude integration (its hooks): say so in one line when it is not current.
+herdr_integration_ok || blocks+=("$(render_line herdr_integration)")
 reply "${blocks[@]}"

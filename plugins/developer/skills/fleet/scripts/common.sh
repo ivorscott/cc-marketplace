@@ -69,6 +69,11 @@ need jq
 hd() {
   if [ -n "${FLEET_SESSION:-}" ]; then herdr --session "$FLEET_SESSION" "$@"; else herdr "$@"; fi
 }
+# herdr_integration_ok: herdr's Claude integration (its hooks) is installed and current, so `agent get` reports a
+# Claude agent's real state and state_change_seq. tell.sh and status.sh rely on those and read no screen text for
+# state (references/herdr-patterns.md). `herdr integration status` says "claude: current" when it is; UNVERIFIED
+# beyond that line.
+herdr_integration_ok() { hd integration status 2>/dev/null | grep -q '^claude: current'; }
 
 require_herdr() {
   need herdr
@@ -505,8 +510,6 @@ transcript_bg_running() {
         | select($id != null and (($ended | index($id)) == null) and ($s.at == null or ($now - $s.at) <= $max))] | length' "$1" 2>/dev/null || echo 0
 }
 
-# footer_bg_running <screen text>: the pane footer says "N shell(s)" or "N monitor(s)" still running.
-footer_bg_running() { printf '%s\n' "$1" | tail -n 8 | grep -Eq '[0-9]+ (shell|monitor)s?([ ,.]|$)'; }
 
 # report_dir: where fleet reports go: reports/ under the Orchestrator's cwd when its row records one (registry.sh
 # orchestrator here), else reports/ in the state dir (a launchd job's cwd is /).
@@ -712,6 +715,7 @@ render_line() {
     no_problems) printf 'No problems.\n' ;;
     other_machines) printf 'Other machines: %s.\n' "${L_list:-none}" ;;
     loop_unregistered) printf 'Loop: no Orchestrator registered, so wakes reach desktop notifications only. Run registry.sh orchestrator here in its pane.\n' ;;
+    herdr_integration) printf 'herdr Claude integration: not current (run herdr integration install claude).\n' ;;
     respawned) printf 'Respawned %s (%s): %s.\n' "${L_name:-}" "${L_model:-default model}" "${L_state:-}" ;;
     restarted) printf 'Restarted %s (%s): %s.\n' "${L_name:-}" "${L_model:-default model}" "${L_state:-}" ;;
     told) printf 'Told %s: "%s" (%s)\n' "${L_name:-}" "${L_text:-}" "${L_how:-delivered}" ;;

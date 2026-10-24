@@ -9,8 +9,8 @@
 # and the agent gets one pointer line, "Read your brief: <path> (id <id>)", so a long brief is never pasted
 # into a prompt. tell waits for the agent to be idle first (brief_idle_secs, default 60) and fails without
 # sending when it is not. A brief counts as delivered ONLY when the agent's transcript shows the id after the
-# send, as a user line or a queued_command attachment (with no transcript known, the id on screen); a state
-# change does not count. The row's last_brief records the file. --brief-file re-sends the pointer to an
+# send, as a user line or a queued_command attachment; a state change does not count, except for a row with no
+# transcript (another harness), where it is all there is. The row's last_brief records the file. --brief-file re-sends the pointer to an
 # existing brief (tick does it once for a Failed row). The outcome is logged as brief_delivered /
 # brief_failed in the event log (the brief text never is). UNVERIFIED: the queued_command attachment shape.
 #
@@ -19,22 +19,16 @@
 # its shell or the agent is gone: exit 2. --no-confirm only checks that herdr accepted the send (for slash commands,
 # which change neither the agent's state nor the transcript), and the line ends "(sent)".
 #
-# Delivery is seen when, within tell_confirm_secs (config.toml, default 15), the first of these
-# shows up (structured signals first, screen text last):
+# Delivery is seen when, within the tell confirm wait (15s), the first of these shows up:
 #   (a) the agent's Claude Code transcript (the row's `transcript` file) gains a line after the
 #       send with type "user" whose string .message.content starts with the first 40 characters
 #       of the text;
 #   (b) herdr `agent get` shows .state_change_seq increased, or agent_status went to working or
-#       blocked;
-#   (c) fallback: the first 40 characters appear in the transcript part of
-#       `herdr agent read --source recent-unwrapped`. The input box at the bottom (from the
-#       second-to-last horizontal rule on) is excluded, so Claude's greyed suggested reply
-#       cannot pass for an echoed message.
-# Not seen: press enter once and look again; if the text is not on screen, send it again.
-# UNVERIFIED: state_change_seq and revision are observed in `agent get` JSON, not documented by
-# herdr (`herdr --skill`), so they are a signal, not a contract; the transcript format may change
-# between Claude Code versions; the screen handling encodes what Claude Code's screen is expected
-# to look like (DEV-368).
+#       blocked. herdr's Claude integration (its hooks) gives these; boot and status say when it is
+#       not current.
+# The screen is never read. Not seen: press enter once (the text may sit in the box unsent) and look again.
+# UNVERIFIED: state_change_seq is observed in `agent get` JSON, not documented by herdr (`herdr --skill`),
+# so it is a signal, not a contract; the transcript format may change between Claude Code versions.
 # Command: Send a team's lead (or one agent) a message and check it arrived · e.g. fleet tell build-api/lead "focus on token expiry"
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
@@ -111,19 +105,6 @@ if [ -n "$pane" ] && ! hd pane process-info --pane "$pane" 2>/dev/null |
   verdict false "its pane is back at the shell" 2
 fi
 
-# transcript <screen>: the screen without its input box.
-transcript() {
-  printf '%s\n' "$1" | awk '
-    { line[NR] = $0; if ($0 ~ /^[[:space:]]*(─|╭|╰|└|┌)/) rule[++n] = NR }
-    END {
-      stop = NR
-      if (n >= 2) stop = rule[n - 1] - 1
-      else if (n == 1) stop = rule[1] - 1
-      for (i = 1; i <= stop; i++) if (n > 0 || line[i] !~ /^[[:space:]]*(❯|│)/) print line[i]
-    }'
-}
-screen() { hd agent read "$ref" --source recent-unwrapped 2>/dev/null | tail -n 60 || true; }
-
 # --- a brief waits for idle -------------------------------------------------------------------------------
 if $is_brief; then
   # Wait for idle: typing into a busy agent queues the line behind its turn, or loses it.
@@ -133,32 +114,25 @@ if $is_brief; then
     sleep "$poll"; w=$((w + 1))
   done
 fi
-needle="$(printf '%s' "$text" | head -1 | cut -c1-40)"
-# An empty (or all-space) needle can't be told apart on screen: then only (a) and (b) count.
-[ -n "${needle//[[:space:]]/}" ] || needle=""
-# The screen signal (c) is about text that appears AFTER the send: more copies of the needle in the
-# transcript region than before, or the region's last lines changed and now hold it. So a text sent
-# twice can still confirm, and a copy already on screen cannot.
-echo_count() { if [ -z "$needle" ]; then echo 0; else transcript "$1" | grep -cF -- "$needle" || true; fi; }
-echo_tail() { transcript "$1" | tail -n 3; }
-echoed_new() { # echoed_new <screen>
-  [ -n "$needle" ] || return 1
-  [ "$(echo_count "$1")" -gt "$n0" ] && return 0
-  [ "$(echo_tail "$1")" != "$tail0" ] && echo_tail "$1" | grep -qF -- "$needle"
-}
-
 before_state="$(agent_state)"; before_seq="$(agent_seq)"
 needle40="$(jq -rn --arg t "$text" '$t[0:40]')"
 lines0=0; [ -r "$transcript" ] && lines0="$(wc -l <"$transcript" | tr -d ' ')"
-before_screen="$(screen)"; n0="$(echo_count "$before_screen")"; tail0="$(echo_tail "$before_screen")"
 
 send() { hd agent prompt "$ref" "$text" >/dev/null 2>&1; }
 send || verdict false "herdr rejected the send" 1
 $confirm || verdict true "" 0
 
 secs="$(const_int TELL_CONFIRM_SECS 15)"; poll="${FLEET_TELL_POLL:-1}"
-# brief_seen: the brief's id in the transcript after the send (a user line or a queued_command attachment);
-# with no transcript known, the id on screen. Nothing else confirms a brief.
+# state_moved: herdr's state moved since the send: agent_status went to working or blocked, or state_change_seq rose.
+state_moved() {
+  local s q
+  s="$(agent_state)"; q="$(agent_seq)"
+  case "$s" in working | blocked) [ "$before_state" = "$s" ] || return 0 ;; esac
+  case "$before_seq" in "" | *[!0-9]*) ;; *) case "$q" in "" | *[!0-9]*) ;; *) [ "$q" -gt "$before_seq" ] && return 0 ;; esac ;; esac
+  return 1
+}
+# brief_seen: the brief's id in the transcript after the send (a user line or a queued_command attachment); a row
+# with no transcript known has only the state to go by. Nothing else confirms a brief.
 brief_seen() {
   if [ -n "$transcript" ]; then
     [ -r "$transcript" ] || return 1
@@ -167,22 +141,17 @@ brief_seen() {
           or (((.attachment.type // "") == "queued_command") and ((.attachment | tostring) | contains($id))))
       | "seen"' 2>/dev/null | grep -q seen
   else
-    transcript "$(screen)" | grep -qF -- "$bid"
+    state_moved
   fi
 }
-arrived() { # structured signals first: transcript user line, herdr state; then the screen
-  local s q
+arrived() { # the transcript's user line, then herdr's state; never the screen
   if $is_brief; then brief_seen; return; fi
   if [ -n "$transcript" ] && [ -r "$transcript" ] &&
     tail -n +$((lines0 + 1)) "$transcript" 2>/dev/null | jq -e --arg n "$needle40" \
       'select(.type == "user" and (.message.content | type == "string") and (.message.content | startswith($n)))' >/dev/null 2>&1; then
     return 0
   fi
-  s="$(agent_state)"; q="$(agent_seq)"
-  case "$s" in working | blocked) [ "$before_state" = "$s" ] || return 0 ;; esac
-  case "$before_seq" in "" | *[!0-9]*) ;; *) case "$q" in "" | *[!0-9]*) ;; *) [ "$q" -gt "$before_seq" ] && return 0 ;; esac ;; esac
-  ! echoed_new "$(screen)" || return 0
-  return 1
+  state_moved
 }
 wait_for() { # wait_for <polls>
   local t=0
@@ -194,9 +163,7 @@ wait_for() { # wait_for <polls>
 }
 
 if wait_for "$secs"; then verdict true "" 0; fi
-# Retry once: the text may be sitting in the box unsent.
+# Press enter once: the text may be sitting in the box unsent.
 hd agent send-keys "$ref" enter >/dev/null 2>&1 || true
 if wait_for "$((secs / 3 + 1))"; then verdict true "" 0; fi
-if ! $is_brief && ! screen | grep -qF -- "$needle"; then send || true; fi
-if wait_for "$secs"; then verdict true "" 0; fi
-verdict false "no state change and no echo after ${secs}s and one retry" 1
+verdict false "no transcript line and no state change after ${secs}s and one enter" 1

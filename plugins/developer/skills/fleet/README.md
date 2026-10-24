@@ -139,7 +139,7 @@ The Orchestrator and agents call these directly (from `scripts/`). You can call 
 
 **Required**
 
-- herdr 0.9 or later, with the Orchestrator running inside a herdr pane
+- herdr 0.9 or later, with the Orchestrator running inside a herdr pane, and herdr's Claude integration current (`herdr integration install claude`): agent state comes from its hooks, never from the screen ([herdr patterns](references/herdr-patterns.md))
 - `jq` and `git`
 - Claude Code; other agent CLIs herdr supports are optional workers
 - the CLI or MCP connector for your code host (`gh`, `glab`, ...) and your tracker (Linear, Jira, ...), allowed through `config.toml` (below)

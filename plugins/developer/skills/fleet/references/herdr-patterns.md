@@ -1,8 +1,26 @@
 # herdr patterns for fleets
 
-Command syntax lives in herdr's own skill: run `herdr --skill`. This file covers only
-the four places where herdr's raw state misleads an orchestrator, and the pattern
-/fleet uses for each. All four were reproduced against herdr 0.9.1 with Claude Code agents.
+Command syntax lives in herdr's own skill: run `herdr --skill`. This file covers the one
+requirement /fleet has of herdr, then the four places where herdr's raw state misleads an
+orchestrator and the pattern /fleet uses for each. All four were reproduced against herdr 0.9.1
+with Claude Code agents.
+
+## Requirement: herdr's Claude integration
+
+`herdr integration install claude` installs the hooks that report a Claude agent's real state to
+herdr (`agent_status` and `state_change_seq` in `agent get`). /fleet reads agent state only from
+those and from the agent's transcript, never from screen text:
+
+- `tell.sh` confirms a message from the transcript's user line or a state change. It no longer
+  looks for an echo on screen, and no longer re-sends a message it cannot see there; it presses
+  enter once.
+- `status.sh` and `next.sh` count background tasks from the transcript only (the pane footer's
+  "1 shell still running" is not read), so an idle agent with no transcript and no done step is
+  Stalled.
+
+`boot` warns once, and `fleet status` ends with one line, when `herdr integration status` does not
+say `claude: current`. The folder-trust dialog (pattern 4) is still read from the screen: it opens
+before any hook runs.
 
 ## 1. `idle` is not proof the agent is alive
 

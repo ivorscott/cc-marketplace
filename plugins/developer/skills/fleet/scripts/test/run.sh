@@ -146,11 +146,12 @@ case "$1 $2" in
         fi ;;
       /exit) [ -n "${EXIT_STUCK:-}" ] || : >"$AS/exited.$3" ;;
     esac
-    [ -z "${PROMPT_ECHO:-}" ] || printf '%s\n> %s\n\n────────\n❯ \n────────\n' "$(cat "$AS/$3.read" 2>/dev/null)" "$4" >"$AS/$3.read"
     echo '{}' ;;
   "agent send-keys") [ -z "${ENTER_WORKS:-}" ] || echo working >"$AS/$3"; echo '{}' ;;
   "agent read") cat "$AS/$3.read" 2>/dev/null || true ;;
   "notification show") if [ -n "${NOTIFY_FAIL:-}" ]; then echo "herdr: no server" >&2; exit 1; fi; echo '{}' ;;
+  # herdr's Claude integration: current unless HERDR_INTEGRATION says otherwise (DEV-408 item 13).
+  "integration status") printf '%s\n' "${HERDR_INTEGRATION:-claude: current}" ;;
   *) echo '{}' ;;
 esac
 S
@@ -1215,12 +1216,9 @@ arow tl/builder Worker tl-b
 rm -f "$AS"/*
 out="$("$SCRIPTS/tell.sh" tl/builder "do the thing" 2>/dev/null)"; rc=$?
 eq "tell: delivered when the agent goes working" "$rc:$(told "$out")" "0:true"
-rm -f "$AS"/*; : >"$AS/tl-b.read"
-out="$(PROMPT_NOSTATE=1 PROMPT_ECHO=1 "$SCRIPTS/tell.sh" tl/builder "echoed into the transcript only" 2>/dev/null)"; rc=$?
-eq "tell: delivered when the text is echoed in the transcript" "$rc:$(told "$out")" "0:true"
-rm -f "$AS"/*; printf '● earlier output\n────────\n❯ Try: ship the thing to prod next\n────────\n' >"$AS/tl-b.read"
+rm -f "$AS"/*; printf '● earlier output\n────────\n❯ Try: ship the thing to prod next\n────────\n' >"$AS/tl-b.read"; : >"$HERDR_LOG"
 out="$(PROMPT_NOSTATE=1 "$SCRIPTS/tell.sh" tl/builder "Try: ship the thing to prod next" 2>/dev/null)"; rc=$?
-eq "tell: ghost text in the input box is not delivery (exit 1)" "$rc:$(told "$out")" "1:false"
+eq "tell: text on screen is never delivery, and the screen is not read (exit 1)" "$rc:$(told "$out"):$(grep -c '^agent read' "$HERDR_LOG" || true)" "1:false:0"
 rm -f "$AS"/*; : >"$HERDR_LOG"
 out="$(PROMPT_NOSTATE=1 ENTER_WORKS=1 "$SCRIPTS/tell.sh" tl/builder "needs an enter" 2>/dev/null)"; rc=$?
 eq "tell: retry once (enter) succeeds on the second poll" "$rc:$(told "$out")" "0:true"
@@ -1594,18 +1592,9 @@ ghset 41 OPEN MERGEABLE "$GREEN" "$H1" ok
 # -- A2: the project directory name maps every non-alphanumeric character to "-"
 eq "A2: transcript_dir_for maps / . _ and spaces" "$(. "$SCRIPTS/common.sh"; transcript_dir_for "/a_b.c/d e-f" | sed "s#^$(projects_dir)/##")" "-a-b-c-d-e-f"
 
-# -- A3: the screen signal needs text that appears after the send
-AR="$AS/fx-b.read"; rm -f "${AS:?}"/*
-printf '● did something\n> repeated message text for A3\n\n────────\n❯ \n────────\n' >"$AR"
-out="$(PROMPT_NOSTATE=1 PROMPT_ECHO=1 "$SCRIPTS/tell.sh" fx/builder "repeated message text for A3" 2>/dev/null)"; rc=$?
-eq "A3: a text sent twice confirms on its second copy" "$rc:$(told "$out")" "0:true"
-rm -f "${AS:?}"/*; printf '● did something\n> repeated message text for A3\n\n────────\n❯ \n────────\n' >"$AR"
-out="$(PROMPT_NOSTATE=1 "$SCRIPTS/tell.sh" fx/builder "repeated message text for A3" 2>/dev/null)"; rc=$?
-eq "A3: a copy that was already on screen is not delivery" "$rc:$(told "$out")" "1:false"
+# -- A3: an all-space text confirms on herdr's state change (the screen is never read, DEV-408 item 13)
 rm -f "${AS:?}"/*
-out="$(PROMPT_NOSTATE=1 "$SCRIPTS/tell.sh" fx/builder "   " 2>/dev/null)"; rc=$?
-eq "A3: an all-space text has no needle, so the screen cannot confirm it" "$rc:$(told "$out")" "1:false"
-out="$("$SCRIPTS/tell.sh" fx/builder "   " 2>/dev/null)"; eq "A3: but herdr's state change still does" "$?:$(told "$out")" "0:true"
+out="$("$SCRIPTS/tell.sh" fx/builder "   " 2>/dev/null)"; eq "A3: an all-space text confirms on herdr's state change" "$?:$(told "$out")" "0:true"
 
 # -- F7: tick's gh temp file comes from mktemp
 check "F7: tick.sh uses mktemp for the gh error file" grep -q 'ghtmp="$(mktemp)"' "$SCRIPTS/tick.sh"
@@ -1629,14 +1618,15 @@ bgfix "$TRB/old.jsonl" 2026-10-19T03:00:00Z Bash "Command running in background 
 fxrow fxbg/a Worker bg-a Working "$TRB/running.jsonl"; fxrow fxbg/b Worker bg-b Working "$TRB/done.jsonl"
 fxrow fxbg/c Worker bg-c Working "$TRB/mon.jsonl"; fxrow fxbg/d Worker bg-d Working "$TRB/old.jsonl"
 fxrow fxbg/e Worker bg-e Working; fxrow fxbg/f Worker bg-f Working
-printf 'working on it\n  1 shell still running\n' >"$AS/bg-e.read"; printf 'idle prompt\n' >"$AS/bg-f.read"
+printf 'working on it\n  1 shell still running\n' >"$AS/bg-e.read"; printf 'idle prompt\n' >"$AS/bg-f.read"; : >"$HERDR_LOG"
 out="$(for n in a b c d e f; do echo "$n=$(bgstatus fxbg/$n)"; done | paste -sd' ' -)"
+eq "background work: dev408-13 status never reads a pane" "$(grep -c '^agent read' "$HERDR_LOG" || true)" 0
 eq "background work: a started task with no notification is not Stalled" "$(printf '%s' "$out" | tr ' ' '\n' | grep '^a=')" "a=Working"
 eq "background work: the same task with its notification is Stalled (no done step)" "$(printf '%s' "$out" | tr ' ' '\n' | grep '^b=')" "b=Stalled"
 eq "background work: an unmatched Monitor start is not Stalled" "$(printf '%s' "$out" | tr ' ' '\n' | grep '^c=')" "c=Working"
 eq "background work: a task older than bg_task_max_hours is aged out, so Stalled" "$(printf '%s' "$out" | tr ' ' '\n' | grep '^d=')" "d=Stalled"
-eq "background work: with no transcript the pane footer counts" "$(printf '%s' "$out" | tr ' ' '\n' | grep '^e=')" "e=Working"
-eq "background work: and no footer, no transcript is Stalled" "$(printf '%s' "$out" | tr ' ' '\n' | grep '^f=')" "f=Stalled"
+eq "background work: dev408-13 with no transcript the pane footer does not count: Stalled" "$(printf '%s' "$out" | tr ' ' '\n' | grep '^e=')" "e=Stalled"
+eq "background work: and no transcript, no footer is Stalled" "$(printf '%s' "$out" | tr ' ' '\n' | grep '^f=')" "f=Stalled"
 unset FLEET_NOW
 
 export FLEET_STATE_DIR="$_afs" FLEET_REGISTRY="$_afr" FLEET_INBOX="$_afi"
@@ -2855,7 +2845,7 @@ eq "tick: a re-sent pointer that arrives brings a worker back as Idle (M2), not 
 rm -f "${AS:?}"/* "$FLEET_STATE_DIR/tick.state.json"; : >"$HERDR_LOG"; f3="$(BRIEF_LOST=1 "$SCRIPTS/tick.sh" 2>/dev/null)"
 eq "tick: a failed brief of an old issue is not re-sent (one brief_failed instead)" "$(grep -c '^agent prompt tb-b' "$HERDR_LOG" || true):$(evc "$f3" brief_failed)" "0:1"
 "$REG" add "$(jq -cn '{name: "tb/lead", team: "tb", tier: "Lead", status: "Failed", herdr_ref: "tb-l", pane: "p", repo: "/x", brief_failed_at: "2026-10-19T00:00:00Z"}')"
-rm -f "${AS:?}"/*; PROMPT_ECHO=1 "$SCRIPTS/tell.sh" tb/lead - --brief-file "$bf" >/dev/null 2>&1
+rm -f "${AS:?}"/*; "$SCRIPTS/tell.sh" tb/lead - --brief-file "$bf" >/dev/null 2>&1
 eq "tell --brief-file: a lead comes back Working" "$("$REG" get tb/lead | jq -r .status)" Working
 "$REG" retire tb/lead >/dev/null 2>&1 || true
 
@@ -3698,6 +3688,22 @@ done
 eq "dev408-20 symbols: the summary line counts the teams by state group" "$(s20 bash -c '. "$1/common.sh"; render_table | head -n 1' _ "$SCRIPTS")" "6 teams · ● 1 working · ○ 1 idle · ◐ 1 waiting · ✗ 3 blocked"
 eq "dev408-20 symbols: each State is its symbol and word" "$(s20 bash -c '. "$1/common.sh"; render_table' _ "$SCRIPTS" | awk -F' [|] ' '/^[|] s/ {print $4}' | paste -sd, -)" "✗ Stalled,✗ Zombie,✗ Failed,◐ Waiting,○ Idle,● Working"
 eq "dev408-20 symbols: one team is singular" "$(s20 bash -c '. "$1/common.sh"; render_table sf | head -n 1' _ "$SCRIPTS")" "1 team · ● 1 working"
+
+# -- dev408-13: agent state comes from herdr's Claude integration and the transcript; nothing reads the screen
+qfresh i13; mkdir -p "$QD/p13"
+HERDR_INTEGRATION="claude: not installed" FLEET_FORCE=1 bt build i13a "$QD/p13" task
+eq "dev408-13 integration: boot warns once when it is not current, and boots" "$BTRC:$(grep -c "Claude integration is not current" "$T/bt.err")" "0:1"
+FLEET_FORCE=1 bt build i13b "$QD/p13" task
+eq "dev408-13 integration: and not when it is current" "$BTRC:$(grep -c "Claude integration" "$T/bt.err")" "0:0"
+st13="$(HERDR_INTEGRATION="claude: not installed" "$SCRIPTS/status.sh" 2>"$T/st13.err")"
+eq "dev408-13 integration: status ends with one line when it is not current, never a stderr warning" "$(printf '%s\n' "$st13" | grep -c 'herdr Claude integration'):$(printf '%s\n' "$st13" | tail -n 1):$(grep -c 'integration' "$T/st13.err")" \
+  "1:herdr Claude integration: not current (run herdr integration install claude).:0"
+eq "dev408-13 integration: and no such line when it is current" "$("$SCRIPTS/status.sh" 2>/dev/null | grep -c 'herdr Claude integration')" 0
+rm -f "$AS"/build-i13a-*; : >"$HERDR_LOG"
+out="$(PROMPT_NOSTATE=1 PROMPT_SEQ=1 "$SCRIPTS/tell.sh" build-i13a/builder "a state_change_seq bump is delivery" 2>/dev/null)"; rc=$?
+eq "dev408-13 tell: a state_change_seq bump confirms, and the screen is never read" "$rc:$(told "$out"):$(grep -c '^agent read' "$HERDR_LOG" || true)" "0:true:0"
+"$REG" set build-i13a/builder status=Working transcript= >/dev/null; echo idle >"$AS/build-i13a-builder"; printf '  1 shell still running\n' >"$AS/build-i13a-builder.read"; : >"$HERDR_LOG"
+eq "dev408-13 status: an idle agent with no transcript and no done step is Stalled, read from no pane" "$("$SCRIPTS/status.sh" build-i13a --json 2>/dev/null | jq -r '.[] | select(.name == "build-i13a/builder") | .status'):$(grep -c '^agent read' "$HERDR_LOG" || true)" "Stalled:0"
 # ---- end DEV-408 ----
 
 printf '\n%d passed, %d failed\n' "$pass" "$failn"

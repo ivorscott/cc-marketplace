@@ -114,6 +114,8 @@ Disk: <n> GB free (warn below <w>).
 Other machines: [DEV-1] on <machine> (heartbeat <age>[, lapsed]); …
 
 Loop: no Orchestrator registered, so wakes reach desktop notifications only. Run registry.sh orchestrator here in its pane.
+
+herdr Claude integration: not current (run herdr integration install claude).
 ```
 
 `--problems` keeps only the teams that need someone (`No problems.` when none does). `status <team>`:
