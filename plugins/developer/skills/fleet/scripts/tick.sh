@@ -411,6 +411,17 @@ if [ "$(printf '%s' "$prs" | jq length)" != 0 ]; then
       [ "$pready" != true ] || ready_now+=("$url")
       [ "$pst" != OPEN ] || [ "$pmerge" != CONFLICTING ] || conflicting+=("$url"$'\t'"$phead"$'\t'"$(printf '%s' "$p" | jq -r .team)"$'\t'"$(printf '%s' "$p" | jq -r .parked)")
       [ "$pst" != MERGED ] || merged_now+=("$url")
+      # A head the tester has not signed while the builder is Done or Idle: the lead may have missed that the builder
+      # finished. One nudge per (PR, head); never for a parked team.
+      pteam="$(printf '%s' "$p" | jq -r .team)"
+      bstat="$(printf '%s' "$all_rows" | jq -r --arg t "$pteam" '[.[] | select(type == "object" and .team == $t and ((.name // "") | endswith("/builder")) and .status != "Retired") | .status] | first // ""')"
+      if [ "$pst" = OPEN ] && [ -n "$phead" ] && [ "$(printf '%s' "$p" | jq -r .parked)" != true ] && { [ "$bstat" = Done ] || [ "$bstat" = Idle ]; } &&
+        printf '%s' "$p" | jq -e --arg h "$phead" '((.signoff // "") | ascii_downcase) as $s | $s == "" or ($h | startswith($s) | not)' >/dev/null &&
+        [ "$(jq --arg k "$url@$phead" '(.head_nudged // []) | index($k) == null' "$STATE_FILE")" = true ]; then
+        "$FLEET_SCRIPTS/tell.sh" "$pteam/lead" "PR $url head is now ${phead:0:7} and the builder is idle: read its report and start the tester" >/dev/null 2>&1 ||
+          warn "could not tell $pteam/lead that $url has a head the tester has not signed"
+        st_upd --arg k "$url@$phead" '$st + {head_nudged: ((($st.head_nudged // []) + [$k]) | unique)}'
+      fi
       [ "$ev" != "null" ] || continue
       add_events "[$ev]"
       case "$(printf '%s' "$ev" | jq -r .type)" in
@@ -553,6 +564,7 @@ st_upd --argjson prs "$live_prs" --argjson esc "$live_esc" --argjson cl "$live_c
   def inrecent: map(select(. > $now - $w * 3600));
   $st
   + (if .pr_ready_emitted then {pr_ready_emitted: [.pr_ready_emitted[] | select(split("@")[0] as $u | $prs | index($u))]} else {} end)
+  + (if .head_nudged then {head_nudged: [.head_nudged[] | select(split("@")[0] as $u | $prs | index($u))]} else {} end)
   + (if .pr_merged_emitted then {pr_merged_emitted: [.pr_merged_emitted[] | select(. as $u | $prs | index($u))]} else {} end)
   + (if .pr_opened_emitted then {pr_opened_emitted: [.pr_opened_emitted[] | select(. as $u | $prs | index($u))]} else {} end)
   + (if .ready_prev then {ready_prev: [.ready_prev[] | select(. as $u | $prs | index($u))]} else {} end)

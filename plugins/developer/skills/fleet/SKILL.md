@@ -87,7 +87,10 @@ retire (F) or re-boot; **Failed**, re-send with `$F/fleet tell <team/role> - --b
 
 - Send to the **lead** unless the user names a worker: `$F/fleet tell <team/role> <text>`. It checks the message
   arrived and exits 1 (not delivered) or 2 (pane or agent gone); never treat an undelivered message as sent.
-- `agent_blocked` → read the screen first, apply the policy, then wait with `--until idle`.
+- `agent_blocked` → read the screen first, apply the policy, then wait with `--until idle --until blocked`, never on
+  idle alone. A wait that times out: check the agent again with `herdr agent get` and its row before waiting again.
+- Tick nudges a lead once per PR head when the builder is idle and the tester has not signed that head ("head is now
+  <sha> and the builder is idle"); the lead starts the tester.
 - **Add a worker:** split a pane in the team's workspace, start the agent, `$F/registry.sh add '<json>'`; respect caps.
 
 ## Tick

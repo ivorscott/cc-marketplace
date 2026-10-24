@@ -3786,6 +3786,26 @@ eq "dev408-2 boot --picked: the reply starts with the pick and why, a blank line
   "0:Booting [DEV-70](https://linear.app/acme/issue/DEV-70/x): Todo by priority; DEV-70 is the oldest P1.::Booted build-pk"
 eq "dev408-2 boot --picked: the search is noted on the lead's row, for the morning report" "$("$REG" get build-pk/lead | jq -r '[.notes[]? | select(.kind == "picked") | .message] | first')" "Todo by priority; DEV-70 is the oldest P1"
 check "dev408-2 boot: without --picked there is no Booting line" bash -c "! grep -q '^Booting' '$T/bt.out.nopick' 2>/dev/null"
+
+# -- dev408-7: a PR head the tester has not signed, with the builder idle, nudges the lead once per head
+qfresh nudge
+qpr app-api 70 fleet/dev-70 main 2026-10-18T10:00:00Z '["a.go"]' x; qteam n70 app-api 70 DEV-70 bbbbbbb
+qpr app-api 71 fleet/dev-71 main 2026-10-18T10:00:00Z '["b.go"]' x; qteam n71 app-api 71 DEV-71 bbbbbbb
+qpr app-api 72 fleet/dev-72 main 2026-10-18T10:00:00Z '["c.go"]' x; qteam n72 app-api 72 DEV-72 aaaaaaa72
+"$REG" set n71/builder status=Working >/dev/null; echo working >"$AS/n71-b"
+for t in n70 n71 n72; do "$REG" add "$(jq -cn --arg t "$t" '{name: ($t + "/lead"), team: $t, tier: "Lead", status: "Working", herdr_ref: ($t + "-lead"), pane: ("p" + $t)}')" >/dev/null; done
+nt() { FLEET_GH="$QD/gh-shim" "$SCRIPTS/tick.sh" >/dev/null 2>&1; }
+nudges() { grep -c "^agent prompt $1-lead PR https://github.com/acme/app-api/pull/$2 head is now aaaaaaa and the builder is idle" "$HERDR_LOG" || true; }
+: >"$HERDR_LOG"; nt
+eq "dev408-7 nudge: an unsigned head with the builder idle tells the lead once" "$(nudges n70 70)" 1
+eq "dev408-7 nudge: a builder still working gets no nudge" "$(nudges n71 71)" 0
+eq "dev408-7 nudge: a head the tester signed gets no nudge" "$(grep -c 'pull/72 head is now' "$HERDR_LOG" || true)" 0
+nt; eq "dev408-7 nudge: the same head again, no second nudge" "$(nudges n70 70)" 1
+jq '.headRefOid = "ccccccc70"' "$QGHD/app-api-70.json" >"$QD/h.json" && mv "$QD/h.json" "$QGHD/app-api-70.json"
+: >"$HERDR_LOG"; nt
+eq "dev408-7 nudge: a new head nudges again" "$(grep -c '^agent prompt n70-lead PR https://github.com/acme/app-api/pull/70 head is now ccccccc and the builder is idle' "$HERDR_LOG")" 1
+check "dev408-7 nudge: the lead brief waits on idle and blocked, and re-checks a wait that timed out" bash -c \
+  "jq -r .lead.brief '$SCRIPTS/../templates/build.json' | grep -q -- '--until idle --until blocked' && jq -r .lead.brief '$SCRIPTS/../templates/build.json' | grep -q 'when a wait times out'"
 # ---- end DEV-408 ----
 
 printf '\n%d passed, %d failed\n' "$pass" "$failn"
