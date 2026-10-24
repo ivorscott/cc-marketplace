@@ -2,8 +2,13 @@
 # Retire a team or one agent: close what /fleet created, remove clean worktrees, and
 # mark the rows Retired. Ask the agents to push WIP and summarise BEFORE running this.
 #
-#   retire.sh <team | team/role> [--outcome O]
+#   retire.sh <team | team/role> [--outcome O] [--verify]
 #   retire.sh --summary <team | team/role> [...]
+#
+# Retiring a whole team also moves its issue on Linear, once per issue and only while linear_writes allows writes (a
+# failure warns, never fails the retire): Shipped → Done, or Verify with --verify; Abandoned or Failed → Todo, and this
+# machine's claim is released. A PR whose body says "Part of" leaves the issue In Progress with its label. The Retired
+# line then ends "Issue → <state>.".
 #
 # --summary changes nothing. It prints, per target, the line the user answers before a retire:
 #   Retire <team>? Outcome <X>. Unpushed: <none|list>. Kept: <none|list>. Reply yes to retire.
@@ -18,14 +23,15 @@
 # removed, the rest kept and named (boot refuses a name with leftovers and names this).
 # Never closes panes or workspaces the registry doesn't record as fleet-created. Worktrees
 # are big (node_modules, build output), so a retire removes them, but only after looking:
-#   - build outputs (node_modules/, *.tsbuildinfo, dist/, .next/, coverage/) are ignored;
+#   - build outputs (node_modules/, *.tsbuildinfo, dist/, .next/, coverage/, .terraform/, test-results/, bin/) are
+#     ignored;
 #   - untracked reports (*.md at the worktree root or under reports/) are copied to
 #     <archive>/<team>-<role>/ (verified with cmp) and then the worktree is removed;
 #   - a worktree is KEPT, and the files or commits named, when it has unpushed commits,
 #     untracked source files or uncommitted edits to tracked files. A kept worktree is
 #     never force-removed. A retire also closes the rows' open escalations ("closed at retire").
-# The archive root is $FLEET_ARCHIVE_DIR, default $PWD/reports/fleet-archive (the
-# Orchestrator's own reports/). Retiring a
+# The archive root is the team repo's reports/fleet-archive (the row's repo; $FLEET_ARCHIVE_DIR overrides it). Once a
+# whole team's worktrees are gone, its empty $FLEET_WORKTREES/<team> directory goes too. Retiring a
 # whole team also runs `env.sh down <team>` for its test cluster (only one the registry
 # created); if that fails the env is kept and reported.
 # Command: Shut a team (or one agent) down safely · e.g. fleet retire build-api --outcome Shipped
@@ -33,10 +39,12 @@ set -euo pipefail
 . "$(dirname "$0")/common.sh"
 registry="$FLEET_SCRIPTS/registry.sh"
 
-# is_build <path>: a build output at any depth (node_modules/, *.tsbuildinfo, dist/, .next/, coverage/).
+# is_build <path>: a build output at any depth (node_modules/, *.tsbuildinfo, dist/, .next/, coverage/, .terraform/,
+# test-results/, bin/).
 is_build() {
   case "/$1" in
     */node_modules | */node_modules/* | */dist | */dist/* | */.next | */.next/* | */coverage | */coverage/* | *.tsbuildinfo) return 0 ;;
+    */.terraform | */.terraform/* | */test-results | */test-results/* | */bin | */bin/*) return 0 ;;
   esac
   return 1
 }
@@ -86,9 +94,10 @@ keep_why() {
   printf '%s' "$w"
 }
 
-# archive_reports <worktree> <name>: copy C_REPORTS to <archive>/<team>-<role>/ and verify each copy.
+# archive_reports <worktree> <name> <repo>: copy C_REPORTS to <archive>/<team>-<role>/ and verify each copy. The
+# archive is the team repo's reports/fleet-archive ($FLEET_ARCHIVE_DIR overrides it).
 archive_reports() {
-  local dest="${FLEET_ARCHIVE_DIR:-$PWD/reports/fleet-archive}/${2//\//-}" f
+  local dest="${FLEET_ARCHIVE_DIR:-${3:-$PWD}/reports/fleet-archive}/${2//\//-}" f
   ARCHIVE_DIR="$dest"
   [ -n "$C_REPORTS" ] || return 0
   while IFS= read -r f; do
@@ -120,8 +129,15 @@ summary() {
 if [ "${1:-}" = "--summary" ]; then shift; summary "$@"; exit 0; fi
 require_herdr
 
-target="${1:?usage: retire.sh <team | team/role> [--outcome O]}"; shift
-outcome=""; [ "${1:-}" = "--outcome" ] && outcome="${2:-}"
+target="${1:?usage: retire.sh <team | team/role> [--outcome O] [--verify]}"; shift
+outcome=""; verify=false
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --outcome) outcome="${2:-}"; shift; [ $# = 0 ] || shift ;;
+    --verify) verify=true; shift ;;
+    *) die "unknown option: $1" "Run fleet help retire" ;;
+  esac
+done
 
 kept=""; archived=""
 keep() { kept="$kept${kept:+, }$1 ($2)"; } # keep <what> <why>: named on the Retired line
@@ -189,7 +205,7 @@ while IFS=$'\t' read -r wt repo wname; do
     [ -z "$C_UNPUSHED" ] || warn "  unpushed commits in $wt: $(printf '%s' "$C_UNPUSHED" | tr '\n' ' ')"
     if [ -n "$C_MODIFIED" ]; then while IFS= read -r f; do warn "  uncommitted in $wt: $f"; done <<<"$C_MODIFIED"; fi
     if [ -n "$C_SOURCE" ]; then while IFS= read -r f; do warn "  untracked in $wt: ?? $f"; done <<<"$C_SOURCE"; fi
-  elif ! archive_reports "$wt" "$wname"; then
+  elif ! archive_reports "$wt" "$wname" "$repo"; then
     warn "kept $wt: could not archive its reports to $ARCHIVE_DIR"; keep "$role" "its reports could not be archived"
   elif git -C "$repo" worktree remove --force "$wt" 2>/dev/null; then
     # --force only because build outputs are untracked; classify proved nothing else is there.
@@ -199,10 +215,34 @@ while IFS=$'\t' read -r wt repo wname; do
     fi
   else warn "kept $wt: git worktree remove failed"; keep "$role" "git worktree remove failed"; fi
 done < <(printf '%s' "$rows" | jq -r '.[] | select((.worktree // "") != "") | [.worktree, .repo, .name] | @tsv')
+! $whole_team || rmdir "$FLEET_WORKTREES/$target" 2>/dev/null || true # the team's own worktrees directory, once empty
 
 if [ -n "$outcome" ]; then "$registry" retire "$target" --outcome "$outcome"; else "$registry" retire "$target"; fi
 for n in $(printf '%s' "$rows" | jq -r '.[].name'); do ev_log retired team="$(printf '%s' "$rows" | jq -r --arg n "$n" '.[] | select(.name == $n) | .team')" name="$n"; done
 outcomes="$("$registry" list | jq -r --argjson names "$(printf '%s' "$rows" | jq -c '[.[].name]')" '[.[] | select(.name as $n | $names | index($n)) | .outcome // empty] | unique | join("/")')"
 prs="$(printf '%s' "$rows" | jq -r '[.[].pr // empty | select(. != "")] | unique[]' | while IFS= read -r u; do pr_link "$u"; done | paste -sd, - | sed 's/,/, /g')"
+
+# Linear: a whole team's issue follows its outcome, once per issue and only while linear_writes allows writes; a
+# failure warns and never fails the retire. Shipped → Done (Verify with --verify); Abandoned or Failed → Todo, and
+# this machine's claim is released. A PR whose body says "Part of" (one slice of a bigger issue) leaves the issue In
+# Progress with its label.
+issue_state=""
+case "$outcomes" in Shipped) want=Done; ! $verify || want=Verify ;; Abandoned | Failed) want=Todo ;; *) want="" ;; esac
+if $whole_team && [ -n "$want" ] && [ "$(linear_writes)" != off ] && "$FLEET_SCRIPTS/linear.sh" has-key >/dev/null 2>&1; then
+  lerr="$(mktemp "${TMPDIR:-/tmp}/fleet-retire.XXXXXX")"
+  while IFS= read -r iss; do
+    [ -n "$iss" ] || continue
+    partof=false
+    for u in $(printf '%s' "$rows" | jq -r --arg i "$iss" '[.[] | select(.issue == $i) | .pr // empty | select(. != "")] | unique[]'); do
+      if forge_pr_json "$u" 2>/dev/null | jq -e '(.body // "") | test("Part of")' >/dev/null 2>&1; then partof=true; fi
+    done
+    if $partof; then warn "$iss stays In Progress: its PR is part of a bigger issue"; continue; fi
+    if "$FLEET_SCRIPTS/linear.sh" state "$iss" "$want" >/dev/null 2>"$lerr"; then issue_state="$want"
+    else warn "could not move $iss to $want on Linear: $(tail -n 1 "$lerr")"; continue; fi
+    [ "$want" != Todo ] || "$FLEET_SCRIPTS/linear.sh" release "$iss" >/dev/null 2>"$lerr" || warn "could not release $iss on Linear: $(tail -n 1 "$lerr")"
+  done < <(printf '%s' "$rows" | jq -r '[.[].issue // empty | select(. != "")] | unique[]')
+  rm -f "$lerr"
+fi
+
 "$registry" archive >/dev/null || warn "archive failed; retired rows stay in the live registry"
-reply "$(render_line retired team="$target" outcome="$outcomes" prs="$prs" archived="$archived" kept="$kept")" "$(render_table)"
+reply "$(render_line retired team="$target" outcome="$outcomes" prs="$prs" archived="$archived" kept="$kept" issue_state="$issue_state")" "$(render_table)"

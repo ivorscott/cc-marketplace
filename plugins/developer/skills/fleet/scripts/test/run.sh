@@ -3844,6 +3844,42 @@ eq "dev408-8 retire: with no rows it removes the clean leftover branch and keeps
   "$rc:$(git -C "$R8" for-each-ref --format='%(refname:short)' refs/heads/fleet/build-lb/ | paste -sd, -):$([ -d "$W8/tester" ] && echo kept)" "0:fleet/build-lb/tester:kept"
 eq "dev408-8 retire: and names what it kept" "$(printf '%s\n' "$out8" | head -n 1)" "Retired build-lb (Abandoned): PRs none. Nothing archived. Kept: tester (unpushed commits)."
 eq "dev408-8 retire: a name with no rows and no leftovers still says nothing matches" "$("$SCRIPTS/retire.sh" build-nothing 2>&1 >/dev/null | grep -c "nothing live matches 'build-nothing'")" 1
+
+# -- dev408-9: retire moves the team's issue on Linear (writes allowed, once per issue) and tidies the disk
+r9team() { # r9team <team> <issue> [PR number]: a lead and a builder on the issue, the builder with the PR
+  "$REG" add "$(jq -cn --arg t "$1" --arg i "$2" '{name: ($t + "/lead"), team: $t, tier: "Lead", status: "Done", herdr_ref: ($t + "-l"), pane: "pl", workspace: "w9", repo: "/nonexistent", issue: $i}')" >/dev/null
+  "$REG" add "$(jq -cn --arg t "$1" --arg i "$2" --arg u "${3:+https://github.com/acme/app-api/pull/$3}" '{name: ($t + "/builder"), team: $t, tier: "Worker", status: "Done", herdr_ref: ($t + "-b"), pane: "pb", repo: "/nonexistent", issue: $i} + (if $u != "" then {pr: $u} else {} end)')" >/dev/null
+}
+rt9() { FLEET_GH="$G4" "$SCRIPTS/retire.sh" "$@" 2>"$T/r9.err"; }
+printf '{"state": "OPEN", "body": "Fixes the export", "url": "https://github.com/acme/app-api/pull/91"}' >"$D4/gh/91.json"
+printf '{"state": "OPEN", "body": "Part of DEV-3: the first slice", "url": "https://github.com/acme/app-api/pull/92"}' >"$D4/gh/92.json"
+d9db() { d4db; jq '.states.Verify = "S4"' "$LINEAR_DB" >"$D4/db9" && cp "$D4/db9" "$LINEAR_DB"; }
+qfresh retire9; d4cfg 'linear_writes = "on"'
+d9db; r9team r9a DEV-3 91; o9="$(rt9 r9a --outcome Shipped)"
+eq "dev408-9 retire: Shipped moves the issue to Done, and the Retired line says so" "$(d4state DEV-3):$(printf '%s\n' "$o9" | head -n 1 | grep -c ' Issue → Done\.$')" "Done:1"
+d9db; r9team r9b DEV-3 91; rt9 r9b --outcome Shipped --verify >/dev/null
+eq "dev408-9 retire: Shipped with --verify moves it to Verify" "$(d4state DEV-3)" Verify
+d9db; r9team r9c DEV-3 91; rt9 r9c --outcome Abandoned >/dev/null
+eq "dev408-9 retire: Abandoned moves it to Todo and releases this machine's label" "$(d4state DEV-3):$(d4labels DEV-3)" "Todo:bug"
+d9db; : >"$LINEAR_LOG"; r9team r9d DEV-3 92; rt9 r9d --outcome Shipped >/dev/null
+eq "dev408-9 retire: a PR that is part of a bigger issue leaves it In Progress with its label" "$(d4state DEV-3):$(d4labels DEV-3):$(d4mut)" "In Progress:bug,fleet:test:0"
+d9db; : >"$LINEAR_LOG"; d4cfg; r9team r9e DEV-3 91; rt9 r9e --outcome Shipped >/dev/null
+eq "dev408-9 retire: with linear_writes off nothing is written" "$(d4state DEV-3):$(d4mut)" "In Progress:0"
+d4cfg 'linear_writes = "on"'; d9db; r9team r9f DEV-99 91; rt9 r9f --outcome Shipped >/dev/null; rc=$?
+eq "dev408-9 retire: a Linear failure warns and never fails the retire" "$rc:$(grep -c 'could not move DEV-99 to Done on Linear' "$T/r9.err"):$("$REG" list --team r9f | jq -r '[.[].status] | unique | join(",")')" "0:1:Retired"
+d9db; r9team r9g DEV-3 91; rt9 r9g/builder --outcome Shipped >/dev/null
+eq "dev408-9 retire: retiring one agent leaves the issue alone" "$(d4state DEV-3)" "In Progress"
+d4cfg
+R9="$QD/r9"; git init -q -b main "$R9"; git -C "$R9" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+git init -q --bare "$QD/r9.git"; git -C "$R9" remote add origin "$QD/r9.git"; git -C "$R9" push -q origin main 2>/dev/null
+W9="$FLEET_STATE_DIR/worktrees/r9w/builder"; mkdir -p "$(dirname "$W9")"; git -C "$R9" worktree add -q -b fleet/r9w/builder "$W9" 2>/dev/null
+mkdir -p "$W9/.terraform/providers" "$W9/node_modules/x" "$W9/bin" "$W9/test-results"; touch "$W9/.terraform/providers/p" "$W9/node_modules/x/i.js" "$W9/bin/app" "$W9/test-results/r.xml"
+printf 'evidence\n' >"$W9/report.md"
+"$REG" add "$(jq -cn --arg r "$R9" --arg w "$W9" '{name: "r9w/builder", team: "r9w", tier: "Worker", status: "Done", herdr_ref: "r9w-b", pane: "pw", workspace: "w9w", repo: $r, worktree: $w}')" >/dev/null
+FLEET_ARCHIVE_DIR= "$SCRIPTS/retire.sh" r9w >/dev/null 2>"$T/r9w.err"; rc=$?
+eq "dev408-9 retire: .terraform, node_modules, bin and test-results never keep a worktree; its report goes to the repo's reports/fleet-archive" \
+  "$rc:$([ -d "$W9" ] && echo kept || echo removed):$(cat "$R9/reports/fleet-archive/r9w-builder/report.md" 2>/dev/null)" "0:removed:evidence"
+eq "dev408-9 retire: and the team's empty worktrees directory goes too" "$([ -d "$FLEET_STATE_DIR/worktrees/r9w" ] && echo kept || echo removed)" removed
 # ---- end DEV-408 ----
 
 printf '\n%d passed, %d failed\n' "$pass" "$failn"

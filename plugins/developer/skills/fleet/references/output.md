@@ -188,10 +188,11 @@ Retire <team>? Outcome <outcome>. Unpushed: <none|role (n commits), …>. Kept: 
 After:
 
 ```
-Retired <team> (<outcome>): PRs <[repo #N](url), …|none>. Archived to <path>. Kept: <role (why), …>.
+Retired <team> (<outcome>): PRs <[repo #N](url), …|none>. Archived to <path>. Kept: <role (why), …>. Issue → <Done|Verify|Todo>.
 ```
 
-`Nothing archived.` when no report was copied; ` Kept: …` only when something was kept. Then the table.
+`Nothing archived.` when no report was copied; ` Kept: …` only when something was kept; ` Issue → …` only when the
+retire moved the team's issue on Linear. Then the table.
 
 ### park
 
