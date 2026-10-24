@@ -842,8 +842,8 @@ shim "$d" uname 'echo Plan9'; eq "machine-id: anything else maps to unknown OS" 
 # status names no machine (prime does); a team without an issue shows - in its Issue cell
 cp "$FLEET_CONFIG_DIR/config.toml" "$T/config.bak2"
 eq "status: no machine footer" "$(DF_GB=100 "$SCRIPTS/status.sh" 2>/dev/null | grep -c '^machine:')" 0
-echo 'machine_name = "Mac 1"' >>"$FLEET_CONFIG_DIR/config.toml"
-eq "prime: names the machine by machine_name" "$(DF_GB=100 "$SCRIPTS/prime.sh" 2>/dev/null | head -n 1 | cut -d: -f1)" "Fleet on Mac 1"
+echo 'machine_name = "laptop-a"' >>"$FLEET_CONFIG_DIR/config.toml"
+eq "prime: names the machine by machine_name" "$(DF_GB=100 "$SCRIPTS/prime.sh" 2>/dev/null | head -n 1 | cut -d: -f1)" "Fleet on laptop-a"
 eq "status --json has no machine footer" "$(DF_GB=100 "$SCRIPTS/status.sh" build-nope --json 2>/dev/null | grep -c machine:)" 0
 eq "status: a team without an issue shows - in its Issue cell" "$(DF_GB=100 "$SCRIPTS/status.sh" 2>/dev/null | grep -c '^| build-plain | - |')" 1
 cp "$T/config.bak2" "$FLEET_CONFIG_DIR/config.toml"
