@@ -19,7 +19,8 @@
 # message, a PR title) never reaches the file; the Orchestrator reads it from the registry. The same line twice in
 # one tick is written once. wakes.log is mode 600 and holds at most 500 lines: past that it moves to wakes.log.1
 # and a new one starts, so a follower sees only new lines. With no Orchestrator registered (registry.sh
-# orchestrator here) nobody follows it, so the lines also go to a desktop notification.
+# orchestrator here) nobody follows it, and with no transcript of it to read the no-reply alert cannot work, so in
+# both cases the lines also go to a desktop notification.
 #
 # Alerts (notify with alert_cmd; the text is "Alert: <what happened>. <next step>."), at most once per cause per 4
 # hours: an escalation P0/P1 (per agent and id),
@@ -140,9 +141,10 @@ n="$(printf '%s\n' "$lines" | wc -l | tr -d ' ')"
 # --- one wake: the lines go to wakes.log, which keeps at most 500 ----------------------------------------------
 [ $(($(wc -l <"$WL" | tr -d ' ') + n)) -le 500 ] || mv -f "$WL" "$WL.1"
 (umask 077; printf '%s\n' "$lines" >>"$WL"); chmod 600 "$WL" 2>/dev/null || true
-# A registered Orchestrator follows the file, and no reply within 15 minutes alerts (above). With none registered
-# nobody does, so the desktop hears instead.
-if [ -n "$(printf '%s' "$orow" | jq -r '.herdr_ref // ""' 2>/dev/null || true)" ]; then
+# A registered Orchestrator follows the file, and no reply within 15 minutes alerts (above), a check that reads its
+# transcript. With none registered nobody follows it, and with no transcript to read (none recorded, or the file is
+# gone) no reply could ever be seen: either way the desktop hears too, so no wake reaches no one.
+if [ -n "$(printf '%s' "$orow" | jq -r '.herdr_ref // ""' 2>/dev/null || true)" ] && [ -n "$otr" ] && [ -f "$otr" ]; then
   ls_set --arg w "$now_iso" '.wake_at = (.wake_at // $w)'
 else
   notify "Fleet needs you" "$(printf '%s' "$lines" | tr '\n' ';' | cut -c1-300)" request

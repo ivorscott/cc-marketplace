@@ -1994,6 +1994,15 @@ HERDR_PANE_ID=po "$REG" orchestrator here --transcript "$OTR" >/dev/null; : >"$F
 eq "loop: registered, a quiet tick sends nothing again and notifies nobody" "$(nwake):$(grep -c '^notification show ' "$HERDR_LOG")" "0:0"
 echo '[{"type":"dead","team":"t","name":"t/builder"}]' >"$FTJ"; newwake; lt >/dev/null 2>&1; : >"$FTJ"
 eq "loop: registered, a wake is the log line alone (no notification)" "$(nwake):$(grep -c '^notification show ' "$HERDR_LOG")" "1:0"
+# R13: registered, but its transcript is not there (none found, or the file is gone): no reply can be seen, so the
+# no-reply alert cannot work and the desktop hears the wake too.
+"$REG" set orchestrator transcript="$HOME/.claude/projects/orch/gone.jsonl" >/dev/null; : >"$HERDR_LOG"
+echo '[{"type":"dead","team":"t","name":"t/builder"}]' >"$FTJ"; newwake; lt >/dev/null 2>&1; r13a="$(nwake):$(grep -c '^notification show ' "$HERDR_LOG")"
+"$REG" set orchestrator transcript= >/dev/null; : >"$HERDR_LOG"
+echo '[{"type":"dead","team":"t","name":"t/tester"}]' >"$FTJ"; newwake; lt >/dev/null 2>&1; : >"$FTJ"
+eq "dev408-R13 loop: registered with no transcript to read a reply from (file gone, or none recorded), a wake is the log line and a desktop notification" \
+  "$r13a,$(nwake):$(grep -c '^notification show ' "$HERDR_LOG")" "1:1,1:1"
+HERDR_PANE_ID=po "$REG" orchestrator here --transcript "$OTR" >/dev/null
 printf 'tick_secs = 120\n' >"$FLEET_CONFIG_DIR/config.toml"; rm -f "$FLEET_STATE_DIR/loop.state.json"
 
 # -- alerts: once per cause per 4 h, alert_cmd gets the message, failures are logged

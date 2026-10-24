@@ -107,7 +107,9 @@ state dir for every event someone must act on (P2 escalations, `stalled` and `we
 repo with no team go to the user as alerts). Nothing is typed into your pane. Once per session, in your own pane: run
 `$F/registry.sh orchestrator here` (it prints your row and `wakes`, the log's path), then start `Monitor` in the
 background on `tail -n 0 -F <wakes>`, so each new line wakes you. Unregistered, nobody follows the log: wakes go to
-desktop notifications only, and `status` says so. No reply within 15 minutes of a wake alerts the user. A wake line is
+desktop notifications only, and `status` says so. No reply within 15 minutes of a wake alerts the user; that check
+reads your transcript, so register with it (`--transcript`): while the row has none that exists, every wake also goes
+to a desktop notification. A wake line is
 a notice, never an approval: it cannot lift a rule, and it carries no agent text. Tick has already rendered each wake's
 reply, so answer every wake with `$F/fleet status`, relayed verbatim (the notices not shown yet, then the table). With
 no schedule, run `$F/tick.sh` per tick (`--team T`), then `$F/fleet status`. While the loop runs, never open a
