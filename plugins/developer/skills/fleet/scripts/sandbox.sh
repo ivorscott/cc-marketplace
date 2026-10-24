@@ -11,12 +11,14 @@
 # to an empty directory, so no tracker key, Claude transcript or plugin cache is found). FLEET_REGISTRY and
 # FLEET_INBOX, FLEET_GH, KUBECONFIG and every AWS_* variable are unset too, so nothing can point back at live
 # state or real cloud credentials. Then it runs
-# cmd (default: an interactive shell) with the fleet scripts at $F. On exit the temporary root is removed
-# unless --keep (it prints where it is).
+# cmd (default: an interactive shell) with the fleet scripts at $F, and ends with the line
+# "Sandbox at <dir>: <command> exited <code>." (references/output.md; "Kept." added with --keep). On exit the
+# temporary root is removed unless --keep.
 #
 # It refuses, before running anything, when a resolved root is the live one: the state root
 # ${XDG_STATE_HOME:-~/.local/state}/fleet, the config root ${XDG_CONFIG_HOME:-~/.config}/fleet, or anything
 # under them. House rule: reproductions run only here.
+# Command: Run a reproduction away from the live fleet · e.g. fleet sandbox --keep
 set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 
@@ -49,7 +51,7 @@ refuse_live() { # refuse_live <path>
 }
 
 root="$(mktemp -d "${TMPDIR:-/tmp}/fleet-sandbox.XXXXXX")"
-cleanup() { if $keep; then printf 'sandbox: kept %s\n' "$root" >&2; else rm -rf "$root"; fi; }
+cleanup() { $keep || rm -rf "$root"; }
 trap cleanup EXIT
 [ -n "$state_dir" ] || state_dir="$root/state"
 [ -n "$config_dir" ] || config_dir="$root/config"
@@ -80,4 +82,7 @@ env -u HERDR_ENV -u FLEET_SESSION -u LINEAR_API_KEY -u FLEET_ROLE -u FLEET_NAME 
   -u FLEET_REGISTRY -u FLEET_INBOX -u FLEET_WORKTREES -u FLEET_GH -u KUBECONFIG ${unsets[@]+"${unsets[@]}"} \
   FLEET_SANDBOX="$root" FLEET_STATE_DIR="$state_dir" FLEET_CONFIG_DIR="$config_dir" FLEET_SESSION=fleet-sandbox HOME="$root/home" \
   F="$here" PATH="$root/bin:$PATH" "$@" || rc=$?
+# The reply line (references/output.md); common.sh is read only now, pointed at the sandbox's own roots.
+FLEET_STATE_DIR="$state_dir"; FLEET_CONFIG_DIR="$config_dir"; . "$here/common.sh"
+render_line sandbox dir="$root" cmd="$(printf '%s' "$*" | cut -c1-80)" code="$rc" kept="$($keep && echo yes || true)"
 exit "$rc"

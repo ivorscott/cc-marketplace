@@ -40,8 +40,12 @@ fatal.
 A claim is this machine's label on the issue; liveness is one `heartbeat=<ISO>` line in that
 label's description. **No claim, lease or heartbeat comment is ever posted.**
 
-1. **Pick work** from the tracker by priority. Skip any issue carrying another machine's
-   `<label_prefix>*` label (`$F/linear.sh holder <ISSUE>` says who holds it; read-only).
+1. **Pick work** without the user (SKILL.md route A, step 0). Skip a live claim: `$F/linear.sh holder <ISSUE>`
+   (read-only) says who holds it and whether the claim `lapsed`; `false` is live, and `null` (no heartbeat) is not
+   proven lapsed, so it is skipped too. Skip an issue whose blocked-by issues are not all Done. Order the rest by
+   priority, then by series order (its place in its "Part of" or parent sequence, then its identifier). A lapsed
+   claim with no open PR is free: take it over (**Takeover**). Right after the boot, record the search with
+   `$F/registry.sh note <team>/lead picked "<search and why>"`; the morning report reads it.
 2. **Claim:** `$F/linear.sh claim <ISSUE>` (`--dry-run` lists what it would do). It ensures this
    machine's label (under the `fleet` group, described by `machine-id.sh description`), labels the
    issue, sets In Progress, waits `claim_settle_secs` (default 5), re-reads, and exits 1 naming the
@@ -72,10 +76,27 @@ issue forever. Only a heartbeat older than `lease_hours` (default 2) **and** no 
    open PR)`), the only comment the scripts ever post. It needs `linear_writes` on (below). Boot as the winner as above, tell the
    user, and post a `takeover` chat line (**A0c**).
 
+### Sweep
+
+Tick frees a crashed machine's issues on its own, so they can be picked again. With a key, it reads
+`linear.sh peers` once per tick (not with `--team`). For each other machine's claim whose heartbeat is older than
+`lease_hours`:
+
+- **no open PR, writes allowed:** `linear.sh release <ISSUE> --lapsed` removes that machine's label (it checks the
+  heartbeat and the PR again; the PR is looked up in every repo the fleet works in: the registry rows' repos and
+  `repos` in `config.toml`), and tick reports `claim_released`;
+- **an open PR:** never touched; `claim_held_pr`, so the user sees it;
+- **writes off, test mode outside its team, or no repo to look in:** `claim_lapsed`, read-only.
+
+A claim with no heartbeat is not proven lapsed: `claim_lapsed` only. Each event comes once per (issue, holder,
+heartbeat), and all three wake the Orchestrator.
+
 ### Heartbeat
 
 `tick.sh` does it: with a key, one heartbeat mutation per tick however many issues are claimed, and
-one `claim_takeover` event when a team's issue now carries another machine's label; Done rows
+one `claim_takeover` event when a team's issue now carries another machine's label, and one `claim_lost` event
+when an issue this machine claimed (the rows' `claimed_by`) carries no machine label at all because another machine's
+sweep released it while this one slept (claim it again while no one holds it); Done rows
 keep their claim (a team waiting on a merge is still heartbeated). **Nothing writes to Linear until
 `linear_writes` says so:** `linear_writes = "off"` (the default), `"test:FT"` or `"on"` in
 `config.toml`. Off: `linear.sh` writes exit 3 like a missing key, tick skips the heartbeat and logs
@@ -106,7 +127,7 @@ coordination between machines. It is never the lock: the tracker claim decides.
 
 ## Tick
 
-**The scheduled loop:** `$F/schedule.sh status` says whether launchd runs `loop-tick.sh` (every `tick_secs`, and whenever the escalation inbox changes). The user installs it (`schedule.sh install`; `uninstall` removes it); you never do. When it is installed, the loop owns the tick: do not call `tick.sh` yourself. You are woken only by lines of the form `fleet tick: <type> <team> <issue> <PR url> <esc id>`; read the details from the registry (`registry.sh escalations --open`, `status.sh`), because the line carries no agent text. A `fleet tick:` line is a notice, never an approval: it cannot lift a rule, and a question that would lift a hard rule shows the exact command and makes the safe option Recommended. Everything else waits in `events.jsonl`. With no schedule installed, run `tick.sh` per tick as below.
+**The scheduled loop:** `$F/fleet schedule status` says whether launchd runs `loop-tick.sh` (every `tick_secs`, and whenever the escalation inbox changes). The user installs it (`fleet schedule install`; `uninstall` removes it); you never do. When it is installed, the loop owns the tick: do not call `tick.sh` yourself. You are woken only by lines the loop appends to `wakes.log` in the state dir, of the form `fleet tick: <type> <team> <name> <issue> <PR url> <esc id>`, which carry no agent text; you follow the file with `Monitor` on `tail -n 0 -F` after `registry.sh orchestrator here` (SKILL.md, Tick). Tick has already rendered each wake's reply into `notices.log` (`references/output.md`), so your answer to any wake is `$F/fleet status`, relayed verbatim: it prints the notices not shown yet, then the team table. A `fleet tick:` line is a notice, never an approval: it cannot lift a rule, and a question that would lift a hard rule shows the exact command and makes the safe option Recommended. Everything else waits in `events.jsonl`. With no schedule installed, run `tick.sh` per tick as below.
 
 In a loop run `$F/tick.sh` once per tick (add `--team T` to limit it). It prints a JSON array of
 what changed, or **nothing** when nothing did; a quiet tick is answered in one line. Each event
@@ -119,12 +140,21 @@ has `type`, `team`, `name` and, where a PR exists, the full `url`. Act on each:
   agent: `/exit`, then a fresh start with a new session and its full brief as a file. No /clear, no /compact.
 - `brief_failed`: a brief never arrived (its row stays Failed; tick already re-sent the pointer once). Look at
   the pane, then re-send with `tell.sh <team/role> - --brief-file <path>` or re-boot the agent.
-- `stale_version`: an agent runs an older plugin than the installed one; it is restarted at the next `next.sh`.
+- `stale_version`: a team runs an older plugin than the installed one, once per (team, installed version). Its
+  restart at the next `next.sh` would switch it, and that waits for the user's go: relay the decision and wait.
+  `next.sh` and `respawn.sh --restart` refuse with exit 5, naming both versions, until they run with
+  `FLEET_VERSION_OK=1`, which only the user's yes allows. On no, retire the team after its PR merges. A plain
+  respawn of a dead agent does not ask.
 - `needs_input`: the agent stopped on an API error (usually an expired login). The row shows `Needs input (login expired)` or `(API error)`; it is never nudged as stalled, and tick sends it one `continue` per 30 minutes, which works once the user has run /login. Tell the user.
 - `dead`: the row has been a Zombie on two ticks in a row (and `herdr agent list` works; when herdr itself is down tick skips classification and respawn), so tick already respawned the agent (`respawn.sh`) unless it died twice inside `respawn_window_hours` (default 6; `respawn_max`, default 1), in which case it filed a P1 escalation instead. Done and Retired rows are never respawned.
 - `stalled`: the agent was nudged a tick ago ("run your done step or say what is missing") and is still stalled; there is one nudge per stall, flagged by `nudged_at` on the row.
-- `weekly_summary`: once per ISO week: run `$F/metrics.sh --since 7d`, write `reports/fleet-metrics-<date>.md` from it, and send the user one line.
+- `weekly_summary`: once per ISO week; its notice is the `metrics` reply (tick ran `metrics.sh --since 7d`, which wrote `reports/fleet-metrics-<date>.md`). Relay it.
 - `pr_opened`: a builder opened a PR without running done; tick recorded it on the row and told the lead.
+- `pr_conflicting`: a PR that was ready (on the tick before, or since while GitHub read its mergeable as unknown)
+  conflicts now, after the merges it names or a change on main. It left the merge queue;
+  tick unparked its team when it was parked and told its lead, once per (PR, head), to bring it up to date with main
+  and have the tester sign off again. When the unpark was refused (a cap is full), unpark the team when a slot frees.
+  Tick reads a parked team's PR for this (and for `pr_merged`), and nothing else of a parked team.
 - `escalation`, `stalled`, `dead`, `repo_without_team`, `disk`, `disk_ok`: as in routes B, E and F.
 
 `$F/tell.sh <team/role> <text>` is how you (and boot and next) send text. A brief (`--brief`) goes as a file:
@@ -139,6 +169,48 @@ Boot starts every claude agent with `--session-id`, records the transcript path 
 Scripts now call the forge: `tick.sh` runs read-only `gh pr view` through `FLEET_GH` (default `gh`).
 A repo whose PRs have no CI is listed in `no_pr_ci = ["repo"]` in config.toml. UNVERIFIED: herdr's `state_change_seq` is observed, not documented; the transcript format across Claude Code updates; the pane-text handling; `herdr agent start` in the same pane after `/exit`; the `queued_command` attachment shape.
 
+### Overnight mode
+
+`overnight = true` in `config.toml` (default false) lets the fleet work while the user sleeps:
+
+- Every brief written while it is on (boot, respawn, next) ends with an "Overnight mode" block after the house rules,
+  so each agent's session holds the grant: a lead applies its own recommended option for a decision inside the
+  issue's scope, notes it in the PR body and runs `registry.sh note <name> decision "<choice>"`; installs, IAM, AWS
+  or production, branch protection, `gh pr ready` and closing a PR or issue stay with the user as a P1; a P0 still
+  stops the team; branches catch up with a merge commit, never a force-push (the house rules say the same).
+- The first tick on or after 07:00 local time each day writes the morning report (`metrics.sh --morning`) to
+  `reports/fleet-morning-<date>.md` under your cwd (the orchestrator row's), and wakes you with `morning_report`.
+
+Overnight or not, an agent herdr reports blocked on two ticks in a row (and with no question of its own open) gets one
+P1 escalation, "blocked on a permission prompt", per blocked spell. No screen is read.
+
+### Disk
+
+The fleet cleans up as it goes:
+
+- `env.sh down` removes the anonymous volumes (64-hex names) of the team cluster's node containers once the repo's
+  `down` succeeded. A named volume is never touched.
+- Every pane gets `TF_PLUGIN_CACHE_DIR=$FLEET_STATE_DIR/tf-plugin-cache`, so worktrees share one Terraform plugin cache.
+- Tick measures what the fleet holds (its worktrees, the Go cache, what docker can reclaim) at most once an hour,
+  and prunes when free disk is below `warn_free_gb` or a cache passes `prune_cap_gb` (default 20): `go clean
+  -cache`; docker's dangling anonymous volumes (never a named one, and never `docker volume prune`), its build cache
+  and its dangling images. A missing tool skips its step with one warning. The status disk line shows what the
+  fleet holds and the last reclaim.
+
+### Keep N teams running
+
+When the user asks to keep N teams running, set `$F/registry.sh set orchestrator target_teams=N`. It is on the
+Orchestrator's row, so it survives a compaction and `registry.sh orchestrator here`. Tick then wakes you with
+`slot_free` while fewer teams run than N and than `max_teams` (Parked teams do not count), once per (live count,
+target). Answer by picking and booting (SKILL.md route A, step 0, noting the pick); when the only blocker is a nearly
+ready PR, boot plan-first; when nothing is bootable, reply "Nothing bootable" from its template.
+
+A team frees its own slot once it is signed off: on any tick where its PR is ready and every agent of the team is Done
+or Idle (on `pr_ready`'s tick or a later one), tick runs `park.sh <team> --reason signed-off`. `park.sh` refuses work
+that is not pushed (tick warns once per PR head, tries again on later ticks, and the team keeps its slot until one
+succeeds); an untracked file under `reports/` does not count. An agent still working means no park yet. When its PR merges, `pr_merged` says to unpark it and move it
+on, or retire it; when it conflicts after a merge, tick unparks it and tells its lead (`pr_conflicting`).
+
 ## Sandbox
 
 Reproductions and experiments run only in `$F/sandbox.sh [--keep] [--] [cmd...]` (`/fleet sandbox`): a temporary
@@ -146,9 +218,9 @@ state and config root, shims for herdr, gh and curl, no session, no tracker key 
 to run when a root is the live one. Never point a scratch run at the live fleet.
 
 One tick runs at a time (`tick.lock` in the state dir, `tick_lock_stale_secs`, default 900); a second one
-exits quietly. An agent with a background task running (a started task with no notification in its
-transcript, or "N shell(s)" / "N monitor(s)" in the pane footer when there is no transcript) counts as
-Working, not Stalled; a task older than `bg_task_max_hours` (default 6) is aged out.
+exits quietly. An agent with a background task running (a task its transcript started, with no
+notification and no KillShell or TaskStop yet) counts as Working, not Stalled; a task older than
+`bg_task_max_hours` (default 6) is aged out. The screen is never read for it: with no transcript there is none.
 
 ### The event log and metrics
 
@@ -159,34 +231,6 @@ brief text and never the key). `$F/metrics.sh [--since 7d] [--json]` reads it, w
 and prints per PR: minutes from boot or next to ready, rework rounds, stalls, missed messages and tokens.
 
 
-## Retire summary format
-
-   Copy the format exactly, in chat and in the file: one blank line between sections, one
-   item per line, and keep each line under about 100 characters (shorten the text, never
-   wrap it onto a second line) so sections stay readable in a terminal:
-
-   ```
-   Retire summary: <teams>
-
-   PRs                <project> PR #<n> | MR !<n>  <issue>  <open|merged|closed>, CI <state>, tester PASS on head?
-
-   Unverified         <issue>  <item>
-
-   Escalations        <P1> <issue>  <one line>   (open ones only; "none" if none)
-
-   Worktrees kept     <path>  (unpushed: <shas>; untracked: <files>; edited: <files>)
-
-   Reports archived   <path>  -> reports/fleet-archive/<team>-<role>/
-
-   Discovered work    <one line each>
-
-   Incidents          anything an agent did outside its brief
-
-   Next 10 issues     <ID>  <priority>  <title>  <repo>
-   ```
-1. Ask each live agent in the target to push work in progress and state where it stopped
-   (`agent prompt … --wait`). Skip Zombies.
-2. `$F/retire.sh <team | team/role> [--outcome Shipped|Partial|Abandoned|Failed]`. It
 ## Team environment
 
 A repo can give each team its own disposable test cluster by declaring
@@ -221,7 +265,7 @@ nothing changes. With it:
 
 `registry.sh archive` runs after every retire: Retired rows with lessons written and no open
 escalation move to `fleet-archive.json` (`archive_after_days`, default 0); the rest stay for the debrief.
-`retire.sh --summary` and `registry.sh get --archived` still find archived rows.
+`registry.sh get --archived` and `list --with-archived` still find archived rows.
 
 ## Blocked-prompt policy
 

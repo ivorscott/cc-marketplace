@@ -6,6 +6,8 @@
 # Nothing is charged to the respawn budget. It refuses at once, with the team still Parked, when the team
 # is not Parked, when max_teams live teams already run, or when another live team works the same repo
 # (FLEET_FORCE=1 overrides the last two). A row that does not start stays Parked; run unpark.sh again for it.
+# It prints "Unparked <team>: <roles> back.", then the team table (references/output.md).
+# Command: Bring a parked team back · e.g. fleet unpark build-api
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
 require_herdr
@@ -46,9 +48,7 @@ for tier in Lead Worker; do
   done < <(printf '%s' "$rows" | jq -r --arg t "$tier" '.[] | select(.tier == $t) | .name')
 done
 rm -f "$FLEET_STATE_DIR/unpark.err"
-if [ "${#failed[@]}" -gt 0 ]; then
-  jq -cn --arg t "$team" --arg f "${failed[*]}" '{team: $t, unparked: false, still_parked: ($f | split(" "))}'
-  exit 1
-fi
+[ "${#failed[@]}" = 0 ] || die "${failed[*]} did not start and stay Parked" "Run fleet unpark $team again"
 ev_log unparked team="$team"
-jq -cn --arg t "$team" '{team: $t, unparked: true}'
+herdr_meta "$team" # the panel shows it again
+reply "$(render_line unparked team="$team" agents="$(printf '%s' "$rows" | jq -r 'sort_by(if .tier == "Lead" then 0 else 1 end) | map(.name | split("/")[1:] | join("/")) | join(", ")')")" "$(render_table)"

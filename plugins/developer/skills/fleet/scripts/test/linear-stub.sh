@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 # A fake Linear API for the tests: linear.sh calls it as FLEET_CURL. It never touches the network.
 #
-#   LINEAR_DB            JSON state: {team, states: {name: id}, labels: [...], issues: [...], next}
+#   LINEAR_DB            JSON state: {team, states: {name: id}, labels: [...], issues: [...], next}; an issue's
+#                        optional `blocks` and `related` (identifiers) answer the Blocks query as relations of
+#                        those types
 #   LINEAR_LOG           one line per operation: "query|mutation <OperationName>"
 #   LINEAR_ARGV_LOG      one line per call with its argv (the key is never in it; it arrives on stdin)
 #   LINEAR_STUB_KEY      the key the stub accepts, read from the `-K -` config on stdin
@@ -40,6 +42,11 @@ case "$op" in
     ok "$(db --argjson v "$vars" '{issue: ((.issues[] | select(.identifier == $v.id)) | {identifier, team: {key: (.team.key // "ENG")}})}')" ;;
   IssueBranch)
     ok "$(db --argjson v "$vars" '{issue: ((.issues[] | select(.identifier == $v.id)) | {identifier, branchName: (.branchName // "")})}')" ;;
+  Blocks)
+    ok "$(db --argjson v "$vars" '. as $r | $v | with_entries(.value as $id
+      | .value = ([$r.issues[] | select(.identifier == $id)] | first
+        | if . == null then null else {identifier, relations: {nodes: ([(.blocks // [])[] | {type: "blocks", relatedIssue: {identifier: .}}]
+            + [(.related // [])[] | {type: "related", relatedIssue: {identifier: .}}])}} end))')" ;;
   IssueLabels)
     ok "$(db --argjson v "$vars" '{issueLabels: {nodes: [.labels[] | select(.name == $v.n) | . + {team: (if (.teamId // null) != null then {id: .teamId} else null end)} | del(.teamId)]}}')" ;;
   WorkflowStates)

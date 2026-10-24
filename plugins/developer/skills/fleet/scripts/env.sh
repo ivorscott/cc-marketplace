@@ -3,7 +3,7 @@
 #
 #   env.sh up [--branch B] <team>   allocate a port slot, run the repo's `up`, write the team kubeconfig
 #   env.sh down <team>              run the repo's `down`, remove the team's images and builder, the kubeconfig, free the slot
-#   env.sh status [<team>]          one env as JSON, or every env as a table
+#   env.sh status [<team>]          "Env <team>: <state>. Context fleet-<team>." for the team, or a line per env
 #
 # The repo opts in with <repo>/.claude/fleet-env.json:
 #   {"up": "...", "down": "...", "kubeconfig": "..."}   command templates; placeholders:
@@ -29,9 +29,13 @@
 # never forced, never a prune) and that builder with its cache, and nothing else: foreign images,
 # clusters and the default builder's cache are never touched. A repo that doesn't mark its
 # images gets no image cleanup. Docker trouble only warns; `down` still frees the slot.
+# Volumes: before the repo's `down`, `down` records the volumes the cluster's node containers mount (kind's label
+# io.x-k8s.kind.cluster=<cluster>); once `down` succeeded it removes the anonymous ones (64-hex names). A named volume
+# is never touched.
 #
 # Exit codes: 0 ok, 1 error, 75 queued (max_envs reached; retry `up` once an env is down).
 # Env: FLEET_WORKTREE (default source of {{branch}}), FLEET_DOCKER (docker binary, for tests), max_envs in config.toml (default 3).
+# Command: Create, remove or list a team's test cluster · e.g. fleet env status
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
 registry="$FLEET_SCRIPTS/registry.sh"
@@ -99,6 +103,16 @@ docker_cleanup() { # docker_cleanup <team> <cluster> <tag> <label> <builder>: on
     if "$docker" buildx rm --force "$builder" >/dev/null 2>&1; then removed="$builder"; else warn "could not remove builder $builder"; fi
   done < <("$docker" buildx ls --format '{{.Name}}' 2>/dev/null || true)
   echo "fleet: removed $n images, builder $removed"
+}
+
+# cluster_volumes <cluster>: the volumes the cluster's node containers mount (kind labels them
+# io.x-k8s.kind.cluster=<cluster>), one name per line; read before `down` deletes the containers.
+cluster_volumes() {
+  command -v "$docker" >/dev/null 2>&1 || return 0
+  local id
+  for id in $("$docker" ps -a --filter "label=io.x-k8s.kind.cluster=$1" --format '{{.ID}}' 2>/dev/null); do
+    "$docker" inspect -f '{{range .Mounts}}{{if eq .Type "volume"}}{{.Name}}{{"\n"}}{{end}}{{end}}' "$id" 2>/dev/null
+  done | grep . | sort -u || true
 }
 
 src_checkout() { # src_checkout <repo> <branch> <dir>: prints the dir to run `up` in
@@ -208,8 +222,14 @@ case "$sub" in
       kc="$(printf '%s' "$cur" | jq -r '.kubeconfig')"
       http="$(printf '%s' "$cur" | jq -r '.http_port // ""')"; https="$(printf '%s' "$cur" | jq -r '.https_port // ""')"
       br="$(printf '%s' "$cur" | jq -r '.branch // ""')"
+      vols="$(cluster_volumes "$cluster")"
       run_tpl "$repo" "$kc" "$(render_env "$(jq -r '.down' "$cfg")" "$team" "$cluster" "$http" "$https" "$br" "$kc" "$cluster" "fleet.team=$team" "$cluster")" "$cluster" >&2 ||
         { "$registry" env-set "$team" state=Failed >/dev/null; die "down failed for $cluster; slot kept"; }
+      # The cluster's anonymous volumes (64-hex names) go with it; a named volume is never touched.
+      for v in $vols; do
+        anon_volume "$v" || continue
+        "$docker" volume rm "$v" >/dev/null 2>&1 || warn "could not remove volume $v of $cluster"
+      done
       docker_cleanup "$team" "$cluster" "$(printf '%s' "$cur" | jq -r '.image_tag // ""')" \
         "$(printf '%s' "$cur" | jq -r '.image_label // ""')" "$(printf '%s' "$cur" | jq -r '.builder // ""')" >&2
     fi
@@ -218,11 +238,12 @@ case "$sub" in
     echo "fleet: $cluster down; slot freed"
     ;;
   status)
-    if [ -n "${1:-}" ]; then "$registry" env-get "$1" || echo '{}'; exit 0; fi
-    "$registry" list --envs | jq -r '
-      (["TEAM", "CLUSTER", "STATE", "SLOT", "HTTP", "HTTPS"] | @tsv),
-      (to_entries[] | [.key, .value.cluster, .value.state, (.value.slot // "-"), (.value.http_port // "-"), (.value.https_port // "-")] | map(tostring) | @tsv)' |
-      column -t -s $'\t'
+    # One line per env (references/output.md); a team with none is Down.
+    envs="$("$registry" list --envs)"
+    if [ -n "${1:-}" ]; then render_line env team="$1" state="$(jq -r --arg t "$1" '.[$t].state // "Down"' <<<"$envs")"; exit 0; fi
+    [ "$(jq length <<<"$envs")" != 0 ] || { render_line no_envs; exit 0; }
+    blocks=(); while IFS=$'\t' read -r t s; do blocks+=("$(render_line env team="$t" state="$s")"); done < <(jq -r 'to_entries[] | [.key, (.value.state // "Down")] | @tsv' <<<"$envs")
+    reply ${blocks[@]+"${blocks[@]}"}
     ;;
   *) sed -n '2,34p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

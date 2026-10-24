@@ -1,0 +1,13 @@
+# slim: the fleet's panel style for herdr (`fleet slim on` puts these lines between markers in herdr's config).
+# Only these keys; the rest of herdr's config is never touched. $role, $state, $issue and $pr are the tokens the fleet
+# reports with herdr's report-metadata.
+[ui]
+sidebar_width = 40
+status_indicators = "symbols"
+agent_panel_sort = "spaces"
+
+[ui.sidebar.agents]
+rows = [["state_icon", "workspace", "$role", "state_text"]]
+
+[ui.sidebar.spaces]
+rows = [["state_icon", "workspace", "$state"], ["$issue", "$pr"]]

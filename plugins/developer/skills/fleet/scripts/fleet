@@ -1,0 +1,139 @@
+#!/usr/bin/env bash
+# The fleet's one command: it runs the script behind each user-facing command, so `/fleet <command>` and a shell
+# call the same code.
+#
+#   fleet <command> [args...]     run the command with its arguments; its reply is the command's own output
+#   fleet help                    the table | Command | What it does | Example |, one row per command
+#   fleet help <command>          that command's usage: its script's # header, unchanged
+#
+# A command is a script in this directory whose header has the line `# Command: <what it does> · e.g. fleet <example>`.
+# help reads those lines, so the list is what the scripts say and cannot drift from them. A script without the line
+# (common.sh, agent-lib.sh, loop-tick.sh, registry.sh, tick.sh, linear.sh, ...) is internal and stays out of it.
+# A few commands have no script of their own and run a subcommand of an internal script: escalate, escalations and
+# resolve (registry.sh), claim, takeover and holder (linear.sh); their help is that script's usage lines for the
+# subcommand, and escalations, claim, takeover and holder turn the script's JSON into their reply line or table.
+# A command that fails ends with the error form, "<command>: <what failed>. <the one next step>." (references/
+# output.md), made from its last line on stderr, with "Run fleet help <command>." when that line names no next step;
+# its other stderr lines come first, unchanged, and the exit status is the command's. An unknown command exits 2 and
+# prints the list on stderr. Agents keep calling the .sh scripts by absolute path (their allow lists name them);
+# this is for the user and the Orchestrator.
+set -euo pipefail
+
+src="${BASH_SOURCE[0]}"
+while [ -L "$src" ]; do t="$(readlink "$src")"; case "$t" in /*) src="$t" ;; *) src="$(dirname "$src")/$t" ;; esac; done
+D="$(cd "$(dirname "$src")" && pwd)"
+. "$D/common.sh"
+
+aliases() { # <name> <script> <subcommand> <what it does · e.g. example>, for the commands with no script of their own
+  printf '%s\t%s\t%s\t%s\n' \
+    escalate registry escalate 'Raise a question by severity; it stays open until resolved · e.g. fleet escalate build-api/lead P1 "which database?" postgres sqlite' \
+    escalations registry escalations 'List escalations, the open ones or all · e.g. fleet escalations --open' \
+    resolve registry resolve 'Close an escalation once its answer reached the agent · e.g. fleet resolve build-api/lead 20261024T090000Z-1 --note "use pg"' \
+    claim linear claim 'Claim an issue on Linear for this machine · e.g. fleet claim DEV-123' \
+    takeover linear takeover 'Take an issue over from a machine whose claim lapsed · e.g. fleet takeover DEV-123' \
+    holder linear holder 'Say which machine holds an issue, and whether its claim lapsed · e.g. fleet holder DEV-123'
+}
+
+commands() { # one line per command, by name: <name> TAB <script> TAB <subcommand or -> TAB <what it does · e.g. example>
+  local f n line
+  {
+    for f in "$D"/*.sh; do
+      line="$(awk 'NR == 1 { next } !/^#/ { exit } sub(/^# Command: /, "") { print; exit }' "$f")"
+      n="$(basename "$f" .sh)"
+      [ -z "$line" ] || printf '%s\t%s\t-\t%s\n' "$n" "$n" "$line"
+    done
+    aliases
+    printf '%s\t-\t-\t%s\n' help "List the commands, or show one command's usage · e.g. fleet help status"
+  } | LC_ALL=C sort -t "$(printf '\t')" -k1,1
+}
+
+list() {
+  local n s sub line what ex
+  printf '| Command | What it does | Example |\n|---|---|---|\n'
+  while IFS=$'\t' read -r n s sub line; do
+    what="${line%% · e.g. *}"; ex=""; [ "$what" = "$line" ] || ex="${line#* · e.g. }"
+    printf '| `%s` | %s | `%s` |\n' "$n" "$what" "$ex"
+  done < <(commands)
+}
+
+header() { awk 'NR == 1 { next } !/^#/ { exit } { sub(/^# ?/, ""); print }' "$1"; } # a script's # header, comment marks off
+
+usage() { # usage <command>: 1 when there is no such command
+  local row n s sub line
+  row="$(commands | awk -F'\t' -v c="$1" '$1 == c')"
+  [ -n "$row" ] || return 1
+  IFS=$'\t' read -r n s sub line <<<"$row"
+  if [ "$n" = help ]; then header "$D/fleet"
+  elif [ "$sub" = - ]; then header "$D/$s.sh"
+  else
+    header "$D/$s.sh" | awk -v p="  $s.sh $sub" '
+      index($0, p) == 1 && (length($0) == length(p) || substr($0, length(p) + 1, 1) == " ") { on = 1; print; next }
+      on && /^          / { print; next }
+      { on = 0 }'
+    printf 'Command: %s\n' "$line"
+  fi
+}
+
+# present <command> <JSON file>: the reply line or table for a command whose script prints JSON.
+present() {
+  local j h who
+  j="$(cat "$2")"
+  who="$(cfg_str machine_name '')"; [ -n "$who" ] || who="$(machine_label)"
+  case "$1" in
+    escalations) render_escalations "$j" ;;
+    claim) if [ "$(jq -r '.claimed // false' <<<"$j")" = true ]; then render_line claimed issue="$(jq -r .issue <<<"$j")" machine="$who"; else printf '%s\n' "$j"; fi ;;
+    takeover) h="$(jq -r '.heartbeat // ""' <<<"$j")"
+      render_line took_over issue="$(jq -r .issue <<<"$j")" machine="$(jq -r .from <<<"$j")" \
+        age="$(jq -rn --arg h "$h" --argjson now "$(jq -rn --arg t "${FLEET_NOW:-$(now)}" '$t | fromdateiso8601')" "$RENDER_DEFS"'$h | ago($now)')" ;;
+    holder) h="$(jq -r '.heartbeat // ""' <<<"$j")"
+      render_line holder issue="$(jq -r .issue <<<"$j")" \
+        machine="$(jq -r --arg w "$who" 'if .holder == null then "" elif .ours then "this machine (\($w))" else .holder end' <<<"$j")" \
+        age="$([ -z "$h" ] || jq -rn --arg h "$h" --argjson now "$(jq -rn --arg t "${FLEET_NOW:-$(now)}" '$t | fromdateiso8601')" "$RENDER_DEFS"'$h | ago($now)')" \
+        lapsed="$([ "$(jq -r '.lapsed' <<<"$j")" != true ] || echo yes)" ;;
+    *) printf '%s\n' "$j" ;;
+  esac
+}
+
+# relay <command> <stderr file> <exit status>: a failed command's stderr, its last line in the error form.
+relay() {
+  local last msg
+  [ -s "$2" ] || { render_error "$1" "it exited $3" >&2; return; }
+  sed '$d' "$2" >&2
+  last="$(tail -n 1 "$2")"
+  case "$last" in "$1: "*) printf '%s\n' "$last" >&2; return ;; esac
+  msg="${last#fleet: }"; msg="${msg#warning: }"
+  case "$msg" in
+    *.) printf '%s: %s\n' "$1" "$msg" >&2 ;; # it already ends with its next step
+    *) render_error "$1" "$msg" >&2 ;;
+  esac
+}
+
+unknown() { printf "fleet: unknown command '%s'. Run fleet help.\n\n" "$1" >&2; list >&2; exit 2; }
+
+cmd="${1:-}"; [ $# = 0 ] || shift
+case "$cmd" in
+  "") list >&2; exit 2 ;;
+  help)
+    if [ $# = 0 ]; then list; exit 0; fi
+    usage "$1" || unknown "$1"
+    exit 0 ;;
+esac
+row="$(commands | awk -F'\t' -v c="$cmd" '$1 == c')"
+[ -n "$row" ] || unknown "$cmd"
+IFS=$'\t' read -r n s sub line <<<"$row"
+run=("$D/$s.sh"); [ "$sub" = - ] || run+=("$sub")
+# The sandbox can be an interactive shell, whose prompt is on stderr: it runs as it is and prints its own line.
+[ "$cmd" != sandbox ] || exec "${run[@]}" "$@"
+errf="$(mktemp "${TMPDIR:-/tmp}/fleet-err.XXXXXX")"; outf=""
+trap 'rm -f "$errf" ${outf:+"$outf"}' EXIT
+rc=0
+case "$cmd" in
+  escalations | claim | takeover | holder)
+    outf="$(mktemp "${TMPDIR:-/tmp}/fleet-out.XXXXXX")"
+    "${run[@]}" "$@" >"$outf" 2>"$errf" || rc=$?
+    if [ "$rc" = 0 ]; then present "$cmd" "$outf"; [ ! -s "$errf" ] || cat "$errf" >&2; fi ;;
+  *) "${run[@]}" "$@" 2>"$errf" || rc=$?
+     [ "$rc" != 0 ] || [ ! -s "$errf" ] || cat "$errf" >&2 ;;
+esac
+[ "$rc" = 0 ] || relay "$cmd" "$errf" "$rc"
+exit "$rc"
