@@ -4030,7 +4030,15 @@ gcfg 'overnight = true'
 eq "dev408-11 overnight: on, the block follows the house rules, with the lead's decision note" "$(hrules | grep -c '^Overnight mode'):$(hrules | grep -c 'registry.sh note n1/lead decision')" "1:1"
 check "dev408-11 overnight: the house rules and the block agree: a merge commit, never a force-push" bash -c \
   "grep -q 'while overnight mode is on: then catch up with a merge commit instead, and never force-push' '$SCRIPTS/../rules/house.md' && printf '%s' \"\$1\" | grep -q 'with a merge commit, never a force-push'" _ "$(hrules)"
-gcfg
+# R15: the builder's brief and the fleet rules say the same thing as the overnight block, never the opposite.
+qfresh night15; mkdir -p "$QD/p15"; FLEET_FORCE=1 bt build n15 "$QD/p15" task
+b15() { cat "$("$REG" get "build-n15/$1" | jq -r '.last_brief // "/nonexistent"')" 2>/dev/null; }
+eq "dev408-R15 overnight: the builder's brief merges the default branch and pushes without force; no brief says rebase or --force-with-lease" \
+  "$BTRC:$(b15 builder | grep -c 'merge the default branch into yours (overnight mode: never rebase)'):$(for r in lead planner builder tester; do b15 "$r"; done |
+    grep -i -e 'force-with-lease' -e 'rebase onto' | grep -vc 'except while overnight mode is on')" "0:1:0"
+gcfg; qfresh day15; FLEET_FORCE=1 bt build d15 "$QD/p15" task
+eq "dev408-R15 overnight: off, the builder's brief rebases and pushes with --force-with-lease, and the fleet rules say so" \
+  "$("$REG" get build-d15/builder | jq -r .last_brief | xargs cat | grep -c -e 'rebase onto the default branch (never merge it into yours)' -e 'branch if you have one (with `--force-with-lease`')" 2
 qfresh blocked; "$REG" add '{"name":"bk/builder","team":"bk","tier":"Worker","status":"Working","herdr_ref":"bk-b","pane":"pbk"}' >/dev/null
 echo blocked >"$AS/bk-b"; bkt() { "$SCRIPTS/tick.sh" >/dev/null 2>&1; }; nesc() { "$REG" escalations --open | jq length; }
 bkt; eq "dev408-11 blocked: blocked on one tick, no escalation" "$(nesc)" 0
