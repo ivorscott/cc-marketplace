@@ -298,8 +298,9 @@ Redact check <base>..<head>: <n> matches.
 ```
 
 Counts only, never a term, a line or a file name. A match also ends with the error form on stderr (`redact-check: <n>
-lines in <range> hold a private term. Remove them before you push.`) and exit 1; a check that cannot run (no
-`redact_terms`, or a range git cannot read) is the error form alone and exit 2, never a clean result.
+lines in <range> hold a private term. Remove them before you push.`) and exit 1; a check that cannot run (no terms
+file at `$FLEET_STATE_DIR/private/redact_terms.txt`, no terms in it, or a range git cannot read) is the error form
+alone, naming the path, and exit 2, never a clean result.
 
 ### help
 

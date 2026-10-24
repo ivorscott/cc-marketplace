@@ -232,7 +232,10 @@ qteam() { # qteam <team> <repo> <n> <issue> [signed sha]
 }
 q() { FLEET_GH="$QD/gh-shim" "$SCRIPTS/queue.sh"; }
 # The redact check (DEV-408 item 5): rfix <dir> makes a repo whose branch `feat` adds a line with a term (in another
-# case), `msg` has a term only in its commit message, and `clean` has neither; the terms are zebra-corp and acme-secret.
+# case), `msg` has a term only in its commit message, and `clean` has neither; rterms <state dir> writes the made-up
+# terms zebra-corp and acme-secret, with a comment and a blank line, to its private/redact_terms.txt (mode 600). Tests
+# point FLEET_STATE_DIR at a temp dir, so the real terms file is never read.
+rterms() { mkdir -p "$1/private"; (umask 077; printf '# made-up terms\n\n  zebra-corp\nacme-secret\n' >"$1/private/redact_terms.txt"); }
 rfix() {
   local d="$1"; git init -q -b main "$d"; git -C "$d" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
   git -C "$d" checkout -q -b feat; printf 'see the Zebra-Corp docs\nplain line\n' >"$d/a.txt"; git -C "$d" add a.txt; git -C "$d" -c user.email=t@t -c user.name=t commit -q -m "add notes"
@@ -361,11 +364,10 @@ J
   qteam t1 app-api 1 DEV-1 aaaaaaa1; qteam t2 app-api 2 DEV-2 aaaaaaa2
   eq "smoke: dev408-18 a base-branch dependency orders the parent first" "$(qorder)" "app-api#1|base of #2|— ; app-api#2|needs app-api #1|rebase after #1"
   # dev408-5: the redact check counts a term, prints no term, and a clean range passes
-  rfix "$SM/rr"; gcfg 'redact_terms = ["zebra-corp", "acme-secret"]'
-  out="$(cd "$SM/rr" && "$SCRIPTS/redact-check.sh" --range main..feat 2>&1)"; rc=$?
+  rfix "$SM/rr"; rterms "$SM/rs"
+  out="$(cd "$SM/rr" && FLEET_STATE_DIR="$SM/rs" "$SCRIPTS/redact-check.sh" --range main..feat 2>&1)"; rc=$?
   eq "smoke: dev408-5 redact check: a match exits 1 and names no term" "$rc:$(printf '%s' "$out" | grep -ci 'zebra\|acme')" "1:0"
-  (cd "$SM/rr" && "$SCRIPTS/redact-check.sh" --range main..clean >/dev/null 2>&1); eq "smoke: dev408-5 redact check: a clean range exits 0" "$?" 0
-  gcfg
+  (cd "$SM/rr" && FLEET_STATE_DIR="$SM/rs" "$SCRIPTS/redact-check.sh" --range main..clean >/dev/null 2>&1); eq "smoke: dev408-5 redact check: a clean range exits 0" "$?" 0
   # dev408-6: a background task stopped with TaskStop no longer counts
   bgk "$SM/k2.jsonl" TaskStop task_id; bgk "$SM/k3.jsonl"
   eq "smoke: dev408-6 a stopped background task does not count, a running one does" "$(bgn "$SM/k2.jsonl") $(bgn "$SM/k3.jsonl")" "0 1"
@@ -3646,21 +3648,27 @@ eq "dev408-18 queue: the conflict is in the event log for the morning report" "$
 eq "dev408-18 queue: and the PR has left the queue" "$(nr 51)" "conflicting"
 
 # -- dev408-5: the redact check (counts only; exit 0 clean, 1 a match, 2 cannot run)
-RR="$T/r408"; rfix "$RR"; gcfg 'redact_terms = ["zebra-corp", "acme-secret"]'
-rc_out() { (cd "$RR" && "$SCRIPTS/redact-check.sh" "$@" >"$T/rc.out" 2>"$T/rc.err"); echo $?; }
+RR="$T/r408"; rfix "$RR"; RS="$T/rs408"; rterms "$RS"; RTF="$RS/private/redact_terms.txt"
+rc_out() { (cd "$RR" && FLEET_STATE_DIR="$RS" "$SCRIPTS/redact-check.sh" "$@" >"$T/rc.out" 2>"$T/rc.err"); echo $?; }
 eq "dev408-5 redact check: a term in an added line, in another case, is a match (exit 1)" "$(rc_out --range main..feat):$(cat "$T/rc.out")" "1:Redact check main..feat: 1 matches."
 eq "dev408-5 redact check: the output never holds a term, a line or a file name" "$(cat "$T/rc.out" "$T/rc.err" | grep -ciE 'zebra|acme|a\.txt|notes')" 0
 check "dev408-5 redact check: stderr says how many lines and what to do" grep -qx 'fleet: 1 lines in main..feat hold a private term. Remove them before you push.' "$T/rc.err"
 eq "dev408-5 redact check: a term in a commit message counts" "$(rc_out --range main..msg):$(cat "$T/rc.out")" "1:Redact check main..msg: 1 matches."
-eq "dev408-5 redact check: a clean range exits 0" "$(rc_out --range main..clean):$(cat "$T/rc.out")" "0:Redact check main..clean: 0 matches."
+eq "dev408-5 redact check: a clean range exits 0, and a mode 600 terms file gets no warning" "$(rc_out --range main..clean):$(cat "$T/rc.out"):$(grep -c 'readable' "$T/rc.err")" "0:Redact check main..clean: 0 matches.:0"
 eq "dev408-5 redact check: a range git cannot read exits 2" "$(rc_out --range main..nosuch)" 2
 eq "dev408-5 redact check: no range exits 2" "$(rc_out)" 2
-gcfg; eq "dev408-5 redact check: no terms set exits 2, never clean" "$(rc_out --range main..clean):$(grep -c 'no redact_terms are set' "$T/rc.err")" "2:1"
-gcfg 'redact_terms = ["zebra-corp", "acme-secret"]'
-gold redact-check "$(cd "$RR" && "$FL" redact-check --range main..feat 2>/dev/null)"
+chmod 644 "$RTF"
+eq "dev408-5 redact check: a group- or world-readable terms file warns, and the check still runs" "$(rc_out --range main..clean):$(grep -c "fleet: warning: $RTF is readable by others; chmod 600 it" "$T/rc.err")" "0:1"
+rm -f "$RTF"
+eq "dev408-5 redact check: no terms file exits 2 with one line naming the path, never clean" "$(rc_out --range main..clean):$(cat "$T/rc.err")" \
+  "2:fleet: no terms file at $RTF, so the check cannot run. Write the private terms there, one per line, mode 600."
+(umask 077; printf '# a comment only\n\n' >"$RTF")
+eq "dev408-5 redact check: a terms file with only comments and blank lines exits 2" "$(rc_out --range main..clean):$(grep -c "no terms in $RTF" "$T/rc.err")" "2:1"
+rterms "$RS"
+gold redact-check "$(cd "$RR" && FLEET_STATE_DIR="$RS" "$FL" redact-check --range main..feat 2>/dev/null)"
 check "dev408-5 redact check: every agent may run it (the base allow list)" bash -c "grep -l '\"Bash($SCRIPTS/redact-check.sh:\*)\"' '$T/gold/state/settings/'*.json >/dev/null"
 check "dev408-5 redact check: the house rule names the script, and exit 2 is UNVERIFIED" bash -c "grep -q 'redact-check.sh --range <base>..HEAD' '$SCRIPTS/../rules/house.md' && grep -q 'Exit 2 means the check could not run: report it UNVERIFIED' '$SCRIPTS/../rules/house.md'"
-gcfg
+check "dev408-5 redact check: config.toml has no redact key" bash -c "! grep -q redact '$SCRIPTS/../config.example.toml'"
 
 # -- dev408-6: a background task stopped with KillShell or TaskStop is not running (next.sh's safe point)
 bgk "$T/k1.jsonl" KillShell shell_id; bgk "$T/k2.jsonl" TaskStop task_id; bgk "$T/k3.jsonl"; bgk "$T/k4.jsonl" "" "" notified
