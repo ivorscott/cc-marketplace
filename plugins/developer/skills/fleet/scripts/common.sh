@@ -523,15 +523,22 @@ report_dir() {
 
 # RENDER_DEFS: jq definitions the tables share. md makes text safe in a table cell; issue_cell and pr_cell give
 # [DEV-1](url) and [repo #N](url) (or the bare key, or -); word is the one-word state of an agent status; rank
-# orders those words, worst last; ago($now) turns an ISO time into "5m ago", "3h ago" or "2d ago".
+# orders those words, worst last; mark is a word's symbol and group the summary line's name for it (references/
+# output.md, "symbols": plain Unicode, never emoji); marked is "<symbol> <word>"; sev puts P0 and P1 in bold;
+# ago($now) turns an ISO time into "5m ago", "3h ago" or "2d ago".
 RENDER_DEFS='def md: tostring | gsub("[\r\n\t]+"; " ") | gsub("\\|"; "\\|");
   def issue_cell($k; $u): if ($k // "") == "" then "-" elif ($u // "") == "" then $k else "[\($k)](\($u))" end;
   def pr_cell($u): if ($u // "") == "" then "-"
     else ([$u | capture("^https?://[^/]+/[^/]+/(?<r>[^/]+)/(pull|merge_requests)/(?<n>[0-9]+)")] | first) as $m
       | if $m == null then "[PR](\($u))" else "[\($m.r) #\($m.n)](\($u))" end end;
-  def word: {"Working": "Working", "Booting": "Working", "Idle": "Idle", "Needs input": "Idle", "Stalled": "Stalled",
+  def word: {"Working": "Working", "Booting": "Working", "Idle": "Idle", "Needs input": "Waiting", "Stalled": "Stalled",
     "Zombie": "Zombie", "Failed": "Failed", "Done": "Done", "Parked": "Parked"}[.] // "Idle";
-  def rank: {"Parked": 0, "Done": 1, "Idle": 2, "Working": 3, "Stalled": 4, "Failed": 5, "Zombie": 6}[.] // 2;
+  def rank: {"Parked": 0, "Done": 1, "Idle": 2, "Working": 3, "Waiting": 4, "Stalled": 5, "Failed": 6, "Zombie": 7}[.] // 2;
+  def mark: {"Working": "●", "Idle": "○", "Waiting": "◐", "Stalled": "✗", "Failed": "✗", "Zombie": "✗", "Parked": "‖", "Done": "✓"}[.] // "○";
+  def group: {"Working": "working", "Idle": "idle", "Waiting": "waiting", "Stalled": "blocked", "Failed": "blocked",
+    "Zombie": "blocked", "Parked": "parked", "Done": "done"}[.] // "idle";
+  def marked: "\(mark) \(.)";
+  def sev: if . == "P0" or . == "P1" then "**\(.)**" else . end;
   def ago($now): if (. // "") == "" then "-"
     else ([(($now - (sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601)) / 60 | floor), 0] | max) as $m
       | if $m < 60 then "\($m)m ago" elif $m < 2880 then "\($m / 60 | floor)h ago" else "\($m / 1440 | floor)d ago" end end;
@@ -547,10 +554,11 @@ roles_line() {
         elif .status == "Zombie" then "✗ (did not start)" else "✓" end)) | join(" ")'
 }
 
-# render_table [team...]: the team table of the registry as it stands (no herdr call): one row per team that has a
-# row not yet Retired, or only the teams named, then "Waiting on you: ..." when a P0 or P1 is open. "No teams." when
-# there is none. State is the worst agent state in one word (Parked when the team is parked); Needs you is the
-# team's most severe open escalation, else what its state needs, else -.
+# render_table [team...]: the team table of the registry as it stands (no herdr call): the summary line ("3 teams ·
+# ● 2 working · ✗ 1 blocked"), then one row per team that has a row not yet Retired, or only the teams named, then
+# "Waiting on you: ..." when a P0 or P1 is open. "No teams." when there is none. State is the worst agent state, its
+# symbol and one word (Parked when the team is parked); Needs you is the team's most severe open escalation, else
+# what its state needs, else -.
 render_table() {
   local rows esc only
   rows="$("$FLEET_SCRIPTS/registry.sh" list)" || return 1
@@ -566,7 +574,7 @@ render_table() {
       | {team: $t,
          issue: issue_cell(($g | map(.issue // "") | map(select(. != "")) | first // ""); ($g | map(.issue_url // "") | map(select(. != "")) | first // "")),
          pr: pr_cell($pr), state: $state,
-         needs: (if $e != null then "\($e.severity): \($e.message | .[0:60])"
+         needs: (if $e != null then "\($e.severity | sev): \($e.message | .[0:60])"
            elif any($g[]; .status == "Needs input") then ($g | map(.status_detail // "") | map(select(. != "")) | first // "answer its prompt")
            elif $state == "Zombie" then "agent gone: respawn or retire"
            elif $state == "Stalled" then "ask for its done step"
@@ -574,9 +582,13 @@ render_table() {
            elif $state == "Done" then (if $pr != "" then "merge the PR" else "retire the team" end)
            else "-" end)}) as $t
     | if ($t | length) == 0 then "No teams." else
+        ([$t | length | "\(.) team\(if . == 1 then "" else "s" end)"]
+          + ([$t[].state] as $s | ["Working", "Idle", "Waiting", "Stalled", "Parked", "Done"]
+            | map(. as $w | group as $g | ([$s[] | select(group == $g)] | length) as $n | select($n > 0) | "\($w | mark) \($n) \($g)"))
+          | join(" · ")),
         "| Team | Issue | PR | State | Needs you |", "|---|---|---|---|---|",
-        ($t[] | "| \(.team | md) | \(.issue) | \(.pr) | \(.state) | \(.needs | md) |"),
-        ([$esc[] | select((.severity | IN("P0", "P1")) and (.team | shown)) | "\(.name) \(.severity): \(.message | .[0:60] | md)"]
+        ($t[] | "| \(.team | md) | \(.issue) | \(.pr) | \(.state | marked) | \(.needs | md) |"),
+        ([$esc[] | select((.severity | IN("P0", "P1")) and (.team | shown)) | "\(.name) \(.severity | sev): \(.message | .[0:60] | md)"]
           | if length > 0 then "Waiting on you: " + join("; ") else empty end)
       end'
 }
@@ -593,7 +605,7 @@ render_agent_table() {
   jq -rn --argjson rows "$rows" --argjson ev "$ev" --argjson now "$(jq -rn --arg t "${FLEET_NOW:-$(now)}" '$t | fromdateiso8601')" "$RENDER_DEFS"'
     "| Agent | Role | State | Model | Last action |", "|---|---|---|---|---|",
     ($rows | sort_by((if .tier == "Lead" then 0 else 1 end), .name)[] | ($ev[.name] // null) as $e
-      | "| \(.name | md) | \(.name | split("/")[1:] | join("/") | md) | \(.status | word) | \(if (.model // "") == "" then "-" else (.model | md) end) | \(if $e != null then "\($e.type) \($e.at | ago($now))" else "updated \(.updated_at | ago($now))" end) |")'
+      | "| \(.name | md) | \(.name | split("/")[1:] | join("/") | md) | \(.status | word | marked) | \(if (.model // "") == "" then "-" else (.model | md) end) | \(if $e != null then "\($e.type) \($e.at | ago($now))" else "updated \(.updated_at | ago($now))" end) |")'
 }
 
 # render_escalations <escalations JSON (registry.sh escalations)>: | Id | Severity | Agent | Question | Age |, oldest
@@ -602,19 +614,19 @@ render_escalations() {
   jq -rn --argjson e "$1" --argjson now "$(jq -rn --arg t "${FLEET_NOW:-$(now)}" '$t | fromdateiso8601')" "$RENDER_DEFS"'
     if ($e | length) == 0 then "No escalations." else
       "| Id | Severity | Agent | Question | Age |", "|---|---|---|---|---|",
-      ($e | sort_by(.at)[] | "| \(.id) | \(.severity) | \(.name | md) | \(.message | .[0:80] | md)\(if .resolved_at != null then " (resolved)" else "" end) | \(.at | ago($now)) |")
+      ($e | sort_by(.at)[] | "| \(.id) | \(.severity | sev) | \(.name | md) | \(.message | .[0:80] | md)\(if .resolved_at != null then " (resolved)" else "" end) | \(.at | ago($now)) |")
     end'
 }
 
-# render_queue <queue.sh JSON>: "Merge in this order:" and | # | PR | Issue | Why this order | After merge | ("Merge in
-# this order: none ready." when nothing is), then "Not ready: [repo #N](url) (<what is missing>)" per open PR that is
-# not, then the queue's notes. Nothing at all when no PR is open.
+# render_queue <queue.sh JSON>: "Merge in this order:" and | # | PR | Issue | Why this order | After merge |, each
+# PR marked ✓ ("Merge in this order: none ready." when nothing is), then "Not ready: [repo #N](url) ✗ <missing> · ✗
+# ..." per open PR that is not, then the queue's notes. Nothing at all when no PR is open.
 render_queue() {
   jq -r 'if (.ready | length) == 0 and (.not_ready | length) == 0 then empty else
       (if (.ready | length) == 0 then "Merge in this order: none ready." else
         "Merge in this order:", "| # | PR | Issue | Why this order | After merge |", "|---|---|---|---|---|",
-        (.ready[] | "| \(.n) | \(.pr) | \(.issue) | \(.why) | \(.after) |") end),
-      (.not_ready[] | "Not ready: \(.pr) (\(.missing))"),
+        (.ready[] | "| \(.n) | ✓ \(.pr) | \(.issue) | \(.why) | \(.after) |") end),
+      (.not_ready[] | "Not ready: \(.pr) \(.missing | map("✗ " + .) | join(" · "))"),
       (.notes[] | "\(.).")
     end' <<<"$1"
 }
@@ -637,10 +649,11 @@ render_metrics_prs() {
     ($p[] | "| \(pr_cell(.pr)) | \(.team // "-" | md) | \(.issue // "-" | md) | \(.ready_minutes // "-") | \(.rework_rounds) | \(.stalls) | \(.missed_messages) | \(.tokens) |")'
 }
 
-# render_decision <P0|P1|P2> <team/role> <question> [option...]: the decision form. The first option is the
-# recommended one; with no options it is the question line alone.
+# render_decision <P0|P1|P2> <team/role> <question> [option...]: the decision form, P0 and P1 in bold. The first
+# option is the recommended one; with no options it is the question line alone.
 render_decision() {
   local p="$1" who="$2" q="$3" letters=ABCDEFGHIJ i=0 o opts="" reply=""; shift 3
+  case "$p" in P0 | P1) p="**$p**" ;; esac
   printf '%s %s: %s\n' "$p" "$who" "$q"
   [ $# -gt 0 ] || return 0
   for o in "$@"; do
@@ -697,7 +710,7 @@ render_line() {
     sandbox) printf 'Sandbox at %s: %s exited %s.%s\n' "${L_dir:-}" "${L_cmd:-}" "${L_code:-0}" "${L_kept:+ Kept.}" ;;
     disk) printf 'Disk: %s GB free (warn below %s).%s\n' "${L_free:-?}" "${L_warn:-?}" "${L_held:+ Fleet holds $L_held GB. Reclaimed ${L_reclaimed:-0} GB.}" ;;
     alert) printf 'Alert: %s. %s.\n' "${L_cause%.}" "${L_next%.}" ;;
-    pr_ready) printf 'Ready to merge: %s%s. Tester signed %s = head, CI %s, mergeable.\n' "${L_pr:-}" "${L_issue:+ for $L_issue}" "${L_sha:-}" "${L_ci:-green}" ;;
+    pr_ready) printf '✓ Ready to merge: %s%s. Tester signed %s = head, CI %s, mergeable.\n' "${L_pr:-}" "${L_issue:+ for $L_issue}" "${L_sha:-}" "${L_ci:-green}" ;;
     pr_merged) printf 'Merged %s. Next: %s.\n' "${L_pr:-}" "${L_next:-}" ;;
     pr_opened) printf 'PR opened: %s%s. %s.\n' "${L_pr:-}" "${L_issue:+ for $L_issue}" "${L_told:-Lead told to start the tester}" ;;
     event) printf '%s %s: %s. %s.\n' "${L_event:-}" "${L_name:-}" "${L_what%.}" "${L_next%.}" ;;

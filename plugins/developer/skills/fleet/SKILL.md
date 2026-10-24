@@ -64,8 +64,8 @@ done contract, escalation, caps, guards and debrief; mechanics that are not rout
 ## B. Status
 
 `$F/fleet status [<team>] [--problems] [--json] [--all]` recomputes health, writes it back and prints the status
-reply of `references/output.md`: the wake notices not shown yet, then the team table (Team, Issue, PR, a one-word
-State, Needs you), then the merge queue when a PR is open (every ready PR in the order to merge them, rebuilt from
+reply of `references/output.md`: the wake notices not shown yet, then the team table (a summary line, then Team,
+Issue, PR, State as a plain symbol and a word, Needs you), then the merge queue when a PR is open (every ready PR in the order to merge them, rebuilt from
 GitHub each time, then `Not ready: …`), then the focus, the disk line (below `warn_free_gb`) and the loop line when
 they apply. When the user asks what is ready to merge, the queue is the answer. `status <team>` prints one row per agent;
 `--all` adds a line for other machines' claims (Linear only); `--json` is the bare agent array. Relay it verbatim.

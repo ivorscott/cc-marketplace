@@ -12,20 +12,41 @@ is no issue); `[repo #N](url)` is a PR link (`-` when there is none). "Then the 
 
 ## Shared
 
+### symbols
+
+Plain Unicode symbols, never emoji and never color codes, so a reply reads the same in a terminal, a chat and a file:
+
+| Symbol | Means | Where |
+|---|---|---|
+| `●` | working | State |
+| `○` | idle | State |
+| `◐` | waiting: it needs input (a prompt, an expired login or an escalation's answer) | State |
+| `✗` | blocked: stalled, failed or gone (Zombie) | State |
+| `‖` | parked | State |
+| `✓` | done | State |
+| `✓` | ready to merge | the merge queue, the `pr_ready` wake |
+| `✗ <missing>` | one check a PR still misses | `Not ready:` |
+
+A severity is `**P0**` or `**P1**` in bold (they wait on you) and `P2` plain, wherever it appears: the Needs you cell,
+`Waiting on you`, the escalations table and the decision form.
+
 ### team table
 
 ```
+<n> teams · ● <n> working · ○ <n> idle · ◐ <n> waiting · ✗ <n> blocked · ‖ <n> parked · ✓ <n> done
 | Team | Issue | PR | State | Needs you |
 |---|---|---|---|---|
-| <team> | [DEV-1](url) | [repo #N](url) | <state> | <needs you> |
-Waiting on you: <team/role> <P0|P1>: <question>; …
+| <team> | [DEV-1](url) | [repo #N](url) | <symbol> <state> | <needs you> |
+Waiting on you: <team/role> **<P0|P1>**: <question>; …
 ```
 
-One row per team that has a row not yet Retired, parked teams included. State is one word, the worst agent state:
-Working, Idle, Done, Stalled, Zombie, Parked or Failed (an agent that needs input counts as Idle; the Needs you cell
-says why). Needs you is the team's most severe open escalation (`P1: <question>`), else what its state needs (`answer
-its prompt`, `ask for its done step`, `agent gone: respawn or retire`, `brief not delivered`, `merge the PR`,
-`retire the team`), else `-`. `Waiting on you` appears only while a P0 or P1 is open. With no team: `No teams.`
+The summary line counts the teams by State and names only the states some team is in (`1 team · ● 1 working`). One
+row per team that has a row not yet Retired, parked teams included. State is the worst agent state, a symbol and one
+word: `● Working`, `○ Idle`, `◐ Waiting` (an agent that needs input; the Needs you cell says why), `✗ Stalled`,
+`✗ Failed`, `✗ Zombie`, `‖ Parked` or `✓ Done`. Needs you is the team's most severe open escalation (`**P1**:
+<question>`), else what its state needs (`answer its prompt`, `ask for its done step`, `agent gone: respawn or
+retire`, `brief not delivered`, `merge the PR`, `retire the team`), else `-`. `Waiting on you` appears only while a P0
+or P1 is open. With no team: `No teams.`
 
 ### merge queue
 
@@ -33,8 +54,8 @@ its prompt`, `ask for its done step`, `agent gone: respawn or retire`, `brief no
 Merge in this order:
 | # | PR | Issue | Why this order | After merge |
 |---|---|---|---|---|
-| 1 | [repo #N](url) | [DEV-1](url) | <why> | <after merge> |
-Not ready: [repo #N](url) (<what is missing>)
+| 1 | ✓ [repo #N](url) | [DEV-1](url) | <why> | <after merge> |
+Not ready: [repo #N](url) ✗ <what is missing> · ✗ <what else is missing>
 Linear order unknown (no key).
 ```
 
@@ -43,7 +64,7 @@ means the tester's signed SHA is the head, CI is green, the PR is mergeable, not
 is the first rule that decides: a dependency (`blocks DEV-x`, `Part of DEV-x, slice n`, `base of #N`, `<repo> #N uses
 its contract`; the dependent says `needs <repo> #N`), then `fewest rebases` (shared files or migration numbers), then
 `oldest first`. After merge is `rebase after #N`, `renumber migration after #N` or `—`. With nothing ready the first
-line is `Merge in this order: none ready.` Not ready says what is missing: `no sign-off`, `signed <sha7> ≠ head`,
+line is `Merge in this order: none ready.` Not ready gives each missing check its own `✗`: `no sign-off`, `signed <sha7> ≠ head`,
 `CI pending`, `CI red`, `no CI checks`, `conflicting`, `mergeable unknown`, `draft`, `held`, `waits for <repo> #N`,
 `dependency cycle with #N`, `GitHub unreadable`, or `other machine` for another machine's fleet PR. The note appears
 when two or more PRs are open and Linear could not be read.
@@ -60,7 +81,7 @@ stderr line, with `Run fleet help <command>.` when that line names no next step.
 ### decision
 
 ```
-<P0|P1|P2> <team/role>: <question>
+<**P0**|**P1**|P2> <team/role>: <question>
 A) <option> (recommended) · B) <option>
 Reply A or B.
 ```
@@ -87,10 +108,10 @@ Loop: no Orchestrator registered, so wakes reach desktop notifications only. Run
 ```
 | Agent | Role | State | Model | Last action |
 |---|---|---|---|---|
-| <team/role> | <role> | <state> | <model> | <event> <age> |
+| <team/role> | <role> | <symbol> <state> | <model> | <event> <age> |
 ```
 
-The last action is the agent's newest event, else `updated <age>`.
+State as in the team table, one agent's. The last action is the agent's newest event, else `updated <age>`.
 
 ### boot
 
@@ -175,7 +196,7 @@ The decision form.
 ```
 | Id | Severity | Agent | Question | Age |
 |---|---|---|---|---|
-| <id> | <P0|P1|P2> | <team/role> | <question> | <age> |
+| <id> | <**P0**|**P1**|P2> | <team/role> | <question> | <age> |
 ```
 
 Oldest first; a resolved one ends `(resolved)`. With none: `No escalations.`
@@ -290,7 +311,7 @@ once, above the table and the merge queue, so the answer to any wake is one `fle
 ### wake pr_ready
 
 ```
-Ready to merge: [repo #N](url) for [DEV-1](url). Tester signed <sha7> = head, CI <green|none>, mergeable.
+✓ Ready to merge: [repo #N](url) for [DEV-1](url). Tester signed <sha7> = head, CI <green|none>, mergeable.
 ```
 
 ### wake pr_merged

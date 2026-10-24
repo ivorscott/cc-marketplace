@@ -1017,8 +1017,8 @@ check "set escalation= is refused" bash -c "! '$REG' set esc/builder escalation=
 check "set escalations= is refused" bash -c "! '$REG' set esc/builder escalations=[]"
 "$REG" add '{"name":"esc/builder","team":"esc","note":"re-add"}'
 eq "add on an existing row keeps its escalations" "$("$REG" get esc/builder | jq '.escalations | length')" 5
-eq "status shows the team's most severe open escalation in its row" "$("$SCRIPTS/status.sh" 2>/dev/null | grep '^| esc |' | grep -c '| P1: still open |$')" 1
-eq "status: a P1 is waiting on the user" "$("$SCRIPTS/status.sh" 2>/dev/null | grep '^Waiting on you:' | grep -c 'esc/builder P1: still open')" 1
+eq "status shows the team's most severe open escalation in its row" "$("$SCRIPTS/status.sh" 2>/dev/null | grep '^| esc |' | grep -c '| \*\*P1\*\*: still open |$')" 1
+eq "status: a P1 is waiting on the user" "$("$SCRIPTS/status.sh" 2>/dev/null | grep '^Waiting on you:' | grep -c 'esc/builder \*\*P1\*\*: still open')" 1
 # notify: a failing herdr call is logged, not hidden, and does not fail the command
 err="$(NOTIFY_FAIL=1 "$REG" escalate esc/builder P2 "n1" 2>&1 >/dev/null)"; rc=$?
 eq "escalate exits 0 when the notification fails" "$rc" 0
@@ -3100,7 +3100,7 @@ eq "tick: and its status stays Parked" "$(stat_of ep-a/lead)" Parked
 
 # status: a parked team is one row, State Parked
 st="$("$SCRIPTS/status.sh" 2>/dev/null)"
-check "status: a parked team's row says Parked" bash -c "printf '%s\n' \"\$1\" | grep -q '^| ep-a |.*| Parked | - |\$'" _ "$st"
+check "status: a parked team's row says Parked" bash -c "printf '%s\n' \"\$1\" | grep -q '^| ep-a |.*| ‖ Parked | - |\$'" _ "$st"
 eq "status: one row for the team" "$(printf '%s\n' "$st" | grep -c '^| ep-a |')" 1
 
 # -- unpark
@@ -3562,7 +3562,7 @@ for c in $("$FL" help | sed -n '3,$p' | cut -d'`' -f2); do
   grep -qx "### $c" "$OUT_MD" || miss="$miss $c:heading"; [ -f "$GD/$c.md" ] || miss="$miss $c:golden"
 done
 for w in $WAKES; do grep -qx "### wake $w" "$OUT_MD" || miss="$miss wake-$w:heading"; [ -f "$GD/wake-$w.md" ] || miss="$miss wake-$w:golden"; done
-for s in "team table" "merge queue" error decision disk alert; do grep -qx "### $s" "$OUT_MD" || miss="$miss $s:heading"; done
+for s in symbols "team table" "merge queue" error decision disk alert; do grep -qx "### $s" "$OUT_MD" || miss="$miss $s:heading"; done
 eq "dev408-17 output: every command and wake has an entry in output.md and a golden file" "$miss" ""
 eq "dev408-17 output: no golden file without an entry" "$(for f in "$GD"/*.md; do b="$(basename "$f" .md)"; case "$b" in wake-*) h="### wake ${b#wake-}" ;; *) h="### ${b//-/ }" ;; esac
   grep -qx "$h" "$OUT_MD" || grep -qx "### $b" "$OUT_MD" || grep -qx "### ${b%%-*}" "$OUT_MD" || echo "$b"; done)" ""
@@ -3606,7 +3606,7 @@ qpr app-api 24 fleet/dev-24 fleet/dev-25 2026-10-18T10:00:00Z '["c.go"]' x; qtea
 qpr app-api 25 fleet/dev-25 fleet/dev-24 2026-10-18T10:00:00Z '["d.go"]' x; qteam t25 app-api 25 DEV-25 aaaaaaa25
 printf '[{"number": 30, "url": "https://github.com/acme/app-api/pull/30", "title": "t", "headRefName": "fleet/dev-30-x", "baseRefName": "main", "body": "", "createdAt": "2026-10-18T10:00:00Z", "files": [{"path": "e.go"}]},
   {"number": 31, "url": "https://github.com/acme/app-api/pull/31", "title": "t", "headRefName": "someone/else", "baseRefName": "main", "body": "", "createdAt": "2026-10-18T10:00:00Z", "files": []}]' >"$QGHD/list-app-api.json"
-nr() { q | jq -r --arg n "$1" '[.not_ready[] | select(.url | endswith("/pull/" + $n)) | .missing] | first // "not listed"'; }
+nr() { q | jq -r --arg n "$1" '[.not_ready[] | select(.url | endswith("/pull/" + $n)) | .missing | join(", ")] | first // "not listed"'; }
 eq "dev408-18 queue: not ready: no sign-off" "$(nr 20)" "no sign-off"
 eq "dev408-18 queue: not ready: mergeable UNKNOWN is never conflicting" "$(nr 21)" "mergeable unknown"
 eq "dev408-18 queue: not ready: conflicting" "$(nr 22)" "conflicting"
@@ -3614,14 +3614,14 @@ eq "dev408-18 queue: not ready: signed another head, held" "$(nr 23)" "signed bb
 eq "dev408-18 queue: a dependency cycle is named" "$(nr 24):$(nr 25)" "waits for app-api #25, dependency cycle with #25:waits for app-api #24, dependency cycle with #24"
 eq "dev408-18 queue: another machine's fleet PR is an order input, never ready; a non-fleet PR is not read" "$(nr 30):$(nr 31)" "other machine:not listed"
 eq "dev408-18 queue: with nothing ready the queue says so" "$(bash -c '. "$1/common.sh"; render_queue "$2"' _ "$SCRIPTS" "$(q)" | head -n 1)" "Merge in this order: none ready."
-check "dev408-18 queue: and each not-ready PR is one line" bash -c ". '$SCRIPTS/common.sh'; render_queue \"\$1\" | grep -qx 'Not ready: \[app-api #22\](https://github.com/acme/app-api/pull/22) (conflicting)'" _ "$(q)"
+check "dev408-18 queue: and each not-ready PR is one line, a ✗ per missing check (dev408-20)" bash -c ". '$SCRIPTS/common.sh'; render_queue \"\$1\" | grep -qx 'Not ready: \[app-api #23\](https://github.com/acme/app-api/pull/23) ✗ signed bbbbbbb ≠ head · ✗ held'" _ "$(q)"
 qfresh waits; qpr app-api 40 fleet/dev-40 main 2026-10-18T10:00:00Z '["a.go"]' x; qpr app-api 41 fleet/dev-41 fleet/dev-40 2026-10-18T10:00:00Z '["b.go"]' x
 qteam t40 app-api 40 DEV-40; qteam t41 app-api 41 DEV-41 aaaaaaa41
 eq "dev408-18 queue: a ready PR whose parent is not ready waits for it" "$(nr 41)" "waits for app-api #40"
 qfresh none; "$REG" add '{"name":"tn/lead","team":"tn","tier":"Lead","status":"Working","herdr_ref":"x","pane":"p"}' >/dev/null
 eq "dev408-18 queue: no PR, no queue" "$(bash -c '. "$1/common.sh"; render_queue "$2"' _ "$SCRIPTS" "$(q)")" ""
 qfresh gh; qpr app-api 42 fleet/dev-42 main 2026-10-18T10:00:00Z '["a.go"]' x; qteam t42 app-api 42 DEV-42 aaaaaaa42
-eq "dev408-18 queue: with no gh at all, the queue says so" "$(FLEET_GH=nosuchgh "$SCRIPTS/queue.sh" | jq -r '[.notes[], .not_ready[].missing] | join("|")')" "Merge queue unknown: gh not found|GitHub unreadable"
+eq "dev408-18 queue: with no gh at all, the queue says so" "$(FLEET_GH=nosuchgh "$SCRIPTS/queue.sh" | jq -r '[.notes[], .not_ready[].missing[]] | join("|")')" "Merge queue unknown: gh not found|GitHub unreadable"
 # the queue's shape, pinned: the contract, base-branch and migration rules and a not-ready PR together
 qfresh rich
 qpr app-api 10 fleet/dev-10-a main 2026-10-20T10:00:00Z '["a.go","db/migrations/0038_x.sql"]' x; qpr app-api 11 fleet/dev-11-b fleet/dev-10-a 2026-10-19T10:00:00Z '["b.go"]' x
@@ -3682,6 +3682,17 @@ eq "dev408-10 respawn --restart: FLEET_VERSION_OK=1 goes on (to the next check: 
 eq "dev408-10 respawn --restart: an equal installed version goes on" "$(FLEET_INSTALLED_VERSION=1.0.0 rv --restart)" 1
 eq "dev408-10 respawn: a plain respawn of a dead agent does not ask" "$(FLEET_INSTALLED_VERSION=2.0.0 rv)" 1
 "$REG" retire rv/builder >/dev/null 2>&1 || true
+
+# -- dev408-20: plain symbols. The golden files pin the shapes; this pins the summary line's grouping (✗ blocked is
+# Stalled, Failed and Zombie together; ◐ waiting is an agent that needs input) and the singular.
+S20="$T/s20"; mkdir -p "$S20"
+s20() { FLEET_REGISTRY="$S20/fleet.json" FLEET_STATE_DIR="$S20" "$@"; }
+for x in "sa:Stalled" "sb:Zombie" "sc:Failed" "sd:Needs input" "se:Idle" "sf:Working"; do
+  s20 "$REG" add "$(jq -cn --arg t "${x%%:*}" --arg s "${x#*:}" '{name: ($t + "/lead"), team: $t, tier: "Lead", status: $s, herdr_ref: $t, pane: "p"}')" >/dev/null
+done
+eq "dev408-20 symbols: the summary line counts the teams by state group" "$(s20 bash -c '. "$1/common.sh"; render_table | head -n 1' _ "$SCRIPTS")" "6 teams · ● 1 working · ○ 1 idle · ◐ 1 waiting · ✗ 3 blocked"
+eq "dev408-20 symbols: each State is its symbol and word" "$(s20 bash -c '. "$1/common.sh"; render_table' _ "$SCRIPTS" | awk -F' [|] ' '/^[|] s/ {print $4}' | paste -sd, -)" "✗ Stalled,✗ Zombie,✗ Failed,◐ Waiting,○ Idle,● Working"
+eq "dev408-20 symbols: one team is singular" "$(s20 bash -c '. "$1/common.sh"; render_table sf | head -n 1' _ "$SCRIPTS")" "1 team · ● 1 working"
 # ---- end DEV-408 ----
 
 printf '\n%d passed, %d failed\n' "$pass" "$failn"

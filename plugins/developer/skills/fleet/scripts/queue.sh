@@ -3,15 +3,15 @@
 # from GitHub and the registry on every call, never from chat or a cache. Internal: `status`, the pr_ready and
 # pr_merged wakes and the morning report print it through render_queue (references/output.md).
 #
-#   queue.sh      JSON {ready: [{n, url, pr, issue, why, after}], not_ready: [{url, pr, missing}], notes: [...]}
+#   queue.sh      JSON {ready: [{n, url, pr, issue, why, after}], not_ready: [{url, pr, missing: [...]}], notes: [...]}
 #
 # Inputs: every registry row not Retired that has a PR (Parked and Done rows included), one read-only
 # `gh pr view` per PR (FLEET_GH), the other open fleet/* PRs in the same repos (`gh pr list`), and Linear's `blocks`
 # relations of the queued issues (linear.sh blocks; without a key the queue says the Linear order is unknown).
 # Ready is common.sh PR_DEFS, the rule tick's pr_ready uses: the tester's signed SHA is the head, CI green (or none
 # in a no_pr_ci repo), mergeable (UNKNOWN is "mergeable unknown", never conflicting), not a draft, not held. Another
-# machine's PR is never ready here (its sign-off is not ours to see): it is an order input, listed as
-# "(other machine)".
+# machine's PR is never ready here (its sign-off is not ours to see): it is an order input, listed as missing
+# "other machine".
 #
 # Order, the first rule that decides:
 #   1. dependencies: a PR another needs goes first. Linear `blocks` ("blocks DEV-x"), the same "Part of <issue>"
@@ -33,7 +33,7 @@ prs="$("$FLEET_SCRIPTS/registry.sh" list | jq -c '
       signoff: ([$g[] | select((.name // "" | endswith("/tester")) and ((.signoff | objects | .sha) != null)) | .signoff.sha] | first // "")})')"
 if [ "$(jq length <<<"$prs")" = 0 ]; then echo '{"ready":[],"not_ready":[],"notes":[]}'; exit 0; fi
 if ! command -v "$FLEET_GH" >/dev/null 2>&1; then
-  jq -c "$RENDER_DEFS"'{ready: [], not_ready: map({url, pr: pr_cell(.url), missing: "GitHub unreadable"}), notes: ["Merge queue unknown: gh not found"]}' <<<"$prs"
+  jq -c "$RENDER_DEFS"'{ready: [], not_ready: map({url, pr: pr_cell(.url), missing: ["GitHub unreadable"]}), notes: ["Merge queue unknown: gh not found"]}' <<<"$prs"
   exit 0
 fi
 
@@ -120,5 +120,5 @@ jq -c --argjson notes "$notes" --argjson blocks "$blocks" "$RENDER_DEFS"'
          after: (if ($renum | length) > 0 then "renumber migration after \($renum | join(", "))"
                  elif ($rebase | length) > 0 then "rebase after \($rebase | join(", "))" else "—" end)}],
      not_ready: [$nodes[] | select((.missing | length) > 0 or (.waits | length) > 0 or .cycle != null)
-      | {url, pr: pr_cell(.url), missing: ((.missing + (.waits | map("waits for " + .)) + (if .cycle != null then ["dependency cycle with \(.cycle)"] else [] end)) | join(", "))}],
+      | {url, pr: pr_cell(.url), missing: (.missing + (.waits | map("waits for " + .)) + (if .cycle != null then ["dependency cycle with \(.cycle)"] else [] end))}],
      notes: $notes}' <<<"$all"
