@@ -408,12 +408,13 @@ in 4.1. Anything that newly exposes the key is a blocker; the items that touch t
    into the team repo, more build output is ignored, the empty team directory goes.
 10. **A plugin version switch waits for the user.** `stale_version` is a decision; `next` and `respawn --restart`
     refuse with exit 5 until `FLEET_VERSION_OK=1`.
-11. **Overnight mode.** `overnight = true`: leads decide inside the issue's scope, the rest stays P1, branches catch up
-    with merge commits, and the morning report (`metrics.sh --morning`) is written after 07:00. A prompt-blocked agent
-    gets a P1 after two ticks, always.
+11. **Overnight mode.** `overnight = true`: a lead takes its own recommendation for a decision inside the issue's scope
+    and notes it; installs, production and the other gated actions stay P1 for the user; branches catch up with merge
+    commits; and the morning report (`metrics.sh --morning`) is written after 07:00. A prompt-blocked agent gets a P1
+    after two ticks, always.
 12. **Clean up as you go.** A team cluster's anonymous volumes go with it, panes share a Terraform plugin cache, tick
-    prunes the Go cache and docker's dangling volumes, build cache and images at most hourly (`prune_cap_gb`), and the
-    disk line shows what the fleet holds.
+    prunes the Go cache and docker's dangling volumes, build cache and images (at most hourly, once one passes
+    `prune_cap_gb` or the disk runs low), and the disk line shows what the fleet holds.
 13. **herdr's Claude integration is required.** Delivery and background tasks are read from hooks and transcripts,
     never from the screen; boot and status say when the integration is not current.
 14. **herdr's panel** shows each team's issue, PR and state, and each agent's role.

@@ -185,7 +185,7 @@ plan_file="$repo/.fleet/plan/$team.md"
 if $is_git; then
   gx="$(git -C "$repo" rev-parse --git-common-dir 2>/dev/null)" || gx=""
   case "$gx" in /*) ;; "") ;; *) gx="$repo/$gx" ;; esac
-  if [ -n "$gx" ] && ! grep -qx '.fleet/' "$gx/info/exclude" 2>/dev/null; then
+  if [ -n "$gx" ] && ! grep -qxF '.fleet/' "$gx/info/exclude" 2>/dev/null; then
     { mkdir -p "$gx/info" && { [ ! -s "$gx/info/exclude" ] || [ -z "$(tail -c 1 "$gx/info/exclude")" ] || echo; } >>"$gx/info/exclude" &&
       echo '.fleet/' >>"$gx/info/exclude"; } || warn "could not add .fleet/ to $gx/info/exclude"
   fi

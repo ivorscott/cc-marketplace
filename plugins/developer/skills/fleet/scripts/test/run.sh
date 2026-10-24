@@ -4024,7 +4024,7 @@ R19P="$(cd "$R19" && pwd -P)" # boot names the repo by its physical path
 eq "dev408-19 plan: only the planner's pane carries FLEET_PLAN_DIR, the repo's .fleet" "$(grep -c "^pane split.*FLEET_NAME=build-p19b/planner.*FLEET_PLAN_DIR=$R19P/.fleet" "$HERDR_LOG"):$(grep -c 'FLEET_PLAN_DIR' "$HERDR_LOG")" "1:1"
 b19() { cat "$("$REG" get "build-p19b/$1" | jq -r '.last_brief // "/nonexistent"')" 2>/dev/null; }
 eq "dev408-19 plan: the planner's, builder's, tester's and lead's briefs name the plan file" \
-  "$(for r in planner builder tester lead; do b19 "$r" | grep -c "$R19/.fleet/plan/build-p19b.md" | sed 's/^[1-9][0-9]*$/y/'; done | paste -sd, -)" "y,y,y,y"
+  "$(for r in planner builder tester lead; do b19 "$r" | grep -cF "$R19P/.fleet/plan/build-p19b.md" | sed 's/^[1-9][0-9]*$/y/'; done | paste -sd, -)" "y,y,y,y"
 sg19() { # the scope guard's decision for a planner's tool call: deny, or allow when it says nothing
   local o; o="$(jq -cn --arg t "$1" --arg p "$2" --arg c "$R19" '{tool_name: $t, tool_input: {file_path: $p}, cwd: $c}' |
     FLEET_ROLE=worker FLEET_NAME=build-p19/planner FLEET_PLAN_DIR="$R19/.fleet" "$SCRIPTS/../../../hooks/fleet-scope-guard.sh")"
