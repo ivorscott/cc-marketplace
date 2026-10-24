@@ -85,7 +85,7 @@ jq -c --argjson notes "$notes" --argjson blocks "$blocks" "$RENDER_DEFS$PART_OF_
          elif ($a | series) != null and ($a | series) == ($b | series) and ([($a | slice // $a.number), ($b | slice // $b.number)] | .[0] < .[1])
            then "Part of \($a | series), slice \($a | slice // $a.number)"
          elif $a.head != "" and $b.base == $a.head then "base of #\($b.number)"
-         elif ($b.body | test("(?im)^\\s*depends on\\s+" + ($a.url | gsub("[.]"; "\\."))) ) then "\($b | ref) uses its contract"
+         elif ($b.body | test("(?im)^\\s*depends on\\s+" + ($a.url | gsub("[.]"; "\\.")) + "(?![0-9])")) then "\($b | ref) uses its contract"
          else empty end) as $why | {from: $i, to: $j, why: $why}]) as $edges
   | def has($set; $v): ($set | index($v)) != null;
   # Kahn over every PR, to find a cycle; the PRs left over are in one

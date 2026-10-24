@@ -3611,6 +3611,12 @@ mv "$QD/key.off" "$FLEET_CONFIG_DIR/linear_api_key"
 qfresh contract; qpr app-web 5 fleet/dev-5-w main 2026-10-18T10:00:00Z '["w.ts"]' 'Depends on https://github.com/acme/app-api/pull/6'; qpr app-api 6 fleet/dev-6-a main 2026-10-21T10:00:00Z '["a.go"]' x
 qteam t5 app-web 5 DEV-5 aaaaaaa5; qteam t6 app-api 6 DEV-6 aaaaaaa6
 eq "dev408-18 queue: Depends on across two repos orders the contract PR first" "$(qorder)" "app-api#6|app-web #5 uses its contract|— ; app-web#5|needs app-api #6|—"
+# R3: "Depends on .../pull/50" names #50 only; #5, whose URL is a prefix of it, gets no edge.
+qfresh prefix; qpr app-api 5 fleet/dev-5-p main 2026-10-17T10:00:00Z '["p.go"]' x; qpr app-api 50 fleet/dev-50-q main 2026-10-18T10:00:00Z '["q.go"]' x
+qpr app-api 60 fleet/dev-60-r main 2026-10-16T10:00:00Z '["r.go"]' 'Depends on https://github.com/acme/app-api/pull/50'
+qteam t5p app-api 5 DEV-5 aaaaaaa5; qteam t50 app-api 50 DEV-50 aaaaaaa50; qteam t60 app-api 60 DEV-60 aaaaaaa60
+eq "dev408-R3 queue: a Depends on URL matches that PR only, not one whose URL is a prefix of it" \
+  "$(q | jq -r '[.ready[] | select(.url | test("/pull/(5|60)$")) | "\(.url | sub(".*/pull/"; "#"))|\(.why)"] | join(" ; ")')" "#5|oldest first ; #60|needs app-api #50"
 qfresh series; qpr app-api 9 fleet/dev-9-c main 2026-10-17T10:00:00Z '["c.go"]' 'Part of DEV-7' MERGEABLE 'slice 2: handlers'
 qpr app-api 8 fleet/dev-8-b main 2026-10-21T10:00:00Z '["b.go"]' 'Part of https://linear.app/acme/issue/DEV-7/x' MERGEABLE 'slice 1: store'
 qteam t9 app-api 9 DEV-9 aaaaaaa9; qteam t8 app-api 8 DEV-8 aaaaaaa8
