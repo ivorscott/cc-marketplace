@@ -92,7 +92,7 @@ set -euo pipefail
 # anywhere: a transport of the caller's never sees a real key, and the tests never reach the network by accident.
 # RESIDUAL, accepted (DEV-368): FLEET_ROLE is an environment convention. An agent can blank it (`FLEET_ROLE= ...`)
 # and run this script as the Orchestrator would, and the key file is readable by any process of the same user in
-# any case. The guards catch mistakes; they are not a security boundary (README). Keychain follow-up: Ivor.
+# any case. The guards catch mistakes; they are not a security boundary (README). A keychain store is a follow-up.
 lcase() { printf '%s' "$1" | LC_ALL=C tr ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz; }
 physical() { # physical <path>: the nearest existing parent made physical, the rest appended, a symlink followed (10 hops)
   local p="$1" d rest hops=0 t
