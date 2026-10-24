@@ -10,6 +10,7 @@ teams_per_repo = 1   # live teams on one repo
 max_envs = 3         # team test clusters at once
 min_free_gb = 40     # boot refuses below this much free disk (0 = off; FLEET_FORCE=1 overrides)
 warn_free_gb = 75    # status shows the disk line, and tick reports it, below this
+prune_cap_gb = 20    # tick prunes (at most hourly) the Go cache or docker's reclaimable once either passes this, or the disk is below warn_free_gb
 # repos = ["/path/to/app", "/path/to/api"]   # repos that should always have a team (repo_without_team); with this set, only teams on these repos count against max_teams
 
 # Several machines on one Linear workspace: each claims issues with the label <label_prefix><machine key>.
@@ -27,6 +28,10 @@ permission_mode = "auto"   # the Claude Code permission mode every agent starts 
 # forge_allow = ["Bash(gh pr view:*)", "Bash(gh pr checks:*)", "Bash(gh pr create:*)"]
 # no_pr_ci = ["repo-without-ci"]   # repos whose PRs have no CI: no checks counts as green
 
+# Overnight mode: leads decide inside the issue's scope (installs, cloud, prod, branch protection, `gh pr ready` and
+# closing stay P1), branches catch up with merge commits, and the first tick after 07:00 writes the morning report
+overnight = false
+
 # Registry
 archive_after_days = 0   # a Retired row with its lessons written moves to fleet-archive.json after this many days
 
@@ -37,7 +42,6 @@ archive_after_days = 0   # a Retired row with its lessons written moves to fleet
 # The loop (schedule.sh) and alerts
 tick_secs = 300
 # schedule_label = "fleet.tick"
-# orchestrator_ref = "herdr-agent-name"   # the Orchestrator's agent when its registry row is missing
 # alert_cmd = "/path/to/script"           # run with the alert text as its one argument
 
 # Chat (coordination only, never the lock)

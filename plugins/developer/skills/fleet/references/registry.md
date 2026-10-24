@@ -20,7 +20,7 @@ restarted, compacted or replaced agent picks up from the row, not from memory.
 | `harness`, `model` | herdr agent kind (`claude`, `codex`, …) and model |
 | `repo`, `cwd`, `worktree`, `branch` | where it works; `worktree` and `branch` are set for writers only |
 | `machine`, `workspace`, `pane`, `herdr_ref` | where it runs; `herdr_ref` is the herdr agent name |
-| `issue`, `claimed_by`, `scope` | the tracker issue, the machine key that claimed it, and the declared file scope `{repo, paths[]}` (empty paths = whole repo); set by `boot.sh --issue/--claimed-by/--scope` |
+| `issue`, `claimed_by`, `scope` | the tracker issue, the machine key that claimed it, and the declared file scope `{repo, paths[]}` (empty paths = whole repo); set by `boot.sh --issue/--claimed-by/--scope`; `registry.sh reassign --claimed-by` (`next.sh`, when its claim succeeded) moves `claimed_by` to the new issue and drops it otherwise, and tick's `claim_lost` reads it |
 | `assignment` | the task it owes (the hook) |
 | `status` | Booting, Working, Needs input, Stalled, Zombie, Idle, Done, Parked, Retired |
 | `escalation`, `escalations[]` | `escalation` is derived: the highest severity among open entries, `""` when none. Each entry is `{id, severity, message, at}` (`id` is `<at compact>-<seq>`, seq the 1-based array position; entries filed before ids existed get the same derived id on read) plus `resolved_at` and `resolution` once `registry.sh resolve` closes it; `(name, id)` identifies one. Open entries survive `done`; `retire` closes them with resolution "closed at retire". A non-array `escalations` reads as empty and non-object elements are skipped |
@@ -36,10 +36,15 @@ restarted, compacted or replaced agent picks up from the row, not from memory.
 | `pr`, `signoff` | `registry.sh signoff <name> <PR URL or N> <sha>` (the tester) sets `pr` and `signoff = {pr, sha, at}`; `tick.sh` reads them. `registry.sh reassign <team> <issue>` (run by `next.sh`) clears `outcome`, `summary`, `done_at`, `pr`, `signoff` and `lessons`, closes open escalations with `resolution: "closed at next"`, sets `issue`, rewrites `assignment`, and sets the lead Working and the workers Idle; it logs `issue_done` (the old issue, PR and outcome) to the event log first |
 | `escalation`, `escalations[]` | `escalation` is derived: the highest severity among open entries, `""` when none. Each entry is `{severity, message, at}` plus `resolved_at` and `resolution` once `registry.sh resolve` closes it; `(name, at)` identifies one. Open entries survive `done` and `retire` |
 | `discovered[]` | unrelated work the agent filed instead of doing |
+| `notes[]` | `{kind, message, at}` from `registry.sh note <name> decision\|picked TEXT`: `decision` is an option an agent took on its own (overnight mode), `picked` the search behind a boot (the Orchestrator, on the lead's row); the morning report reads both |
+| `cwd`, `target_teams` (the `orchestrator` row) | where the Orchestrator's session runs, recorded by `registry.sh orchestrator here`, which replaces the rest of the row but keeps `target_teams`, the "keep N teams running" goal |
 | `expertise_file` | the role's expertise file, if the repo has one |
 | `started`, `done_at`, `ended` | lifecycle timestamps (UTC) |
 | `outcome`, `summary`, `lessons` | how it ended, its one-line summary, and debrief lessons |
 | `updated_at`, `synced_at` | change tracking for the sink |
+
+Beside the rows, the top-level `prefs` object keeps the user's fleet-wide choices (such as `slim`), written and read with
+`registry.sh pref <key> [value]` (the Orchestrator's only).
 
 ## Escalation inbox
 
@@ -51,15 +56,14 @@ new line starts a tick within seconds.
 ## Schema check and the archive
 
 Every registry write is checked: a write that would leave a row malformed (name not a string,
-`escalations` not an array of entries with severity P0/P1/P2, `message` and `at`, `discovered` not
+`escalations` not an array of entries with severity P0/P1/P2, `message` and `at`, `discovered` or `notes` not
 an array) is refused and the file stays byte-identical. A row already malformed on disk is tolerated
 with a warning, so it cannot block other writes; `escalate`, `resolve` and `retire` repair it.
 
 `registry.sh archive` (run after every `retire.sh`) moves Retired rows to `fleet-archive.json` in the
 state dir once `lessons` is written, no escalation is open, and `archive_after_days` (config.toml,
 default 0) have passed since `ended`. Rows without lessons stay: they are the debrief queue.
-`list` and `status` read the live file only; `get --archived <name>`, `list --with-archived` and
-`retire.sh --summary` read both.
+`list` and `status` read the live file only; `get --archived <name>` and `list --with-archived` read both.
 ## Who may write what
 
 `registry.sh set` from an agent (its pane has `FLEET_ROLE`) takes only `status`, `summary`, `nudged_at`,

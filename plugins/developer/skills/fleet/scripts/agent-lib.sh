@@ -10,6 +10,7 @@ render() { # render <text> <name> <worktree> <workers>
   s="${s//\{\{name\}\}/$2}"; s="${s//\{\{name_slug\}\}/${2//\//-}}"; s="${s//\{\{worktree\}\}/$3}"
   s="${s//\{\{workers\}\}/$4}"; s="${s//\{\{registry\}\}/$registry}"; s="${s//\{\{scripts\}\}/$FLEET_SCRIPTS}"
   s="${s//\{\{issue_url\}\}/${issue_url:-<the full URL of the issue>}}"
+  case "$s" in *'{{catch_up}}'*) s="${s//\{\{catch_up\}\}/$(catch_up)}" ;; esac # rebase or, overnight, merge (common.sh)
   printf '%s' "$s"
 }
 
@@ -20,7 +21,7 @@ claude_args() { # claude_args <model> <tier> <worktree> <allow-json>
   extra="${extra//\{\{scripts\}\}/$FLEET_SCRIPTS}"
   extra="${extra//\{\{team\}\}/$team}"; extra="${extra//\{\{worktree\}\}/$3}"
   settings="$(jq -cn --arg r "$registry" --argjson extra "$extra" --argjson tools "$tool_allow" --argjson h "$herdr_allow" \
-    '{permissions: {allow: (["Bash(\($r):*)"] + $h + $extra + $tools | unique)}}')"
+    --arg rc "$FLEET_SCRIPTS/redact-check.sh" '{permissions: {allow: (["Bash(\($r):*)", "Bash(\($rc):*)"] + $h + $extra + $tools | unique)}}')"
   # A file keeps the typed start command short: a long inline JSON outlasted herdr's startup wait.
   local dir="$FLEET_STATE_DIR/settings" file
   mkdir -p "$dir"

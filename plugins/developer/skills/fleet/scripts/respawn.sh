@@ -11,7 +11,9 @@
 # (the role brief for the row's current assignment, plus --brief-text for the lead), sent as a file through
 # tell.sh --brief. The lead comes back Working, a worker Idle (the lead hands it work). The row's
 # plugin_version becomes the version of these scripts. It is not a death: nothing charges the respawn budget,
-# and the event is `restarted`. UNVERIFIED against real herdr: `herdr agent start` after /exit in the same pane.
+# and the event is `restarted`. A plugin installed since the row started would switch versions, which waits for
+# the user's go: --restart exits 5 naming both versions unless FLEET_VERSION_OK=1 (a plain respawn of a dead agent
+# does not ask). UNVERIFIED against real herdr: `herdr agent start` after /exit in the same pane.
 #
 # The resume brief is `build_brief --resume`: the role brief, the assignment, the last report file,
 # `git status` and `git log` of its branch and its open escalations (no pane text). A lead also gets
@@ -20,8 +22,10 @@
 # new session id, so its `transcript` path changes (the old one is kept in the row's `transcripts` list). Logs `respawned` to the event log.
 #
 # If the row's pane is gone, a new pane is split from the lead's pane in the same workspace.
+# It prints "Respawned <team/role> (<model>): <state>." ("Restarted ..." with --restart; references/output.md).
 # UNVERIFIED against real herdr: that `herdr agent start <same name>` is accepted for an agent whose
 # pane died (DEV-368).
+# Command: Start a dead agent again from its row · e.g. fleet respawn build-api/builder
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
 require_herdr
@@ -40,6 +44,7 @@ row="$("$registry" get "$name")" || exit 1
 get() { printf '%s' "$row" | jq -r ".$1 // \"\""; }
 status="$(get status)"
 case "$status" in Done | Retired) die "$name is $status; not respawning it" ;; esac
+[ "$restart" != true ] || version_switch_check "[$row]" "$name"
 
 team="$(get team)"; tier="$(get tier)"; agent="$(get herdr_ref)"; pane="$(get pane)"; split_new=0
 new_ws=""; cwd="$(get cwd)"; worktree="$(get worktree)"; model="$(get model)"; kind="$(get harness)"; kind="${kind:-claude}"
@@ -84,6 +89,8 @@ fi
 # as boot makes it; any other agent is split from the lead's pane in the team's workspace.
 if ! hd pane process-info --pane "$pane" >/dev/null 2>&1; then
   env_args=(); [ -z "$(env_config "$repo")" ] || env_args=(--env "KUBECONFIG=$(env_dir "$team")/kubeconfig")
+  [ "$role" != planner ] || env_args+=(--env "FLEET_PLAN_DIR=$repo/.fleet") # boot's planner fence
+  mkdir -p "$FLEET_STATE_DIR/tf-plugin-cache"; env_args+=(--env "TF_PLUGIN_CACHE_DIR=$FLEET_STATE_DIR/tf-plugin-cache") # boot's shared cache
   if [ "$tier" = "Lead" ]; then
     ws_json="$(hd workspace create --cwd "${cwd:-$repo}" --label "$team" --no-focus \
       --env FLEET_ROLE=lead --env "FLEET_NAME=$name" --env "FLEET_TEAM=$team" --env "FLEET_STATE_DIR=$FLEET_STATE_DIR" ${env_args[@]+"${env_args[@]}"})" ||
@@ -127,4 +134,5 @@ else ev_log respawned team="$team" name="$name" detail="new pane $pane"; fi
 if [ "$new_status" = Working ] || [ "$new_status" = Idle ]; then
   "$FLEET_SCRIPTS/tell.sh" "$name" "$brief" --brief >/dev/null || { "$registry" set "$name" status=Failed >/dev/null; die "the resume brief did not reach $name; row set to Failed"; }
 fi
-jq -cn --arg n "$name" --arg s "$new_status" --argjson r "$restart" 'if $r then {restarted: $n, status: $s} else {respawned: $n, status: $s} end'
+if $restart; then render_line restarted name="$name" model="$model" state="$new_status"
+else render_line respawned name="$name" model="$model" state="$new_status"; fi

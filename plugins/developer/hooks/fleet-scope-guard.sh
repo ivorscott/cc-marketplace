@@ -8,6 +8,7 @@
 #   name (linear_api_key) and by the resolved path of $FLEET_CONFIG_DIR/linear_api_key; only the
 #   directory of that path is looked at, never the key file itself.
 #   Workers with a worktree (FLEET_WORKTREE): also denied file writes outside that worktree.
+#   A planner (FLEET_PLAN_DIR, <repo>/.fleet): denied file writes outside it; its plan is .fleet/plan/<team>.md.
 #
 # Shell commands are covered by fleet-bash-guard.sh. Both are guardrails, not a boundary: the key
 # file is mode 600 for the user the agents run as, so any same-uid process can read it.
@@ -102,6 +103,15 @@ case "$tool" in
     done <<<"$globs"
     ;;
 esac
+
+# A planner (FLEET_PLAN_DIR, which boot sets to <repo>/.fleet on its pane) writes only there, its plan at
+# .fleet/plan/<team>.md; everything else stays read-only for it.
+if [ "${FLEET_ROLE:-}" = "worker" ] && [ -n "${FLEET_PLAN_DIR:-}" ]; then
+  case "$tool" in Read | Grep | Glob) exit 0 ;; esac
+  proot="$(resolve "$FLEET_PLAN_DIR")"
+  case "$rp/" in "$proot"/*) exit 0 ;; esac
+  deny "fleet scope guard: a planner writes only under $proot (its plan goes to $proot/plan/<team>.md); $path is read-only for you."
+fi
 
 # The worktree fence is for workers with a worktree, and not for reads (Read, Grep, Glob).
 [ "${FLEET_ROLE:-}" = "worker" ] && [ -n "${FLEET_WORKTREE:-}" ] || exit 0
