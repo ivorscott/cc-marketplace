@@ -254,9 +254,10 @@ Fleet runs fill disks: worktrees carry `node_modules` and build output, and ever
 builds and loads images. Four guards keep it from filling:
 
 - **Retire** removes the worktree. Build outputs (`node_modules/`, `*.tsbuildinfo`, `dist/`,
-  `.next/`, `coverage/`) are ignored; untracked reports (`*.md` at the worktree root or under
-  `reports/`) are copied, and verified, to `reports/fleet-archive/<team>-<role>/` in the
-  Orchestrator's working directory (`FLEET_ARCHIVE_DIR` overrides the root). A worktree is
+  `.next/`, `coverage/`, `.terraform/`, `test-results/`, `bin/`) are ignored; untracked reports (`*.md` at the
+  worktree root or under `reports/`) are copied, and verified, to `reports/fleet-archive/<team>-<role>/` in the
+  team's repo, which keeps that folder out of git through its `.git/info/exclude` (`FLEET_ARCHIVE_DIR` overrides the
+  root). Tidying an earlier boot's leftover worktree archives its reports the same way. A worktree is
   kept only for unpushed commits, untracked source files or uncommitted edits to tracked
   files, and the output names them.
 - **`env.sh down`** removes the team's images and build cache after the repo's `down` (see below).

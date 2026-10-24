@@ -182,14 +182,7 @@ is_git=false; git -C "$repo" rev-parse --git-dir >/dev/null 2>&1 && is_git=true
 # through the repo's own .git/info/exclude, added once; .gitignore is never touched, nor are the user's .spec/ and
 # .plan/.
 plan_file="$repo/.fleet/plan/$team.md"
-if $is_git; then
-  gx="$(git -C "$repo" rev-parse --git-common-dir 2>/dev/null)" || gx=""
-  case "$gx" in /*) ;; "") ;; *) gx="$repo/$gx" ;; esac
-  if [ -n "$gx" ] && ! grep -qxF '.fleet/' "$gx/info/exclude" 2>/dev/null; then
-    { mkdir -p "$gx/info" && { [ ! -s "$gx/info/exclude" ] || [ -z "$(tail -c 1 "$gx/info/exclude")" ] || echo; } >>"$gx/info/exclude" &&
-      echo '.fleet/' >>"$gx/info/exclude"; } || warn "could not add .fleet/ to $gx/info/exclude"
-  fi
-fi
+! $is_git || git_exclude "$repo" '.fleet/'
 mkdir -p "$(dirname "$plan_file")" 2>/dev/null || warn "could not create $(dirname "$plan_file")"
 
 . "$FLEET_SCRIPTS/agent-lib.sh" # render, claude_args, start_agent (needs team, task, repo, registry, tool_allow)

@@ -175,6 +175,18 @@ docker_reclaimable_gb() {
     END { printf "%d\n", t }'
 }
 
+# git_exclude <repo> <line>: add one line (a path pattern) to the repo's own .git/info/exclude, in the common git dir
+# so its worktrees share it, once. Never .gitignore. Not a git repo: nothing. A failure warns. Boot keeps .fleet/ out
+# of git with it, retire its report archive.
+git_exclude() {
+  local gx
+  gx="$(git -C "$1" rev-parse --git-common-dir 2>/dev/null)" || return 0
+  case "$gx" in /*) ;; *) gx="$1/$gx" ;; esac
+  ! grep -qxF "$2" "$gx/info/exclude" 2>/dev/null || return 0
+  { mkdir -p "$gx/info" && { [ ! -s "$gx/info/exclude" ] || [ -z "$(tail -c 1 "$gx/info/exclude")" ] || echo; } >>"$gx/info/exclude" &&
+    printf '%s\n' "$2" >>"$gx/info/exclude"; } || warn "could not add $2 to $gx/info/exclude"
+}
+
 # config_list <key>: a TOML array of strings from config.toml as a JSON array, default [].
 # The array may span lines (key = [ "a", "b" ]). Used for tracker_allow and forge_allow,
 # which keep tool-specific permissions (Linear/Jira, GitHub/GitLab, ...) out of templates.

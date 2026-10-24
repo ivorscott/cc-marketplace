@@ -95,11 +95,13 @@ keep_why() {
 }
 
 # archive_reports <worktree> <name> <repo>: copy C_REPORTS to <archive>/<team>-<role>/ and verify each copy. The
-# archive is the team repo's reports/fleet-archive ($FLEET_ARCHIVE_DIR overrides it).
+# archive is the team repo's reports/fleet-archive ($FLEET_ARCHIVE_DIR overrides it), kept out of that repo's git
+# through its .git/info/exclude, so a `git add -A` in the main checkout never commits fleet reports.
 archive_reports() {
   local dest="${FLEET_ARCHIVE_DIR:-${3:-$PWD}/reports/fleet-archive}/${2//\//-}" f
   ARCHIVE_DIR="$dest"
   [ -n "$C_REPORTS" ] || return 0
+  [ -n "${FLEET_ARCHIVE_DIR:-}" ] || git_exclude "${3:-$PWD}" 'reports/fleet-archive/'
   while IFS= read -r f; do
     mkdir -p "$dest/$(dirname "$f")" && cp -p "$1/$f" "$dest/$f" && cmp -s "$1/$f" "$dest/$f" || return 1
   done <<<"$C_REPORTS"

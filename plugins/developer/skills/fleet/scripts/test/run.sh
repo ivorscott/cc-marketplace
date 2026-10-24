@@ -3936,6 +3936,10 @@ eq "dev408-R1 retire: tidying a leftover worktree archives its untracked report 
   "$rc:$([ -d "$W8/tester" ] && echo kept || echo removed):$(cat "$R8/reports/fleet-archive/build-lb-tester/DEV-8-tester.md" 2>/dev/null)" "0:removed:the report"
 eq "dev408-R1 retire: and its line says where" "$(printf '%s\n' "$out8b" | head -n 1)" \
   "Retired build-lb (Abandoned): PRs none. Archived to $(cd "$R8" && pwd -P)/reports/fleet-archive."
+# R9: that archive sits in the team repo's main checkout; a `git add -A` there must not pick it up.
+git -C "$R8" add -A; eq "dev408-R9 retire: the archive in the team repo stays out of git (its .git/info/exclude, once; no .gitignore)" \
+  "$(git -C "$R8" diff --cached --name-only | grep -c fleet-archive || true):$(grep -cxF 'reports/fleet-archive/' "$R8/.git/info/exclude"):$([ -e "$R8/.gitignore" ] && echo gitignore || echo none)" "0:1:none"
+git -C "$R8" reset -q
 
 # -- dev408-9: retire moves the team's issue on Linear (writes allowed, once per issue) and tidies the disk
 r9team() { # r9team <team> <issue> [PR number]: a lead and a builder on the issue, the builder with the PR
