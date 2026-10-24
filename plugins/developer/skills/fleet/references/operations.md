@@ -202,9 +202,10 @@ Orchestrator's row, so it survives a compaction and `registry.sh orchestrator he
 target). Answer by picking and booting (SKILL.md route A, step 0, noting the pick); when the only blocker is a nearly
 ready PR, boot plan-first; when nothing is bootable, reply "Nothing bootable" from its template.
 
-A team frees its own slot once it is signed off: on `pr_ready`, when every agent of the team is Done or Idle, tick runs
-`park.sh <team> --reason signed-off`. `park.sh` refuses work that is not pushed (tick warns once and the team keeps
-its slot), and an agent still working means no park. When its PR merges, `pr_merged` says to unpark it and move it
+A team frees its own slot once it is signed off: on any tick where its PR is ready and every agent of the team is Done
+or Idle (on `pr_ready`'s tick or a later one), tick runs `park.sh <team> --reason signed-off`. `park.sh` refuses work
+that is not pushed (tick warns once per PR head, tries again on later ticks, and the team keeps its slot until one
+succeeds); an untracked file under `reports/` does not count. An agent still working means no park yet. When its PR merges, `pr_merged` says to unpark it and move it
 on, or retire it; when it conflicts after a merge, tick unparks it and tells its lead (`pr_conflicting`).
 
 ## Sandbox

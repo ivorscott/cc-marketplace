@@ -3839,6 +3839,22 @@ pk3="$(FLEET_GH="$QD/gh-shim" "$SCRIPTS/tick.sh" 2>"$T/pk3.err")"
 eq "dev408-2 park: on pr_ready, tick parks a signed-off team whose tester's report is untracked under reports/, and the slot frees" \
   "$(tstat s63):$("$REG" get s63/lead | jq -r .parked_reason):$(grep -c 'could not park' "$T/pk3.err"):$(printf '%s' "$pk3" | jq -r '[.[] | select(.type == "slot_free") | .detail] | join(",")')" \
   "Done,Parked:signed-off:0:0 live < target 1"
+# R5: the park is tried on every tick while the team is signed off and idle, not only on pr_ready's tick.
+qfresh r5park
+"$REG" add '{"name":"orchestrator","team":"orchestrator","tier":"Orchestrator","status":"Working","herdr_ref":"o5","pane":"po5"}' >/dev/null; "$REG" set orchestrator target_teams=1 >/dev/null
+qpr app-api 64 fleet/dev-64 main 2026-10-18T10:00:00Z '["e.go"]' x; qteam s64 app-api 64 DEV-64 aaaaaaa64
+"$REG" add '{"name":"s64/lead","team":"s64","tier":"Lead","status":"Working","herdr_ref":"s64-lead","pane":"ps64"}' >/dev/null
+echo working >"$AS/s64-lead"; r5a="$(FLEET_GH="$QD/gh-shim" "$SCRIPTS/tick.sh" 2>/dev/null)"; r5st="$(tstat s64 | grep -c Parked)"
+echo idle >"$AS/s64-lead"; "$REG" set s64/lead status=Idle >/dev/null; r5b="$(FLEET_GH="$QD/gh-shim" "$SCRIPTS/tick.sh" 2>/dev/null)"
+eq "dev408-R5 park: a lead still Working on pr_ready's tick does not keep the slot: a later tick parks the signed-off team and the slot frees" \
+  "$(evc "$r5a" pr_ready):$r5st:$(evc "$r5a" slot_free):$(evc "$r5b" pr_ready):$(tstat s64):$("$REG" get s64/lead | jq -r .parked_reason):$(printf '%s' "$r5b" | jq -r '[.[] | select(.type == "slot_free") | .detail] | join(",")')" \
+  "1:0:0:0:Done,Parked:signed-off:0 live < target 1"
+qpr app-api 65 fleet/dev-65 main 2026-10-18T10:00:00Z '["f.go"]' x; qteam s65 app-api 65 DEV-65 aaaaaaa65; pkwt "$QD/wt65"; echo wip >"$QD/wt65/wip.go"
+"$REG" add '{"name":"s65/lead","team":"s65","tier":"Lead","status":"Idle","herdr_ref":"s65-lead","pane":"ps65"}' >/dev/null; "$REG" set s65/builder worktree="$QD/wt65" >/dev/null
+for i in 1 2; do FLEET_GH="$QD/gh-shim" "$SCRIPTS/tick.sh" >/dev/null 2>>"$T/r5.err"; done; r5c="$(tstat s65)"
+rm -f "$QD/wt65/wip.go"; FLEET_GH="$QD/gh-shim" "$SCRIPTS/tick.sh" >/dev/null 2>>"$T/r5.err"
+eq "dev408-R5 park: a refused park warns once per head over two ticks, and parks on the tick after the work is clean" \
+  "$(grep -c 's65 is signed off but could not park' "$T/r5.err"):$r5c:$(tstat s65)" "1:Done,Idle:Done,Parked"
 qfresh picked; mkdir -p "$QD/p2"
 FLEET_FORCE=1 bt --issue DEV-70 --issue-url https://linear.app/acme/issue/DEV-70/x build pk "$QD/p2" task
 "$REG" note build-pk/lead picked "Todo by priority; DEV-70 is the oldest P1" >/dev/null

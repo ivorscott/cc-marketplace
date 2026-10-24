@@ -113,8 +113,8 @@ reply, so answer every wake with `$F/fleet status`, relayed verbatim (the notice
 no schedule, run `$F/tick.sh` per tick (`--team T`), then `$F/fleet status`. While the loop runs, never open a
 question box (AskUserQuestion): the wakes queue behind it. Ask in plain text and end the turn. Then act on each:
 
-- `pr_ready`: send ONE `PushNotification` with the full PR URL. A team whose agents were all Done or Idle was parked
-  (signed off), so its slot is free while the PR waits for its merge.
+- `pr_ready`: send ONE `PushNotification` with the full PR URL. A team whose agents are all Done or Idle is parked
+  (signed off), then or on a later tick, so its slot is free while the PR waits for its merge.
 - `slot_free`: fewer teams run than the user's target (`$F/registry.sh set orchestrator target_teams=N` when the user
   asks to keep N teams running). Pick and boot (A, step 0) over Todo, Backlog and unclaimed or lapsed In Progress
   across the repos in `repos`. When the only blocker is an open PR that is nearly ready (signed off, or CI green),

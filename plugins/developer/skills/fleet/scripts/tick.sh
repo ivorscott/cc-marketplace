@@ -32,7 +32,8 @@
 #                   no_pr_ci in config.toml), the tester's signed-off SHA is the PR head, and the
 #                   body has no "DO NOT MERGE", "merge order", "before/after", "merge after/before" or "stacked on",
 #                   and the PR is not a draft (a stacked child must not go ready before its parent). Once per (PR, head SHA).
-#                   A team whose every agent is then Done or Idle is parked (park.sh --reason signed-off) to free its slot.
+#                   While a team's PR is ready and every agent of the team is Done or Idle, on that tick or a later one,
+#                   it is parked (park.sh --reason signed-off) to free its slot.
 #   pr_merged       the row's PR was merged; the Orchestrator answers with next.sh. Once per PR. A team marked
 #                   park --after-merge (or by focus) is parked by tick instead; the event says `parks`.
 #   pr_conflicting  after this tick's merge, a PR that was ready on the tick before is CONFLICTING: it leaves the merge
@@ -437,6 +438,20 @@ if [ "$(printf '%s' "$prs" | jq length)" != 0 ]; then
           warn "could not tell $pteam/lead that $url has a head the tester has not signed"
         st_upd --arg k "$url@$phead" '$st + {head_nudged: ((($st.head_nudged // []) + [$k]) | unique)}'
       fi
+      # Signed off (ready) and every agent Done or Idle: the team parks, so its slot frees while the PR waits for its
+      # merge (a Parked team does not count). Tried on every tick while that holds, not only on pr_ready's tick (the
+      # lead is often still Working then). park.sh refuses work that is not pushed: one warning per (PR, head), and the
+      # team keeps its slot until a later tick parks it. An agent still working means no park.
+      if [ "$pready" = true ] && [ "$pst" = OPEN ] && [ "$(printf '%s' "$p" | jq -r .parked)" != true ] &&
+        [ "$(printf '%s' "$all_rows" | jq --arg t "$pteam" '[.[] | select(type == "object" and .team == $t and .status != "Retired"
+          and .tier != "Orchestrator") | .status] | length > 0 and all(. == "Done" or . == "Idle")')" = true ]; then
+        if ! "$FLEET_SCRIPTS/park.sh" "$pteam" --reason signed-off >/dev/null 2>"$FLEET_STATE_DIR/park.err" &&
+          [ "$(jq --arg k "$url@$phead" '(.park_refused // []) | index($k) == null' "$STATE_FILE")" = true ]; then
+          warn "$pteam is signed off but could not park, so it keeps its slot: $(grep -v '^fleet: warning:' "$FLEET_STATE_DIR/park.err" | head -n 1 | sed 's/^fleet: //')"
+          st_upd --arg k "$url@$phead" '$st + {park_refused: ((($st.park_refused // []) + [$k]) | unique)}'
+        fi
+        rm -f "$FLEET_STATE_DIR/park.err"
+      fi
       [ "$ev" != "null" ] || continue
       add_events "[$ev]"
       case "$(printf '%s' "$ev" | jq -r .type)" in
@@ -450,17 +465,7 @@ if [ "$(printf '%s' "$prs" | jq length)" != 0 ]; then
             rm -f "$FLEET_STATE_DIR/park.err"
           fi ;;
         pr_ready)
-          st_upd --argjson e "$ev" '$st + {pr_ready_emitted: ((($st.pr_ready_emitted // []) + [$e.url + "@" + $e.sha]) | unique)}'
-          # Signed off and every agent Done or Idle: the team parks, so its slot frees while the PR waits for its merge
-          # (a Parked team does not count). park.sh refuses work that is not pushed: one warning (pr_ready comes once
-          # per head), and the team keeps its slot. An agent still working means no park.
-          pt="$(printf '%s' "$ev" | jq -r .team)"
-          if [ "$(printf '%s' "$p" | jq -r .parked)" != true ] && [ "$(printf '%s' "$all_rows" | jq --arg t "$pt" '[.[] | select(type == "object"
-              and .team == $t and .status != "Retired" and .tier != "Orchestrator") | .status] | length > 0 and all(. == "Done" or . == "Idle")')" = true ]; then
-            "$FLEET_SCRIPTS/park.sh" "$pt" --reason signed-off >/dev/null 2>"$FLEET_STATE_DIR/park.err" ||
-              warn "$pt is signed off but could not park, so it keeps its slot: $(grep -v '^fleet: warning:' "$FLEET_STATE_DIR/park.err" | head -n 1 | sed 's/^fleet: //')"
-            rm -f "$FLEET_STATE_DIR/park.err"
-          fi ;;
+          st_upd --argjson e "$ev" '$st + {pr_ready_emitted: ((($st.pr_ready_emitted // []) + [$e.url + "@" + $e.sha]) | unique)}' ;;
       esac
     done < <(printf '%s' "$prs" | jq -c '.[]')
     rm -f "$ghtmp"; ghtmp=""
@@ -646,6 +651,7 @@ st_upd --argjson prs "$live_prs" --argjson esc "$live_esc" --argjson cl "$live_c
   $st
   + (if .pr_ready_emitted then {pr_ready_emitted: [.pr_ready_emitted[] | select(split("@")[0] as $u | $prs | index($u))]} else {} end)
   + (if .head_nudged then {head_nudged: [.head_nudged[] | select(split("@")[0] as $u | $prs | index($u))]} else {} end)
+  + (if .park_refused then {park_refused: [.park_refused[] | select(split("@")[0] as $u | $prs | index($u))]} else {} end)
   + (if .pr_merged_emitted then {pr_merged_emitted: [.pr_merged_emitted[] | select(. as $u | $prs | index($u))]} else {} end)
   + (if .pr_opened_emitted then {pr_opened_emitted: [.pr_opened_emitted[] | select(. as $u | $prs | index($u))]} else {} end)
   + (if .ready_prev then {ready_prev: [.ready_prev[] | select(. as $u | $prs | index($u))]} else {} end)
