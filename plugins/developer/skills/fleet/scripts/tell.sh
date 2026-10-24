@@ -89,10 +89,13 @@ verdict() { # verdict <delivered true|false> <reason> <exit code>
           "$FLEET_SCRIPTS/registry.sh" set "$target" brief_failed_at= brief_failed_issue= brief_failed_line= brief_resent= \
             status="$([ "$(printf '%s' "$brow" | jq -r '.tier // ""')" = Lead ] && echo Working || echo Idle)" >/dev/null 2>&1 || true
         else "$FLEET_SCRIPTS/registry.sh" set "$target" brief_failed_at= brief_failed_issue= brief_failed_line= >/dev/null 2>&1 || true; fi
-      # brief_failed_line: the transcript's length at the send, so a pointer that shows up later (status.sh) is this
-      # send's and not an earlier delivery of the same brief.
-      else "$FLEET_SCRIPTS/registry.sh" set "$target" brief_failed_at="$(now)" brief_failed_issue="$(printf '%s' "$brow" | jq -r '.issue // ""')" \
-        brief_failed_line="${lines0:-0}" >/dev/null 2>&1 || true; fi ;;
+      else
+        # brief_failed_line: the transcript's length at the send (now, when it failed before sending), so a pointer
+        # that shows up later (status.sh) is this send's and not an earlier delivery of the same brief.
+        bl="${lines0:-}"; [ -n "$bl" ] || { bl=0; [ ! -r "$transcript" ] || bl="$(wc -l <"$transcript" | tr -d ' ')"; }
+        "$FLEET_SCRIPTS/registry.sh" set "$target" brief_failed_at="$(now)" brief_failed_issue="$(printf '%s' "$brow" | jq -r '.issue // ""')" \
+          brief_failed_line="$bl" >/dev/null 2>&1 || true
+      fi ;;
     esac
   fi
   if [ "$1" = true ]; then
