@@ -6,7 +6,8 @@
 #
 # Wake: every event someone must act on reaches the Orchestrator: pr_ready, pr_merged, any escalation (P0/P1
 # for Ivor, P2 the Orchestrator answers itself), dead, stalled (after the nudge), claim_takeover, needs_input,
-# brief_failed, weekly_summary (tick writes the metrics report), and pr_opened when the lead could not be told
+# brief_failed, stale_version (a decision for the user), weekly_summary (tick writes the metrics report), and
+# pr_opened when the lead could not be told
 # (WAKE_TYPES in common.sh; tick renders each one's reply into notices.log for `fleet status`). disk and
 # repo_without_team go to notify/alert_cmd instead. Nothing is reported to no one.
 # A quiet tick prints nothing. One wake per tick, all its lines in one message, through tell.sh to the target:

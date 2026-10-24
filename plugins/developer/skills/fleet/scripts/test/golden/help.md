@@ -13,6 +13,7 @@
 | `next` | Move a team to its next issue after its PR merged | `fleet next build-api DEV-124` |
 | `park` | Free a team's slot and keep its work | `fleet park build-api` |
 | `prime` | Pick the fleet up again after a compaction or in a new session | `fleet prime` |
+| `redact-check` | Count the private terms in what a branch adds (counts only) | `fleet redact-check --range origin/main..HEAD` |
 | `resolve` | Close an escalation once its answer reached the agent | `fleet resolve build-api/lead 20261024T090000Z-1 --note "use pg"` |
 | `respawn` | Start a dead agent again from its row | `fleet respawn build-api/builder` |
 | `retire` | Shut a team (or one agent) down safely | `fleet retire build-api --outcome Shipped` |

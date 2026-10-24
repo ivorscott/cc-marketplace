@@ -19,8 +19,9 @@
 #   needs_input     an agent stopped by an API error (expired login); status_detail on its row says which
 #   brief_failed    a brief never arrived (the row stays Failed): tick re-sent its pointer once and that did
 #                   not arrive either. Once per (agent, brief file)
-#   stale_version   an agent runs an older plugin version than the one installed (its row's plugin_version);
-#                   it is restarted at the next `next.sh`, never mid-task. Once per (agent, installed version)
+#   stale_version   a team has an agent on an older plugin version than the one installed (its row's
+#                   plugin_version); switching it at the next `next.sh` waits for the user's go (a decision).
+#                   Once per (team, installed version)
 #   weekly_summary  the ISO week changed (its notice runs metrics.sh, which writes reports/fleet-metrics-<date>.md);
 #                   the first tick ever only records the week
 #   escalation      an open escalation not yet reported (keyed by agent name and escalation id)
@@ -256,18 +257,23 @@ else
 fi
 
 # --- stale plugin version ------------------------------------------------------------------------------
-# A row booted (or restarted) by an older plugin than the one installed now. The fix is a restart at the next
-# `next.sh` (never mid-task), so this only reports it, once per (agent, installed version).
+# A team with a row booted (or restarted) by an older plugin than the one installed now. Its restart at the next
+# `next.sh` (never mid-task) would switch it, and that waits for the user's go (next.sh and respawn.sh --restart
+# refuse with exit 5 until FLEET_VERSION_OK=1), so this asks, once per (team, installed version), naming the
+# team's first stale row, the lead first.
 iv="$(installed_version)"
 if [ -n "$iv" ]; then
+  vseen=" "
   while IFS=$'\t' read -r vname vteam pv; do
     [ -n "$vname" ] && [ -n "$pv" ] || continue
     version_gt "$iv" "$pv" || continue
-    if [ "$(jq --arg k "$vname|$iv" '(.stale_emitted // []) | index($k) == null' "$STATE_FILE")" = true ]; then
-      add_events "$(jq -cn --arg n "$vname" --arg t "$vteam" --arg p "$pv" --arg i "$iv" '[{type: "stale_version", team: $t, name: $n, detail: ("runs " + $p + ", installed " + $i + "; restarted at the next next.sh")}]')"
-      st_upd --arg k "$vname|$iv" '$st + {stale_emitted: ((($st.stale_emitted // []) + [$k]) | unique)}'
+    case "$vseen" in *" $vteam "*) continue ;; esac
+    vseen="$vseen$vteam "
+    if [ "$(jq --arg k "$vteam|$iv" '(.stale_emitted // []) | index($k) == null' "$STATE_FILE")" = true ]; then
+      add_events "$(jq -cn --arg n "$vname" --arg t "$vteam" --arg p "$pv" --arg i "$iv" '[{type: "stale_version", team: $t, name: $n, from: $p, to: $i, detail: ("runs " + $p + ", installed " + $i + "; waits for the user'"'"'s go")}]')"
+      st_upd --arg k "$vteam|$iv" '$st + {stale_emitted: ((($st.stale_emitted // []) + [$k]) | unique)}'
     fi
-  done < <("$registry" list --live ${team:+--team "$team"} | jq -r '.[] | select(.tier != "Orchestrator") | [.name, .team, (.plugin_version // "")] | @tsv')
+  done < <("$registry" list --live ${team:+--team "$team"} | jq -r '[.[] | select(.tier != "Orchestrator")] | sort_by(.team, (if .tier == "Lead" then 0 else 1 end), .name)[] | [.name, .team, (.plugin_version // "")] | @tsv')
 fi
 
 # --- escalations ------------------------------------------------------------------------------
@@ -451,7 +457,8 @@ live_prs="$("$registry" list | jq -c '[.[] | select(.status != "Retired") | .pr 
 live_esc="$("$registry" escalations --open | jq -c '[.[] | .name + "|" + .id]')"
 live_claims="$("$registry" list --live | jq -c '[.[] | select((.issue // "") != "") | .team + "|" + .issue]')"
 live_names="$("$registry" list --live | jq -c '[.[] | .name]')"
-st_upd --argjson prs "$live_prs" --argjson esc "$live_esc" --argjson cl "$live_claims" --argjson live_names "$live_names" --argjson now "$now_epoch" --argjson w "$(const_int RESPAWN_WINDOW_HOURS 6)" '
+live_teams="$("$registry" list --live | jq -c '[.[] | .team // empty] | unique')"
+st_upd --argjson prs "$live_prs" --argjson esc "$live_esc" --argjson cl "$live_claims" --argjson live_names "$live_names" --argjson live_teams "$live_teams" --argjson now "$now_epoch" --argjson w "$(const_int RESPAWN_WINDOW_HOURS 6)" '
   def inrecent: map(select(. > $now - $w * 3600));
   $st
   + (if .pr_ready_emitted then {pr_ready_emitted: [.pr_ready_emitted[] | select(split("@")[0] as $u | $prs | index($u))]} else {} end)
@@ -461,7 +468,7 @@ st_upd --argjson prs "$live_prs" --argjson esc "$live_esc" --argjson cl "$live_c
   + (if .conflict_told then {conflict_told: [.conflict_told[] | select(split("@")[0] as $u | $prs | index($u))]} else {} end)
   + (if .escalations_emitted then {escalations_emitted: [.escalations_emitted[] | select(. as $k | $esc | index($k))]} else {} end)
   + (if .takeover_emitted then {takeover_emitted: [.takeover_emitted[] | select(split("|")[0:2] | join("|") as $k | $cl | index($k))]} else {} end)
-  + (if .stale_emitted then {stale_emitted: [.stale_emitted[] | select(split("|")[0] as $n | $live_names | index($n))]} else {} end)
+  + (if .stale_emitted then {stale_emitted: [.stale_emitted[] | select(split("|")[0] as $t | $live_teams | index($t))]} else {} end)
   + (if .brief_failed_emitted then {brief_failed_emitted: [.brief_failed_emitted[] | select(split("|")[0] as $n | $live_names | index($n))]} else {} end)
   + (if .respawns then {respawns: (.respawns | with_entries(.value |= inrecent) | with_entries(select(.value | length > 0)))} else {} end)'
 tick_state_write "$(cat "$STATE_FILE")"

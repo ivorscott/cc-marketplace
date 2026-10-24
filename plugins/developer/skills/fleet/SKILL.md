@@ -97,7 +97,10 @@ status`. Then act on each:
 - `pr_merged`: run `$F/fleet next <team> <next issue> [--brief TEXT] [--issue-url URL]` at a safe point (every agent
   idle); it logs `issue_done`, reassigns the rows and restarts every agent with a fresh brief. A team marked
   `--after-merge` was parked by tick instead (`parks` on the event).
-- `needs_input`, `brief_failed`, `stale_version`: look at the pane; tick already re-sent or will restart them.
+- `needs_input`, `brief_failed`: look at the pane; tick already re-sent them.
+- `stale_version`: a decision for the user (a newer plugin is installed). Relay it and wait. On yes, run that team's
+  `next` with `FLEET_VERSION_OK=1` when it moves; on no, retire the team after its PR merges. Without that yes,
+  `next` and `respawn --restart` refuse with exit 5; never set `FLEET_VERSION_OK=1` on your own.
 - `dead`: tick respawned the agent, or filed a P1 escalation after a second death inside the window.
 - `failed`: a row turned Failed (a restart or a brief that did not arrive); look at it.
 - `stalled`: nudged once and still stalled. `pr_opened`: a builder opened a PR without `done`; tick told the lead.

@@ -230,6 +230,25 @@ qteam() { # qteam <team> <repo> <n> <issue> [signed sha]
   [ -z "${5:-}" ] || "$REG" signoff "$1/tester" "https://github.com/acme/$2/pull/$3" "$5" >/dev/null
 }
 q() { FLEET_GH="$QD/gh-shim" "$SCRIPTS/queue.sh"; }
+# The redact check (DEV-408 item 5): rfix <dir> makes a repo whose branch `feat` adds a line with a term (in another
+# case), `msg` has a term only in its commit message, and `clean` has neither; the terms are zebra-corp and acme-secret.
+rfix() {
+  local d="$1"; git init -q -b main "$d"; git -C "$d" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+  git -C "$d" checkout -q -b feat; printf 'see the Zebra-Corp docs\nplain line\n' >"$d/a.txt"; git -C "$d" add a.txt; git -C "$d" -c user.email=t@t -c user.name=t commit -q -m "add notes"
+  git -C "$d" checkout -q -b msg main; echo ok >"$d/b.txt"; git -C "$d" add b.txt; git -C "$d" -c user.email=t@t -c user.name=t commit -q -m "for acme-secret review"
+  git -C "$d" checkout -q -b clean main; echo ok >"$d/c.txt"; git -C "$d" add c.txt; git -C "$d" -c user.email=t@t -c user.name=t commit -q -m "tidy"
+  git -C "$d" checkout -q main
+}
+# Background tasks (DEV-408 item 6): bgk <file> [stop tool] [input key] [notified] writes a transcript with a background
+# Bash start (kjob1), then how it ended; bgn <file> is transcript_bg_running's count an hour later.
+bgk() {
+  { jq -nc '{type: "assistant", timestamp: "2026-10-24T09:00:00Z", message: {content: [{type: "tool_use", id: "toolu_k", name: "Bash", input: {command: "x", run_in_background: true}}]}}'
+    jq -nc '{type: "user", message: {content: [{type: "tool_result", tool_use_id: "toolu_k", content: "Command running in background with ID: kjob1. Output is being written to: /x"}]}}'
+    [ -z "${2:-}" ] || jq -nc --arg n "$2" --arg k "$3" '{type: "assistant", message: {content: [{type: "tool_use", id: "toolu_s", name: $n, input: {($k): "kjob1"}}]}}'
+    [ -z "${4:-}" ] || jq -nc '{type: "user", message: {content: "<task-notification><task-id>kjob1</task-id><status>completed</status></task-notification>"}}'
+  } >"$1"
+}
+bgn() { FLEET_NOW=2026-10-24T10:00:00Z bash -c '. "$1/common.sh"; transcript_bg_running "$2"' _ "$SCRIPTS" "$1"; }
 qorder() { q | jq -r '[.ready[] | "\(.url | sub(".*/acme/"; "") | sub("/pull/"; "#"))|\(.why)|\(.after)"] | join(" ; ")'; }
 gcfg() { printf '%s\n' "$@" >"$FLEET_CONFIG_DIR/config.toml"; } # gcfg ['key = value'...]: the whole config.toml, nothing else
 gold() { # gold <entry> <reply>
@@ -340,6 +359,15 @@ J
   qfresh smoke; qpr app-api 1 fleet/dev-1-a main 2026-10-20T10:00:00Z '["a.go"]' x; qpr app-api 2 fleet/dev-2-b fleet/dev-1-a 2026-10-19T10:00:00Z '["b.go"]' y
   qteam t1 app-api 1 DEV-1 aaaaaaa1; qteam t2 app-api 2 DEV-2 aaaaaaa2
   eq "smoke: dev408-18 a base-branch dependency orders the parent first" "$(qorder)" "app-api#1|base of #2|— ; app-api#2|needs app-api #1|rebase after #1"
+  # dev408-5: the redact check counts a term, prints no term, and a clean range passes
+  rfix "$SM/rr"; gcfg 'redact_terms = ["zebra-corp", "acme-secret"]'
+  out="$(cd "$SM/rr" && "$SCRIPTS/redact-check.sh" --range main..feat 2>&1)"; rc=$?
+  eq "smoke: dev408-5 redact check: a match exits 1 and names no term" "$rc:$(printf '%s' "$out" | grep -ci 'zebra\|acme')" "1:0"
+  (cd "$SM/rr" && "$SCRIPTS/redact-check.sh" --range main..clean >/dev/null 2>&1); eq "smoke: dev408-5 redact check: a clean range exits 0" "$?" 0
+  gcfg
+  # dev408-6: a background task stopped with TaskStop no longer counts
+  bgk "$SM/k2.jsonl" TaskStop task_id; bgk "$SM/k3.jsonl"
+  eq "smoke: dev408-6 a stopped background task does not count, a running one does" "$(bgn "$SM/k2.jsonl") $(bgn "$SM/k3.jsonl")" "0 1"
   printf '\n%d passed, %d failed\n' "$pass" "$failn"
   [ "$failn" = 0 ]; exit
 fi
@@ -2837,15 +2865,21 @@ eq "version_gt: equal is not newer" "$(. "$SCRIPTS/common.sh"; version_gt 3.10.0
 eq "version_gt: 1.2 < 1.10" "$(. "$SCRIPTS/common.sh"; version_gt 1.2 1.10 && echo y || echo n)" n
 rm -f "$FLEET_STATE_DIR/tick.state.json"
 s1="$(FLEET_INSTALLED_VERSION=99.0.0 "$SCRIPTS/tick.sh" --team build-hb 2>/dev/null)"; s2="$(FLEET_INSTALLED_VERSION=99.0.0 "$SCRIPTS/tick.sh" --team build-hb 2>/dev/null)"
-eq "tick: stale_version for each booted agent, once" "$(evc "$s1" stale_version):$(evc "$s2" stale_version)" "$nb:0"
+eq "tick: dev408-10 one stale_version per team (a decision, not one per agent), once" "$(evc "$s1" stale_version):$(evc "$s2" stale_version)" "1:0"
+eq "tick: dev408-10 it names the lead and both versions, and waits for the user's go" "$(printf '%s' "$s1" | jq -r '.[] | select(.type == "stale_version") | [.name, .to, (.detail | test("waits for the user.s go"))] | map(tostring) | join(" ")')" "build-hb/lead 99.0.0 true"
 eq "tick: no stale_version when the installed version is the same" "$(rm -f "$FLEET_STATE_DIR/tick.state.json"; evc "$(FLEET_INSTALLED_VERSION="$(jq -r .version "$SCRIPTS/../../../.claude-plugin/plugin.json")" "$SCRIPTS/tick.sh" 2>/dev/null)" stale_version)" 0
 
 # -- next: restart every agent with its full brief (a file); no /clear, no /compact
 rm -f "${AS:?}"/*; : >"$HERDR_LOG"; : >"$FLEET_STATE_DIR/events.jsonl"
 "$REG" set build-hb/lead outcome=Shipped >/dev/null # E: issue_done is per row with an outcome, summary or lessons
 before_t="$("$REG" list --team build-hb | jq -c '[.[] | {(.name): .transcript}] | add')"
-out="$("$SCRIPTS/next.sh" build-hb DEV-8 --brief "Start on DEV-8 now" --issue-url https://tracker.example/issue/DEV-8 2>"$T/next.err")"; rc=$?
-eq "next: exits 0" "$rc" 0
+# dev408-10: a plugin installed since the team started would switch it on restart: next waits for the user's go
+PV_="$("$REG" get build-hb/lead | jq -r '.plugin_version // ""')"
+FLEET_INSTALLED_VERSION=99.0.0 "$SCRIPTS/next.sh" build-hb DEV-8 >/dev/null 2>"$T/next.err"; rc=$?
+eq "next: dev408-10 a newer installed plugin refuses with exit 5, nothing changed" "$rc:$("$REG" list --team build-hb | jq -c '[.[].issue] | unique'):$(grep -c '^agent prompt' "$HERDR_LOG" || true)" '5:["DEV-7"]:0'
+check "next: dev408-10 and it names both versions and the way on" grep -q "build-hb runs plugin $PV_ and 99.0.0 is installed.*run it again with FLEET_VERSION_OK=1" "$T/next.err"
+out="$(FLEET_INSTALLED_VERSION=99.0.0 FLEET_VERSION_OK=1 "$SCRIPTS/next.sh" build-hb DEV-8 --brief "Start on DEV-8 now" --issue-url https://tracker.example/issue/DEV-8 2>"$T/next.err")"; rc=$?
+eq "next: exits 0 (dev408-10: with FLEET_VERSION_OK=1 the newer plugin does not stop it)" "$rc" 0
 eq "next: every agent got /exit once" "$(grep -c '^agent prompt build-hb-[a-z]* /exit' "$HERDR_LOG")" "$nb"
 eq "next: and a fresh start with a new session id" "$(grep '^agent start build-hb-' "$HERDR_LOG" | grep -c -- '--session-id')" "$nb"
 eq "next: every transcript path changed (the old one is kept in transcripts)" "$("$REG" list --team build-hb | jq --argjson b "$before_t" '[.[] | $b[.name] as $o | select(.transcript != $o and ((.transcripts // []) | index($o) != null))] | length')" "$nb"
@@ -2857,13 +2891,19 @@ eq "next: the lead is Working, the workers Idle, all on DEV-8" "$("$REG" list --
 eq "next: issue_done is logged (for DEV-7) before next" "$(jq -rs '[.[] | select(.type == "issue_done" or .type == "next") | .type + ":" + (.issue // "")] | join(",")' "$FLEET_STATE_DIR/events.jsonl")" "issue_done:DEV-7,next:DEV-8"
 eq "next: restarted is logged for each agent" "$(jq -s '[.[] | select(.type == "restarted")] | length' "$FLEET_STATE_DIR/events.jsonl")" "$nb"
 # runs twice: right after, the agents are busy with their briefs, so nothing changes
-: >"$HERDR_LOG"; "$SCRIPTS/next.sh" build-hb DEV-9 >/dev/null 2>"$T/next.err"; rc=$?
-eq "next twice: not at a safe point (agents mid-turn): exit 1, nothing changed" "$rc:$("$REG" list --team build-hb | jq -c '[.[].issue] | unique'):$(grep -c '^agent prompt' "$HERDR_LOG" || true)" '1:["DEV-8"]:0'
+: >"$HERDR_LOG"; FLEET_INSTALLED_VERSION="$("$REG" get build-hb/lead | jq -r '.plugin_version // ""')" "$SCRIPTS/next.sh" build-hb DEV-9 >/dev/null 2>"$T/next.err"; rc=$?
+eq "next twice: not at a safe point (agents mid-turn): exit 1, nothing changed (dev408-10: an equal installed version does not refuse)" "$rc:$("$REG" list --team build-hb | jq -c '[.[].issue] | unique'):$(grep -c '^agent prompt' "$HERDR_LOG" || true)" '1:["DEV-8"]:0'
 check "next twice: it says who is busy" grep -q 'is not at a safe point' "$T/next.err"
 rm -f "${AS:?}"/*; bgtr="$("$REG" get build-hb/builder | jq -r .transcript)"; cp "$bgtr" "$T/bgtr.keep" 2>/dev/null || : >"$T/bgtr.keep"
 bgfix "$bgtr" "${FLEET_NOW:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}" Bash "Command running in background with ID: nxjob1. Output is being written to: /x"
 "$SCRIPTS/next.sh" build-hb DEV-9 >/dev/null 2>"$T/next.err"; rc=$?
 eq "next: a background task (in the transcript) is not a safe point" "$rc:$(grep -c 'build-hb/builder (background task)' "$T/next.err")" "1:1"
+# dev408-6: the same task stopped with KillShell no longer blocks next (the busy tester does, so nothing moves)
+jq -nc '{type: "assistant", message: {content: [{type: "tool_use", id: "toolu_k", name: "KillShell", input: {shell_id: "nxjob1"}}]}}' >>"$bgtr"
+echo working >"$AS/build-hb-tester"
+"$SCRIPTS/next.sh" build-hb DEV-9 >/dev/null 2>"$T/next.err"; rc=$?
+eq "next: dev408-6 a shell killed with KillShell is not a background task" "$rc:$(grep -c '(background task)' "$T/next.err"):$(grep -c 'build-hb/tester (working)' "$T/next.err")" "1:0:1"
+rm -f "$AS/build-hb-tester"
 cp "$T/bgtr.keep" "$bgtr"
 rm -f "${AS:?}"/*
 mkdir "$FLEET_STATE_DIR/next.build-hb.lock"
@@ -3398,7 +3438,7 @@ bad=""; while IFS= read -r row; do
 done < <(sed -n '3,$p' "$D4/help.out")
 eq "dev408-16 commands: every row has an example that runs that command" "$bad" ""
 eq "dev408-16 commands: no internal script is listed" "$(printf '%s\n' "$cmds" | grep -cxE 'common|agent-lib|loop-tick|registry|tick|linear|machine-id|chat|fleet')" 0
-eq "dev408-16 commands: the commands (scripts with a Command line, the aliases, help)" "$(printf '%s\n' "$cmds" | paste -sd' ' -)" "boot claim debrief env escalate escalations focus help holder metrics next park prime resolve respawn retire sandbox schedule status takeover tell unpark"
+eq "dev408-16 commands: the commands (scripts with a Command line, the aliases, help)" "$(printf '%s\n' "$cmds" | paste -sd' ' -)" "boot claim debrief env escalate escalations focus help holder metrics next park prime redact-check resolve respawn retire sandbox schedule status takeover tell unpark"
 bad=""; for f in "$SCRIPTS"/*.sh; do
   grep -q '^# Command: ' "$f" || continue; n="$(basename "$f" .sh)"
   awk 'NR == 1 { next } !/^#/ { exit } { print }' "$f" | grep -qE "^#   $n\.sh( |$)" || bad="$bad $n:usage"
@@ -3481,6 +3521,7 @@ for w in $WAKES; do
     weekly_summary) ev='{"type":"weekly_summary","team":"","name":"","week":"2026-W43"}' ;;
     escalation) ev='{"type":"escalation","team":"build-api","name":"build-api/lead","id":"20261024T080000Z-1","severity":"P1","message":"which database?","options":["postgres","sqlite"]}' ;;
     pr_conflicting) ev='{"type":"pr_conflicting","team":"build-api","name":"build-api/lead","url":"https://github.com/acme/app-api/pull/214","merged":"https://github.com/acme/app-web/pull/121","lead_told":true}' ;;
+    stale_version) ev='{"type":"stale_version","team":"build-api","name":"build-api/lead","from":"4.0.0","to":"4.1.0","detail":"runs 4.0.0, installed 4.1.0; waits for the go"}' ;;
     *) ev="$(jq -cn --arg t "$w" '{type: $t, team: "build-api", name: "build-api/builder"}')" ;;
   esac
   gold "wake-$w" "$(bash -c '. "$1/common.sh"; render_notice "$2"' _ "$SCRIPTS" "$ev")"
@@ -3524,7 +3565,7 @@ for w in $WAKES; do grep -qx "### wake $w" "$OUT_MD" || miss="$miss wake-$w:head
 for s in "team table" "merge queue" error decision disk alert; do grep -qx "### $s" "$OUT_MD" || miss="$miss $s:heading"; done
 eq "dev408-17 output: every command and wake has an entry in output.md and a golden file" "$miss" ""
 eq "dev408-17 output: no golden file without an entry" "$(for f in "$GD"/*.md; do b="$(basename "$f" .md)"; case "$b" in wake-*) h="### wake ${b#wake-}" ;; *) h="### ${b//-/ }" ;; esac
-  grep -qx "$h" "$OUT_MD" || grep -qx "### ${b%%-*}" "$OUT_MD" || echo "$b"; done)" ""
+  grep -qx "$h" "$OUT_MD" || grep -qx "### $b" "$OUT_MD" || grep -qx "### ${b%%-*}" "$OUT_MD" || echo "$b"; done)" ""
 check "dev408-17 output: SKILL.md tells the Orchestrator to relay output verbatim" grep -q 'verbatim' "$SCRIPTS/../SKILL.md"
 
 # -- dev408-18: the merge queue (queue.sh), rebuilt from GitHub and the registry on every call
@@ -3608,6 +3649,39 @@ eq "dev408-18 queue: its parked team is unparked first" "$("$REG" list --team tb
 eq "dev408-18 queue: and its lead is told exactly once to catch up and re-sign" "$(grep -c '^agent prompt tb-lead PR https://github.com/acme/app-api/pull/51 conflicts after https://github.com/acme/app-api/pull/50 merged' "$HERDR_LOG"):$(printf '%s' "$t2" | jq -r '.[] | select(.type == "pr_conflicting") | .lead_told')" "1:true"
 eq "dev408-18 queue: the conflict is in the event log for the morning report" "$(jq -r 'select(.type == "pr_conflicting") | .pr' "$FLEET_STATE_DIR/events.jsonl")" "https://github.com/acme/app-api/pull/51"
 eq "dev408-18 queue: and the PR has left the queue" "$(nr 51)" "conflicting"
+
+# -- dev408-5: the redact check (counts only; exit 0 clean, 1 a match, 2 cannot run)
+RR="$T/r408"; rfix "$RR"; gcfg 'redact_terms = ["zebra-corp", "acme-secret"]'
+rc_out() { (cd "$RR" && "$SCRIPTS/redact-check.sh" "$@" >"$T/rc.out" 2>"$T/rc.err"); echo $?; }
+eq "dev408-5 redact check: a term in an added line, in another case, is a match (exit 1)" "$(rc_out --range main..feat):$(cat "$T/rc.out")" "1:Redact check main..feat: 1 matches."
+eq "dev408-5 redact check: the output never holds a term, a line or a file name" "$(cat "$T/rc.out" "$T/rc.err" | grep -ciE 'zebra|acme|a\.txt|notes')" 0
+check "dev408-5 redact check: stderr says how many lines and what to do" grep -qx 'fleet: 1 lines in main..feat hold a private term. Remove them before you push.' "$T/rc.err"
+eq "dev408-5 redact check: a term in a commit message counts" "$(rc_out --range main..msg):$(cat "$T/rc.out")" "1:Redact check main..msg: 1 matches."
+eq "dev408-5 redact check: a clean range exits 0" "$(rc_out --range main..clean):$(cat "$T/rc.out")" "0:Redact check main..clean: 0 matches."
+eq "dev408-5 redact check: a range git cannot read exits 2" "$(rc_out --range main..nosuch)" 2
+eq "dev408-5 redact check: no range exits 2" "$(rc_out)" 2
+gcfg; eq "dev408-5 redact check: no terms set exits 2, never clean" "$(rc_out --range main..clean):$(grep -c 'no redact_terms are set' "$T/rc.err")" "2:1"
+gcfg 'redact_terms = ["zebra-corp", "acme-secret"]'
+gold redact-check "$(cd "$RR" && "$FL" redact-check --range main..feat 2>/dev/null)"
+check "dev408-5 redact check: every agent may run it (the base allow list)" bash -c "grep -l '\"Bash($SCRIPTS/redact-check.sh:\*)\"' '$T/gold/state/settings/'*.json >/dev/null"
+check "dev408-5 redact check: the house rule names the script, and exit 2 is UNVERIFIED" bash -c "grep -q 'redact-check.sh --range <base>..HEAD' '$SCRIPTS/../rules/house.md' && grep -q 'Exit 2 means the check could not run: report it UNVERIFIED' '$SCRIPTS/../rules/house.md'"
+gcfg
+
+# -- dev408-6: a background task stopped with KillShell or TaskStop is not running (next.sh's safe point)
+bgk "$T/k1.jsonl" KillShell shell_id; bgk "$T/k2.jsonl" TaskStop task_id; bgk "$T/k3.jsonl"; bgk "$T/k4.jsonl" "" "" notified
+eq "dev408-6 background tasks: start+KillShell, start+TaskStop, start alone, start+notification" "$(bgn "$T/k1.jsonl") $(bgn "$T/k2.jsonl") $(bgn "$T/k3.jsonl") $(bgn "$T/k4.jsonl")" "0 0 1 0"
+bgk "$T/k5.jsonl" TaskStop task_id; sed -i.bak 's/"kjob1"}}]}}$/"otherjob"}}]}}/' "$T/k5.jsonl"
+eq "dev408-6 background tasks: a stop that names another task does not end this one" "$(bgn "$T/k5.jsonl")" 1
+
+# -- dev408-10: respawn --restart waits for the user's go when a newer plugin is installed; a plain respawn does not
+"$REG" add '{"name":"rv/builder","team":"rv","tier":"Worker","status":"Idle","herdr_ref":"rv-b","pane":"p","repo":"/x","template":"nosuch","plugin_version":"1.0.0"}' >/dev/null
+rv() { "$SCRIPTS/respawn.sh" rv/builder "$@" >/dev/null 2>"$T/rv.err"; echo $?; }
+eq "dev408-10 respawn --restart: a newer installed plugin refuses with exit 5" "$(FLEET_INSTALLED_VERSION=2.0.0 rv --restart)" 5
+check "dev408-10 respawn --restart: and names both versions" grep -q 'rv/builder runs plugin 1.0.0 and 2.0.0 is installed' "$T/rv.err"
+eq "dev408-10 respawn --restart: FLEET_VERSION_OK=1 goes on (to the next check: no such template)" "$(FLEET_INSTALLED_VERSION=2.0.0 FLEET_VERSION_OK=1 rv --restart)" 1
+eq "dev408-10 respawn --restart: an equal installed version goes on" "$(FLEET_INSTALLED_VERSION=1.0.0 rv --restart)" 1
+eq "dev408-10 respawn: a plain respawn of a dead agent does not ask" "$(FLEET_INSTALLED_VERSION=2.0.0 rv)" 1
+"$REG" retire rv/builder >/dev/null 2>&1 || true
 # ---- end DEV-408 ----
 
 printf '\n%d passed, %d failed\n' "$pass" "$failn"

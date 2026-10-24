@@ -4,7 +4,9 @@
 #   next.sh <team> <issue> [--brief TEXT] [--assignment TEXT] [--issue-url URL]
 #
 #   0. one next per team at a time: a second call while one runs exits 4 and changes nothing (the lock holds
-#      the pid; a lock whose process is gone, e.g. after SIGKILL, is taken over)
+#      the pid; a lock whose process is gone, e.g. after SIGKILL, is taken over). A plugin installed since a row
+#      started would switch versions on restart, which waits for the user's go: exit 5 naming both versions,
+#      nothing changed, unless FLEET_VERSION_OK=1 (tick's stale_version asks)
 #   1. safe point: every agent of the team must be idle (not mid-turn) with no background task running;
 #      otherwise nothing changes, it says who is busy and exits 1 (run it again later)
 #   2. claim the issue through linear.sh; a claim that fails aborts before any row changes. When claims are
@@ -61,6 +63,7 @@ rows="$("$registry" list --team "$team" | jq -c '[.[] | select(.status != "Retir
 [ "$(printf '%s' "$rows" | jq length)" != 0 ] || die "no live rows for team '$team'"
 from="$(printf '%s' "$rows" | jq -r '[.[] | select((.issue // "") != "")] | first // {} | [(.issue // ""), (.issue_url // "")] | @tsv')"
 [ "$(printf '%s' "$rows" | jq '[.[] | select(.status == "Parked")] | length')" = 0 ] || die "team '$team' is parked; unpark.sh $team first, or leave it parked"
+version_switch_check "$rows" "$team"
 
 # 1. Safe point. herdr must answer (a failed call is not "idle"), every agent must be idle or done, and no
 # background task may be running (its transcript; the pane footer when there is no transcript).

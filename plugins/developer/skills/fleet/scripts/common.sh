@@ -456,13 +456,29 @@ version_gt() {
     for (i = 1; i <= n; i++) { p = x[i] + 0; q = y[i] + 0; if (p > q) exit 0; if (p < q) exit 1 }
     exit 1 }'
 }
+# version_switch_check <rows JSON array> <who>: a restart starts each agent on the newest installed plugin, so when
+# that is newer than a row's plugin_version the restart would switch versions, which waits for the user's go (tick
+# asks with stale_version). Exit 5, naming both versions, unless FLEET_VERSION_OK=1 (next.sh, respawn.sh --restart).
+version_switch_check() {
+  [ "${FLEET_VERSION_OK:-}" != 1 ] || return 0
+  local iv v old=""
+  iv="$(installed_version)"; [ -n "$iv" ] || return 0
+  while IFS= read -r v; do
+    [ -n "$v" ] && version_gt "$iv" "$v" || continue
+    if [ -z "$old" ] || version_gt "$old" "$v"; then old="$v"; fi
+  done < <(jq -r '.[] | .plugin_version // empty' <<<"$1")
+  [ -n "$old" ] || return 0
+  printf 'fleet: %s runs plugin %s and %s is installed, so a restart would switch it to %s. Ask the user, then run it again with FLEET_VERSION_OK=1.\n' "$2" "$old" "$iv" "$iv" >&2
+  exit 5
+}
 
 # transcript_bg_running <transcript file>: how many background tasks the agent has running: tool_use blocks
 # with input.run_in_background == true, or named Monitor, whose task id (in the matching tool_result text:
 # "...running in background with ID: <id>" or "Monitor started ... task <id>") has no later
-# <task-notification><task-id><id></task-id> line, and that started less than bg_task_max_hours (default 6)
-# ago (a task killed without a notification would otherwise count until the session ends). Observed shape of
-# Claude Code transcripts, not a documented contract: UNVERIFIED for stability. Unreadable: 0.
+# <task-notification><task-id><id></task-id> line and no KillShell or TaskStop tool_use naming it
+# (input.shell_id or input.task_id), and that started less than bg_task_max_hours (default 6) ago (a task killed
+# without either would otherwise count until the session ends). Observed shape of Claude Code transcripts, not a
+# documented contract: UNVERIFIED for stability. Unreadable: 0.
 transcript_bg_running() {
   [ -r "$1" ] || { echo 0; return 0; }
   local maxs now_e; maxs=$(($(const_int BG_TASK_MAX_HOURS 6) * 3600))
@@ -478,8 +494,11 @@ transcript_bg_running() {
         | {tool: .id, at: ($t | ep)}]) as $starts
     | ([$L[] | select(.type == "user") | (.message.content // [])[]? | select(type == "object" and .type == "tool_result")
         | {tool: .tool_use_id, text: (.content | body)}]) as $results
-    | ([$L[] | select(.type == "user") | (.message.content | body) | select(contains("<task-notification>"))
-        | scan("<task-id>([A-Za-z0-9_-]+)</task-id>") | .[0]] | unique) as $ended
+    | ([($L[] | select(.type == "user") | (.message.content | body) | select(contains("<task-notification>"))
+        | scan("<task-id>([A-Za-z0-9_-]+)</task-id>") | .[0]),
+        ($L[] | select(.type == "assistant") | (.message.content // [])[]?
+        | select(type == "object" and .type == "tool_use" and (.name == "KillShell" or .name == "TaskStop"))
+        | (.input.task_id? // .input.shell_id?) | select(type == "string"))] | unique) as $ended
     | [$starts[] | . as $s | ($results | map(select(.tool == $s.tool)) | first | .text // "") as $x
         | ($x | (try capture("running in background with ID: (?<id>[A-Za-z0-9_-]+)").id catch null)
             // (try capture("Monitor started[^\n]*?task (?<id>[A-Za-z0-9_-]+)").id catch null)) as $id
@@ -687,6 +706,7 @@ render_line() {
     discovered) printf 'Discovered work: %s\n' "${L_work:-}" ;;
     report) printf 'Report: %s\n' "${L_path:-}" ;;
     no_prs) printf 'No PRs in the last %s.\n' "${L_since:-7d}" ;;
+    redact) printf 'Redact check %s: %s matches.\n' "${L_range:-}" "${L_count:-0}" ;;
     no_envs) printf 'No team environments.\n' ;;
     nothing_to_debrief) printf 'Nothing to debrief.\n' ;;
     *) warn "render_line: no entry '$e'"; return 1 ;;
@@ -722,6 +742,9 @@ render_notice() {
       else render_line event event="Needs input" name="$name" what="$d" next="Look at its pane"; fi ;;
     brief_failed) render_line event event="Brief failed" name="$name" what="its brief never arrived, re-sent once" next="Look at its pane, then re-send or re-boot" ;;
     claim_takeover) render_line claim_takeover issue="$(team_issue "$team")" machine="$(jq -r '.holder // "another machine"' <<<"$e")" team="$team" ;;
+    stale_version) d="$(jq -r '.to // "a newer version"' <<<"$e")"
+      render_decision P2 "$name" "$team runs plugin $(jq -r '.from // "an older version"' <<<"$e") and $d is installed. Switch it to $d at its next issue?" \
+        "yes, at its next issue" "no, retire it after this issue" ;;
     weekly_summary) "$FLEET_SCRIPTS/metrics.sh" --since 7d 2>/dev/null ;;
     escalation)
       while IFS= read -r o; do [ -z "$o" ] || opts+=("$o"); done < <(jq -r '.options[]? // empty' <<<"$e")
@@ -732,7 +755,7 @@ render_notice() {
 
 # WAKE_TYPES: the tick events that wake the Orchestrator (loop-tick.sh) and get a notice (tick.sh); each has an entry
 # in references/output.md. An escalation wakes at any severity, pr_opened only when the lead could not be told.
-WAKE_TYPES="pr_ready pr_merged pr_opened pr_conflicting dead failed stalled needs_input brief_failed claim_takeover weekly_summary escalation"
+WAKE_TYPES="pr_ready pr_merged pr_opened pr_conflicting dead failed stalled needs_input brief_failed claim_takeover stale_version weekly_summary escalation"
 # WAKE_JQ: the jq filter that keeps the events that wake, with $wake bound to WAKE_TYPES (--arg wake "$WAKE_TYPES").
 WAKE_JQ='select(type == "object") | select((.type as $t | $wake | split(" ") | index($t)) and (.type != "pr_opened" or .lead_told == false))'
 

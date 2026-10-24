@@ -253,6 +253,16 @@ DEV-1: held by <machine|this machine (<machine>)> (heartbeat <age>[, lapsed]).
 
 `DEV-1: held by nobody.` for an unclaimed issue.
 
+### redact-check
+
+```
+Redact check <base>..<head>: <n> matches.
+```
+
+Counts only, never a term, a line or a file name. A match also ends with the error form on stderr (`redact-check: <n>
+lines in <range> hold a private term. Remove them before you push.`) and exit 1; a check that cannot run (no
+`redact_terms`, or a range git cannot read) is the error form alone and exit 2, never a clean result.
+
 ### help
 
 ```
@@ -342,6 +352,18 @@ Brief failed <team/role>: its brief never arrived, re-sent once. Look at its pan
 ```
 [DEV-1](url) taken over by <machine>. Stop or hand off <team>.
 ```
+
+### wake stale_version
+
+```
+P2 <team/role>: <team> runs plugin <old> and <new> is installed. Switch it to <new> at its next issue?
+A) yes, at its next issue (recommended) · B) no, retire it after this issue
+Reply A or B.
+```
+
+The decision form, once per (team, installed version), naming the team's lead. Until the user says yes, `next` and
+`respawn --restart` refuse with exit 5 (`next: <team> runs plugin <old> and <new> is installed, so a restart would
+switch it to <new>. Ask the user, then run it again with FLEET_VERSION_OK=1.`).
 
 ### wake weekly_summary
 

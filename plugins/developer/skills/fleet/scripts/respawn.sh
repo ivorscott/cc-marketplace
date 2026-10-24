@@ -11,7 +11,9 @@
 # (the role brief for the row's current assignment, plus --brief-text for the lead), sent as a file through
 # tell.sh --brief. The lead comes back Working, a worker Idle (the lead hands it work). The row's
 # plugin_version becomes the version of these scripts. It is not a death: nothing charges the respawn budget,
-# and the event is `restarted`. UNVERIFIED against real herdr: `herdr agent start` after /exit in the same pane.
+# and the event is `restarted`. A plugin installed since the row started would switch versions, which waits for
+# the user's go: --restart exits 5 naming both versions unless FLEET_VERSION_OK=1 (a plain respawn of a dead agent
+# does not ask). UNVERIFIED against real herdr: `herdr agent start` after /exit in the same pane.
 #
 # The resume brief is `build_brief --resume`: the role brief, the assignment, the last report file,
 # `git status` and `git log` of its branch and its open escalations (no pane text). A lead also gets
@@ -42,6 +44,7 @@ row="$("$registry" get "$name")" || exit 1
 get() { printf '%s' "$row" | jq -r ".$1 // \"\""; }
 status="$(get status)"
 case "$status" in Done | Retired) die "$name is $status; not respawning it" ;; esac
+[ "$restart" != true ] || version_switch_check "[$row]" "$name"
 
 team="$(get team)"; tier="$(get tier)"; agent="$(get herdr_ref)"; pane="$(get pane)"; split_new=0
 new_ws=""; cwd="$(get cwd)"; worktree="$(get worktree)"; model="$(get model)"; kind="$(get harness)"; kind="${kind:-claude}"

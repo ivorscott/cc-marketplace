@@ -33,6 +33,7 @@ archive_after_days = 0   # a Retired row with its lessons written moves to fleet
 # Briefs and agent panes
 # brief_idle_secs = 60     # tell.sh waits this long for the agent to be idle before a brief
 # scrub_env = ["MY_TOKEN"] # extra variables unset in every agent pane (the key and AWS_* always are)
+redact_terms = []          # private terms redact-check.sh counts in what a branch adds (it prints counts, never a term); none set means the check cannot run
 
 # The loop (schedule.sh) and alerts
 tick_secs = 300
