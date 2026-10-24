@@ -386,6 +386,48 @@ in 4.1. Anything that newly exposes the key is a blocker; the items that touch t
 - **Not guard gaps, by design:** claims are not released at retire, next or a Failed row, so the machine-wide heartbeat keeps an
   abandoned issue locked while this machine runs any team; the viewer cache saves one `Viewer` read per tick only.
 
+## What changed in 4.1
+
+1. **Picking without the user.** Route A picks the next issue itself: it skips a live claim and an issue whose
+   blockers are not Done, orders the rest by priority then series, takes over a lapsed claim with no open PR, and
+   notes the search on the lead's row (`registry.sh note <team>/lead picked`). The user is asked only for a cap or a P0/P1.
+2. **Keep N teams running.** `target_teams` on the Orchestrator's row; tick wakes it with `slot_free` while fewer
+   teams run; a signed-off team whose agents are all Done or Idle parks to free its slot; "Nothing bootable" lists
+   what each candidate needs.
+3. **Lapsed claims are swept.** Tick releases another machine's lapsed claim with no open PR (`claim_released`),
+   leaves one with an open PR alone (`claim_held_pr`) and reports the rest read-only (`claim_lapsed`).
+4. **Wakes without typing.** The loop appends fixed-template lines to `wakes.log`; the Orchestrator follows it with
+   `Monitor`. No wake is typed into a pane, queued or retried; the no-reply alert stays.
+5. **The redact check exists.** `redact-check.sh --range <base>..<head>` counts private terms from
+   `$FLEET_STATE_DIR/private/redact_terms.txt` (mode 600) in what a branch adds, counts only.
+6. **next.sh's safe point** no longer waits on a shell stopped with KillShell or TaskStop.
+7. **A stale PR head nudges the lead** once per head when the builder is idle and the tester has not signed it.
+8. **An interrupted boot undoes itself.** Rows are written first; a boot that fails or is interrupted closes its
+   workspace, removes its worktrees and branches and retires its rows; leftovers block the name until `retire` tidies them.
+9. **Retire tidies Linear and the disk.** The issue follows the outcome (`--verify` for Verify), reports are archived
+   into the team repo, more build output is ignored, the empty team directory goes.
+10. **A plugin version switch waits for the user.** `stale_version` is a decision; `next` and `respawn --restart`
+    refuse with exit 5 until `FLEET_VERSION_OK=1`.
+11. **Overnight mode.** `overnight = true`: leads decide inside the issue's scope, the rest stays P1, branches catch up
+    with merge commits, and the morning report (`metrics.sh --morning`) is written after 07:00. A prompt-blocked agent
+    gets a P1 after two ticks, always.
+12. **Clean up as you go.** A team cluster's anonymous volumes go with it, panes share a Terraform plugin cache, tick
+    prunes the Go cache and docker's dangling volumes, build cache and images at most hourly (`prune_cap_gb`), and the
+    disk line shows what the fleet holds.
+13. **herdr's Claude integration is required.** Delivery and background tasks are read from hooks and transcripts,
+    never from the screen; boot and status say when the integration is not current.
+14. **herdr's panel** shows each team's issue, PR and state, and each agent's role.
+15. **Slim panel style**, offered once: `fleet slim on|off|status`, written only between markers in herdr's config.
+16. **One command, `fleet <command>`,** with `fleet help` from the scripts' own lines, plus `prime` and `debrief`.
+17. **One output shape per command and wake** (`references/output.md`, pinned by golden files), with a blank line
+    between blocks so tables render.
+18. **The merge queue.** `status` and the merge wakes print every ready PR in the order to merge them, and why; a PR
+    that conflicts after a merge leaves the queue and its lead is told.
+19. **The planner's plan file** is `<repo>/.fleet/plan/<team>.md`, the only place a planner writes; `.fleet/` stays out
+    of git through `.git/info/exclude`, and retire deletes the plan.
+20. **Plain state symbols** in every table (`● ○ ◐ ✗ ‖ ✓`), a summary line above the team table, P0 and P1 in bold,
+    and `✓` or `✗ <missing>` for each PR's readiness.
+
 ## Files
 
 | Path | Purpose |
