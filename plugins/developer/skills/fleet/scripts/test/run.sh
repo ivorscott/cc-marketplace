@@ -4011,6 +4011,30 @@ check "dev408-15 slim: the style holds only the fleet's [ui] keys and its rows" 
   "! grep -vE '^(#.*|\[ui(\.sidebar\.(agents|spaces))?\]|sidebar_width = 40|status_indicators = \"symbols\"|agent_panel_sort = \"spaces\"|rows = .*|)\$' '$SCRIPTS/../styles/slim.toml'"
 check "dev408-15 slim: SKILL.md offers it once, in plain text, before the first boot and at prime" bash -c \
   "grep -q 'fleet slim status' '$SCRIPTS/../SKILL.md' && grep -q 'Turn on slim, the fleet' '$SCRIPTS/../SKILL.md'"
+
+# -- dev408-19: the planner's plan file: <repo>/.fleet/plan/<team>.md, out of git through .git/info/exclude
+qfresh plan19; R19="$QD/r19"; git init -q -b main "$R19"; git -C "$R19" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+printf 'node_modules/\n' >"$R19/.gitignore"; cp "$R19/.gitignore" "$QD/gi.before"; mkdir -p "$R19/.spec" "$R19/.plan"
+FLEET_FORCE=1 bt build p19 "$R19" task; FLEET_FORCE=1 bt build p19b "$R19" task
+EX19="$R19/.git/info/exclude"
+eq "dev408-19 plan: boot adds .fleet/ to the repo's .git/info/exclude once, however many boots" "$(grep -cx '.fleet/' "$EX19")" 1
+eq "dev408-19 plan: and never touches .gitignore, nor ignores the user's .spec/ and .plan/" "$(cmp -s "$R19/.gitignore" "$QD/gi.before" && echo same):$(grep -c 'spec\|\.plan' "$EX19")" "same:0"
+check "dev408-19 plan: so git ignores the plan files there" git -C "$R19" check-ignore -q .fleet/plan/build-p19.md
+R19P="$(cd "$R19" && pwd -P)" # boot names the repo by its physical path
+eq "dev408-19 plan: only the planner's pane carries FLEET_PLAN_DIR, the repo's .fleet" "$(grep -c "^pane split.*FLEET_NAME=build-p19b/planner.*FLEET_PLAN_DIR=$R19P/.fleet" "$HERDR_LOG"):$(grep -c 'FLEET_PLAN_DIR' "$HERDR_LOG")" "1:1"
+b19() { cat "$("$REG" get "build-p19b/$1" | jq -r '.last_brief // "/nonexistent"')" 2>/dev/null; }
+eq "dev408-19 plan: the planner's, builder's, tester's and lead's briefs name the plan file" \
+  "$(for r in planner builder tester lead; do b19 "$r" | grep -c "$R19/.fleet/plan/build-p19b.md" | sed 's/^[1-9][0-9]*$/y/'; done | paste -sd, -)" "y,y,y,y"
+sg19() { # the scope guard's decision for a planner's tool call: deny, or allow when it says nothing
+  local o; o="$(jq -cn --arg t "$1" --arg p "$2" --arg c "$R19" '{tool_name: $t, tool_input: {file_path: $p}, cwd: $c}' |
+    FLEET_ROLE=worker FLEET_NAME=build-p19/planner FLEET_PLAN_DIR="$R19/.fleet" "$SCRIPTS/../../../hooks/fleet-scope-guard.sh")"
+  if [ -n "$o" ]; then jq -r '.hookSpecificOutput.permissionDecision' <<<"$o"; else echo allow; fi
+}
+eq "dev408-19 plan: the guard lets a planner write its plan under .fleet/" "$(sg19 Write "$R19/.fleet/plan/build-p19.md")" allow
+eq "dev408-19 plan: and nowhere else, while it may still read anything" \
+  "$(sg19 Write "$R19/src/main.go"):$(sg19 Edit "$R19/.gitignore"):$(sg19 Write "$R19/.fleet-x/plan.md"):$(sg19 Write "$R19/.fleet/../x.md"):$(sg19 Read "$R19/src/main.go")" "deny:deny:deny:deny:allow"
+printf 'the plan\n' >"$R19/.fleet/plan/build-p19.md"; printf 'the other plan\n' >"$R19/.fleet/plan/build-p19b.md"; "$SCRIPTS/retire.sh" build-p19 >/dev/null 2>&1
+eq "dev408-19 plan: retire removes the team's plan file, and only its own" "$([ -e "$R19/.fleet/plan/build-p19.md" ] && echo kept || echo removed):$([ -e "$R19/.fleet/plan/build-p19b.md" ] && echo kept || echo removed)" "removed:kept"
 # ---- end DEV-408 ----
 
 printf '\n%d passed, %d failed\n' "$pass" "$failn"

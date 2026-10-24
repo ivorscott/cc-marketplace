@@ -216,6 +216,13 @@ while IFS=$'\t' read -r wt repo wname; do
   else warn "kept $wt: git worktree remove failed"; keep "$role" "git worktree remove failed"; fi
 done < <(printf '%s' "$rows" | jq -r '.[] | select((.worktree // "") != "") | [.worktree, .repo, .name] | @tsv')
 ! $whole_team || rmdir "$FLEET_WORKTREES/$target" 2>/dev/null || true # the team's own worktrees directory, once empty
+# The planner's plan goes with its team: .fleet/plan/<team>.md in the team's repo (and the folders, once empty).
+if $whole_team; then
+  while IFS= read -r r; do
+    [ -n "$r" ] || continue
+    rm -f "$r/.fleet/plan/$target.md"; rmdir "$r/.fleet/plan" "$r/.fleet" 2>/dev/null || true
+  done < <(printf '%s' "$rows" | jq -r '[.[].repo // empty | select(. != "")] | unique[]')
+fi
 
 if [ -n "$outcome" ]; then "$registry" retire "$target" --outcome "$outcome"; else "$registry" retire "$target"; fi
 for n in $(printf '%s' "$rows" | jq -r '.[].name'); do ev_log retired team="$(printf '%s' "$rows" | jq -r --arg n "$n" '.[] | select(.name == $n) | .team')" name="$n"; done

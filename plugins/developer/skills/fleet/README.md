@@ -349,7 +349,10 @@ the OS-derived sources, regenerate the OS id. Nothing detects a cloned id for yo
 
 ## Guard residuals (4.1)
 
-The scope guard (`hooks/fleet-scope-guard.sh`) and the Bash guard (`hooks/fleet-bash-guard.sh`) catch mistakes; they are
+The scope guard (`hooks/fleet-scope-guard.sh`) holds a worker with a worktree to writing inside it, and a planner to
+writing only under its repo's `.fleet/` (its plan, `.fleet/plan/<team>.md`; boot sets `FLEET_PLAN_DIR` on the
+planner's pane and adds `.fleet/` to the repo's own `.git/info/exclude` once, never to `.gitignore`; retire deletes the
+plan). It and the Bash guard (`hooks/fleet-bash-guard.sh`) catch mistakes; they are
 not a security boundary. Agents run as the same user as the Orchestrator, so a mode-600 key file is readable by any
 process of that user whatever the guards say (a Keychain item or a separate OS user is the follow-up). The guards' scope
 is frozen for B: what they deny today stays denied, and the bypass classes below are known and accepted, to be taken up
@@ -411,4 +414,5 @@ in 4.1. Anything that newly exposes the key is a blocker; the items that touch t
 | `references/` | herdr pitfalls, registry format, expertise files, and `output.md`: the one output shape of every command and wake |
 | `scripts/test/golden/` | the expected reply of each output.md entry, compared byte for byte by `run.sh` |
 | `../../agents/lead.md`, `orchestrator.md` | delegate-only agent definitions |
-| `../../hooks/` | context recovery (`prime`) and the worktree scope guard; inert outside fleet panes |
+| `../../hooks/` | context recovery (`prime`) and the worktree and planner scope guard; inert outside fleet panes |
+| `<repo>/.fleet/plan/<team>.md` | the planner's plan, in the team's repo and out of git (`.git/info/exclude`); retire deletes it |

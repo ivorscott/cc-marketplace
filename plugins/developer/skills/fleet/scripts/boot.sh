@@ -178,6 +178,19 @@ else perm_mode="$(permission_mode)" || exit 1; fi
 plugin_ver="$(plugin_version)"
 
 is_git=false; git -C "$repo" rev-parse --git-dir >/dev/null 2>&1 && is_git=true
+# The planner writes its plan to <repo>/.fleet/plan/<team>.md, the one place it may write. .fleet/ stays out of git
+# through the repo's own .git/info/exclude, added once; .gitignore is never touched, nor are the user's .spec/ and
+# .plan/.
+plan_file="$repo/.fleet/plan/$team.md"
+if $is_git; then
+  gx="$(git -C "$repo" rev-parse --git-common-dir 2>/dev/null)" || gx=""
+  case "$gx" in /*) ;; "") ;; *) gx="$repo/$gx" ;; esac
+  if [ -n "$gx" ] && ! grep -qx '.fleet/' "$gx/info/exclude" 2>/dev/null; then
+    { mkdir -p "$gx/info" && { [ ! -s "$gx/info/exclude" ] || [ -z "$(tail -c 1 "$gx/info/exclude")" ] || echo; } >>"$gx/info/exclude" &&
+      echo '.fleet/' >>"$gx/info/exclude"; } || warn "could not add .fleet/ to $gx/info/exclude"
+  fi
+fi
+mkdir -p "$(dirname "$plan_file")" 2>/dev/null || warn "could not create $(dirname "$plan_file")"
 
 . "$FLEET_SCRIPTS/agent-lib.sh" # render, claude_args, start_agent (needs team, task, repo, registry, tool_allow)
 
@@ -230,9 +243,10 @@ for i in $(seq 0 $((nworkers - 1))); do
     cwd="$worktree"
   fi
   if [ -z "$prev" ]; then split=(--pane "$lead_pane" --direction right); else split=(--pane "$prev" --direction down); fi
+  plan_env=(); [ "$role" != planner ] || plan_env=(--env "FLEET_PLAN_DIR=$repo/.fleet") # the scope guard's planner fence
   pane="$(hd pane split "${split[@]}" --cwd "$cwd" --no-focus \
     --env FLEET_ROLE=worker --env "FLEET_NAME=$name" --env "FLEET_TEAM=$team" \
-    --env "FLEET_WORKTREE=$worktree" --env "FLEET_STATE_DIR=$FLEET_STATE_DIR" \
+    --env "FLEET_WORKTREE=$worktree" --env "FLEET_STATE_DIR=$FLEET_STATE_DIR" ${plan_env[@]+"${plan_env[@]}"} \
     ${env_args[@]+"${env_args[@]}"} | jq -r '.result.pane.pane_id // empty')" || pane=""
   [ -n "$pane" ] || die "pane split failed for $name"
   prev="$pane"
