@@ -109,7 +109,7 @@ is open, then these lines, each only when it applies:
 ```
 Focus: <team>.
 
-Disk: <n> GB free (warn below <w>).
+Disk: <n> GB free (warn below <w>). Fleet holds <n> GB. Reclaimed <n> GB.
 
 Other machines: [DEV-1] on <machine> (heartbeat <age>[, lapsed]); …
 
@@ -474,10 +474,12 @@ The decision form of the escalation, with its options.
 ### disk
 
 ```
-Disk: <n> GB free (warn below <w>).
+Disk: <n> GB free (warn below <w>). Fleet holds <n> GB. Reclaimed <n> GB.
 ```
 
-Under the status table, only below `warn_free_gb`.
+Under the status table, only below `warn_free_gb`. What the fleet holds (its worktrees, the Go cache, what docker can
+reclaim) and the last reclaim come from tick's hourly measure and prune (operations.md, "Disk"); before the first
+measure the line ends after the warning.
 
 ### alert
 

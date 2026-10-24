@@ -520,6 +520,44 @@ if free="$(free_gb)"; then
   st_upd --arg d "$now_d" '$st + {disk: $d}'
 fi
 
+# --- prune: disk the fleet's tools fill ------------------------------------------------------------------------
+# At most once an hour (prune_at), fleet-wide (not with --team). It measures what the fleet holds (its worktrees, the
+# Go cache, what docker can reclaim) for the status disk line, and prunes when free disk is below warn_free_gb or a
+# measured size passes prune_cap_gb (default 20): `go clean -cache` when the Go cache is over the cap or the disk is
+# low; docker's dangling anonymous volumes (64-hex names only: a named volume is never touched, and never `docker
+# volume prune`, whose meaning changed across Docker versions), its build cache (`builder prune -f`) and dangling
+# images (`image prune -f`) when what docker can reclaim is over the cap or the disk is low. A missing tool skips its
+# step with one warning. What the free disk gained is kept as the last reclaim.
+if [ -z "$team" ] && [ $((now_epoch - $(jq -r '.prune_at // 0' "$STATE_FILE"))) -ge 3600 ]; then
+  pcap="$(cfg_int prune_cap_gb 20)"; gobin="${FLEET_GO:-go}"; dk="${FLEET_DOCKER:-docker}"
+  gocache=""; go_gb=0; dk_gb=0; have_dk=false; command -v "$dk" >/dev/null 2>&1 && have_dk=true
+  if command -v "$gobin" >/dev/null 2>&1; then gocache="$("$gobin" env GOCACHE 2>/dev/null || true)"; go_gb="$(du_gb "$gocache")"; fi
+  ! $have_dk || dk_gb="$(docker_reclaimable_gb)"
+  held=$(($(du_gb "$FLEET_WORKTREES") + go_gb + dk_gb))
+  f0="$(free_gb 2>/dev/null || true)"; low=false; [ -z "$f0" ] || [ "$f0" -ge "$(warn_free_gb)" ] || low=true
+  pruned=false
+  if $low || [ "$go_gb" -gt "$pcap" ]; then
+    if [ -n "$gocache" ]; then "$gobin" clean -cache >/dev/null 2>&1 || warn "go clean -cache failed"; pruned=true
+    else warn "go not found; the Go cache is not pruned"; fi
+  fi
+  if $low || [ "$dk_gb" -gt "$pcap" ]; then
+    if $have_dk; then
+      while IFS= read -r v; do
+        anon_volume "$v" || continue
+        "$dk" volume rm "$v" >/dev/null 2>&1 || warn "could not remove the dangling volume $v"
+      done < <("$dk" volume ls -q --filter dangling=true 2>/dev/null || true)
+      "$dk" builder prune -f >/dev/null 2>&1 || warn "docker builder prune failed"
+      "$dk" image prune -f >/dev/null 2>&1 || warn "docker image prune failed"
+      pruned=true
+    else warn "docker not found; its volumes, build cache and images are not pruned"; fi
+  fi
+  rec="$(jq -r '.reclaimed_gb // 0' "$STATE_FILE")"
+  if $pruned; then f1="$(free_gb 2>/dev/null || true)"; rec=0; [ -z "$f0" ] || [ -z "$f1" ] || [ "$f1" -le "$f0" ] || rec=$((f1 - f0)); fi
+  [ "$held" -ge "$rec" ] || rec="$held"
+  held_after="$held"; ! $pruned || held_after=$((held - rec))
+  st_upd --argjson at "$now_epoch" --argjson h "$held_after" --argjson r "$rec" '$st + {prune_at: $at, held_gb: $h, reclaimed_gb: $r}'
+fi
+
 # --- weekly archive ------------------------------------------------------------------------------
 week="$(date +%G-W%V)"
 if [ "$(jq -r '.archive_week // ""' "$STATE_FILE")" != "$week" ]; then

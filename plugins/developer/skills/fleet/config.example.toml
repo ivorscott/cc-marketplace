@@ -10,6 +10,7 @@ teams_per_repo = 1   # live teams on one repo
 max_envs = 3         # team test clusters at once
 min_free_gb = 40     # boot refuses below this much free disk (0 = off; FLEET_FORCE=1 overrides)
 warn_free_gb = 75    # status shows the disk line, and tick reports it, below this
+prune_cap_gb = 20    # tick prunes (at most hourly) the Go cache or docker's reclaimable once either passes this, or the disk is below warn_free_gb
 # repos = ["/path/to/app", "/path/to/api"]   # repos that should always have a team (repo_without_team); with this set, only teams on these repos count against max_teams
 
 # Several machines on one Linear workspace: each claims issues with the label <label_prefix><machine key>.

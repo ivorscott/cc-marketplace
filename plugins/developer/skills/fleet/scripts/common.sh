@@ -139,6 +139,20 @@ free_gb() {
   printf '%s\n' $((kb / 1024 / 1024))
 }
 
+# Disk the fleet's tools fill (tick's prune, env.sh down, the status disk line). FLEET_DOCKER and FLEET_GO name the
+# docker and go binaries (the tests point them at stubs).
+# anon_volume <name>: an anonymous docker volume's name is 64 hex characters; a named volume's never is.
+anon_volume() { case "$1" in *[!0-9a-f]* | "") return 1 ;; esac; [ "${#1}" = 64 ]; }
+# du_gb <dir>: its size in whole GB, 0 when it is missing.
+du_gb() { if [ -d "$1" ]; then du -sk "$1" 2>/dev/null | awk '{printf "%d\n", $1 / 1048576}'; else echo 0; fi; }
+# docker_reclaimable_gb: what `docker system df` says can be reclaimed, summed, in whole GB (0 when it says nothing).
+docker_reclaimable_gb() {
+  "${FLEET_DOCKER:-docker}" system df --format '{{.Reclaimable}}' 2>/dev/null | awk '
+    { n = $1 + 0; u = $1; sub(/^[0-9.]+/, "", u)
+      t += n * ((u == "TB") ? 1024 : (u == "GB") ? 1 : (u == "MB") ? 1 / 1024 : (u == "kB" || u == "KB") ? 1 / 1048576 : 0) }
+    END { printf "%d\n", t }'
+}
+
 # config_list <key>: a TOML array of strings from config.toml as a JSON array, default [].
 # The array may span lines (key = [ "a", "b" ]). Used for tracker_allow and forge_allow,
 # which keep tool-specific permissions (Linear/Jira, GitHub/GitLab, ...) out of templates.

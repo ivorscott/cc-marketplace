@@ -89,6 +89,7 @@ fi
 # as boot makes it; any other agent is split from the lead's pane in the team's workspace.
 if ! hd pane process-info --pane "$pane" >/dev/null 2>&1; then
   env_args=(); [ -z "$(env_config "$repo")" ] || env_args=(--env "KUBECONFIG=$(env_dir "$team")/kubeconfig")
+  mkdir -p "$FLEET_STATE_DIR/tf-plugin-cache"; env_args+=(--env "TF_PLUGIN_CACHE_DIR=$FLEET_STATE_DIR/tf-plugin-cache") # boot's shared cache
   if [ "$tier" = "Lead" ]; then
     ws_json="$(hd workspace create --cwd "${cwd:-$repo}" --label "$team" --no-focus \
       --env FLEET_ROLE=lead --env "FLEET_NAME=$name" --env "FLEET_TEAM=$team" --env "FLEET_STATE_DIR=$FLEET_STATE_DIR" ${env_args[@]+"${env_args[@]}"})" ||

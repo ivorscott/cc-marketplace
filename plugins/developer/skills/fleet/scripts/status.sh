@@ -150,7 +150,11 @@ else
 fi
 [ ! -f "$FLEET_STATE_DIR/focus" ] || blocks+=("$(render_line focus team="$(cat "$FLEET_STATE_DIR/focus")")")
 free="$(free_gb 2>/dev/null || true)"
-[ -z "$free" ] || [ "$free" -ge "$(warn_free_gb)" ] || blocks+=("$(render_line disk free="$free" warn="$(warn_free_gb)")")
+# What the fleet holds and the last reclaim come from tick's hourly measure (du is too slow for every status).
+if [ -n "$free" ] && [ "$free" -lt "$(warn_free_gb)" ]; then
+  held="$(jq -r '.held_gb // empty' "$FLEET_STATE_DIR/tick.state.json" 2>/dev/null || true)"
+  blocks+=("$(render_line disk free="$free" warn="$(warn_free_gb)" held="$held" reclaimed="$(jq -r '.reclaimed_gb // 0' "$FLEET_STATE_DIR/tick.state.json" 2>/dev/null || echo 0)")")
+fi
 if $all; then
   if [ -z "$claims_file" ]; then blocks+=("$(render_line other_machines list="not provided (pass --claims with linear.sh peers)")")
   else

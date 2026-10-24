@@ -166,6 +166,8 @@ if [ -n "$(env_config "$repo")" ]; then
   mkdir -p "$(env_dir "$team")"
   env_args=(--env "KUBECONFIG=$(env_dir "$team")/kubeconfig")
 fi
+# One Terraform plugin cache for every pane, so each worktree does not download the providers again.
+mkdir -p "$FLEET_STATE_DIR/tf-plugin-cache"; env_args+=(--env "TF_PLUGIN_CACHE_DIR=$FLEET_STATE_DIR/tf-plugin-cache")
 
 tool_allow="$(jq -cn --argjson t "$(config_list tracker_allow)" --argjson f "$(config_list forge_allow)" '$t + $f | unique')"
 # The permission mode: the template's own permission_mode, else config/FLEET_PERMISSION_MODE, else auto. A mode

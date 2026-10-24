@@ -166,6 +166,19 @@ Boot starts every claude agent with `--session-id`, records the transcript path 
 Scripts now call the forge: `tick.sh` runs read-only `gh pr view` through `FLEET_GH` (default `gh`).
 A repo whose PRs have no CI is listed in `no_pr_ci = ["repo"]` in config.toml. UNVERIFIED: herdr's `state_change_seq` is observed, not documented; the transcript format across Claude Code updates; the pane-text handling; `herdr agent start` in the same pane after `/exit`; the `queued_command` attachment shape.
 
+### Disk
+
+The fleet cleans up as it goes:
+
+- `env.sh down` removes the anonymous volumes (64-hex names) of the team cluster's node containers once the repo's
+  `down` succeeded. A named volume is never touched.
+- Every pane gets `TF_PLUGIN_CACHE_DIR=$FLEET_STATE_DIR/tf-plugin-cache`, so worktrees share one Terraform plugin cache.
+- Tick measures what the fleet holds (its worktrees, the Go cache, what docker can reclaim) at most once an hour,
+  and prunes when free disk is below `warn_free_gb` or a cache passes `prune_cap_gb` (default 20): `go clean
+  -cache`; docker's dangling anonymous volumes (never a named one, and never `docker volume prune`), its build cache
+  and its dangling images. A missing tool skips its step with one warning. The status disk line shows what the
+  fleet holds and the last reclaim.
+
 ### Keep N teams running
 
 When the user asks to keep N teams running, set `$F/registry.sh set orchestrator target_teams=N`. It is on the

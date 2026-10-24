@@ -48,6 +48,12 @@ case "$1 $2" in
     exit 0 ;;
   "buildx ls") cat "$DKDIR/builders"; exit 0 ;;
   "buildx rm") grep -vx "${4:-}\*\?" "$DKDIR/builders" >"$DKDIR/b.tmp"; mv "$DKDIR/b.tmp" "$DKDIR/builders"; exit 0 ;;
+  # DEV-408 item 12. containers: ID <tab> kind cluster <tab> volumes (comma-separated); dangling: one volume per line;
+  # df: the Reclaimable column of `docker system df`
+  "ps -a") awk -F'\t' -v c="${4#label=io.x-k8s.kind.cluster=}" '$2 == c {print $1}' "$DKDIR/containers" 2>/dev/null; exit 0 ;;
+  "inspect -f") awk -F'\t' -v i="$4" '$1 == i {gsub(",", "\n", $3); print $3}' "$DKDIR/containers" 2>/dev/null; exit 0 ;;
+  "volume ls") cat "$DKDIR/dangling" 2>/dev/null; exit 0 ;;
+  "system df") cat "$DKDIR/df" 2>/dev/null; exit 0 ;;
 esac
 if [ "$1" = rmi ]; then
   x="$2"; awk -F'\t' -v x="$x" '($1 == x || $2 == x) && $4 == 1 {f = 1} END {exit !f}' "$DKDIR/images.tsv" && exit 1
@@ -62,6 +68,12 @@ cat >"$T/bin/df" <<'S'
 printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\nfake 1 1 %s 1%% /\n' $((${DF_GB:-500} * 1048576))
 S
 chmod +x "$T/bin/docker" "$T/docker-stub" "$T/bin/df"; export FLEET_DOCKER="$T/docker-stub" DF_GB=500
+# Go is always a stub too (tick's prune, DEV-408 item 12): FLEET_GO points at it; a go shim first on PATH records any
+# call that would reach a real binary and fails it. The stub's GOCACHE is $GO_CACHE.
+export GO_LOG="$T/go.log" REAL_GO_LOG="$T/realgo.log" GO_CACHE="$T/gocache"; : >"$GO_LOG"; : >"$REAL_GO_LOG"; mkdir -p "$GO_CACHE"
+printf '#!/usr/bin/env bash\necho "$*" >>"$REAL_GO_LOG"; exit 1\n' >"$T/bin/go"
+printf '#!/usr/bin/env bash\necho "$*" >>"$GO_LOG"\n[ "$*" != "env GOCACHE" ] || echo "$GO_CACHE"\n' >"$T/go-stub"
+chmod +x "$T/bin/go" "$T/go-stub"; export FLEET_GO="$T/go-stub"
 dkreset() { # a team's tag/label images, foreign images, foreign builder
   printf 'ID1\tapp:fleet-build-a\t\t0\nID2\timg2:latest\tfleet.team=build-a\t0\nID3\tother:latest\t\t0\nID4\tsvc:latest\tfleet.team=other\t0\nID5\tshared:v1\tfleet.team=build-a\t1\nID6\tapp:fleet-build-b\t\t0\n' >"$DKDIR/images.tsv"
   printf 'default\nfleet-build-a*\nfleet-build-b\n' >"$DKDIR/builders"; : >"$DOCKER_LOG"
@@ -458,7 +470,11 @@ eq "down with a foreign cluster name makes no docker call" "$(wc -l <"$DOCKER_LO
 eq "down with a foreign cluster name runs no stub down" "$(calls down)" 0
 check "down with a foreign cluster name refuses" test "$rc" -ne 0
 "$REG" env-release build-plain
+AV="$(printf 'a%.0s' $(seq 1 64))"; printf 'c1\tfleet-build-a\t%s,app-data\nc2\tother-cluster\t%s\n' "$AV" "$(printf 'b%.0s' $(seq 1 64))" >"$DKDIR/containers"; : >"$DOCKER_LOG"
 "$ENV" down build-a >/dev/null 2>&1
+eq "dev408-12 down: the cluster's anonymous volume is removed; its named volume and another cluster's are not" \
+  "$(grep -c "^volume rm $AV\$" "$DOCKER_LOG"):$(grep -c '^volume rm app-data' "$DOCKER_LOG"):$(grep -c '^volume rm b' "$DOCKER_LOG")" "1:0:0"
+rm -f "$DKDIR/containers"
 eq "down runs the stub down once" "$(calls down)" 1
 check "down removes the env directory" test ! -e "$FLEET_STATE_DIR/env/build-a"
 eq "down marks env Down" "$("$REG" env-get build-a | jq -r .state)" Down
@@ -525,7 +541,7 @@ eq "no docker call reached the real binary" "$(wc -l <"$REAL_DOCKER_LOG" | tr -d
 "$ENV" up build-a >/dev/null 2>&1; dkreset
 STUB_DOWN_FAIL=1 "$ENV" down build-a >/dev/null 2>&1; rc=$?
 check "failed repo down exits non-zero" test "$rc" -ne 0
-eq "failed repo down: no docker call" "$(wc -l <"$DOCKER_LOG" | tr -d ' ')" 0
+eq "failed repo down: nothing removed (only the volume read before down, DEV-408 item 12)" "$(grep -vc '^ps -a ' "$DOCKER_LOG" | tr -d ' ')" 0
 # docker unusable: down still succeeds and frees the slot
 DOCKER_DOWN=1 "$ENV" down build-a >/dev/null 2>"$T/dn.err"; rc=$?
 eq "docker daemon down: env down exit 0" "$rc" 0
@@ -3880,6 +3896,31 @@ FLEET_ARCHIVE_DIR= "$SCRIPTS/retire.sh" r9w >/dev/null 2>"$T/r9w.err"; rc=$?
 eq "dev408-9 retire: .terraform, node_modules, bin and test-results never keep a worktree; its report goes to the repo's reports/fleet-archive" \
   "$rc:$([ -d "$W9" ] && echo kept || echo removed):$(cat "$R9/reports/fleet-archive/r9w-builder/report.md" 2>/dev/null)" "0:removed:evidence"
 eq "dev408-9 retire: and the team's empty worktrees directory goes too" "$([ -d "$FLEET_STATE_DIR/worktrees/r9w" ] && echo kept || echo removed)" removed
+
+# -- dev408-12: tick prunes at most hourly when the disk is low or a cache passes prune_cap_gb; status shows it
+qfresh prune; : >"$GO_LOG"; : >"$DOCKER_LOG"; rm -f "$DKDIR/df"
+C64="$(printf 'c%.0s' $(seq 1 64))"; D64="$(printf 'd%.0s' $(seq 1 64))"; printf '%s\n%s\napp-db\n' "$C64" "$D64" >"$DKDIR/dangling"
+pt() { FLEET_NOW="$1" DF_GB="$2" "$SCRIPTS/tick.sh" >/dev/null 2>"$T/pt.err"; }
+pt 2026-10-24T10:00:00Z 500
+eq "dev408-12 prune: above the floor and under the caps nothing is pruned" "$(grep -c 'clean' "$GO_LOG"):$(grep -c 'prune\|volume rm' "$DOCKER_LOG")" "0:0"
+pt 2026-10-24T11:00:01Z 10
+eq "dev408-12 prune: a low disk cleans the Go cache, removes the anonymous dangling volumes, prunes build cache and dangling images" \
+  "$(grep -c '^clean -cache$' "$GO_LOG"):$(grep -c "^volume rm $C64\$" "$DOCKER_LOG"):$(grep -c "^volume rm $D64\$" "$DOCKER_LOG"):$(grep -c '^builder prune -f$' "$DOCKER_LOG"):$(grep -c '^image prune -f$' "$DOCKER_LOG")" "1:1:1:1:1"
+eq "dev408-12 prune: a named dangling volume is never removed, and it is never docker volume prune" "$(grep -c '^volume rm app-db' "$DOCKER_LOG"):$(grep -c '^volume prune' "$DOCKER_LOG")" "0:0"
+pt 2026-10-24T11:30:00Z 10; eq "dev408-12 prune: at most once an hour" "$(grep -c '^clean -cache$' "$GO_LOG")" 1
+pt 2026-10-24T12:00:02Z 10; eq "dev408-12 prune: and again after the hour" "$(grep -c '^clean -cache$' "$GO_LOG")" 2
+printf '25GB (50%%)\n' >"$DKDIR/df"; : >"$DOCKER_LOG"; : >"$GO_LOG"; pt 2026-10-24T13:00:03Z 500
+eq "dev408-12 prune: docker over prune_cap_gb prunes docker alone (the Go cache is under it)" "$(grep -c '^builder prune -f$' "$DOCKER_LOG"):$(grep -c 'clean' "$GO_LOG")" "1:0"
+printf '3GB (10%%)\n' >"$DKDIR/df"; pt 2026-10-24T14:00:04Z 10
+eq "dev408-12 status: below warn_free_gb the disk line says what the fleet holds and the last reclaim" "$(DF_GB=10 "$SCRIPTS/status.sh" 2>/dev/null | grep '^Disk:')" \
+  "Disk: 10 GB free (warn below 75). Fleet holds 3 GB. Reclaimed 0 GB."
+FLEET_GO=/nonexistent/go pt 2026-10-24T15:00:05Z 10
+eq "dev408-12 prune: a missing tool skips its step with one warning" "$(grep -c 'go not found; the Go cache is not pruned' "$T/pt.err")" 1
+eq "dev408-12 prune: the real docker and go are never called" "$(cat "$REAL_DOCKER_LOG" "$REAL_GO_LOG" | grep -c .)" 0
+rm -f "$DKDIR/df" "$DKDIR/dangling"
+qfresh tf; mkdir -p "$QD/p12"; FLEET_FORCE=1 bt build tf "$QD/p12" task
+eq "dev408-12 boot: every pane gets the shared TF_PLUGIN_CACHE_DIR, and the directory exists" \
+  "$(grep -c "^workspace create.*TF_PLUGIN_CACHE_DIR=$FLEET_STATE_DIR/tf-plugin-cache" "$HERDR_LOG"):$(grep -c "^pane split.*TF_PLUGIN_CACHE_DIR=$FLEET_STATE_DIR/tf-plugin-cache" "$HERDR_LOG"):$([ -d "$FLEET_STATE_DIR/tf-plugin-cache" ] && echo dir)" "1:3:dir"
 # ---- end DEV-408 ----
 
 printf '\n%d passed, %d failed\n' "$pass" "$failn"
