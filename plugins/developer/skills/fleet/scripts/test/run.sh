@@ -396,13 +396,20 @@ J
   eq "smoke: guard: a push to main is denied" "$(sbg 'git push origin main')" deny
   eq "smoke: guard: ls -ltr ~ is allowed" "$(sbg 'ls -ltr ~')" allow
   eq "smoke: guard: a quoted commit message is allowed" "$(sbg 'git commit -m "Find it; npm install foo"')" allow
-  # dev512-8: a glob the shell never expands (a heredoc body, quoted text) is not a path; one it does expand still is
+  # dev512-8: the body of a heredoc that a plain cat writes to a file is not read for globs; quoted text and any other
+  # heredoc body are (bash -c, an interpreter or a shell reading stdin expands them), so those globs stay denied
   eq "smoke: dev512-8 guard: a heredoc body holding a JS regex is allowed" "$(sbg "cat > /tmp/claude-501/scratch/ident.ts <<'EOF'
 export const isName = (v: string) => /[A-Za-z]{3,}/.test(v);
 EOF")" allow
   eq "smoke: dev512-8 guard: ls /*, cat \"\$HOME\"/.config/f*/* and a heredoc naming the key file stay denied" "$(sbg 'ls /*'):$(sbg 'cat "$HOME"/.config/f*/*'):$(sbg "cat <<'EOF'
 ~/.config/fleet/linear_api""_key
 EOF")" "deny:deny:deny"
+  eq "smoke: dev512-8 guard: the config-dir glob stays denied in bash -c '…', python3 -c glob.glob(\$HOME…), a heredoc bash reads, cat piped to bash" \
+    "$(sbg "bash -c 'cat ~/.config/f*/*'"):$(sbg "python3 -c \"import glob; print(glob.glob('\$HOME/.config/f*/*'))\""):$(sbg "bash <<'EOF'
+cat ~/.config/f*/*
+EOF"):$(sbg "cat <<'EOF' | bash
+cat ~/.config/f*/*
+EOF")" "deny:deny:deny:deny"
   check "smoke: the tester brief says never run the full suite locally" bash -c "jq -r '.workers[] | select(.role == \"tester\") | .brief' '$SCRIPTS/../templates/build.json' | grep -q 'Never run the full suite locally'"
   check "smoke: the house rules hold the one-test-run rule" grep -q 'One test run per PR head, and it is CI' "$SCRIPTS/../rules/house.md"
   # dev408-16: the dispatcher lists every command once, with an example, no internal script, every Step 0 route

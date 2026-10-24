@@ -6,8 +6,8 @@
 #   LINEAR_API_KEY) is denied, and so is one that reaches the key's directory in any form:
 #   ~/.config/fleet, $HOME/.config/fleet, ${XDG_CONFIG_HOME}/fleet, $FLEET_CONFIG_DIR, the absolute path
 #   (as written or resolved), a glob whose fixed part is that directory or above it (~/.config/*,
-#   ~/.config/fl*; not one in a heredoc body or inside quotes, which the shell never expands), `cd` into it or
-#   into its parent, and a recursive tool (grep -r, rg, find, ...) pointed
+#   ~/.config/fl*, quoted or not; not one in the body of a heredoc that a plain cat or tee writes to a file), `cd`
+#   into it or into its parent, and a recursive tool (grep -r, rg, find, ...) pointed
 #   at a directory above it (~, $HOME, ~/.config).
 #   `herdr pane run|send-text|send-keys` to any pane is denied (it types into someone else's shell).
 #   `herdr agent prompt|send-keys|read` is allowed only to an agent of the agent's own team: the target must
@@ -145,24 +145,18 @@ for w in $(printf '%s' "$flat" | tr ';&|()<>' '       '); do
   if $recursive && at_or_above "$n"; then deny "fleet bash guard: a recursive command over $w would read the Linear key's directory; name a narrower path."; fi
   prev="$w"
 done
-# A glob that can reach it. The shell never expands a glob in a heredoc's body or inside quotes, so this rule reads the
-# command with heredoc bodies left out (the lines after <<WORD, <<'WORD' or <<-WORD up to WORD) and with the glob
-# characters inside quotes (or after a backslash) dropped; the quoted text itself stays, so "$HOME"/.config/f*/* is
-# still a path. A JS regex in a scratch file's heredoc (/[A-Za-z]{3,}/) is not one.
+# A glob that can reach it, read on the command flattened as for the other rules (quotes and backslashes deleted):
+# quoted text counts, since bash -c, sh -c, eval, an interpreter or a shell reading stdin expands it. One body is left
+# out: that of a heredoc on a line whose command is cat or tee and that neither pipes on nor sits in $(...), `...` or a
+# process substitution, the write-a-file shape (cat > ident.ts <<'EOF' with a JS regex such as /[A-Za-z]{3,}/ in it).
+# The lines after <<WORD, <<'WORD' or <<-WORD up to WORD go. A body fed to anything else is still read.
 globtext="$(printf '%s\n' "$cmd" | awk '
   inb { t = $0; if (strip) sub(/^\t+/, "", t); if (t == word) inb = 0; next }
   { print
-    if (match($0, /(^|[^<])<<-?[[:space:]]*["\047]?[A-Za-z_][A-Za-z0-9_]*["\047]?/)) {
+    if ($0 ~ /^[[:space:]]*([^[:space:]]*\/)?(cat|tee)[[:space:]]/ && $0 !~ /[|`]|\$\(|[<>]\(/ &&
+      match($0, /(^|[^<])<<-?[[:space:]]*["\047]?[A-Za-z_][A-Za-z0-9_]*["\047]?/)) {
       m = substr($0, RSTART, RLENGTH); sub(/^[^<]*<</, "", m); strip = (m ~ /^-/); sub(/^-?[[:space:]]*/, "", m); gsub(/["\047]/, "", m)
-      word = m; inb = 1 } }' | awk 'BEGIN { q = "" }
-  { out = ""; n = length($0)
-    for (i = 1; i <= n; i++) { c = substr($0, i, 1)
-      if (q == "" && c == "\\") { i++; d = substr($0, i, 1); if (d !~ /[][*?{}]/) out = out d; continue }
-      if (q == "" && (c == "\"" || c == "\047")) { q = c; continue }
-      if (q != "" && c == q) { q = ""; continue }
-      if (q != "" && c ~ /[][*?{}]/) continue
-      out = out c }
-    print out }')"
+      word = m; inb = 1 } }' | tr -d "\"'\\\\")"
 for w in $(printf '%s' "$globtext" | tr ';&|()<>' '       '); do
   case "$w" in *[*?[{]*) ;; *) continue ;; esac
   word_path "$w"; t="$WP"

@@ -384,9 +384,9 @@ in 4.1. Anything that newly exposes the key is a blocker; the items that touch t
 - **Quote and separator edge cases:** a `;`, `|` or `(` inside a quoted `grep` argument splits the segment, so
   `grep -E 'a|b' -r x ~` is allowed; a backslash-newline continuation (`grep \` then `-r x ~` on the next line) resets the
   scan; `/bin/\Find ~` and `GREP\ -r x ~` are cheap evasion variants; a mixed-case tool inside a wrapper's quoted string
-  (`watch "Grep -r x ~"`, `$(which Grep) -r x ~`) is matched in lower case only. Since 4.1.1 the glob rule skips
-  heredoc bodies and the glob characters inside quotes (the shell expands neither), so a heredoc that a later
-  `bash file` runs is read as text only, like `sh -c` strings.
+  (`watch "Grep -r x ~"`, `$(which Grep) -r x ~`) is matched in lower case only. Since 4.1.1 the glob rule skips one
+  thing: the body of a heredoc that a plain `cat` or `tee` writes to a file (no pipe, no `$(...)`), so a file that a
+  later `bash file` runs is read as text only, like a script written in two steps.
 - **Tool list:** GNU's abbreviated `--recurs` and the long `--directories=recurse` are not recognised, nor `bsdtar` or
   `scp -r`. Prose over-denial is by design: an unquoted `echo Tree ~` and quoted prose that mentions `grep -r` and `~`
   are denied (agents quote their prose); so is `ls -ltr ~; echo Find`.
@@ -463,8 +463,9 @@ Fixes from the first day of 4.1 (DEV-512), one per item:
    herdr's reason, then no push while that herdr version runs.
 6. **Slim takes over a hand-written style:** backup, the conflicting `[ui]` tables and keys out, the block in.
 7. **A message to a busy agent is `(queued)`,** exit 0, with no enter pressed into its input line.
-8. **The guard reads globs as the shell does:** a glob in a heredoc body or inside quotes is not a path, so a scratch
-   file with a regex in it passes; `"$HOME"/.config/f*/*` stays denied.
+8. **The guard lets a scratch file through:** the body of a heredoc that a plain `cat` or `tee` writes to a file is not
+   read for globs, so a file with a regex in it passes; quoted globs and every other heredoc body (`bash -c`, an
+   interpreter, a shell reading stdin) are still read, so `~/.config/f*/*` stays denied in all of them.
 9. **A sleeping Mac is not a broken loop:** `schedule status` says when the Mac slept; "Keeping the Mac awake" above.
 10. **The version-switch yes is kept** once per installed version (`registry.sh pref version_ok <version>`);
     `FLEET_VERSION_OK` is gone.
