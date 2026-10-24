@@ -791,6 +791,8 @@ render_line() {
     claim_takeover) printf '%s taken over by %s. Stop or hand off %s.\n' "${L_issue:-}" "${L_machine:-}" "${L_team:-}" ;;
     slot_free) printf 'Slot free (%s of %s teams running). Pick the next issue and boot it.\n' "${L_live:-?}" "${L_target:-?}" ;;
     morning_report) printf 'Morning report %s: %s. Relay it as it is.\n' "${L_date:-}" "${L_path:-}" ;;
+    slim) printf 'Slim: %s.%s\n' "${L_state:-off}" "${L_backup:+ Backup at $L_backup.}" ;;
+    slim_status) printf 'Slim: %s. herdr Claude integration: %s. Offer: %s.\n' "${L_slim:-off}" "${L_integration:-missing}" "${L_offer:-done}" ;;
     debrief) printf '%s (%s): %s\n' "${L_team:-}" "${L_outcome:-}" "${L_lessons:-}" ;;
     discovered) printf 'Discovered work: %s\n' "${L_work:-}" ;;
     report) printf 'Report: %s\n' "${L_path:-}" ;;

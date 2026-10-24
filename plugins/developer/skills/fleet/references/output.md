@@ -338,6 +338,17 @@ alone, naming the path, and exit 2, never a clean result.
 
 `help <command>`: that command's usage header, unchanged.
 
+### slim
+
+```
+Slim: <on|off>. Backup at <path>.
+```
+
+` Backup at …` only when it changed herdr's config. `slim status`: `Slim: <on|off|conflict>. herdr Claude integration:
+<current|missing>. Offer: <due|done>.` A conflict (herdr's config already declares a table or key slim sets outside
+the fleet's markers) changes nothing: `Slim: conflict. Merge these lines into <config> yourself:`, the lines, and the
+error form on stderr, exit 3.
+
 ### sandbox
 
 ```

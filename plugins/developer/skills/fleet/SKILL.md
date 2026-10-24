@@ -51,6 +51,10 @@ done contract, escalation, caps, guards and debrief; mechanics that are not rout
 
 ## A. Boot
 
+Before the first boot of a session, run `$F/fleet slim status`. When it says `Offer: due`, ask once, in plain text
+(never a question box): "Turn on slim, the fleet's panel style for herdr, and install herdr's Claude integration?
+(yes/no)". Yes → `$F/fleet slim on`; no → `$F/fleet slim off`. Either records the answer, so it is never asked again.
+
 0. **Pick** the issue yourself when the user names none (or a slot frees, Tick): never ask which one. Search the
    tracker (Todo, Backlog, and In Progress that is unclaimed or lapsed, across the repos in `repos`); skip a live
    claim (`$F/fleet holder <ISSUE>` not lapsed, or with no heartbeat) and any issue whose blocked-by issues are not
@@ -179,7 +183,7 @@ worktrees, branches, plans, reports and the Linear claim (no Linear write). Tick
 ## G. Prime
 
 Run `$F/fleet prime` (the counts, then the status table) and answer with it. The registry is the memory: read rows,
-plans or reports only for what that does not answer.
+plans or reports only for what that does not answer. Then make the slim offer (A, before the first boot) if it is due.
 
 ## H. Debrief
 

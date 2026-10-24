@@ -80,6 +80,7 @@ Each command works the same from Claude Code (`/fleet <command>`) and from a she
 | `retire` | Shut a team (or one agent) down safely | `fleet retire build-api --outcome Shipped` |
 | `sandbox` | Run a reproduction away from the live fleet | `fleet sandbox --keep` |
 | `schedule` | Install, remove or check the launchd loop | `fleet schedule status` |
+| `slim` | Turn the fleet's panel style for herdr on or off, or say if it is on | `fleet slim status` |
 | `status` | Show each team's health and what needs you | `fleet status --problems` |
 | `takeover` | Take an issue over from a machine whose claim lapsed | `fleet takeover DEV-123` |
 | `tell` | Send a team's lead (or one agent) a message and check it arrived | `fleet tell build-api/lead "focus on token expiry"` |
@@ -119,6 +120,7 @@ The Orchestrator and agents call these directly (from `scripts/`). You can call 
 | `boot.sh` | `boot.sh [--issue ID --claimed-by KEY --labels a,b --scope 'repo: paths'] <template> <focus> <dir> [task…]` boots a team (`FLEET_FORCE=1` goes over the `max_agents` cap and the `min_free_gb` disk floor, never over another machine's claim). A takeover is done with `linear.sh takeover` before boot. It writes every row (Idle) before any agent starts; a boot that fails or is interrupted closes its workspace, removes the worktrees and branches it made and retires its rows (Abandoned), and a name with leftovers of an earlier boot is refused until `retire.sh <team>` tidies them |
 | `claim.sh` | `lease` prints now + `lease_hours` · `hb` reads the `heartbeat=` line of a label description (stdin) · `expired --lease ISO` says whether a lease has lapsed (the open-PR check is `linear.sh takeover`'s). Pure: it never calls a tracker |
 | `redact-check.sh` | `redact-check.sh --range <base>..<head>` counts the private terms in the lines a branch adds and its commit messages; prints counts only, never a term; exit 0 clean, 1 a match, 2 cannot run (no terms file, no terms, bad range). The terms live in `$FLEET_STATE_DIR/private/redact_terms.txt` (default `~/.local/state/fleet/private/redact_terms.txt`), outside every repo: one per line, blank lines and `#` lines ignored, mode 600 (it warns when the file is group- or world-readable). Every agent may run it: the house rules require it before sign-off and every push |
+| `slim.sh` | `slim.sh on\|off\|status` the slim panel style for herdr (`styles/slim.toml`), written only between markers in herdr's config, with a backup, the Claude integration and a reload; the choice is a registry pref, so the offer is made once. The Orchestrator's only |
 | `linear.sh` | claims and heartbeat on the Linear API: `claim <ISSUE> [--dry-run]` · `heartbeat` (one mutation) · `holder <ISSUE>` (with `lapsed`), `peers` and `blocks <ISSUE…>` (read-only) · `takeover <ISSUE> [--repo OWNER/NAME]` (refuses while a PR is open) · `release <ISSUE> [--lapsed]` (removes this machine's label, or with `--lapsed` a lapsed machine's, under takeover's guards) · `state <ISSUE> <Done\|Verify\|Todo>` · `migrate [--dry-run]` · `has-key`. Key in `~/.config/fleet/linear_api_key` (mode 600) or `LINEAR_API_KEY`; none: exit 3. Writes need `linear_writes` (below): off, the default, exits 3 too. Never posts claim or lease comments |
 | `chat.sh` | `channel` and `allow` print `chat_channel` and `chat_allow` · `format <event> …` prints the one-line message. It never posts or reads; the Orchestrator does with its own chat tools |
 | `machine-id.sh` | `id\|key\|label\|description\|hash\|show`: this machine's tracker identity, e.g. `fleet:3f9a2c1e`. The label description publishes `machine id sha256:<12 hex>`, never the full id; `linear.sh migrate` rewrites an older label that still holds the full id |
@@ -209,6 +211,25 @@ rows = [["state_icon", "workspace", "$state"], ["$issue", "$pr"]]
 
 An agent's line then reads like `◐ build-api · builder · working`, which names its team without dividers. A call
 herdr refuses is one warning, never a failure.
+
+### Slim panel style
+
+Slim is the fleet's panel style for herdr, [`styles/slim.toml`](styles/slim.toml): a 40-column sidebar, symbols for
+the agent states, agents sorted by space, and the rows above. The Orchestrator offers it once, before the first boot
+(or at `fleet prime`), together with herdr's Claude integration; your answer is recorded and never asked again.
+
+- `fleet slim on` backs herdr's config up (`config.toml.fleet-bak.<time>`), writes the style between
+  `# fleet slim:begin` and `# fleet slim:end` (the begin line names the plugin version, so a later version replaces
+  exactly that block), installs the Claude integration if it is missing and reloads herdr. A reload herdr refuses
+  puts the backup back. When your config already declares `[ui]`, `[ui.sidebar.agents]` or `[ui.sidebar.spaces]`
+  (or one of slim's keys) outside the markers, nothing changes: it prints the lines to merge yourself (TOML forbids
+  a table twice).
+- `fleet slim off` removes only the block between the markers; your own keys and the integration stay.
+- `fleet slim status` says whether it is on, whether the integration is current and whether the offer is due.
+
+Your config outside the markers is never edited. Without the fleet: delete the lines between the markers, then run
+`herdr server reload-config`. Before, an agent's line is herdr's default; after, it reads like
+`◐ build-api · builder · working`.
 
 ## Running the loop from launchd
 
@@ -381,6 +402,7 @@ in 4.1. Anything that newly exposes the key is a blocker; the items that touch t
 | `scripts/queue.sh` | the merge queue: which ready PRs to merge, in which order, and why |
 | `scripts/sandbox.sh` | reproductions away from the live fleet |
 | `scripts/redact-check.sh` | the redact check the house rules require: private terms counted, never printed |
+| `scripts/slim.sh`, `styles/slim.toml` | the slim panel style for herdr, between markers in herdr's config |
 | `rules/house.md` | the house rules every brief ends with (a repo's `.claude/fleet-rules.md` follows them) |
 | `scripts/retire.sh` | safe teardown: archives reports to `reports/fleet-archive/`, removes worktrees, removes the team's test cluster |
 | `scripts/env.sh` | per-team disposable test cluster, declared by the repo's `.claude/fleet-env.json` |

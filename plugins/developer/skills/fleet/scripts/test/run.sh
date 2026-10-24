@@ -171,6 +171,8 @@ case "$1 $2" in
   "integration status") printf '%s\n' "${HERDR_INTEGRATION:-claude: current}" ;;
   # the panel metadata (DEV-408 item 14); META_FAIL=1 makes herdr refuse it
   "workspace report-metadata" | "pane report-metadata") [ -z "${META_FAIL:-}" ] || exit 1; echo '{}' ;;
+  # slim (DEV-408 item 15): RELOAD_FAIL=1 makes herdr refuse to reload its config
+  "server reload-config") [ -z "${RELOAD_FAIL:-}" ] || exit 1; echo '{}' ;;
   *) echo '{}' ;;
 esac
 S
@@ -3453,7 +3455,7 @@ bad=""; while IFS= read -r row; do
 done < <(sed -n '3,$p' "$D4/help.out")
 eq "dev408-16 commands: every row has an example that runs that command" "$bad" ""
 eq "dev408-16 commands: no internal script is listed" "$(printf '%s\n' "$cmds" | grep -cxE 'common|agent-lib|loop-tick|registry|tick|linear|machine-id|chat|fleet')" 0
-eq "dev408-16 commands: the commands (scripts with a Command line, the aliases, help)" "$(printf '%s\n' "$cmds" | paste -sd' ' -)" "boot claim debrief env escalate escalations focus help holder metrics next park prime redact-check resolve respawn retire sandbox schedule status takeover tell unpark"
+eq "dev408-16 commands: the commands (scripts with a Command line, the aliases, help)" "$(printf '%s\n' "$cmds" | paste -sd' ' -)" "boot claim debrief env escalate escalations focus help holder metrics next park prime redact-check resolve respawn retire sandbox schedule slim status takeover tell unpark"
 bad=""; for f in "$SCRIPTS"/*.sh; do
   grep -q '^# Command: ' "$f" || continue; n="$(basename "$f" .sh)"
   awk 'NR == 1 { next } !/^#/ { exit } { print }' "$f" | grep -qE "^#   $n\.sh( |$)" || bad="$bad $n:usage"
@@ -3977,6 +3979,38 @@ eq "dev408-14 meta: a tick with nothing changed reports nothing" "$(grep -c 'rep
 eq "dev408-14 meta: a new PR is reported on the next tick" "$(grep -c '^workspace report-metadata --source fleet w1 --token issue=DEV-140 --token pr=#14 ' "$HERDR_LOG")" 1
 META_FAIL=1 FLEET_FORCE=1 bt build mf "$QD/p14" task
 eq "dev408-14 meta: herdr refusing the metadata warns once and never fails the boot" "$BTRC:$(grep -c 'herdr did not take the panel metadata of build-mf' "$T/bt.err")" "0:1"
+
+# -- dev408-15: slim, the fleet's panel style for herdr: written between markers, offered once, nothing else touched
+qfresh slim; HC="$QD/herdr.toml"; printf '# mine\n[keys]\nquit = "q"\n' >"$HC"; cp "$HC" "$QD/mine.toml"
+sl() { FLEET_HERDR_CONFIG="$HC" "$SCRIPTS/slim.sh" "$@"; }
+PV15="$(jq -r .version "$SCRIPTS/../../../.claude-plugin/plugin.json")"
+eq "dev408-15 slim: status before anything: off, the integration missing, the offer due" "$(HERDR_INTEGRATION="claude: not installed" sl status)" "Slim: off. herdr Claude integration: missing. Offer: due."
+gold slim "$(HERDR_INTEGRATION="claude: not installed" sl status)"
+: >"$HERDR_LOG"; o15="$(HERDR_INTEGRATION="claude: not installed" sl on)"; rc=$?
+eq "dev408-15 slim: on keeps the user's lines and adds the style between markers carrying the plugin version" \
+  "$rc:$(head -n 3 "$HC" | cmp -s - "$QD/mine.toml" && echo kept):$(grep -c "^# fleet slim:begin (developer $PV15)\$" "$HC"):$(grep -c '^# fleet slim:end$' "$HC"):$(grep -c '^sidebar_width = 40$' "$HC")" "0:kept:1:1:1"
+eq "dev408-15 slim: on backs up first, installs the missing integration, reloads herdr and records the choice" \
+  "$(ls "$HC".fleet-bak.* 2>/dev/null | wc -l | tr -d ' '):$(grep -c '^integration install claude' "$HERDR_LOG"):$(grep -c '^server reload-config' "$HERDR_LOG"):$("$REG" pref slim)" "1:1:1:on"
+eq "dev408-15 slim: and says so with the backup" "$(printf '%s' "$o15" | sed 's/fleet-bak\.[0-9TZ]*/fleet-bak.X/')" "Slim: on. Backup at $HC.fleet-bak.X."
+sl on >/dev/null; eq "dev408-15 slim: a second on replaces the block, never two" "$(grep -c '^# fleet slim:begin' "$HC")" 1
+eq "dev408-15 slim: status once on" "$(sl status)" "Slim: on. herdr Claude integration: current. Offer: done."
+sl off >/dev/null; eq "dev408-15 slim: off removes only the block and records the choice" "$(grep -c 'fleet slim' "$HC"):$(grep -c '^quit = "q"$' "$HC"):$("$REG" pref slim)" "0:1:off"
+eq "dev408-15 slim: with a choice recorded the offer is never due again" "$(sl status)" "Slim: off. herdr Claude integration: current. Offer: done."
+printf '[ui]\nsidebar_width = 30\n' >>"$HC"; cp "$HC" "$QD/before.toml"; o15="$(sl on 2>"$T/sl.err")"; rc=$?
+eq "dev408-15 slim: a [ui] table outside the markers: nothing changes, the lines to merge are printed, exit 3" \
+  "$rc:$(cmp -s "$HC" "$QD/before.toml" && echo same):$(printf '%s' "$o15" | grep -c '^sidebar_width = 40$'):$(grep -c 'already sets \[ui\] outside' "$T/sl.err")" "3:same:1:1"
+eq "dev408-15 slim: and status says conflict" "$(sl status | cut -d. -f1)" "Slim: conflict"
+cp "$QD/mine.toml" "$HC"; RELOAD_FAIL=1 sl on >/dev/null 2>"$T/sl.err"; rc=$?
+eq "dev408-15 slim: a reload herdr refuses puts the config back as it was, exit 1" "$rc:$(cmp -s "$HC" "$QD/mine.toml" && echo restored)" "1:restored"
+FLEET_ROLE=worker sl status >/dev/null 2>"$T/sl.err"; eq "dev408-15 slim: an agent is refused" "$?:$(grep -c "slim.sh is the Orchestrator's" "$T/sl.err")" "1:1"
+env -u FLEET_TEST FLEET_HERDR_CONFIG="$QD/elsewhere.toml" "$SCRIPTS/slim.sh" on >/dev/null 2>&1
+eq "dev408-15 slim: without FLEET_TEST=1 the override is ignored: herdr's own config (here under the test HOME)" \
+  "$([ -e "$QD/elsewhere.toml" ] && echo used || echo ignored):$(grep -c '^# fleet slim:begin' "$HOME/.config/herdr/config.toml")" "ignored:1"
+rm -rf "$HOME/.config/herdr"
+check "dev408-15 slim: the style holds only the fleet's [ui] keys and its rows" bash -c \
+  "! grep -vE '^(#.*|\[ui(\.sidebar\.(agents|spaces))?\]|sidebar_width = 40|status_indicators = \"symbols\"|agent_panel_sort = \"spaces\"|rows = .*|)\$' '$SCRIPTS/../styles/slim.toml'"
+check "dev408-15 slim: SKILL.md offers it once, in plain text, before the first boot and at prime" bash -c \
+  "grep -q 'fleet slim status' '$SCRIPTS/../SKILL.md' && grep -q 'Turn on slim, the fleet' '$SCRIPTS/../SKILL.md'"
 # ---- end DEV-408 ----
 
 printf '\n%d passed, %d failed\n' "$pass" "$failn"

@@ -19,6 +19,7 @@
 | `retire` | Shut a team (or one agent) down safely | `fleet retire build-api --outcome Shipped` |
 | `sandbox` | Run a reproduction away from the live fleet | `fleet sandbox --keep` |
 | `schedule` | Install, remove or check the launchd loop | `fleet schedule status` |
+| `slim` | Turn the fleet's panel style for herdr on or off, or say if it is on | `fleet slim status` |
 | `status` | Show each team's health and what needs you | `fleet status --problems` |
 | `takeover` | Take an issue over from a machine whose claim lapsed | `fleet takeover DEV-123` |
 | `tell` | Send a team's lead (or one agent) a message and check it arrived | `fleet tell build-api/lead "focus on token expiry"` |
