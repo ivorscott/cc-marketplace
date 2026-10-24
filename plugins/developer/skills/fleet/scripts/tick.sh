@@ -40,6 +40,10 @@
 #   repo_without_team  a repo in config.toml `repos` with no live team, when it becomes so
 #   disk, disk_ok   free disk crossed below warn_free_gb, and recovered
 #   claim_takeover  a team's issue now carries another machine's label (once per team, issue and holder)
+#   claim_released  another machine's lapsed claim with no open PR was released (linear.sh release --lapsed)
+#   claim_held_pr   another machine's lapsed claim has an open PR, so it was left alone
+#   claim_lapsed    another machine's claim lapsed (writes off, test mode) or has no heartbeat; left alone, read-only.
+#                   The three claim_ events: once per (issue, holder, heartbeat); not with --team
 #   claims_unavailable  teams hold issues but no Linear key is configured (once)
 #   claims_readonly     teams hold issues and a key exists, but linear_writes = off (once)
 # With a key and linear_writes allowing it, every tick makes ONE heartbeat mutation (linear.sh heartbeat);
@@ -148,8 +152,55 @@ claims_taken_over() {
     fi
   done < <(printf '%s' "$claim_rows" | jq -r '[.[] | [.team, .issue]] | unique[] | @tsv')
 }
+# Another machine's lapsed claim (linear.sh peers, read once; a fleet-wide check, so tick --team skips it). Only a
+# heartbeat older than lease_hours is lapsed. With writes allowed and no open PR in any repo the fleet works in (the
+# registry rows' repos and config.toml `repos`, by their origin remotes), linear.sh release --lapsed frees the
+# issue (it checks both again): claim_released. An open PR is never touched: claim_held_pr. Writes off, test mode
+# outside its team, or no repo to look in: claim_lapsed, read-only. A claim with no heartbeat is not proven lapsed:
+# claim_lapsed only. Each once per (issue, holder, heartbeat); keys of claims no longer listed are dropped.
+claims_lapsed() {
+  [ -z "$team" ] || return 0
+  "$FLEET_SCRIPTS/linear.sh" has-key >/dev/null 2>&1 || return 0
+  local peers repos i m hb k ev url why proven lease err now_t
+  peers="$("$FLEET_SCRIPTS/linear.sh" peers 2>/dev/null)" || { warn "could not read other machines' claims"; return 0; }
+  repos="$({ "$registry" list | jq -r '.[] | .repo // empty'; config_list repos | jq -r '.[]'; } | sort -u | while IFS= read -r d; do
+      [ -d "$d" ] && git -C "$d" remote get-url origin 2>/dev/null | sed -E 's#^(git@[^:]+:|[a-z]+://([^@/]+@)?[^/]+/)##; s#\.git$##'
+    done | grep -E '^[^/[:space:]]+/[^/[:space:]]+$' | sort -u | paste -sd' ' -)" || repos=""
+  now_t="${FLEET_NOW:-$(now)}"; err="$(mktemp "${TMPDIR:-/tmp}/fleet-tick-release.XXXXXX")"
+  while IFS=$'\t' read -r i m hb; do
+    [ -n "$i" ] || continue
+    [ "$hb" != - ] || hb=""
+    proven=0 # a live heartbeat is skipped; one that is no time is never proven lapsed
+    if [ -n "$hb" ] && lease="$("$FLEET_SCRIPTS/claim.sh" lease --now "$hb" 2>/dev/null)"; then
+      "$FLEET_SCRIPTS/claim.sh" expired --lease "$lease" --now "$now_t" >/dev/null 2>&1 && proven=1 || continue
+    fi
+    k="$i|$m|$hb"
+    [ "$(jq --arg k "$k" '(.lapsed_emitted // []) | index($k) == null' "$STATE_FILE")" = true ] || continue
+    ev=claim_lapsed; url=""; why=""
+    if [ "$proven" = 0 ]; then why="no heartbeat, so it is not proven lapsed"
+    elif [ "$(linear_writes)" = off ]; then why="its heartbeat is older than lease_hours, and linear_writes is off"
+    elif [ -z "$repos" ]; then why="its heartbeat is older than lease_hours, and the fleet has no repo to look for its PR in"
+    else
+      # shellcheck disable=SC2046,SC2086
+      if "$FLEET_SCRIPTS/linear.sh" release "$i" --lapsed $(printf -- '--repo %s ' $repos) >/dev/null 2>"$err"; then ev=claim_released
+      else
+        case "$(cat "$err")" in
+          *"has an open PR ("*) ev=claim_held_pr; url="$(sed -n 's/.*has an open PR (\([^)]*\)).*/\1/p' "$err" | head -n 1)" ;;
+          *"test mode"*) why="its heartbeat is older than lease_hours, and linear_writes is in test mode" ;;
+          *) warn "could not release the lapsed claim of $m on $i: $(tail -n 1 "$err")"; continue ;;
+        esac
+      fi
+    fi
+    add_events "$(jq -cn --arg e "$ev" --arg i "$i" --arg m "$m" --arg u "$url" --arg w "$why" \
+      '[{type: $e, team: "", name: "", issue: $i, holder: $m} + (if $u != "" then {url: $u} else {} end) + (if $w != "" then {detail: $w} else {} end)]')"
+    st_upd --arg k "$k" '$st + {lapsed_emitted: ((($st.lapsed_emitted // []) + [$k]) | unique)}'
+  done < <(printf '%s' "$peers" | jq -r '.[] | [.issue, .label, (.heartbeat // "-")] | @tsv')
+  rm -f "$err"
+  st_upd --argjson p "$peers" '$st + {lapsed_emitted: [($st.lapsed_emitted // [])[] | select(split("|")[0:2] | join("|") as $k | [$p[] | .issue + "|" + .label] | index($k))]}'
+}
 heartbeat
 claims_taken_over
+claims_lapsed
 
 # --- stalled / dead -------------------------------------------------------------------------
 # A newly Stalled agent gets ONE nudge through tell.sh (nudged_at on its row) and no event; still
@@ -438,11 +489,16 @@ fi
 st_upd --arg w "$sweek" '$st + {summary_week: $w}'
 
 # --- the event log ------------------------------------------------------------------------------------
-while IFS=$'\t' read -r etype eteam ename eurl esha; do
+while IFS=$'\t' read -r etype eteam ename eurl esha eissue edetail; do
   [ -n "$etype" ] || continue
-  [ "$eurl" != - ] || eurl=""; [ "$esha" != - ] || esha=""; [ "$eteam" != - ] || eteam=""
-  ev_log "$etype" team="$eteam" name="$ename" pr="$eurl" sha="$esha"
-done < <(jq -r '.[] | select(.type | IN("pr_opened", "pr_ready", "pr_merged", "pr_conflicting", "stalled", "dead", "failed", "needs_input", "stale_version")) | [.type, (.team // "-" | if . == "" then "-" else . end), .name, (.url // "-"), (.sha // "-")] | @tsv' "$EVENTS_FILE")
+  [ "$eurl" != - ] || eurl=""; [ "$esha" != - ] || esha=""; [ "$eteam" != - ] || eteam=""; [ "$ename" != - ] || ename=""
+  [ "$eissue" != - ] || eissue=""; [ "$edetail" != - ] || edetail=""
+  ev_log "$etype" team="$eteam" name="$ename" pr="$eurl" sha="$esha" issue="$eissue" detail="$edetail"
+done < <(jq -r 'def d: if . == null or . == "" then "-" else tostring end;
+  .[] | select(.type | IN("pr_opened", "pr_ready", "pr_merged", "pr_conflicting", "stalled", "dead", "failed", "needs_input", "stale_version",
+    "claim_released", "claim_held_pr", "claim_lapsed"))
+  | [.type, (.team | d), (.name | d), (.url | d), (.sha | d), (if (.type | startswith("claim_")) then (.issue | d) else "-" end),
+     (if (.type | startswith("claim_")) then ("holder " + (.holder // "?") + (if .detail then ": " + .detail else "" end)) else "-" end)] | @tsv' "$EVENTS_FILE")
 
 # --- notices: each wake's reply, rendered once for `fleet status` (references/output.md) --------------------------
 while IFS= read -r ev; do

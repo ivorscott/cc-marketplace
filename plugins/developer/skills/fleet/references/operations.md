@@ -40,8 +40,12 @@ fatal.
 A claim is this machine's label on the issue; liveness is one `heartbeat=<ISO>` line in that
 label's description. **No claim, lease or heartbeat comment is ever posted.**
 
-1. **Pick work** from the tracker by priority. Skip any issue carrying another machine's
-   `<label_prefix>*` label (`$F/linear.sh holder <ISSUE>` says who holds it; read-only).
+1. **Pick work** without the user (SKILL.md route A, step 0). Skip a live claim: `$F/linear.sh holder <ISSUE>`
+   (read-only) says who holds it and whether the claim `lapsed`; `false` is live, and `null` (no heartbeat) is not
+   proven lapsed, so it is skipped too. Skip an issue whose blocked-by issues are not all Done. Order the rest by
+   priority, then by series order (its place in its "Part of" or parent sequence, then its identifier). A lapsed
+   claim with no open PR is free: take it over (**Takeover**). Record the search behind each boot with
+   `$F/registry.sh note <team>/lead picked "<query and why>"`; the morning report reads it.
 2. **Claim:** `$F/linear.sh claim <ISSUE>` (`--dry-run` lists what it would do). It ensures this
    machine's label (under the `fleet` group, described by `machine-id.sh description`), labels the
    issue, sets In Progress, waits `claim_settle_secs` (default 5), re-reads, and exits 1 naming the
@@ -71,6 +75,21 @@ issue forever. Only a heartbeat older than `lease_hours` (default 2) **and** no 
    label, sets In Progress and posts **one** comment (`fleet: taken over from … (heartbeat …, no
    open PR)`), the only comment the scripts ever post. It needs `linear_writes` on (below). Boot as the winner as above, tell the
    user, and post a `takeover` chat line (**A0c**).
+
+### Sweep
+
+Tick frees a crashed machine's issues on its own, so they can be picked again. With a key, it reads
+`linear.sh peers` once per tick (not with `--team`). For each other machine's claim whose heartbeat is older than
+`lease_hours`:
+
+- **no open PR, writes allowed:** `linear.sh release <ISSUE> --lapsed` removes that machine's label (it checks the
+  heartbeat and the PR again; the PR is looked up in every repo the fleet works in: the registry rows' repos and
+  `repos` in `config.toml`), and tick reports `claim_released`;
+- **an open PR:** never touched; `claim_held_pr`, so the user sees it;
+- **writes off, test mode outside its team, or no repo to look in:** `claim_lapsed`, read-only.
+
+A claim with no heartbeat is not proven lapsed: `claim_lapsed` only. Each event comes once per (issue, holder,
+heartbeat), and all three wake the Orchestrator.
 
 ### Heartbeat
 

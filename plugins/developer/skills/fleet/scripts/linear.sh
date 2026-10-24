@@ -17,7 +17,9 @@
 #   linear.sh release <ISSUE> [--lapsed [--repo OWNER/NAME]]   remove this machine's label (and its legacy label) from
 #                                             the issue, keeping the rest; refuses an issue this machine does not hold.
 #                                             --lapsed removes another machine's label instead, only with takeover's
-#                                             guards (heartbeat older than lease_hours, no open PR); nothing is posted
+#                                             guards (heartbeat older than lease_hours, no open PR); nothing is posted.
+#                                             --repo may repeat: the open PR is looked up in every one given (tick's
+#                                             sweep passes the fleet's repos), else in the cwd's repo
 #   linear.sh state <ISSUE> <Done|Verify|Todo>   move the issue to that workflow state, labels untouched; refuses an
 #                                             issue another machine holds
 #   linear.sh migrate [--dry-run]             delete this machine's old `fleet-claim:` comments, and rewrite our
@@ -312,20 +314,24 @@ claim_lapsed() {
   "$FLEET_SCRIPTS/claim.sh" expired --lease "$lease" --now "${FLEET_NOW:-$(now)}"
 }
 
-# lapsed_claim <ISSUE> <issue json> <repo | ""> <refusal>: prints "<holder label><TAB><heartbeat>" when another
+# lapsed_claim <ISSUE> <issue json> <repos | ""> <refusal>: prints "<holder label><TAB><heartbeat>" when another
 # machine's claim on the issue may be taken from it: its heartbeat is older than lease_hours AND no PR is open for
-# the issue (a PR waiting on a merge is not quiet). Otherwise it dies naming why, ending with <refusal> ("Not
-# taking over"), before anything is written. takeover and release --lapsed share it; FLEET_FORCE never bypasses it.
+# the issue in any of the space-separated OWNER/NAME repos (the cwd's repo when there are none; a PR waiting on a
+# merge is not quiet). Otherwise it dies naming why, ending with <refusal> ("Not taking over"), before anything is
+# written. takeover and release --lapsed share it; FLEET_FORCE never bypasses it.
 lapsed_claim() {
-  local issue="$1" iss="$2" repo="$3" no="$4" holder hb why pr="" rc=0
+  local issue="$1" iss="$2" repos="$3" no="$4" holder hb why pr="" rc=0 r
   holder="$(other_fleet_labels "$iss" | head -n 1)"
   [ -n "$holder" ] || die "$issue is not claimed by another machine. $no"
   hb="$(hb_of "$(q_labels_named "$holder" | jq -r '.[0].description // ""')")"
   [ -n "$hb" ] || die "$holder has no heartbeat; cannot show its claim lapsed. $no"
   why="$(claim_lapsed "$hb" 2>&1)" || die "$issue is claimed by $holder ($why). $no"
-  pr="$(open_pr "$issue" "$repo")" || rc=$?
-  [ "$rc" = 0 ] || die "cannot look up open PRs for $issue (gh failed or is missing). $no"
-  [ -z "$pr" ] || die "$issue has an open PR ($pr). $no while it is open"
+  for r in ${repos:-.}; do
+    [ "$r" != . ] || r=""
+    pr="$(open_pr "$issue" "$r")" || rc=$?
+    [ "$rc" = 0 ] || die "cannot look up open PRs for $issue${r:+ in $r} (gh failed or is missing). $no"
+    [ -z "$pr" ] || die "$issue has an open PR ($pr). $no while it is open"
+  done
   printf '%s\t%s\n' "$holder" "$hb"
 }
 
@@ -524,12 +530,12 @@ case "$cmd" in
     while [ $# -gt 0 ]; do
       case "$1" in
         --lapsed) lapsed=1; shift ;;
-        --repo) repo="${2:?--repo needs OWNER/NAME}"; shift 2 ;;
+        --repo) repo="${repo:+$repo }${2:?--repo needs OWNER/NAME}"; shift 2 ;;
         -*) die "unknown option: $1" ;;
         *) issue="$1"; shift ;;
       esac
     done
-    [ -n "$issue" ] || die "usage: release <ISSUE> [--lapsed [--repo OWNER/NAME]]"
+    [ -n "$issue" ] || die "usage: release <ISSUE> [--lapsed [--repo OWNER/NAME]...]"
     [ -z "$repo" ] || [ "$lapsed" = 1 ] || die "--repo goes with --lapsed (it is where the open PR is looked up)"
     [ "$WMODE" != off ] || writes_off
     iss="$(q_issue "$issue")"

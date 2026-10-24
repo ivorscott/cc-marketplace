@@ -3514,6 +3514,9 @@ for w in $WAKES; do
     escalation) ev='{"type":"escalation","team":"build-api","name":"build-api/lead","id":"20261024T080000Z-1","severity":"P1","message":"which database?","options":["postgres","sqlite"]}' ;;
     pr_conflicting) ev='{"type":"pr_conflicting","team":"build-api","name":"build-api/lead","url":"https://github.com/acme/app-api/pull/214","merged":"https://github.com/acme/app-web/pull/121","lead_told":true}' ;;
     stale_version) ev='{"type":"stale_version","team":"build-api","name":"build-api/lead","from":"4.0.0","to":"4.1.0","detail":"runs 4.0.0, installed 4.1.0; waits for the go"}' ;;
+    claim_released) ev='{"type":"claim_released","team":"","name":"","issue":"DEV-2","holder":"fleet:other"}' ;;
+    claim_held_pr) ev='{"type":"claim_held_pr","team":"","name":"","issue":"DEV-6","holder":"fleet:other","url":"https://github.com/acme/app-api/pull/9"}' ;;
+    claim_lapsed) ev='{"type":"claim_lapsed","team":"","name":"","issue":"DEV-4","holder":"fleet:other","detail":"no heartbeat, so it is not proven lapsed"}' ;;
     *) ev="$(jq -cn --arg t "$w" '{type: $t, team: "build-api", name: "build-api/builder"}')" ;;
   esac
   gold "wake-$w" "$(bash -c '. "$1/common.sh"; render_notice "$2"' _ "$SCRIPTS" "$ev")"
@@ -3717,6 +3720,37 @@ check "dev408-4 loop: SKILL.md follows wakes.log with Monitor, allows Monitor, a
   "grep -q '^allowed-tools:.*Monitor' '$SCRIPTS/../SKILL.md' && grep -q 'tail -n 0 -F <wakes>' '$SCRIPTS/../SKILL.md' && grep -q 'never open a' '$SCRIPTS/../SKILL.md'"
 check "dev408-4 loop: orchestrator_ref, the wake queue and the typed wake are gone" bash -c \
   "! grep -q orchestrator_ref '$SCRIPTS/../config.example.toml' '$SCRIPTS'/*.sh && ! grep -q 'orchestrator_wake_missed\|wake_undelivered\|tell.sh\|wake_misses =' '$SCRIPTS/loop-tick.sh'"
+
+# -- dev408-1: the Pick step decides without the user (route A, operations.md A0b)
+check "dev408-1 pick: route A has the Pick step: a live claim and unfinished blockers are skipped, priority then series order" bash -c \
+  "grep -q '^0\. \*\*Pick\*\*' '$SCRIPTS/../SKILL.md' && grep -q 'skip a live' '$SCRIPTS/../SKILL.md' && grep -q 'blocked-by issues are not' '$SCRIPTS/../SKILL.md' && grep -q 'series order' '$SCRIPTS/../SKILL.md' && grep -q 'note <team>/lead picked' '$SCRIPTS/../SKILL.md'"
+check "dev408-1 pick: operations.md skips a live claim, no longer any issue with another machine's label" bash -c \
+  "grep -q 'Skip a live claim' '$SCRIPTS/../references/operations.md' && ! grep -q 'Skip any issue carrying another machine' '$SCRIPTS/../references/operations.md'"
+
+# -- dev408-3: tick sweeps other machines' lapsed claims: release (no PR), held (open PR), lapsed (read-only), live left
+qfresh sweep; git init -q "$D4/r3"; git -C "$D4/r3" remote add origin https://github.com/acme/app-api.git
+d4db; jq '.labels += [{id: "L7", name: "fleet:pr", description: "pr host\nheartbeat=2026-10-18T06:00:00Z", parent: {id: "L1", name: "fleet"}},
+    {id: "L8", name: "fleet:live", description: "live host\nheartbeat=2026-10-18T08:30:00Z", parent: {id: "L1", name: "fleet"}}]
+  | .issues |= (map(if .identifier == "DEV-5" then .labelIds = ["L3"] else . end)
+    + [{id: "I6", identifier: "DEV-6", team: {id: "T1"}, state: {id: "S1", name: "In Progress"}, labelIds: ["L7"], comments: []},
+       {id: "I7", identifier: "DEV-7", team: {id: "T1"}, state: {id: "S1", name: "In Progress"}, labelIds: ["L8"], comments: []}])' "$LINEAR_DB" >"$D4/db3" && cp "$D4/db3" "$LINEAR_DB"
+printf '[{"url": "https://github.com/acme/app-api/pull/9", "headRefName": "fleet/dev-6-x", "isCrossRepository": false}]' >"$D4/gh-pr6.json"
+sw() { FLEET_GH="$G4" D4GH_LIST="$D4/gh-pr6.json" FLEET_NOW=2026-10-18T09:00:00Z "$SCRIPTS/tick.sh" 2>"$D4/sw.err"; }
+swev() { printf '%s' "$1" | jq -r '[.[] | select(.type | startswith("claim_")) | .type + ":" + .issue] | sort | join(" ")'; }
+d4cfg 'linear_writes = "on"' "repos = [\"$D4/r3\"]"; : >"$LINEAR_LOG"; : >"$D4GH_LOG"; s1="$(sw)"
+eq "dev408-3 sweep: lapsed with no PR released, lapsed with a PR held, no heartbeat lapsed, a live claim untouched" "$(swev "$s1")" "claim_held_pr:DEV-6 claim_lapsed:DEV-4 claim_released:DEV-2"
+eq "dev408-3 sweep: exactly one release, of the lapsed claim with no PR" "$(d4mut):$(d4labels DEV-2):$(d4labels DEV-6):$(d4labels DEV-7)" "1:bug:fleet:pr:fleet:live"
+eq "dev408-3 sweep: every PR lookup was in the fleet's repo (by its origin remote), and held names the PR" "$(grep -c '^pr list' "$D4GH_LOG"):$(grep -c '^pr list.*--repo acme/app-api' "$D4GH_LOG"):$(printf '%s' "$s1" | jq -r '.[] | select(.type == "claim_held_pr") | .url')" "3:3:https://github.com/acme/app-api/pull/9"
+eq "dev408-3 sweep: each once, then quiet" "$(swev "$(sw)")" ""
+eq "dev408-3 sweep: the claims are in the event log with their holder" "$(jq -r 'select(.type | startswith("claim_")) | .type + ":" + .issue + ":" + .detail' "$FLEET_STATE_DIR/events.jsonl" | sort | head -n 1)" "claim_held_pr:DEV-6:holder fleet:pr"
+eq "dev408-3 sweep: they wake the Orchestrator" "$(jq -r '.[] | .type' <<<"$s1" | grep -c '^claim_' ):$(bash -c '. "$1/common.sh"; for t in claim_released claim_held_pr claim_lapsed; do case " $WAKE_TYPES " in *" $t "*) printf y ;; esac; done' _ "$SCRIPTS")" "3:yyy"
+qfresh sweepro; cp "$D4/db3" "$LINEAR_DB"; d4cfg "repos = [\"$D4/r3\"]"; : >"$LINEAR_LOG"; s2="$(sw)"
+eq "dev408-3 sweep: with writes off nothing is written, and each lapsed claim is claim_lapsed" "$(swev "$s2"):$(d4mut)" "claim_lapsed:DEV-2 claim_lapsed:DEV-4 claim_lapsed:DEV-6:0"
+qfresh sweepnr; cp "$D4/db3" "$LINEAR_DB"; d4cfg 'linear_writes = "on"'; : >"$LINEAR_LOG"; s3="$(sw)"
+eq "dev408-3 sweep: with no repo to look for a PR in, nothing is released" "$(swev "$s3"):$(d4mut)" "claim_lapsed:DEV-2 claim_lapsed:DEV-4 claim_lapsed:DEV-6:0"
+qfresh sweepteam; cp "$D4/db3" "$LINEAR_DB"; d4cfg 'linear_writes = "on"' "repos = [\"$D4/r3\"]"
+eq "dev408-3 sweep: tick --team leaves it to the fleet-wide tick" "$(swev "$(FLEET_GH="$G4" D4GH_LIST="$D4/gh-pr6.json" FLEET_NOW=2026-10-18T09:00:00Z "$SCRIPTS/tick.sh" --team nobody 2>/dev/null)")" ""
+d4cfg
 # ---- end DEV-408 ----
 
 printf '\n%d passed, %d failed\n' "$pass" "$failn"

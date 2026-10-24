@@ -50,6 +50,13 @@ done contract, escalation, caps, guards and debrief; mechanics that are not rout
 
 ## A. Boot
 
+0. **Pick** the issue yourself when the user names none (or a slot frees, Tick): never ask which one. Search the
+   tracker (Todo, Backlog, and In Progress that is unclaimed or lapsed, across the repos in `repos`); skip a live
+   claim (`$F/fleet holder <ISSUE>` not lapsed, or with no heartbeat) and any issue whose blocked-by issues are not
+   all Done; order the rest by priority, then by series order (its place in its "Part of" or parent sequence, then its
+   identifier). A lapsed claim with no open PR is free: take it with `$F/fleet takeover <ISSUE>`. Ask the user only
+   to override a cap, or for a P0/P1. After the boot, record the search: `$F/registry.sh note <team>/lead picked
+   "<query and why>"`.
 1. Pick the template: `build` (plan, build, test one piece of work), `review` (independent read-only reviewers)
    or `research` (problem-first study guide); a path to a custom template JSON also works. Unsure → ask.
 2. With several machines on Linear, claim the issue first (`references/operations.md`, "Claims"); a single machine
@@ -59,7 +66,8 @@ done contract, escalation, caps, guards and debrief; mechanics that are not rout
    the done contract and house rules appended, and writes the registry rows. Pass `--issue DEV-123 --issue-url
    <URL>` for an issue-bound team so the PR body gets the exact `Fixes <URL>` line. A repo with
    `.claude/fleet-env.json` gets a team test cluster (`references/operations.md`, "Team environment").
-3. It prints the team as JSON. Anything not `Working` needs you now: go to **B** for that agent.
+3. It prints its line (each agent ✓, or ✗ and why) and the team table. Anything not `● Working` needs you now: go to
+   **B** for that agent.
 
 ## B. Status
 
@@ -108,6 +116,8 @@ question box (AskUserQuestion): the wakes queue behind it. Ask in plain text and
 - `stalled`: nudged once and still stalled. `pr_opened`: a builder opened a PR without `done`; tick told the lead.
 - `weekly_summary`: its notice is the metrics table and the report it wrote (`reports/fleet-metrics-<date>.md`).
 - `claim_takeover`: stop or hand off the team (F), tell the user, escalate P1; never fight back (operations.md).
+- `claim_released`: tick freed another machine's lapsed claim; the issue can be picked (A, step 0). `claim_held_pr`
+  and `claim_lapsed`: tick left another machine's claim alone (an open PR, writes off, or no heartbeat); relay it.
 - `pr_conflicting`: a merge made a ready PR conflict; tick unparked its team and told its lead. Act only when the
   notice says the unpark was refused (a cap is full): unpark the team when a slot frees.
 

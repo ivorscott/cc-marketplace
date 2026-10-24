@@ -392,6 +392,28 @@ Brief failed <team/role>: its brief never arrived, re-sent once. Look at its pan
 [DEV-1](url) taken over by <machine>. Stop or hand off <team>.
 ```
 
+### wake claim_released
+
+```
+Claim released DEV-1: <machine> stopped its heartbeat and has no open PR. The issue is free to pick.
+```
+
+### wake claim_held_pr
+
+```
+Claim held DEV-1: <machine> stopped its heartbeat, but [repo #N](url) is open. It stays theirs while the PR is open.
+```
+
+### wake claim_lapsed
+
+```
+Claim lapsed DEV-1: <machine>: <why it was left>. Left as it is.
+```
+
+Why: `no heartbeat, so it is not proven lapsed`, or `its heartbeat is older than lease_hours, and` `linear_writes is
+off`, `linear_writes is in test mode` or `the fleet has no repo to look for its PR in`. The three come from tick's
+sweep of other machines' claims (operations.md, "Sweep"), once per (issue, holder, heartbeat).
+
 ### wake stale_version
 
 ```

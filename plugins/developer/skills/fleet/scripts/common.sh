@@ -775,6 +775,13 @@ render_notice() {
       else render_line event event="Needs input" name="$name" what="$d" next="Look at its pane"; fi ;;
     brief_failed) render_line event event="Brief failed" name="$name" what="its brief never arrived, re-sent once" next="Look at its pane, then re-send or re-boot" ;;
     claim_takeover) render_line claim_takeover issue="$(team_issue "$team")" machine="$(jq -r '.holder // "another machine"' <<<"$e")" team="$team" ;;
+    claim_released | claim_held_pr | claim_lapsed)
+      n="$(jq -r '.issue // ""' <<<"$e")"; o="$(jq -r '.holder // "another machine"' <<<"$e")"; d="$(jq -r '.detail // ""' <<<"$e")"
+      case "$type" in
+        claim_released) render_line event event="Claim released" name="$n" what="$o stopped its heartbeat and has no open PR" next="The issue is free to pick" ;;
+        claim_held_pr) render_line event event="Claim held" name="$n" what="$o stopped its heartbeat, but $(pr_link "$url") is open" next="It stays theirs while the PR is open" ;;
+        claim_lapsed) render_line event event="Claim lapsed" name="$n" what="$o: $d" next="Left as it is" ;;
+      esac ;;
     stale_version) d="$(jq -r '.to // "a newer version"' <<<"$e")"
       render_decision P2 "$name" "$team runs plugin $(jq -r '.from // "an older version"' <<<"$e") and $d is installed. Switch it to $d at its next issue?" \
         "yes, at its next issue" "no, retire it after this issue" ;;
@@ -788,7 +795,7 @@ render_notice() {
 
 # WAKE_TYPES: the tick events that wake the Orchestrator (loop-tick.sh) and get a notice (tick.sh); each has an entry
 # in references/output.md. An escalation wakes at any severity, pr_opened only when the lead could not be told.
-WAKE_TYPES="pr_ready pr_merged pr_opened pr_conflicting dead failed stalled needs_input brief_failed claim_takeover stale_version weekly_summary escalation"
+WAKE_TYPES="pr_ready pr_merged pr_opened pr_conflicting dead failed stalled needs_input brief_failed claim_takeover claim_released claim_held_pr claim_lapsed stale_version weekly_summary escalation"
 # WAKE_JQ: the jq filter that keeps the events that wake, with $wake bound to WAKE_TYPES (--arg wake "$WAKE_TYPES").
 WAKE_JQ='select(type == "object") | select((.type as $t | $wake | split(" ") | index($t)) and (.type != "pr_opened" or .lead_told == false))'
 
