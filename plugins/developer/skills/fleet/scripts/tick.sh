@@ -587,6 +587,18 @@ if [ -n "$prev_week" ] && [ "$prev_week" != "$sweek" ]; then
 fi
 st_upd --arg w "$sweek" '$st + {summary_week: $w}'
 
+# --- herdr's panel ---------------------------------------------------------------------------------------------
+# A team whose state, PR or issue changed since the last tick shows it on herdr's panel again (common.sh herdr_meta);
+# a team that did not change is not reported. meta_seen holds what each team showed last.
+while IFS=$'\t' read -r mteam msig; do
+  [ -n "$mteam" ] || continue
+  [ "$(jq -r --arg t "$mteam" '(.meta_seen // {})[$t] // ""' "$STATE_FILE")" != "$msig" ] || continue
+  herdr_meta "$mteam"
+  st_upd --arg t "$mteam" --arg s "$msig" '$st + {meta_seen: (($st.meta_seen // {}) + {($t): $s})}'
+done < <("$registry" list ${team:+--team "$team"} | jq -r "$RENDER_DEFS"'[.[] | select(.status != "Retired" and .tier != "Orchestrator" and (.team // "") != "")]
+  | group_by(.team)[] | [.[0].team, ((if any(.[]; .status == "Parked") then "Parked" else (map(.status | word) | sort_by(rank) | last) end)
+    + "|" + ([.[].pr // empty] | first // "") + "|" + ([.[].issue // empty] | first // ""))] | @tsv')
+
 # --- morning report ----------------------------------------------------------------------------------------
 # Overnight mode (overnight = true in config.toml): the first tick on or after 07:00 local time each day (the
 # FLEET_MORNING_HOUR constant) writes the morning report (metrics.sh --morning) to reports/fleet-morning-<date>.md

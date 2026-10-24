@@ -64,4 +64,5 @@ while IFS=$'\t' read -r name pane; do
   hd pane close "$pane" >/dev/null 2>&1 || warn "could not close pane $pane of $name; its row is Parked"
 done < <(printf '%s' "$rows" | jq -r '.[] | [.name, (.pane // "")] | @tsv')
 ev_log parked team="$team" detail="$reason"
+herdr_meta "$team" # the panel shows it Parked
 reply "$(render_line parked team="$team")" "$(render_table)"

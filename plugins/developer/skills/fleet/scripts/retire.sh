@@ -245,4 +245,6 @@ if $whole_team && [ -n "$want" ] && [ "$(linear_writes)" != off ] && "$FLEET_SCR
 fi
 
 "$registry" archive >/dev/null || warn "archive failed; retired rows stay in the live registry"
+# One agent retired: its team's panel shows the rest (a whole team's workspace is closed with it).
+$whole_team || herdr_meta "${target%%/*}"
 reply "$(render_line retired team="$target" outcome="$outcomes" prs="$prs" archived="$archived" kept="$kept" issue_state="$issue_state")" "$(render_table)"

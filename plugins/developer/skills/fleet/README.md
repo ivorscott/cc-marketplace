@@ -192,6 +192,24 @@ reported, the worktrees with commits on no remote, and every worktree a retire w
 
 `scripts/park.sh <team>` closes a team's panes and keeps everything else (rows, worktrees, branches, plans, reports and the Linear claim; nothing is written to Linear). The rows become `Parked`; tick skips them (no nudge, respawn or next issue, never Stalled or Zombie), the team still covers its repo for `repo_without_team`, and it does not count against `max_teams`. It refuses at once, changing nothing, when herdr does not answer or when a worktree has uncommitted changes or commits that are on no remote. `park.sh <team> --after-merge` parks nothing now; tick parks the team when its PR merges, instead of the Orchestrator running `next.sh`. `scripts/unpark.sh <team>` starts the agents again from their rows with the same resume brief a respawn gets (the lead first, in a new workspace); it costs no respawn budget and refuses at once when `max_teams` or `teams_per_repo` is full. `scripts/focus.sh <team>` parks every other live team after its PR merges (`--now`: at once); `focus.sh --clear` unparks only the teams focus parked. `status` shows one line per parked team and one for the focus.
 
+## herdr's panel
+
+The fleet shows each team on herdr's panel with herdr's report-metadata (source `fleet`): the team's workspace gets
+the tokens `issue` (`DEV-12`), `pr` (`#214`) and `state` (the team table's word), and each agent's pane gets `role`
+and `state`. Boot, park, unpark and a one-agent retire report them; tick reports a team again only when its state,
+PR or issue changed. A herdr config row names them as `$issue`, `$pr`, `$state` and `$role`, for example:
+
+```toml
+[ui.sidebar.agents]
+rows = [["state_icon", "workspace", "$role", "state_text"]]
+
+[ui.sidebar.spaces]
+rows = [["state_icon", "workspace", "$state"], ["$issue", "$pr"]]
+```
+
+An agent's line then reads like `◐ build-api · builder · working`, which names its team without dividers. A call
+herdr refuses is one warning, never a failure.
+
 ## Running the loop from launchd
 
 `scripts/schedule.sh install` writes a small launcher, `$FLEET_STATE_DIR/bin/fleet-tick`, and `~/Library/LaunchAgents/fleet.tick.plist` (label: `schedule_label`; interval: `tick_secs`, default 300), loads it, and waits for the first tick: if that fails it unloads the job and prints the last log line. The launcher reads the plugin's `installPath` from `~/.claude/plugins/installed_plugins.json` each run, so a plugin update takes effect on the next tick and a swept old version cannot break the job. The job also runs whenever the escalation inbox changes (`WatchPaths`), so a P0 starts a tick within seconds. `uninstall` and `status` do the rest; `status` says whether the loop is healthy (a good tick within twice `tick_secs`).

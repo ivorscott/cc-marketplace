@@ -69,6 +69,28 @@ need jq
 hd() {
   if [ -n "${FLEET_SESSION:-}" ]; then herdr --session "$FLEET_SESSION" "$@"; else herdr "$@"; fi
 }
+# herdr_meta <team>: show the team on herdr's panel. Its workspace gets the tokens issue, pr (#N) and state (the team
+# table's word), each agent's pane role and state (herdr's report-metadata, source fleet), so a herdr config row can
+# name $issue, $pr, $state and $role (README, "Slim panel style"). Best effort: a failed call is one warning, never a
+# failure. Boot, tick (when a team's state or PR changed), retire (one agent), park and unpark call it.
+herdr_meta() {
+  local rows ws t r p s mi mp ms failed=0
+  rows="$("$FLEET_SCRIPTS/registry.sh" list --team "$1" 2>/dev/null | jq -c '[.[] | select(.status != "Retired" and .tier != "Orchestrator")]' 2>/dev/null)" || return 0
+  [ "$(jq length <<<"${rows:-[]}" 2>/dev/null || echo 0)" != 0 ] || return 0
+  t="$(jq -r "$RENDER_DEFS"'[([.[] | .workspace // empty | select(. != "")] | first // ""),
+      ([.[] | .issue // empty | select(. != "")] | first // ""),
+      ([.[] | .pr // empty | select(. != "")] | first // "" | capture("/(pull|merge_requests)/(?<n>[0-9]+)").n // "" | if . == "" then "" else "#" + . end),
+      (if any(.[]; .status == "Parked") then "Parked" else (map(.status | word) | sort_by(rank) | last) end)] | join("\u001f")' <<<"$rows")"
+  IFS=$'\x1f' read -r ws mi mp ms <<<"$t" # not tabs: read would merge the empty fields
+  if [ -n "$ws" ]; then hd workspace report-metadata --source fleet "$ws" --token "issue=$mi" --token "pr=$mp" --token "state=$ms" >/dev/null 2>&1 || failed=1; fi
+  while IFS=$'\t' read -r p r s; do
+    [ -n "$p" ] || continue
+    hd pane report-metadata --source fleet "$p" --token "role=$r" --token "state=$s" >/dev/null 2>&1 || failed=1
+  done < <(jq -r "$RENDER_DEFS"'.[] | select((.pane // "") != "" and .status != "Parked") | [.pane, (.name | split("/")[1:] | join("/")), (.status | word)] | @tsv' <<<"$rows")
+  [ "$failed" = 0 ] || warn "herdr did not take the panel metadata of $1"
+  return 0
+}
+
 # herdr_integration_ok: herdr's Claude integration (its hooks) is installed and current, so `agent get` reports a
 # Claude agent's real state and state_change_seq. tell.sh and status.sh rely on those and read no screen text for
 # state (references/herdr-patterns.md). `herdr integration status` says "claude: current" when it is; UNVERIFIED

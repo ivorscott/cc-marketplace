@@ -169,6 +169,8 @@ case "$1 $2" in
   "notification show") if [ -n "${NOTIFY_FAIL:-}" ]; then echo "herdr: no server" >&2; exit 1; fi; echo '{}' ;;
   # herdr's Claude integration: current unless HERDR_INTEGRATION says otherwise (DEV-408 item 13).
   "integration status") printf '%s\n' "${HERDR_INTEGRATION:-claude: current}" ;;
+  # the panel metadata (DEV-408 item 14); META_FAIL=1 makes herdr refuse it
+  "workspace report-metadata" | "pane report-metadata") [ -z "${META_FAIL:-}" ] || exit 1; echo '{}' ;;
   *) echo '{}' ;;
 esac
 S
@@ -3962,6 +3964,19 @@ eq "dev408-11 morning: the first tick from 07:00 writes it under the Orchestrato
 eq "dev408-11 morning: once per date" "$(evc "$(mt 2026-10-24T08:00:00Z)" morning_report)" 0
 eq "dev408-11 morning: and the next date again" "$(evc "$(mt 2026-10-25T07:30:00Z)" morning_report)" 1
 gcfg; eq "dev408-11 morning: never with overnight off" "$(evc "$(mt 2026-10-26T08:00:00Z)" morning_report)" 0
+
+# -- dev408-14: the team on herdr's panel: workspace tokens issue, pr, state; pane tokens role, state (best effort)
+qfresh meta; mkdir -p "$QD/p14"
+FLEET_FORCE=1 bt --issue DEV-140 build mt "$QD/p14" task
+eq "dev408-14 meta: boot reports the workspace's issue, PR and state, and each pane's role and state" \
+  "$(grep '^workspace report-metadata' "$HERDR_LOG"):$(grep -c '^pane report-metadata --source fleet p[0-9]* --token role=[a-z]* --token state=' "$HERDR_LOG")" \
+  "workspace report-metadata --source fleet w1 --token issue=DEV-140 --token pr= --token state=Working:4"
+: >"$HERDR_LOG"; "$SCRIPTS/tick.sh" >/dev/null 2>&1; : >"$HERDR_LOG"; "$SCRIPTS/tick.sh" >/dev/null 2>&1
+eq "dev408-14 meta: a tick with nothing changed reports nothing" "$(grep -c 'report-metadata' "$HERDR_LOG")" 0
+"$REG" set build-mt/builder pr=https://github.com/acme/app-api/pull/14 >/dev/null; : >"$HERDR_LOG"; "$SCRIPTS/tick.sh" >/dev/null 2>&1
+eq "dev408-14 meta: a new PR is reported on the next tick" "$(grep -c '^workspace report-metadata --source fleet w1 --token issue=DEV-140 --token pr=#14 ' "$HERDR_LOG")" 1
+META_FAIL=1 FLEET_FORCE=1 bt build mf "$QD/p14" task
+eq "dev408-14 meta: herdr refusing the metadata warns once and never fails the boot" "$BTRC:$(grep -c 'herdr did not take the panel metadata of build-mf' "$T/bt.err")" "0:1"
 # ---- end DEV-408 ----
 
 printf '\n%d passed, %d failed\n' "$pass" "$failn"
