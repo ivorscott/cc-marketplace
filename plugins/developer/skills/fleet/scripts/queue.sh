@@ -72,10 +72,10 @@ if [ "$(jq length <<<"$all")" -ge 2 ] && [ -n "$issues" ]; then
   else notes='["Linear order unknown (no key)"]'; fi
 fi
 
-jq -c --argjson notes "$notes" --argjson blocks "$blocks" "$RENDER_DEFS"'
+jq -c --argjson notes "$notes" --argjson blocks "$blocks" "$RENDER_DEFS$PART_OF_JQ"'
   def repo: .url | capture("^https?://[^/]+/[^/]+/(?<r>[^/]+)/").r // "?";
   def ref: "\(repo) #\(.number)";
-  def series: (.body | [match("(?i)part of\\s+(?:https?://\\S+/issue/)?([A-Za-z][A-Za-z0-9]*-[0-9]+)").captures[0].string] | first // null | if . then ascii_upcase else . end);
+  def series: (.body | part_of); # "Part of DEV-7", its tracker URL, or a markdown link to it (common.sh)
   def slice: ((.title + " " + .body) | [match("(?i)slice\\s*([0-9]+)").captures[0].string | tonumber] | first // null);
   def migs: [.files[] | select(test("(^|/)migrations/")) | (split("/") | last | capture("^(?<m>[0-9]+)").m // empty)] | unique;
   . as $all

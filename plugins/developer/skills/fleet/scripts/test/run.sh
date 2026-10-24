@@ -3615,6 +3615,11 @@ qfresh series; qpr app-api 9 fleet/dev-9-c main 2026-10-17T10:00:00Z '["c.go"]' 
 qpr app-api 8 fleet/dev-8-b main 2026-10-21T10:00:00Z '["b.go"]' 'Part of https://linear.app/acme/issue/DEV-7/x' MERGEABLE 'slice 1: store'
 qteam t9 app-api 9 DEV-9 aaaaaaa9; qteam t8 app-api 8 DEV-8 aaaaaaa8
 eq "dev408-18 queue: a Part of series goes by slice" "$(qorder)" "app-api#8|Part of DEV-7, slice 1|— ; app-api#9|needs app-api #8|—"
+# R4: the markdown-link form a PR body often uses, "Part of [DEV-7](<tracker url>)", is the same series.
+qfresh serieslink; qpr app-api 9 fleet/dev-9-c main 2026-10-17T10:00:00Z '["c.go"]' 'Part of [DEV-7](https://linear.app/acme/issue/DEV-7/x)' MERGEABLE 'slice 2: handlers'
+qpr app-api 8 fleet/dev-8-b main 2026-10-21T10:00:00Z '["b.go"]' 'part of [DEV-7](https://linear.app/acme/issue/DEV-7/x)' MERGEABLE 'slice 1: store'
+qteam t9 app-api 9 DEV-9 aaaaaaa9; qteam t8 app-api 8 DEV-8 aaaaaaa8
+eq "dev408-R4 queue: a Part of written as a markdown link, in any case, still orders the series by slice" "$(qorder)" "app-api#8|Part of DEV-7, slice 1|— ; app-api#9|needs app-api #8|—"
 qfresh hub; qpr app-api 10 fleet/dev-10 main 2026-10-17T10:00:00Z '["a.go","b.go"]' x; qpr app-api 11 fleet/dev-11 main 2026-10-19T10:00:00Z '["a.go"]' x
 qpr app-api 12 fleet/dev-12 main 2026-10-18T10:00:00Z '["b.go"]' x
 qteam t10 app-api 10 DEV-10 aaaaaaa10; qteam t11 app-api 11 DEV-11 aaaaaaa11; qteam t12 app-api 12 DEV-12 aaaaaaa12
