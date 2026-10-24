@@ -3725,7 +3725,9 @@ check "dev408-4 loop: orchestrator_ref, the wake queue and the typed wake are go
 
 # -- dev408-1: the Pick step decides without the user (route A, operations.md A0b)
 check "dev408-1 pick: route A has the Pick step: a live claim and unfinished blockers are skipped, priority then series order" bash -c \
-  "grep -q '^0\. \*\*Pick\*\*' '$SCRIPTS/../SKILL.md' && grep -q 'skip a live' '$SCRIPTS/../SKILL.md' && grep -q 'blocked-by issues are not' '$SCRIPTS/../SKILL.md' && grep -q 'series order' '$SCRIPTS/../SKILL.md' && grep -q -- '--picked' '$SCRIPTS/../SKILL.md'"
+  "grep -q '^0\. \*\*Pick\*\*' '$SCRIPTS/../SKILL.md' && grep -q 'skip a live' '$SCRIPTS/../SKILL.md' && grep -q 'blocked-by issues are not' '$SCRIPTS/../SKILL.md' && grep -q 'series order' '$SCRIPTS/../SKILL.md'"
+check "dev408-1 pick: right after the boot the Orchestrator notes the search on the lead's row, and writes the Booting line itself" bash -c \
+  "grep -q 'registry.sh note <team>/lead' '$SCRIPTS/../SKILL.md' && grep -qx '### booting' '$SCRIPTS/../references/output.md' && grep -q 'Booting \[DEV-1\](url): <the search and why>.' '$SCRIPTS/../references/output.md'"
 check "dev408-1 pick: operations.md skips a live claim, no longer any issue with another machine's label" bash -c \
   "grep -q 'Skip a live claim' '$SCRIPTS/../references/operations.md' && ! grep -q 'Skip any issue carrying another machine' '$SCRIPTS/../references/operations.md'"
 
@@ -3754,7 +3756,7 @@ qfresh sweepteam; cp "$D4/db3" "$LINEAR_DB"; d4cfg 'linear_writes = "on"' "repos
 eq "dev408-3 sweep: tick --team leaves it to the fleet-wide tick" "$(swev "$(FLEET_GH="$G4" D4GH_LIST="$D4/gh-pr6.json" FLEET_NOW=2026-10-18T09:00:00Z "$SCRIPTS/tick.sh" --team nobody 2>/dev/null)")" ""
 d4cfg
 
-# -- dev408-2: keep N teams running: slot_free under target_teams, a signed-off team parks, boot --picked
+# -- dev408-2: keep N teams running: slot_free under target_teams, a signed-off team parks, the pick is a note
 qfresh slots
 "$REG" add '{"name":"orchestrator","team":"orchestrator","tier":"Orchestrator","status":"Working","herdr_ref":"o2","pane":"po2"}' >/dev/null
 slot() { "$REG" add "$(jq -cn --arg t "$1" '{name: ($t + "/lead"), team: $t, tier: "Lead", status: "Working", herdr_ref: ($t + "-lead"), pane: ("p" + $t)}')" >/dev/null; }
@@ -3782,11 +3784,12 @@ eq "dev408-2 park: signed off with every agent Done or Idle, the team parks (Don
 eq "dev408-2 park: an agent still working means no park" "$(tstat s61 | grep -c Parked)" 0
 eq "dev408-2 park: work that is not pushed refuses the park: one warning, the team keeps its slot, the tick goes on" "$rc:$(tstat s62):$(grep -c 's62 is signed off but could not park, so it keeps its slot: not parking s62' "$T/pk.err")" "0:Done,Idle:1"
 qfresh picked; mkdir -p "$QD/p2"
-FLEET_FORCE=1 bt --picked "Todo by priority; DEV-70 is the oldest P1" --issue DEV-70 --issue-url https://linear.app/acme/issue/DEV-70/x build pk "$QD/p2" task
-eq "dev408-2 boot --picked: the reply starts with the pick and why, a blank line, then the boot line" "$BTRC:$(head -n 1 "$T/bt.out"):$(sed -n 2p "$T/bt.out"):$(sed -n 3p "$T/bt.out" | cut -c1-15)" \
-  "0:Booting [DEV-70](https://linear.app/acme/issue/DEV-70/x): Todo by priority; DEV-70 is the oldest P1.::Booted build-pk"
-eq "dev408-2 boot --picked: the search is noted on the lead's row, for the morning report" "$("$REG" get build-pk/lead | jq -r '[.notes[]? | select(.kind == "picked") | .message] | first')" "Todo by priority; DEV-70 is the oldest P1"
-check "dev408-2 boot: without --picked there is no Booting line" bash -c "! grep -q '^Booting' '$T/bt.out.nopick' 2>/dev/null"
+FLEET_FORCE=1 bt --issue DEV-70 --issue-url https://linear.app/acme/issue/DEV-70/x build pk "$QD/p2" task
+"$REG" note build-pk/lead picked "Todo by priority; DEV-70 is the oldest P1" >/dev/null
+eq "dev408-2 pick: boot prints no Booting line (the Orchestrator writes it), and the note keeps the search for the morning report" \
+  "$BTRC:$(grep -c '^Booting' "$T/bt.out"):$("$REG" get build-pk/lead | jq -r '[.notes[]? | select(.kind == "picked") | .message] | first')" "0:0:Todo by priority; DEV-70 is the oldest P1"
+FLEET_FORCE=1 bt --picked x build pk2 "$QD/p2" task
+eq "dev408-2 pick: boot has no --picked option" "$BTRC:$(grep -c 'unknown option: --picked' "$T/bt.err")" "1:1"
 
 # -- dev408-7: a PR head the tester has not signed, with the builder idle, nudges the lead once per head
 qfresh nudge

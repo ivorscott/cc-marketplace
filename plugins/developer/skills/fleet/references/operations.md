@@ -44,8 +44,8 @@ label's description. **No claim, lease or heartbeat comment is ever posted.**
    (read-only) says who holds it and whether the claim `lapsed`; `false` is live, and `null` (no heartbeat) is not
    proven lapsed, so it is skipped too. Skip an issue whose blocked-by issues are not all Done. Order the rest by
    priority, then by series order (its place in its "Part of" or parent sequence, then its identifier). A lapsed
-   claim with no open PR is free: take it over (**Takeover**). Boot it with `--picked "<query and why>"`: boot notes
-   the search on the lead's row (the morning report reads it) and says it first.
+   claim with no open PR is free: take it over (**Takeover**). Right after the boot, record the search with
+   `$F/registry.sh note <team>/lead picked "<search and why>"`; the morning report reads it.
 2. **Claim:** `$F/linear.sh claim <ISSUE>` (`--dry-run` lists what it would do). It ensures this
    machine's label (under the `fleet` group, described by `machine-id.sh description`), labels the
    issue, sets In Progress, waits `claim_settle_secs` (default 5), re-reads, and exits 1 naming the
@@ -171,7 +171,7 @@ A repo whose PRs have no CI is listed in `no_pr_ci = ["repo"]` in config.toml. U
 When the user asks to keep N teams running, set `$F/registry.sh set orchestrator target_teams=N`. It is on the
 Orchestrator's row, so it survives a compaction and `registry.sh orchestrator here`. Tick then wakes you with
 `slot_free` while fewer teams run than N and than `max_teams` (Parked teams do not count), once per (live count,
-target). Answer by picking and booting (SKILL.md route A, step 0, with `--picked`); when the only blocker is a nearly
+target). Answer by picking and booting (SKILL.md route A, step 0, noting the pick); when the only blocker is a nearly
 ready PR, boot plan-first; when nothing is bootable, reply "Nothing bootable" from its template.
 
 A team frees its own slot once it is signed off: on `pr_ready`, when every agent of the team is Done or Idle, tick runs

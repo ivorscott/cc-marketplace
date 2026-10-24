@@ -736,7 +736,6 @@ render_line() {
     event) printf '%s %s: %s. %s.\n' "${L_event:-}" "${L_name:-}" "${L_what%.}" "${L_next%.}" ;;
     claim_takeover) printf '%s taken over by %s. Stop or hand off %s.\n' "${L_issue:-}" "${L_machine:-}" "${L_team:-}" ;;
     slot_free) printf 'Slot free (%s of %s teams running). Pick the next issue and boot it.\n' "${L_live:-?}" "${L_target:-?}" ;;
-    booting) L_what="${L_why:-}"; printf 'Booting %s: %s.\n' "${L_issue:-}" "${L_what%.}" ;;
     debrief) printf '%s (%s): %s\n' "${L_team:-}" "${L_outcome:-}" "${L_lessons:-}" ;;
     discovered) printf 'Discovered work: %s\n' "${L_work:-}" ;;
     report) printf 'Report: %s\n' "${L_path:-}" ;;

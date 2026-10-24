@@ -31,7 +31,8 @@ done contract, escalation, caps, guards and debrief; mechanics that are not rout
   herdr, gh and curl, no tracker key); it refuses the live fleet.
 - **Relay output verbatim:** every command and every wake prints its final reply in one fixed shape
   (`references/output.md`). Answer with that output as it is, with at most one `Did: …` line above it; never
-  reword it into bullets or prose. The one reply you fill yourself is "Nothing bootable: …", from its template.
+  reword it into bullets or prose. The only lines you fill yourself are "Booting …" and "Nothing bootable …", from
+  their templates.
 
 ## Step 0 — Route the request
 
@@ -55,9 +56,10 @@ done contract, escalation, caps, guards and debrief; mechanics that are not rout
    claim (`$F/fleet holder <ISSUE>` not lapsed, or with no heartbeat) and any issue whose blocked-by issues are not
    all Done; order the rest by priority, then by series order (its place in its "Part of" or parent sequence, then its
    identifier). A lapsed claim with no open PR is free: take it with `$F/fleet takeover <ISSUE>`. Ask the user only
-   to override a cap, or for a P0/P1. Boot it with `--picked "<query and why>"`: boot notes it on the lead's row (the
-   morning report reads it) and its reply starts `Booting <issue>: <why>.` With nothing bootable, reply "Nothing
-   bootable" from its template (`references/output.md`): each candidate, ranked, with what it needs from the user.
+   to override a cap, or for a P0/P1. Right after the boot, record the search: `$F/registry.sh note <team>/lead
+   picked "<search and why>"` (the morning report reads it), and start your reply with the `Booting` line from its
+   template (`references/output.md`) above boot's output. With nothing bootable, reply "Nothing bootable" from its
+   template: each candidate, ranked, with what it needs from the user.
 1. Pick the template: `build` (plan, build, test one piece of work), `review` (independent read-only reviewers)
    or `research` (problem-first study guide); a path to a custom template JSON also works. Unsure → ask.
 2. With several machines on Linear, claim the issue first (`references/operations.md`, "Claims"); a single machine

@@ -131,13 +131,21 @@ State as in the team table, one agent's. The last action is the agent's newest e
 ### boot
 
 ```
-Booting [DEV-1](url): <the search and why>.
-
 Booted <team> on [DEV-1](url) in <repo>: lead ✓ planner ✓ builder ✗ (did not start) tester ✓
 ```
 
-Then the table. `✗ (brief not delivered)` for a brief that did not arrive; no ` on …` without an issue. The
-`Booting` line comes first only with `--picked` (the Orchestrator picked the issue itself).
+Then the table. `✗ (brief not delivered)` for a brief that did not arrive; no ` on …` without an issue.
+
+### booting
+
+A line the Orchestrator fills itself, above boot's output, when it picked the issue (SKILL.md route A, step 0):
+
+```
+Booting [DEV-1](url): <the search and why>.
+```
+
+The same search goes on the lead's row first, `registry.sh note <team>/lead picked "<search and why>"`, where the
+morning report reads it.
 
 ### nothing bootable
 
