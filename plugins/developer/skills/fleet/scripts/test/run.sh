@@ -3687,6 +3687,12 @@ check "dev408-5 redact check: stderr says how many lines and what to do" grep -q
 eq "dev408-5 redact check: a term in a commit message counts" "$(rc_out --range main..msg):$(cat "$T/rc.out")" "1:Redact check main..msg: 1 matches."
 eq "dev408-5 redact check: a clean range exits 0, and a mode 600 terms file gets no warning" "$(rc_out --range main..clean):$(cat "$T/rc.out"):$(grep -c 'readable' "$T/rc.err")" "0:Redact check main..clean: 0 matches.:0"
 eq "dev408-5 redact check: a range git cannot read exits 2" "$(rc_out --range main..nosuch)" 2
+# R10: the default branch deletes a line holding a term after the branch left it; the branch added nothing private.
+git -C "$RR" checkout -q -b old main; printf 'zebra-corp notes\nplain\n' >"$RR/d.txt"; git -C "$RR" add d.txt; git -C "$RR" -c user.email=t@t -c user.name=t commit -q -m "old notes"
+git -C "$RR" checkout -q -b side old; echo ok >"$RR/e.txt"; git -C "$RR" add e.txt; git -C "$RR" -c user.email=t@t -c user.name=t commit -q -m "side work"
+git -C "$RR" checkout -q old; printf 'plain\n' >"$RR/d.txt"; git -C "$RR" -c user.email=t@t -c user.name=t commit -q -am "drop the notes"; git -C "$RR" checkout -q main
+eq "dev408-R10 redact check: a line the default branch deleted after the branch point is not counted as added (two or three dots)" \
+  "$(rc_out --range old..side):$(cat "$T/rc.out"):$(rc_out --range old...side)" "0:Redact check old..side: 0 matches.:0"
 eq "dev408-5 redact check: no range exits 2" "$(rc_out)" 2
 chmod 644 "$RTF"
 eq "dev408-5 redact check: a group- or world-readable terms file warns, and the check still runs" "$(rc_out --range main..clean):$(grep -c "fleet: warning: $RTF is readable by others; chmod 600 it" "$T/rc.err")" "0:1"
