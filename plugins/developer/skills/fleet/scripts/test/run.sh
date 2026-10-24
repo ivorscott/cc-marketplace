@@ -3478,7 +3478,7 @@ d4cfg
 "$REG" escalate g4/lead P1 "need a decision" >/dev/null 2>&1
 FLEET_NOW=2026-10-24T09:00:00Z "$FL" prime >"$D4/prime.out" 2>/dev/null; rc=$?
 eq "dev408-16 commands: prime counts teams, open escalations and problems" "$rc:$(head -n 1 "$D4/prime.out")" "0:Fleet on fleet:test: 2 teams, 1 open escalations, 1 problems."
-eq "dev408-16 commands: then prints the status output" "$(sed 1d "$D4/prime.out")" "$(FLEET_NOW=2026-10-24T09:00:00Z "$SCRIPTS/status.sh" 2>/dev/null)"
+eq "dev408-16 commands: then, after a blank line, prints the status output" "$(sed -n 2p "$D4/prime.out"):$(sed 1,2d "$D4/prime.out")" ":$(FLEET_NOW=2026-10-24T09:00:00Z "$SCRIPTS/status.sh" 2>/dev/null)"
 d4cfg 'machine_name = "test box"'; eq "dev408-16 commands: prime names the machine by machine_name when set" "$("$FL" prime 2>/dev/null | head -n 1 | cut -d: -f1)" "Fleet on test box"; d4cfg
 # debrief: the retired teams whose lessons are due
 eq "dev408-16 commands: debrief with nothing waiting" "$("$FL" debrief)" "Nothing to debrief."
@@ -3487,6 +3487,7 @@ for r in lead builder tester; do "$REG" add "$(jq -cn --arg r "$r" '{name: ("r4/
 "$REG" retire r4/lead --outcome Shipped >/dev/null; "$REG" retire r4/builder --outcome Partial >/dev/null; "$REG" retire r4/tester --outcome Shipped >/dev/null
 "$REG" set r4/tester lessons="sign the exact head" >/dev/null
 eq "dev408-16 commands: debrief lists the team, its outcomes and each agent's lesson or that it is due, then discovered work" "$("$FL" debrief)" "r4 (Partial/Shipped): lead: lesson due; builder: lesson due; tester: sign the exact head
+
 Discovered work: flaky ci (r4/builder)"
 
 # -- dev408-17: one output shape per command and wake
@@ -3564,6 +3565,10 @@ done
 for w in $WAKES; do grep -qx "### wake $w" "$OUT_MD" || miss="$miss wake-$w:heading"; [ -f "$GD/wake-$w.md" ] || miss="$miss wake-$w:golden"; done
 for s in symbols "team table" "merge queue" error decision disk alert; do grep -qx "### $s" "$OUT_MD" || miss="$miss $s:heading"; done
 eq "dev408-17 output: every command and wake has an entry in output.md and a golden file" "$miss" ""
+# Markdown ends a table only at a blank line: a row next to a line that is neither a row nor blank swallows it.
+eq "dev408-17 output: no golden has a table row next to a line that is neither a row nor blank" "$(for f in "$GD"/*.md; do awk -v f="$(basename "$f")" '
+    { row[NR] = ($0 ~ /^\|/); blank[NR] = ($0 == "") }
+    END { for (i = 1; i <= NR; i++) if (row[i] && ((i > 1 && !row[i - 1] && !blank[i - 1]) || (i < NR && !row[i + 1] && !blank[i + 1]))) { print f; exit } }' "$f"; done)" ""
 eq "dev408-17 output: no golden file without an entry" "$(for f in "$GD"/*.md; do b="$(basename "$f" .md)"; case "$b" in wake-*) h="### wake ${b#wake-}" ;; *) h="### ${b//-/ }" ;; esac
   grep -qx "$h" "$OUT_MD" || grep -qx "### $b" "$OUT_MD" || grep -qx "### ${b%%-*}" "$OUT_MD" || echo "$b"; done)" ""
 check "dev408-17 output: SKILL.md tells the Orchestrator to relay output verbatim" grep -q 'verbatim' "$SCRIPTS/../SKILL.md"

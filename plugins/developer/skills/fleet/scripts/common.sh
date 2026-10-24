@@ -521,6 +521,18 @@ report_dir() {
 # Scripts print through these functions, never with a printf of their own, so every machine shows the same thing
 # and the Orchestrator relays it as it is.
 
+# reply <block>...: a reply made of blocks (a command's line, the team table, the merge queue, a footer line), the
+# empty ones left out, with exactly one blank line between two. Markdown ends a table only at a blank line, and runs
+# adjacent lines together into one paragraph.
+reply() {
+  local b n=0
+  for b in "$@"; do
+    [ -n "$b" ] || continue
+    [ "$n" = 0 ] || printf '\n'
+    printf '%s\n' "$b"; n=1
+  done
+}
+
 # RENDER_DEFS: jq definitions the tables share. md makes text safe in a table cell; issue_cell and pr_cell give
 # [DEV-1](url) and [repo #N](url) (or the bare key, or -); word is the one-word state of an agent status; rank
 # orders those words, worst last; mark is a word's symbol and group the summary line's name for it (references/
@@ -556,9 +568,9 @@ roles_line() {
 
 # render_table [team...]: the team table of the registry as it stands (no herdr call): the summary line ("3 teams ·
 # ● 2 working · ✗ 1 blocked"), then one row per team that has a row not yet Retired, or only the teams named, then
-# "Waiting on you: ..." when a P0 or P1 is open. "No teams." when there is none. State is the worst agent state, its
-# symbol and one word (Parked when the team is parked); Needs you is the team's most severe open escalation, else
-# what its state needs, else -.
+# "Waiting on you: ..." when a P0 or P1 is open, a blank line between the three (reply). "No teams." when there is
+# none. State is the worst agent state, its symbol and one word (Parked when the team is parked); Needs you is the
+# team's most severe open escalation, else what its state needs, else -.
 render_table() {
   local rows esc only
   rows="$("$FLEET_SCRIPTS/registry.sh" list)" || return 1
@@ -582,14 +594,15 @@ render_table() {
            elif $state == "Done" then (if $pr != "" then "merge the PR" else "retire the team" end)
            else "-" end)}) as $t
     | if ($t | length) == 0 then "No teams." else
-        ([$t | length | "\(.) team\(if . == 1 then "" else "s" end)"]
+        [([$t | length | "\(.) team\(if . == 1 then "" else "s" end)"]
           + ([$t[].state] as $s | ["Working", "Idle", "Waiting", "Stalled", "Parked", "Done"]
             | map(. as $w | group as $g | ([$s[] | select(group == $g)] | length) as $n | select($n > 0) | "\($w | mark) \($n) \($g)"))
           | join(" · ")),
-        "| Team | Issue | PR | State | Needs you |", "|---|---|---|---|---|",
-        ($t[] | "| \(.team | md) | \(.issue) | \(.pr) | \(.state | marked) | \(.needs | md) |"),
-        ([$esc[] | select((.severity | IN("P0", "P1")) and (.team | shown)) | "\(.name) \(.severity | sev): \(.message | .[0:60] | md)"]
-          | if length > 0 then "Waiting on you: " + join("; ") else empty end)
+         (["| Team | Issue | PR | State | Needs you |", "|---|---|---|---|---|",
+           ($t[] | "| \(.team | md) | \(.issue) | \(.pr) | \(.state | marked) | \(.needs | md) |")] | join("\n")),
+         ([$esc[] | select((.severity | IN("P0", "P1")) and (.team | shown)) | "\(.name) \(.severity | sev): \(.message | .[0:60] | md)"]
+          | if length > 0 then "Waiting on you: " + join("; ") else empty end)]
+        | join("\n\n")
       end'
 }
 
@@ -620,14 +633,17 @@ render_escalations() {
 
 # render_queue <queue.sh JSON>: "Merge in this order:" and | # | PR | Issue | Why this order | After merge |, each
 # PR marked ✓ ("Merge in this order: none ready." when nothing is), then "Not ready: [repo #N](url) ✗ <missing> · ✗
-# ..." per open PR that is not, then the queue's notes. Nothing at all when no PR is open.
+# ..." per open PR that is not, then the queue's notes, a blank line between any two (reply). Nothing at all when
+# no PR is open.
 render_queue() {
   jq -r 'if (.ready | length) == 0 and (.not_ready | length) == 0 then empty else
-      (if (.ready | length) == 0 then "Merge in this order: none ready." else
-        "Merge in this order:", "| # | PR | Issue | Why this order | After merge |", "|---|---|---|---|---|",
-        (.ready[] | "| \(.n) | ✓ \(.pr) | \(.issue) | \(.why) | \(.after) |") end),
-      (.not_ready[] | "Not ready: \(.pr) \(.missing | map("✗ " + .) | join(" · "))"),
-      (.notes[] | "\(.).")
+      [(if (.ready | length) == 0 then "Merge in this order: none ready." else "Merge in this order:" end),
+       (if (.ready | length) == 0 then empty else
+         (["| # | PR | Issue | Why this order | After merge |", "|---|---|---|---|---|",
+           (.ready[] | "| \(.n) | ✓ \(.pr) | \(.issue) | \(.why) | \(.after) |")] | join("\n")) end),
+       (.not_ready[] | "Not ready: \(.pr) \(.missing | map("✗ " + .) | join(" · "))"),
+       (.notes[] | "\(.).")]
+      | join("\n\n")
     end' <<<"$1"
 }
 
@@ -784,13 +800,13 @@ notice_add() { # notice_add <text>: one notice (it may span lines)
   jq -nc --arg at "${FLEET_NOW:-$(now)}" --arg t "$1" '{at: $at, text: $t}' >>"$f" 2>/dev/null || warn "cannot write $f"
   notices_unlock
 }
-notices_show() { # print the notices not shown yet, each followed by a blank line, and mark them shown
+notices_show() { # print the notices not shown yet, a blank line between two (reply), and mark them shown
   local f n s; f="$(notices_file)"
   [ -s "$f" ] || return 0
   notices_lock || return 0
   n="$(wc -l <"$f" | tr -d ' ')"; s="$(cat "$f.shown" 2>/dev/null || true)"
   case "$s" in "" | *[!0-9]*) s=0 ;; esac; [ "$s" -le "$n" ] || s=0
-  [ "$s" -ge "$n" ] || tail -n +$((s + 1)) "$f" | jq -r '.text // empty | ., ""' 2>/dev/null
+  [ "$s" -ge "$n" ] || tail -n +$((s + 1)) "$f" | jq -Rrn '[inputs | fromjson? | .text? // empty | select(type == "string" and . != "")] | join("\n\n")' 2>/dev/null
   # Once everything is shown, a long log starts over (nothing unshown is lost).
   if [ "$n" -gt 200 ]; then : >"$f"; n=0; fi
   printf '%s\n' "$n" >"$f.shown"

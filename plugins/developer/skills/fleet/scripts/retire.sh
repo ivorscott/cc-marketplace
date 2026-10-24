@@ -165,5 +165,4 @@ for n in $(printf '%s' "$rows" | jq -r '.[].name'); do ev_log retired team="$(pr
 outcomes="$("$registry" list | jq -r --argjson names "$(printf '%s' "$rows" | jq -c '[.[].name]')" '[.[] | select(.name as $n | $names | index($n)) | .outcome // empty] | unique | join("/")')"
 prs="$(printf '%s' "$rows" | jq -r '[.[].pr // empty | select(. != "")] | unique[]' | while IFS= read -r u; do pr_link "$u"; done | paste -sd, - | sed 's/,/, /g')"
 "$registry" archive >/dev/null || warn "archive failed; retired rows stay in the live registry"
-render_line retired team="$target" outcome="$outcomes" prs="$prs" archived="$archived" kept="$kept"
-render_table
+reply "$(render_line retired team="$target" outcome="$outcomes" prs="$prs" archived="$archived" kept="$kept")" "$(render_table)"

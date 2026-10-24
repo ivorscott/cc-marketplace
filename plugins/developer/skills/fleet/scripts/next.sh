@@ -125,8 +125,7 @@ for n in $(printf '%s' "$rows" | jq -r '.[] | select(.tier == "Lead") | .name');
 while IFS= read -r n; do [ -z "$n" ] || failed+=("$n"); done <"$wfail"
 rm -f "$wfail"
 
-render_line moved team="$team" from="$(issue_link "${from%%$'\t'*}" "${from#*$'\t'}")" to="$(issue_link "$issue" "$issue_url")"
-render_table
+reply "$(render_line moved team="$team" from="$(issue_link "${from%%$'\t'*}" "${from#*$'\t'}")" to="$(issue_link "$issue" "$issue_url")")" "$(render_table)"
 if [ "${#failed[@]}" -gt 0 ]; then
   warn "not restarted: ${failed[*]} (rows set to Failed)"
   exit 1

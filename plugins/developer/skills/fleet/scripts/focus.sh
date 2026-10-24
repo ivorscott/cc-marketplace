@@ -45,8 +45,7 @@ if [ "$arg" = "--clear" ]; then
     "$registry" park-mark "$t" - >/dev/null
   done < <("$registry" list | jq -r '[.[] | select((.park_after_merge // "") | startswith("focus:")) | .team] | unique[]')
   ev_log focus_cleared team="$ft"
-  render_line focus_cleared unparked="$(commas ${done_list[@]+"${done_list[@]}"})" refused="$(commas ${refused[@]+"${refused[@]}"})"
-  render_table
+  reply "$(render_line focus_cleared unparked="$(commas ${done_list[@]+"${done_list[@]}"})" refused="$(commas ${refused[@]+"${refused[@]}"})")" "$(render_table)"
   [ "${#refused[@]}" = 0 ] || exit 1
   exit 0
 fi
@@ -65,7 +64,7 @@ while IFS= read -r t; do
   move park "$t" "${pargs[@]}"
 done < <("$registry" list --live | jq -r --arg f "$team" '[.[] | select(.tier != "Orchestrator" and .team != $f) | .team] | unique[]')
 ev_log focus_set team="$team" detail="$([ "$now_flag" = 1 ] && echo now || echo after-merge)"
-if [ "$now_flag" = 1 ]; then render_line focused team="$team" parked="$(commas ${done_list[@]+"${done_list[@]}"})" refused="$(commas ${refused[@]+"${refused[@]}"})"
-else render_line focus_marked team="$team" marked="$(commas ${done_list[@]+"${done_list[@]}"})" refused="$(commas ${refused[@]+"${refused[@]}"})"; fi
-render_table
+if [ "$now_flag" = 1 ]; then line="$(render_line focused team="$team" parked="$(commas ${done_list[@]+"${done_list[@]}"})" refused="$(commas ${refused[@]+"${refused[@]}"})")"
+else line="$(render_line focus_marked team="$team" marked="$(commas ${done_list[@]+"${done_list[@]}"})" refused="$(commas ${refused[@]+"${refused[@]}"})")"; fi
+reply "$line" "$(render_table)"
 [ "${#refused[@]}" = 0 ] || exit 1

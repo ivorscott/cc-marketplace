@@ -268,8 +268,7 @@ if [ "$status" = "Working" ]; then
 fi
 
 ev_log boot team="$team" issue="$issue" detail="template $template"
-render_line booted team="$team" issue="$(issue_link "$issue" "$issue_url")" repo="$(basename "$repo")" agents="$(roles_line "$team")"
-render_table
+reply "$(render_line booted team="$team" issue="$(issue_link "$issue" "$issue_url")" repo="$(basename "$repo")" agents="$(roles_line "$team")")" "$(render_table)"
 if [ "${#failed_agents[@]}" -gt 0 ]; then
   warn "brief not delivered to: ${failed_agents[*]} (rows set to Failed)"
   exit 1

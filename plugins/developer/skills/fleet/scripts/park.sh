@@ -40,7 +40,7 @@ rows="$("$registry" list --team "$team" | jq -c '[.[] | select(.tier != "Orchest
 if [ "$after" = 1 ]; then
   "$registry" park-mark "$team" "$reason" >/dev/null
   ev_log park_marked team="$team" detail="$reason"
-  render_line park_marked team="$team"; render_table
+  reply "$(render_line park_marked team="$team")" "$(render_table)"
   exit 0
 fi
 
@@ -64,4 +64,4 @@ while IFS=$'\t' read -r name pane; do
   hd pane close "$pane" >/dev/null 2>&1 || warn "could not close pane $pane of $name; its row is Parked"
 done < <(printf '%s' "$rows" | jq -r '.[] | [.name, (.pane // "")] | @tsv')
 ev_log parked team="$team" detail="$reason"
-render_line parked team="$team"; render_table
+reply "$(render_line parked team="$team")" "$(render_table)"

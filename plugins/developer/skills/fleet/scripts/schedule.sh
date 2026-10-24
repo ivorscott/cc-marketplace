@@ -156,8 +156,7 @@ case "${1:-}" in
       if [ $((nowe - lg)) -le $((2 * secs)) ]; then health=healthy; else health="problem: no good tick within $((2 * secs / 60)) min"; fi
     fi
     [ "$loaded" = loaded ] || health="problem: the job is $loaded"
-    render_line loop loaded="$loaded" when="$when" health="$health"
-    orch_hint
+    reply "$(render_line loop loaded="$loaded" when="$when" health="$health")" "$(orch_hint)"
     ;;
   *) sed -n '2,6p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

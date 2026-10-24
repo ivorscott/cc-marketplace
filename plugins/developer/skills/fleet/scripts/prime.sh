@@ -18,5 +18,4 @@ teams="$("$registry" list | jq '[.[] | select(.tier != "Orchestrator" and .statu
 esc="$("$registry" escalations --open --not-retired | jq length)"
 probs="$("$registry" list --problems | jq '[.[] | select(.tier != "Orchestrator")] | length')"
 who="$(cfg_str machine_name '')"; [ -n "$who" ] || who="$(machine_label)"
-render_line prime machine="$who" teams="$teams" escalations="$esc" problems="$probs"
-[ -z "$st" ] || printf '%s\n' "$st"
+reply "$(render_line prime machine="$who" teams="$teams" escalations="$esc" problems="$probs")" "$st"

@@ -136,34 +136,35 @@ if $json; then printf '%s\n' "$out"; exit 0; fi
 if [ -n "$team" ]; then render_agent_table "$team" || die "no team $team" "Run fleet status for the teams"; exit 0; fi
 
 # The fleet: the notices not shown yet, the team table (with --problems, only the teams that need someone),
-# then the footer lines that apply.
-notices_show
+# then the footer lines that apply, each a block of the reply.
+blocks=("$(notices_show)")
 if $problems; then
   pteams="$(printf '%s' "$out" | jq -r '[.[] | select(.tier != "Orchestrator") | .team] | unique[]')"
   if [ -n "$pteams" ]; then
     # shellcheck disable=SC2086
-    render_table $pteams
-  else render_line no_problems; fi
+    blocks+=("$(render_table $pteams)")
+  else blocks+=("$(render_line no_problems)"); fi
 else
-  render_table
+  blocks+=("$(render_table)")
   # The merge queue, rebuilt from GitHub and the registry (queue.sh), when any PR is open.
-  if q="$("$FLEET_SCRIPTS/queue.sh" 2>/dev/null)"; then render_queue "$q"; else warn "the merge queue could not be built"; fi
+  if q="$("$FLEET_SCRIPTS/queue.sh" 2>/dev/null)"; then blocks+=("$(render_queue "$q")"); else warn "the merge queue could not be built"; fi
 fi
-[ ! -f "$FLEET_STATE_DIR/focus" ] || render_line focus team="$(cat "$FLEET_STATE_DIR/focus")"
+[ ! -f "$FLEET_STATE_DIR/focus" ] || blocks+=("$(render_line focus team="$(cat "$FLEET_STATE_DIR/focus")")")
 free="$(free_gb 2>/dev/null || true)"
-[ -z "$free" ] || [ "$free" -ge "$(warn_free_gb)" ] || render_line disk free="$free" warn="$(warn_free_gb)"
+[ -z "$free" ] || [ "$free" -ge "$(warn_free_gb)" ] || blocks+=("$(render_line disk free="$free" warn="$(warn_free_gb)")")
 if $all; then
-  if [ -z "$claims_file" ]; then render_line other_machines list="not provided (pass --claims with linear.sh peers)"
+  if [ -z "$claims_file" ]; then blocks+=("$(render_line other_machines list="not provided (pass --claims with linear.sh peers)")")
   else
-    render_line other_machines list="$(printf '%s' "$claims" | jq -r --argjson now "$(jq -rn --arg t "${FLEET_NOW:-$(now)}" '$t | fromdateiso8601')" \
+    blocks+=("$(render_line other_machines list="$(printf '%s' "$claims" | jq -r --argjson now "$(jq -rn --arg t "${FLEET_NOW:-$(now)}" '$t | fromdateiso8601')" \
       --argjson lease "$(lease_hours)" "$RENDER_DEFS"'
       [.[] | "\(issue_cell(.issue; "")) on \(.machine // .label) (\(if .heartbeat == null then "no heartbeat"
         else "heartbeat \(.heartbeat | ago($now))" + (if ($now - (.heartbeat | fromdateiso8601)) > ($lease * 3600) then ", lapsed" else "" end) end))"]
-      | if length == 0 then "none" else join("; ") end')"
+      | if length == 0 then "none" else join("; ") end')")")
   fi
 fi
 # The launchd loop is installed (its launcher exists) but has no Orchestrator to wake: say so in one line.
 if [ -x "$FLEET_STATE_DIR/bin/fleet-tick" ] && [ -z "$(cfg_str orchestrator_ref "")" ] &&
   [ -z "$("$registry" get orchestrator 2>/dev/null | jq -r '.herdr_ref // ""' 2>/dev/null)" ]; then
-  render_line loop_unregistered
+  blocks+=("$(render_line loop_unregistered)")
 fi
+reply "${blocks[@]}"

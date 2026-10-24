@@ -223,7 +223,8 @@ case "$sub" in
     envs="$("$registry" list --envs)"
     if [ -n "${1:-}" ]; then render_line env team="$1" state="$(jq -r --arg t "$1" '.[$t].state // "Down"' <<<"$envs")"; exit 0; fi
     [ "$(jq length <<<"$envs")" != 0 ] || { render_line no_envs; exit 0; }
-    while IFS=$'\t' read -r t s; do render_line env team="$t" state="$s"; done < <(jq -r 'to_entries[] | [.key, (.value.state // "Down")] | @tsv' <<<"$envs")
+    blocks=(); while IFS=$'\t' read -r t s; do blocks+=("$(render_line env team="$t" state="$s")"); done < <(jq -r 'to_entries[] | [.key, (.value.state // "Down")] | @tsv' <<<"$envs")
+    reply ${blocks[@]+"${blocks[@]}"}
     ;;
   *) sed -n '2,34p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

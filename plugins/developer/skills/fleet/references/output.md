@@ -10,6 +10,11 @@ added later adds its entry here and its golden file, or the "every command has a
 `<angle brackets>` are filled in; `[DEV-1](url)` is an issue link (the bare key when there is no URL, `-` when there
 is no issue); `[repo #N](url)` is a PR link (`-` when there is none). "Then the table" means the team table follows.
 
+A reply is made of blocks: a command's line, the summary line, a table, `Waiting on you`, the queue heading, each
+`Not ready` line, each note and each footer line. Exactly one blank line separates two blocks (`reply` in common.sh),
+because Markdown ends a table only at a blank line and runs adjacent lines together into one paragraph. A test
+fails when a golden file has a table row next to a line that is neither a row nor blank.
+
 ## Shared
 
 ### symbols
@@ -34,9 +39,11 @@ A severity is `**P0**` or `**P1**` in bold (they wait on you) and `P2` plain, wh
 
 ```
 <n> teams · ● <n> working · ○ <n> idle · ◐ <n> waiting · ✗ <n> blocked · ‖ <n> parked · ✓ <n> done
+
 | Team | Issue | PR | State | Needs you |
 |---|---|---|---|---|
 | <team> | [DEV-1](url) | [repo #N](url) | <symbol> <state> | <needs you> |
+
 Waiting on you: <team/role> **<P0|P1>**: <question>; …
 ```
 
@@ -52,10 +59,13 @@ or P1 is open. With no team: `No teams.`
 
 ```
 Merge in this order:
+
 | # | PR | Issue | Why this order | After merge |
 |---|---|---|---|---|
 | 1 | ✓ [repo #N](url) | [DEV-1](url) | <why> | <after merge> |
+
 Not ready: [repo #N](url) ✗ <what is missing> · ✗ <what else is missing>
+
 Linear order unknown (no key).
 ```
 
@@ -98,8 +108,11 @@ is open, then these lines, each only when it applies:
 
 ```
 Focus: <team>.
+
 Disk: <n> GB free (warn below <w>).
+
 Other machines: [DEV-1] on <machine> (heartbeat <age>[, lapsed]); …
+
 Loop: no Orchestrator registered, so wakes reach desktop notifications only. Run registry.sh orchestrator here in its pane.
 ```
 
@@ -221,6 +234,7 @@ Then the status output.
 
 ```
 <team> (<outcome>): <role>: <lesson>; <role>: lesson due
+
 Discovered work: <text> (<team/role>); …
 ```
 
@@ -232,6 +246,7 @@ One line per team with retired rows still in the live registry; `Nothing to debr
 | Week | Issues shipped | PRs | Rework | Median cycle |
 |---|---|---|---|---|
 | <YYYY-Www> | <n> | <n> | <n> | <h>h <m>m |
+
 Report: <path>
 ```
 

@@ -50,5 +50,4 @@ done
 rm -f "$FLEET_STATE_DIR/unpark.err"
 [ "${#failed[@]}" = 0 ] || die "${failed[*]} did not start and stay Parked" "Run fleet unpark $team again"
 ev_log unparked team="$team"
-render_line unparked team="$team" agents="$(printf '%s' "$rows" | jq -r 'sort_by(if .tier == "Lead" then 0 else 1 end) | map(.name | split("/")[1:] | join("/")) | join(", ")')"
-render_table
+reply "$(render_line unparked team="$team" agents="$(printf '%s' "$rows" | jq -r 'sort_by(if .tier == "Lead" then 0 else 1 end) | map(.name | split("/")[1:] | join("/")) | join(", ")')")" "$(render_table)"
