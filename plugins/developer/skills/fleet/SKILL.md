@@ -167,7 +167,8 @@ An escalation stays open, even after its agent is Done, until you run `$F/fleet 
 2. `$F/fleet retire <team | team/role> [--outcome Shipped|Partial|Abandoned|Failed] [--verify]` closes only the fleet's panes,
    removes worktrees, closes open escalations ("closed at retire") and marks the rows Retired. A whole team's issue
    follows the outcome on Linear (when writes are on): Shipped → Done (`--verify`: Verify, for an issue the user checks
-   before Done), Abandoned or Failed → Todo with this machine's claim released; a "Part of" PR leaves it. It **keeps** a
+   before Done) once its PR merged (an open PR leaves it, with a warning: move it when the PR merges), Abandoned or
+   Failed (or no outcome) → Todo with this machine's claim released; a PR that says "Part of <issue>" leaves it. It **keeps** a
    worktree with unpushed, untracked or uncommitted work and names it: ask the agent to push, then retire again.
    A team name with no live rows but leftovers of an earlier boot (its `fleet/<team>/*` branches or worktrees) is
    tidied the same way; boot refuses such a name until then. A boot that fails or is interrupted undoes what it made.

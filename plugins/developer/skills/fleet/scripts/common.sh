@@ -491,6 +491,12 @@ PR_DEFS='def pr_noci_ok($noci; $repo; $url): ($repo | split("/") | last) as $bas
        (if .isDraft == true then "draft" else empty end),
        (if pr_held then "held" else empty end)];
   '
+# PART_OF_JQ: jq `def part_of;` on a PR body: the issue a "Part of <issue>" line names (its identifier, a markdown link
+# to it, or its tracker URL), upper-cased, else null. Any case, and only before an issue reference, so prose such as
+# "part of the cleanup" is not one. retire leaves such an issue In Progress; the merge queue orders its slices.
+PART_OF_JQ='def part_of: [match("(?i)\\bpart of\\s+\\[?\\s*(?:https?://\\S+/issue/)?([a-z][a-z0-9]*-[0-9]+)\\b").captures[0].string] | first // null
+    | if . then ascii_upcase else . end;
+  '
 
 # Claude Code transcripts. projects_dir is where Claude keeps them (tests point HOME at a fixture
 # tree); transcript_dir_for <cwd> is the project directory for a working directory (every character

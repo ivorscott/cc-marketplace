@@ -6,9 +6,10 @@
 #   retire.sh --summary <team | team/role> [...]
 #
 # Retiring a whole team also moves its issue on Linear, once per issue and only while linear_writes allows writes (a
-# failure warns, never fails the retire): Shipped → Done, or Verify with --verify; Abandoned or Failed → Todo, and this
-# machine's claim is released. A PR whose body says "Part of" leaves the issue In Progress with its label. The Retired
-# line then ends "Issue → <state>.".
+# failure warns, never fails the retire): Shipped → Done, or Verify with --verify, once every PR of the issue merged (an
+# open PR leaves it as it is, with a warning); Abandoned or Failed, or no outcome reported (shown as Abandoned) → Todo,
+# and this machine's claim is released. A PR whose body says it is "Part of" another issue (any case, before an issue
+# reference) leaves the issue In Progress with its label. The Retired line then ends "Issue → <state>.".
 #
 # --summary changes nothing. It prints, per target, the line the user answers before a retire:
 #   Retire <team>? Outcome <X>. Unpushed: <none|list>. Kept: <none|list>. Reply yes to retire.
@@ -237,20 +238,24 @@ outcomes="$("$registry" list | jq -r --argjson names "$(printf '%s' "$rows" | jq
 prs="$(printf '%s' "$rows" | jq -r '[.[].pr // empty | select(. != "")] | unique[]' | while IFS= read -r u; do pr_link "$u"; done | paste -sd, - | sed 's/,/, /g')"
 
 # Linear: a whole team's issue follows its outcome, once per issue and only while linear_writes allows writes; a
-# failure warns and never fails the retire. Shipped → Done (Verify with --verify); Abandoned or Failed → Todo, and
-# this machine's claim is released. A PR whose body says "Part of" (one slice of a bigger issue) leaves the issue In
-# Progress with its label.
+# failure warns and never fails the retire. Shipped → Done (Verify with --verify), only once every PR of the issue
+# merged (an open one leaves it as it is, to move when it merges); Abandoned or Failed, or no outcome at all (which the
+# Retired line shows as Abandoned) → Todo, and this machine's claim is released. A PR whose body says it is "Part of"
+# another issue (PART_OF_JQ: one slice of a bigger issue) leaves the issue In Progress with its label.
 issue_state=""
-case "$outcomes" in Shipped) want=Done; ! $verify || want=Verify ;; Abandoned | Failed) want=Todo ;; *) want="" ;; esac
+case "${outcomes:-Abandoned}" in Shipped) want=Done; ! $verify || want=Verify ;; Abandoned | Failed) want=Todo ;; *) want="" ;; esac
 if $whole_team && [ -n "$want" ] && [ "$(linear_writes)" != off ] && "$FLEET_SCRIPTS/linear.sh" has-key >/dev/null 2>&1; then
   lerr="$(mktemp "${TMPDIR:-/tmp}/fleet-retire.XXXXXX")"
   while IFS= read -r iss; do
     [ -n "$iss" ] || continue
-    partof=false
+    partof=false; unmerged=""
     for u in $(printf '%s' "$rows" | jq -r --arg i "$iss" '[.[] | select(.issue == $i) | .pr // empty | select(. != "")] | unique[]'); do
-      if forge_pr_json "$u" 2>/dev/null | jq -e '(.body // "") | test("Part of")' >/dev/null 2>&1; then partof=true; fi
+      j="$(forge_pr_json "$u" 2>/dev/null)" || j='{}'
+      if jq -e "$PART_OF_JQ"'(.body // "") | part_of != null' >/dev/null 2>&1 <<<"$j"; then partof=true; fi
+      [ "$want" = Todo ] || [ "$(jq -r '.state // ""' <<<"$j" 2>/dev/null)" = MERGED ] || unmerged="$unmerged${unmerged:+, }$u"
     done
     if $partof; then warn "$iss stays In Progress: its PR is part of a bigger issue"; continue; fi
+    if [ -n "$unmerged" ]; then warn "$iss stays as it is: $unmerged is not merged (or could not be read); move it to $want once it merges"; continue; fi
     if "$FLEET_SCRIPTS/linear.sh" state "$iss" "$want" >/dev/null 2>"$lerr"; then issue_state="$want"
     else warn "could not move $iss to $want on Linear: $(tail -n 1 "$lerr")"; continue; fi
     [ "$want" != Todo ] || "$FLEET_SCRIPTS/linear.sh" release "$iss" >/dev/null 2>"$lerr" || warn "could not release $iss on Linear: $(tail -n 1 "$lerr")"

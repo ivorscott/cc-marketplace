@@ -3953,8 +3953,12 @@ r9team() { # r9team <team> <issue> [PR number]: a lead and a builder on the issu
   "$REG" add "$(jq -cn --arg t "$1" --arg i "$2" --arg u "${3:+https://github.com/acme/app-api/pull/$3}" '{name: ($t + "/builder"), team: $t, tier: "Worker", status: "Done", herdr_ref: ($t + "-b"), pane: "pb", repo: "/nonexistent", issue: $i} + (if $u != "" then {pr: $u} else {} end)')" >/dev/null
 }
 rt9() { FLEET_GH="$G4" "$SCRIPTS/retire.sh" "$@" 2>"$T/r9.err"; }
-printf '{"state": "OPEN", "body": "Fixes the export", "url": "https://github.com/acme/app-api/pull/91"}' >"$D4/gh/91.json"
+printf '{"state": "MERGED", "body": "Fixes the export", "url": "https://github.com/acme/app-api/pull/91"}' >"$D4/gh/91.json"
 printf '{"state": "OPEN", "body": "Part of DEV-3: the first slice", "url": "https://github.com/acme/app-api/pull/92"}' >"$D4/gh/92.json"
+printf '{"state": "OPEN", "body": "Fixes the export", "url": "https://github.com/acme/app-api/pull/93"}' >"$D4/gh/93.json"
+printf '{"state": "MERGED", "body": "Part of removing the smoke test everywhere", "url": "https://github.com/acme/app-api/pull/94"}' >"$D4/gh/94.json"
+printf '{"state": "MERGED", "body": "part of DEV-1, slice 2", "url": "https://github.com/acme/app-api/pull/95"}' >"$D4/gh/95.json"
+printf '{"state": "MERGED", "body": "Part of [DEV-2](https://linear.app/acme/issue/DEV-2/x)", "url": "https://github.com/acme/app-api/pull/96"}' >"$D4/gh/96.json"
 d9db() { d4db; jq '.states.Verify = "S4"' "$LINEAR_DB" >"$D4/db9" && cp "$D4/db9" "$LINEAR_DB"; }
 qfresh retire9; d4cfg 'linear_writes = "on"'
 d9db; r9team r9a DEV-3 91; o9="$(rt9 r9a --outcome Shipped)"
@@ -3971,6 +3975,16 @@ d4cfg 'linear_writes = "on"'; d9db; r9team r9f DEV-99 91; rt9 r9f --outcome Ship
 eq "dev408-9 retire: a Linear failure warns and never fails the retire" "$rc:$(grep -c 'could not move DEV-99 to Done on Linear' "$T/r9.err"):$("$REG" list --team r9f | jq -r '[.[].status] | unique | join(",")')" "0:1:Retired"
 d9db; r9team r9g DEV-3 91; rt9 r9g/builder --outcome Shipped >/dev/null
 eq "dev408-9 retire: retiring one agent leaves the issue alone" "$(d4state DEV-3)" "In Progress"
+# R14: Shipped waits for the merge; "Part of" is a parent reference in any case, never prose; no outcome is Abandoned.
+d9db; : >"$LINEAR_LOG"; r9team r9h DEV-3 93; o9h="$(rt9 r9h --outcome Shipped)"
+eq "dev408-R14 retire: a Shipped retire while the PR is open leaves the issue as it is, and says why" \
+  "$(d4state DEV-3):$(d4mut):$(grep -c 'DEV-3 stays as it is: https://github.com/acme/app-api/pull/93 is not merged' "$T/r9.err"):$(printf '%s\n' "$o9h" | head -n 1 | grep -c 'Issue →')" "In Progress:0:1:0"
+p14() { d9db; r9team "$1" DEV-3 "$2"; rt9 "$1" --outcome Shipped >/dev/null; d4state DEV-3; }
+eq "dev408-R14 retire: Part of is read only before an issue reference, in any case and as a markdown link" \
+  "$(p14 r9i 94):$(p14 r9j 95):$(p14 r9k 96)" "Done:In Progress:In Progress"
+d9db; r9team r9l DEV-3 93; o9l="$(rt9 r9l)"
+eq "dev408-R14 retire: with no outcome reported, the issue goes back to Todo and the claim is released, as the Abandoned line says" \
+  "$(d4state DEV-3):$(d4labels DEV-3):$(printf '%s\n' "$o9l" | head -n 1 | grep -c '(Abandoned).* Issue → Todo\.$')" "Todo:bug:1"
 d4cfg
 R9="$QD/r9"; git init -q -b main "$R9"; git -C "$R9" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
 git init -q --bare "$QD/r9.git"; git -C "$R9" remote add origin "$QD/r9.git"; git -C "$R9" push -q origin main 2>/dev/null
