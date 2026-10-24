@@ -5,7 +5,7 @@
 #   loop-tick.sh
 #
 # Wake: every event someone must act on reaches the Orchestrator: pr_ready, pr_merged, any escalation (P0/P1
-# for the user, P2 the Orchestrator answers itself), dead, stalled (after the nudge), claim_takeover, the claim sweep's
+# for the user, P2 the Orchestrator answers itself), dead, stalled (after the nudge), claim_takeover, claim_lost, the claim sweep's
 # claim_released, claim_held_pr and claim_lapsed, needs_input,
 # brief_failed, stale_version (a decision for the user), weekly_summary (tick writes the metrics report), and
 # pr_opened when the lead could not be told

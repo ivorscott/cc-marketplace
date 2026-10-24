@@ -20,7 +20,7 @@ restarted, compacted or replaced agent picks up from the row, not from memory.
 | `harness`, `model` | herdr agent kind (`claude`, `codex`, …) and model |
 | `repo`, `cwd`, `worktree`, `branch` | where it works; `worktree` and `branch` are set for writers only |
 | `machine`, `workspace`, `pane`, `herdr_ref` | where it runs; `herdr_ref` is the herdr agent name |
-| `issue`, `claimed_by`, `scope` | the tracker issue, the machine key that claimed it, and the declared file scope `{repo, paths[]}` (empty paths = whole repo); set by `boot.sh --issue/--claimed-by/--scope` |
+| `issue`, `claimed_by`, `scope` | the tracker issue, the machine key that claimed it, and the declared file scope `{repo, paths[]}` (empty paths = whole repo); set by `boot.sh --issue/--claimed-by/--scope`; `registry.sh reassign --claimed-by` (`next.sh`, when its claim succeeded) moves `claimed_by` to the new issue and drops it otherwise, and tick's `claim_lost` reads it |
 | `assignment` | the task it owes (the hook) |
 | `status` | Booting, Working, Needs input, Stalled, Zombie, Idle, Done, Parked, Retired |
 | `escalation`, `escalations[]` | `escalation` is derived: the highest severity among open entries, `""` when none. Each entry is `{id, severity, message, at}` (`id` is `<at compact>-<seq>`, seq the 1-based array position; entries filed before ids existed get the same derived id on read) plus `resolved_at` and `resolution` once `registry.sh resolve` closes it; `(name, id)` identifies one. Open entries survive `done`; `retire` closes them with resolution "closed at retire". A non-array `escalations` reads as empty and non-object elements are skipped |

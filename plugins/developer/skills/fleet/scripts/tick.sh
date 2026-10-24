@@ -44,6 +44,8 @@
 #   slot_free       fewer live teams than target_teams (orchestrator row) and max_teams: the Orchestrator picks and
 #                   boots. Once per (live count, target)
 #   claim_takeover  a team's issue now carries another machine's label (once per team, issue and holder)
+#   claim_lost      a team's issue that this machine claimed carries no machine label any more: another machine
+#                   released it as lapsed (once per team and issue; not while linear_writes is off)
 #   claim_released  another machine's lapsed claim with no open PR was released (linear.sh release --lapsed)
 #   claim_held_pr   another machine's lapsed claim has an open PR, so it was left alone
 #   claim_lapsed    another machine's claim lapsed (writes off, test mode) or has no heartbeat; left alone, read-only.
@@ -141,20 +143,32 @@ heartbeat() {
     st_upd '$st + {claims_unavailable_emitted: true}'
   fi
 }
-# A team of ours whose issue now carries another machine's label was taken over: report it once.
+# A team of ours whose issue now carries another machine's label was taken over: report it once. One whose issue
+# carries no machine label at all, while its rows say this machine claimed it (claimed_by), lost its claim: another
+# machine's sweep released it as lapsed (this one slept past lease_hours), and our heartbeat never puts the label back.
+# Report that once too (claim_lost), so this machine learns before someone else picks the issue; only while Linear
+# writes are not off, since a team moved unclaimed carries no claimed_by.
 claims_taken_over() {
   "$FLEET_SCRIPTS/linear.sh" has-key >/dev/null 2>&1 || return 0
-  local t i h
-  while IFS=$'\t' read -r t i; do
+  local t i c h writes; writes="$(linear_writes)"
+  while IFS=$'\t' read -r t i c; do
     [ -n "$i" ] || continue
     h="$("$FLEET_SCRIPTS/linear.sh" holder "$i" 2>/dev/null)" || { warn "could not read the holder of $i"; continue; }
+    if printf '%s' "$h" | jq -e '.holder == null' >/dev/null 2>&1; then
+      [ -n "$c" ] && [ "$writes" != off ] || continue
+      if [ "$(jq --arg k "$t|$i" '(.lost_emitted // []) | index($k) == null' "$STATE_FILE")" = true ]; then
+        add_events "$(jq -cn --arg t "$t" --arg i "$i" '[{type: "claim_lost", team: $t, name: ($t + "/lead"), issue: $i}]')"
+        st_upd --arg k "$t|$i" '$st + {lost_emitted: ((($st.lost_emitted // []) + [$k]) | unique)}'
+      fi
+      continue
+    fi
     printf '%s' "$h" | jq -e '.holder != null and (.ours | not)' >/dev/null 2>&1 || continue
     h="$(printf '%s' "$h" | jq -r .holder)"
     if [ "$(jq --arg k "$t|$i|$h" '(.takeover_emitted // []) | index($k) == null' "$STATE_FILE")" = true ]; then
       add_events "$(jq -cn --arg t "$t" --arg i "$i" --arg h "$h" '[{type: "claim_takeover", team: $t, name: ($t + "/lead"), issue: $i, holder: $h}]')"
       st_upd --arg k "$t|$i|$h" '$st + {takeover_emitted: ((($st.takeover_emitted // []) + [$k]) | unique)}'
     fi
-  done < <(printf '%s' "$claim_rows" | jq -r '[.[] | [.team, .issue]] | unique[] | @tsv')
+  done < <(printf '%s' "$claim_rows" | jq -r 'group_by(.team + "|" + .issue) | .[] | [.[0].team, .[0].issue, ([.[].claimed_by // empty | select(. != "")] | first // "")] | @tsv')
 }
 # Another machine's lapsed claim (linear.sh peers, read once; a fleet-wide check, so tick --team skips it). Only a
 # heartbeat older than lease_hours is lapsed. With writes allowed and no open PR in any repo the fleet works in (the
@@ -627,9 +641,10 @@ while IFS=$'\t' read -r etype eteam ename eurl esha eissue edetail; do
   ev_log "$etype" team="$eteam" name="$ename" pr="$eurl" sha="$esha" issue="$eissue" detail="$edetail"
 done < <(jq -r 'def d: if . == null or . == "" then "-" else tostring end;
   .[] | select(.type | IN("pr_opened", "pr_ready", "pr_merged", "pr_conflicting", "stalled", "dead", "failed", "needs_input", "stale_version", "slot_free",
-    "claim_takeover", "claim_released", "claim_held_pr", "claim_lapsed", "morning_report"))
+    "claim_takeover", "claim_lost", "claim_released", "claim_held_pr", "claim_lapsed", "morning_report"))
   | [.type, (.team | d), (.name | d), (.url | d), (.sha | d), (if (.type | startswith("claim_")) then (.issue | d) else "-" end),
-     (if (.type | startswith("claim_")) then ("holder " + (.holder // "?") + (if .detail then ": " + .detail else "" end))
+     (if .type == "claim_lost" then "claimed by this machine, released by another"
+      elif (.type | startswith("claim_")) then ("holder " + (.holder // "?") + (if .detail then ": " + .detail else "" end))
       elif (.type | IN("pr_conflicting", "morning_report")) then (.detail | d) else "-" end)] | @tsv' "$EVENTS_FILE")
 
 # --- notices: each wake's reply, rendered once for `fleet status` (references/output.md) --------------------------
@@ -658,6 +673,7 @@ st_upd --argjson prs "$live_prs" --argjson esc "$live_esc" --argjson cl "$live_c
   + (if .conflict_told then {conflict_told: [.conflict_told[] | select(split("@")[0] as $u | $prs | index($u))]} else {} end)
   + (if .escalations_emitted then {escalations_emitted: [.escalations_emitted[] | select(. as $k | $esc | index($k))]} else {} end)
   + (if .takeover_emitted then {takeover_emitted: [.takeover_emitted[] | select(split("|")[0:2] | join("|") as $k | $cl | index($k))]} else {} end)
+  + (if .lost_emitted then {lost_emitted: [.lost_emitted[] | select(. as $k | $cl | index($k))]} else {} end)
   + (if .stale_emitted then {stale_emitted: [.stale_emitted[] | select(split("|")[0] as $t | $live_teams | index($t))]} else {} end)
   + (if .brief_failed_emitted then {brief_failed_emitted: [.brief_failed_emitted[] | select(split("|")[0] as $n | $live_names | index($n))]} else {} end)
   + (if .respawns then {respawns: (.respawns | with_entries(.value |= inrecent) | with_entries(select(.value | length > 0)))} else {} end)'

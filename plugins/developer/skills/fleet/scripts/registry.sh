@@ -21,7 +21,7 @@
 #                                                          Orchestrator, on the lead's row). The last two go to `notes`
 #   registry.sh retire <name|team> [--outcome O]           also closes the rows' open escalations ("closed at retire")
 #   registry.sh signoff <name> <pr-url|N> <sha>            the tester's sign-off: records the PR and the exact SHA verified
-#   registry.sh reassign <team> <issue> [--assignment TEXT] [--issue-url URL]
+#   registry.sh reassign <team> <issue> [--assignment TEXT] [--issue-url URL] [--claimed-by KEY]
 #                                                          move a team to a new issue (next.sh): logs issue_done for the old one,
 #                                                          clears the old outcome, PR and sign-off, rewrites the assignment;
 #                                                          workers go Idle, the lead Working
@@ -329,12 +329,13 @@ case "$cmd" in
     ev_log signoff team="$(jq -r --arg n "$name" '.agents[$n].team // ""' "$FLEET_REGISTRY")" name="$name" pr="$pr" sha="$sha"
     ;;
   reassign)
-    team="${1:?usage: reassign <team> <issue> [--assignment TEXT] [--issue-url URL]}"; issue="${2:?usage: reassign <team> <issue>}"; shift 2
-    assignment=""; iurl=""
+    team="${1:?usage: reassign <team> <issue> [--assignment TEXT] [--issue-url URL] [--claimed-by KEY]}"; issue="${2:?usage: reassign <team> <issue>}"; shift 2
+    assignment=""; iurl=""; cby=""
     while [ $# -gt 0 ]; do
       case "$1" in
         --assignment) assignment="${2:?--assignment needs text}"; shift 2 ;;
         --issue-url) iurl="${2:?--issue-url needs a URL}"; shift 2 ;;
+        --claimed-by) cby="${2:?--claimed-by needs a machine key}"; shift 2 ;;
         *) die "unknown reassign option: $1" ;;
       esac
     done
@@ -354,7 +355,9 @@ case "$cmd" in
           pr="$(printf '%s' "$line" | jq -r '.[5]')"
       done
     # One update for every row: a half-moved team would be worse than an unmoved one.
-    update --arg t "$team" --arg i "$issue" --arg a "$assignment" --arg u "$iurl" --arg now "$(now)" "$DERIVE"'
+    # claimed_by follows the new issue: the claim next.sh made, or none when it moved the team unclaimed (tick's
+    # claim_lost reads it).
+    update --arg t "$team" --arg i "$issue" --arg a "$assignment" --arg u "$iurl" --arg cb "$cby" --arg now "$(now)" "$DERIVE"'
       .agents |= with_entries(
         if .value.team == $t and .value.status != "Retired" and .value.tier != "Orchestrator" then
           .value |= (
@@ -362,6 +365,7 @@ case "$cmd" in
             | norm | esc_close("closed at next"; $now)
             | derive | .issue = $i | .assignment = $a
             | (if $u != "" then .issue_url = $u else del(.issue_url) end)
+            | (if $cb != "" then .claimed_by = $cb else del(.claimed_by) end)
             | .status = (if .tier == "Lead" then "Working" else "Idle" end) | .updated_at = $now)
         else . end)'
     ;;

@@ -59,9 +59,11 @@ if $morning; then
     | select(.kind == "decision" and (.at // "") >= $c) | "- \($n | md): \(.message | md)"' <<<"$rows")"
   section "UNVERIFIED" "$(jq -r --arg c "$cutoff" "$RENDER_DEFS"'.[] | select((.updated_at // "") >= $c) | .name as $n
     | (.summary // "") | split("\n")[] | split("; ")[] | select(test("UNVERIFIED")) | "- \($n | md): \(. | md)"' <<<"$rows")"
-  section "Takeovers" "$(jq -r '.[] | select(.type == "claim_takeover" or .type == "claim_released")
+  section "Takeovers" "$(jq -r '.[] | select(.type == "claim_takeover" or .type == "claim_released" or .type == "claim_lost")
     | ((.detail // "") | sub("^holder "; "") | split(": ")[0]) as $h
-    | if .type == "claim_takeover" then "- \(.issue // "?"): taken over by \($h)" else "- \(.issue // "?"): released from \($h) (heartbeat lapsed, no open PR)" end' <<<"$events")"
+    | if .type == "claim_takeover" then "- \(.issue // "?"): taken over by \($h)"
+      elif .type == "claim_lost" then "- \(.issue // "?"): this machine'"'"'s claim was released by another machine (\(.team // "?"))"
+      else "- \(.issue // "?"): released from \($h) (heartbeat lapsed, no open PR)" end' <<<"$events")"
   section "Boots" "$(jq -r --argjson rows "$rows" '.[] | select(.type == "boot") | .team as $t
     | ([$rows[] | select(.name == ($t + "/lead")) | (.notes // [])[] | select(.kind == "picked") | .message] | last) as $why
     | "- \($t)\(if (.issue // "") != "" then " on " + .issue else "" end): \($why // "named by the user")"' <<<"$events")"

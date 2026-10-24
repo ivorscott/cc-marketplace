@@ -99,6 +99,7 @@ fi
 
 # 3. Reassign.
 ra=(reassign "$team" "$issue"); [ -z "$assignment" ] || ra+=(--assignment "$assignment"); [ -z "$issue_url" ] || ra+=(--issue-url "$issue_url")
+[ "$rc" != 0 ] || ra+=(--claimed-by "$(machine_key)") # the rows record the claim, as boot's --claimed-by does
 "$registry" "${ra[@]}" >/dev/null
 ev_log next team="$team" issue="$issue"
 

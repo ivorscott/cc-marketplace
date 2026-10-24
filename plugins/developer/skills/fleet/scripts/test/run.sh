@@ -3536,6 +3536,7 @@ for w in $WAKES; do
     pr_opened) ev='{"type":"pr_opened","team":"build-api","name":"build-api/builder","url":"https://github.com/acme/app-api/pull/214","lead_told":false}' ;;
     needs_input) ev='{"type":"needs_input","team":"build-api","name":"build-api/builder","detail":"login expired"}' ;;
     claim_takeover) ev='{"type":"claim_takeover","team":"build-api","name":"build-api/lead","issue":"DEV-12","holder":"fleet:other"}' ;;
+    claim_lost) ev='{"type":"claim_lost","team":"build-api","name":"build-api/lead","issue":"DEV-12"}' ;;
     weekly_summary) ev='{"type":"weekly_summary","team":"","name":"","week":"2026-W43"}' ;;
     escalation) ev='{"type":"escalation","team":"build-api","name":"build-api/lead","id":"20261024T080000Z-1","severity":"P1","message":"which database?","options":["postgres","sqlite"]}' ;;
     pr_conflicting) ev='{"type":"pr_conflicting","team":"build-api","name":"build-api/lead","url":"https://github.com/acme/app-api/pull/214","merged":"https://github.com/acme/app-web/pull/121","lead_told":true}' ;;
@@ -3780,6 +3781,22 @@ qfresh sweepnr; cp "$D4/db3" "$LINEAR_DB"; d4cfg 'linear_writes = "on"'; : >"$LI
 eq "dev408-3 sweep: with no repo to look for a PR in, nothing is released" "$(swev "$s3"):$(d4mut)" "claim_lapsed:DEV-2 claim_lapsed:DEV-4 claim_lapsed:DEV-6:0"
 qfresh sweepteam; cp "$D4/db3" "$LINEAR_DB"; d4cfg 'linear_writes = "on"' "repos = [\"$D4/r3\"]"
 eq "dev408-3 sweep: tick --team leaves it to the fleet-wide tick" "$(swev "$(FLEET_GH="$G4" D4GH_LIST="$D4/gh-pr6.json" FLEET_NOW=2026-10-18T09:00:00Z "$SCRIPTS/tick.sh" --team nobody 2>/dev/null)")" ""
+# R2: another machine's sweep released our lapsed claim, so the issue carries no machine label (DEV-1 here) and our
+# heartbeat never puts it back. A team whose rows say this machine claimed it learns that once (claim_lost); a team
+# moved unclaimed (no claimed_by) and a team whose issue still carries our label are quiet; with writes off, nothing.
+qfresh lost; d4db; d4cfg 'linear_writes = "on"'
+for r in 'r2|DEV-1|test' 'r2u|DEV-1|' 'r2o|DEV-3|test'; do IFS='|' read -r t i c <<<"$r"
+  "$REG" add "$(jq -cn --arg t "$t" --arg i "$i" --arg c "$c" '{name: ($t + "/builder"), team: $t, tier: "Worker", status: "Idle", herdr_ref: ($t + "-b"), pane: ("p" + $t), issue: $i}
+    + (if $c != "" then {claimed_by: $c} else {} end)')" >/dev/null; done
+l1="$(FLEET_NOW=2026-10-18T09:00:00Z "$SCRIPTS/tick.sh" 2>/dev/null)"; l2="$(FLEET_NOW=2026-10-18T09:00:00Z "$SCRIPTS/tick.sh" 2>/dev/null)"
+eq "dev408-R2 claims: an issue this machine claimed that lost its label wakes the Orchestrator once (claim_lost); unclaimed and held teams are quiet" \
+  "$(printf '%s' "$l1" | jq -c '[.[] | select(.type == "claim_lost") | .team + ":" + .issue]'):$(evc "$l2" claim_lost):$(jq -r 'select(.type == "claim_lost") | .detail' "$FLEET_STATE_DIR/events.jsonl")" \
+  "[\"r2:DEV-1\"]:0:claimed by this machine, released by another"
+qfresh lostro; d4db; d4cfg; "$REG" add '{"name":"r2/builder","team":"r2","tier":"Worker","status":"Idle","herdr_ref":"r2-b","pane":"pr2","issue":"DEV-1","claimed_by":"test"}' >/dev/null
+eq "dev408-R2 claims: with linear_writes off there is no claim_lost (a move then leaves the team unclaimed)" "$(evc "$(FLEET_NOW=2026-10-18T09:00:00Z "$SCRIPTS/tick.sh" 2>/dev/null)" claim_lost)" 0
+"$REG" reassign r2 DEV-7 >/dev/null; c1="$("$REG" get r2/builder | jq -r '.claimed_by // "none"')"
+"$REG" reassign r2 DEV-8 --claimed-by test >/dev/null
+eq "dev408-R2 claims: reassign drops claimed_by for an unclaimed move and records the claim next.sh made" "$c1:$("$REG" get r2/builder | jq -r '.claimed_by // "none"')" "none:test"
 d4cfg
 
 # -- dev408-2: keep N teams running: slot_free under target_teams, a signed-off team parks, the pick is a note

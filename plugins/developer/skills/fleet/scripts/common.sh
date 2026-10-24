@@ -833,6 +833,9 @@ render_notice() {
       else render_line event event="Needs input" name="$name" what="$d" next="Look at its pane"; fi ;;
     brief_failed) render_line event event="Brief failed" name="$name" what="its brief never arrived, re-sent once" next="Look at its pane, then re-send or re-boot" ;;
     claim_takeover) render_line claim_takeover issue="$(team_issue "$team")" machine="$(jq -r '.holder // "another machine"' <<<"$e")" team="$team" ;;
+    claim_lost) n="$(jq -r '.issue // ""' <<<"$e")"
+      render_line event event="Claim lost" name="$team" what="$(team_issue "$team") lost this machine's label: another machine released the claim as lapsed" \
+        next="Claim it again with fleet claim $n while no one holds it, or stop $team" ;;
     claim_released | claim_held_pr | claim_lapsed)
       n="$(jq -r '.issue // ""' <<<"$e")"; o="$(jq -r '.holder // "another machine"' <<<"$e")"; d="$(jq -r '.detail // ""' <<<"$e")"
       case "$type" in
@@ -855,7 +858,7 @@ render_notice() {
 
 # WAKE_TYPES: the tick events that wake the Orchestrator (loop-tick.sh) and get a notice (tick.sh); each has an entry
 # in references/output.md. An escalation wakes at any severity, pr_opened only when the lead could not be told.
-WAKE_TYPES="pr_ready pr_merged pr_opened pr_conflicting dead failed stalled needs_input brief_failed claim_takeover claim_released claim_held_pr claim_lapsed stale_version slot_free weekly_summary morning_report escalation"
+WAKE_TYPES="pr_ready pr_merged pr_opened pr_conflicting dead failed stalled needs_input brief_failed claim_takeover claim_lost claim_released claim_held_pr claim_lapsed stale_version slot_free weekly_summary morning_report escalation"
 # WAKE_JQ: the jq filter that keeps the events that wake, with $wake bound to WAKE_TYPES (--arg wake "$WAKE_TYPES").
 WAKE_JQ='select(type == "object") | select((.type as $t | $wake | split(" ") | index($t)) and (.type != "pr_opened" or .lead_told == false))'
 

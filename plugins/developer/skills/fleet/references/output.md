@@ -429,6 +429,12 @@ Brief failed <team/role>: its brief never arrived, re-sent once. Look at its pan
 [DEV-1](url) taken over by <machine>. Stop or hand off <team>.
 ```
 
+### wake claim_lost
+
+```
+Claim lost <team>: [DEV-1](url) lost this machine's label: another machine released the claim as lapsed. Claim it again with fleet claim DEV-1 while no one holds it, or stop <team>.
+```
+
 ### wake claim_released
 
 ```

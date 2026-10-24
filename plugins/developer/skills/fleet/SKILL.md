@@ -136,6 +136,9 @@ question box (AskUserQuestion): the wakes queue behind it. Ask in plain text and
 - An agent blocked on a permission prompt for two ticks gets a P1 escalation ("blocked on a permission prompt"),
   overnight or not: look at its pane and apply the blocked-prompt policy.
 - `claim_takeover`: stop or hand off the team (F), tell the user, escalate P1; never fight back (operations.md).
+- `claim_lost`: another machine released this machine's lapsed claim on the team's issue (this one slept past
+  lease_hours). Check `$F/fleet holder <ISSUE>`: with no holder, claim it again (`$F/fleet claim <ISSUE>`); with
+  another machine's, treat it as `claim_takeover`.
 - `claim_released`: tick freed another machine's lapsed claim; the issue can be picked (A, step 0). `claim_held_pr`
   and `claim_lapsed`: tick left another machine's claim alone (an open PR, writes off, or no heartbeat); relay it.
 - `pr_conflicting`: a merge made a ready PR conflict; tick unparked its team and told its lead. Act only when the

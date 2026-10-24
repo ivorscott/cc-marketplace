@@ -94,7 +94,9 @@ heartbeat), and all three wake the Orchestrator.
 ### Heartbeat
 
 `tick.sh` does it: with a key, one heartbeat mutation per tick however many issues are claimed, and
-one `claim_takeover` event when a team's issue now carries another machine's label; Done rows
+one `claim_takeover` event when a team's issue now carries another machine's label, and one `claim_lost` event
+when an issue this machine claimed (the rows' `claimed_by`) carries no machine label at all because another machine's
+sweep released it while this one slept (claim it again while no one holds it); Done rows
 keep their claim (a team waiting on a merge is still heartbeated). **Nothing writes to Linear until
 `linear_writes` says so:** `linear_writes = "off"` (the default), `"test:FT"` or `"on"` in
 `config.toml`. Off: `linear.sh` writes exit 3 like a missing key, tick skips the heartbeat and logs
