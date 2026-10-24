@@ -167,9 +167,12 @@ free_gb() {
 anon_volume() { case "$1" in *[!0-9a-f]* | "") return 1 ;; esac; [ "${#1}" = 64 ]; }
 # du_gb <dir>: its size in whole GB, 0 when it is missing.
 du_gb() { if [ -d "$1" ]; then du -sk "$1" 2>/dev/null | awk '{printf "%d\n", $1 / 1048576}'; else echo 0; fi; }
-# docker_reclaimable_gb: what `docker system df` says can be reclaimed, summed, in whole GB (0 when it says nothing).
-docker_reclaimable_gb() {
-  "${FLEET_DOCKER:-docker}" system df --format '{{.Reclaimable}}' 2>/dev/null | awk '
+# docker_prunable_gb: what tick's docker prune can free, in whole GB (0 when docker says nothing): the build cache
+# `docker system df` says can be reclaimed, plus the dangling images. Unused tagged images and named volumes count in
+# docker's own Reclaimable total but no prune step removes them, so they never trigger one.
+docker_prunable_gb() {
+  { "${FLEET_DOCKER:-docker}" system df --format '{{.Type}}\t{{.Reclaimable}}' 2>/dev/null | awk -F'\t' '$1 == "Build Cache" { print $2 }'
+    "${FLEET_DOCKER:-docker}" image ls --filter dangling=true --format '{{.Size}}' 2>/dev/null; } | awk '
     { n = $1 + 0; u = $1; sub(/^[0-9.]+/, "", u)
       t += n * ((u == "TB") ? 1024 : (u == "GB") ? 1 : (u == "MB") ? 1 / 1024 : (u == "kB" || u == "KB") ? 1 / 1048576 : 0) }
     END { printf "%d\n", t }'

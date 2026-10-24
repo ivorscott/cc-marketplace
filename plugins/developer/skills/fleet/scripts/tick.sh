@@ -566,17 +566,18 @@ fi
 
 # --- prune: disk the fleet's tools fill ------------------------------------------------------------------------
 # At most once an hour (prune_at), fleet-wide (not with --team). It measures what the fleet holds (its worktrees, the
-# Go cache, what docker can reclaim) for the status disk line, and prunes when free disk is below warn_free_gb or a
-# measured size passes prune_cap_gb (default 20): `go clean -cache` when the Go cache is over the cap or the disk is
-# low; docker's dangling anonymous volumes (64-hex names only: a named volume is never touched, and never `docker
+# Go cache, what the docker prune can free) for the status disk line, and prunes when free disk is below warn_free_gb
+# or a measured size passes prune_cap_gb (default 20): `go clean -cache` when the Go cache is over the cap or the disk
+# is low; docker's dangling anonymous volumes (64-hex names only: a named volume is never touched, and never `docker
 # volume prune`, whose meaning changed across Docker versions), its build cache (`builder prune -f`) and dangling
-# images (`image prune -f`) when what docker can reclaim is over the cap or the disk is low. A missing tool skips its
-# step with one warning. What the free disk gained is kept as the last reclaim.
+# images (`image prune -f`) when the build cache plus the dangling images pass the cap or the disk is low (unused
+# tagged images and named volumes, which no step removes, never trigger it, or the build cache would go every hour).
+# A missing tool skips its step with one warning. What the free disk gained is kept as the last reclaim.
 if [ -z "$team" ] && [ $((now_epoch - $(jq -r '.prune_at // 0' "$STATE_FILE"))) -ge 3600 ]; then
   pcap="$(cfg_int prune_cap_gb 20)"; gobin="${FLEET_GO:-go}"; dk="${FLEET_DOCKER:-docker}"
   gocache=""; go_gb=0; dk_gb=0; have_dk=false; command -v "$dk" >/dev/null 2>&1 && have_dk=true
   if command -v "$gobin" >/dev/null 2>&1; then gocache="$("$gobin" env GOCACHE 2>/dev/null || true)"; go_gb="$(du_gb "$gocache")"; fi
-  ! $have_dk || dk_gb="$(docker_reclaimable_gb)"
+  ! $have_dk || dk_gb="$(docker_prunable_gb)"
   held=$(($(du_gb "$FLEET_WORKTREES") + go_gb + dk_gb))
   f0="$(free_gb 2>/dev/null || true)"; low=false; [ -z "$f0" ] || [ "$f0" -ge "$(warn_free_gb)" ] || low=true
   pruned=false

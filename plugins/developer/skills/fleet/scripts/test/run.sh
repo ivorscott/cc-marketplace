@@ -44,16 +44,17 @@ case "$1 $2" in
     case "$4" in
       reference=*) awk -F'\t' -v p="${4#reference=*:}" '{n = length(p) + 1; if (substr($2, length($2) - n + 1) == ":" p) print $2}' "$DKDIR/images.tsv" ;;
       label=*) awk -F'\t' -v l="${4#label=}" '$3 == l {print $1}' "$DKDIR/images.tsv" ;;
+      dangling=true) cat "$DKDIR/dimages" 2>/dev/null ;; # DEV-408 R8: the dangling images' sizes, one per line
     esac
     exit 0 ;;
   "buildx ls") cat "$DKDIR/builders"; exit 0 ;;
   "buildx rm") grep -vx "${4:-}\*\?" "$DKDIR/builders" >"$DKDIR/b.tmp"; mv "$DKDIR/b.tmp" "$DKDIR/builders"; exit 0 ;;
   # DEV-408 item 12. containers: ID <tab> kind cluster <tab> volumes (comma-separated); dangling: one volume per line;
-  # df: the Reclaimable column of `docker system df`
+  # df: the Type and Reclaimable columns of `docker system df`, tab-separated
   "ps -a") awk -F'\t' -v c="${4#label=io.x-k8s.kind.cluster=}" '$2 == c {print $1}' "$DKDIR/containers" 2>/dev/null; exit 0 ;;
   "inspect -f") awk -F'\t' -v i="$4" '$1 == i {gsub(",", "\n", $3); print $3}' "$DKDIR/containers" 2>/dev/null; exit 0 ;;
   "volume ls") cat "$DKDIR/dangling" 2>/dev/null; exit 0 ;;
-  "system df") cat "$DKDIR/df" 2>/dev/null; exit 0 ;;
+  "system df") case "$*" in *'{{.Type}}'*) cat "$DKDIR/df" 2>/dev/null ;; *) cut -f2 "$DKDIR/df" 2>/dev/null ;; esac; exit 0 ;;
 esac
 if [ "$1" = rmi ]; then
   x="$2"; awk -F'\t' -v x="$x" '($1 == x || $2 == x) && $4 == 1 {f = 1} END {exit !f}' "$DKDIR/images.tsv" && exit 1
@@ -4041,15 +4042,21 @@ eq "dev408-12 prune: a low disk cleans the Go cache, removes the anonymous dangl
 eq "dev408-12 prune: a named dangling volume is never removed, and it is never docker volume prune" "$(grep -c '^volume rm app-db' "$DOCKER_LOG"):$(grep -c '^volume prune' "$DOCKER_LOG")" "0:0"
 pt 2026-10-24T11:30:00Z 10; eq "dev408-12 prune: at most once an hour" "$(grep -c '^clean -cache$' "$GO_LOG")" 1
 pt 2026-10-24T12:00:02Z 10; eq "dev408-12 prune: and again after the hour" "$(grep -c '^clean -cache$' "$GO_LOG")" 2
-printf '25GB (50%%)\n' >"$DKDIR/df"; : >"$DOCKER_LOG"; : >"$GO_LOG"; pt 2026-10-24T13:00:03Z 500
+printf 'Build Cache\t25GB (50%%)\n' >"$DKDIR/df"; : >"$DOCKER_LOG"; : >"$GO_LOG"; pt 2026-10-24T13:00:03Z 500
 eq "dev408-12 prune: docker over prune_cap_gb prunes docker alone (the Go cache is under it)" "$(grep -c '^builder prune -f$' "$DOCKER_LOG"):$(grep -c 'clean' "$GO_LOG")" "1:0"
-printf '3GB (10%%)\n' >"$DKDIR/df"; pt 2026-10-24T14:00:04Z 10
+printf 'Build Cache\t3GB (10%%)\n' >"$DKDIR/df"; pt 2026-10-24T14:00:04Z 10
 eq "dev408-12 status: below warn_free_gb the disk line says what the fleet holds and the last reclaim" "$(DF_GB=10 "$SCRIPTS/status.sh" 2>/dev/null | grep '^Disk:')" \
   "Disk: 10 GB free (warn below 75). Fleet holds 3 GB. Reclaimed 0 GB."
 FLEET_GO=/nonexistent/go pt 2026-10-24T15:00:05Z 10
 eq "dev408-12 prune: a missing tool skips its step with one warning" "$(grep -c 'go not found; the Go cache is not pruned' "$T/pt.err")" 1
 eq "dev408-12 prune: the real docker and go are never called" "$(cat "$REAL_DOCKER_LOG" "$REAL_GO_LOG" | grep -c .)" 0
-rm -f "$DKDIR/df" "$DKDIR/dangling"
+# R8: unused tagged images and named volumes, which no prune step removes, never trigger one (the build cache would
+# go every hour); the build cache plus the dangling images do.
+printf 'Images\t30GB (60%%)\nLocal Volumes\t12GB (40%%)\nBuild Cache\t1GB (5%%)\n' >"$DKDIR/df"; : >"$DOCKER_LOG"; pt 2026-10-24T16:00:06Z 500
+r8a="$(grep -c '^builder prune -f$' "$DOCKER_LOG")"; printf '15GB\n7.5GB\n' >"$DKDIR/dimages"; pt 2026-10-24T17:00:07Z 500
+eq "dev408-R8 prune: 42 GB of unused tagged images and named volumes do not trigger the docker prune; 23.5 GB of build cache and dangling images do" \
+  "$r8a:$(grep -c '^builder prune -f$' "$DOCKER_LOG")" "0:1"
+rm -f "$DKDIR/df" "$DKDIR/dangling" "$DKDIR/dimages"
 qfresh tf; mkdir -p "$QD/p12"; FLEET_FORCE=1 bt build tf "$QD/p12" task
 eq "dev408-12 boot: every pane gets the shared TF_PLUGIN_CACHE_DIR, and the directory exists" \
   "$(grep -c "^workspace create.*TF_PLUGIN_CACHE_DIR=$FLEET_STATE_DIR/tf-plugin-cache" "$HERDR_LOG"):$(grep -c "^pane split.*TF_PLUGIN_CACHE_DIR=$FLEET_STATE_DIR/tf-plugin-cache" "$HERDR_LOG"):$([ -d "$FLEET_STATE_DIR/tf-plugin-cache" ] && echo dir)" "1:3:dir"
