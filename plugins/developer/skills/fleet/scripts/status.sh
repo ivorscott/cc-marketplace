@@ -6,7 +6,8 @@
 #
 # The output is the status entry of references/output.md: the wake notices not shown yet (once, above the
 # rest), the team table (| Team | Issue | PR | State | Needs you |, one row per team with a row not yet
-# Retired, parked teams included, then "Waiting on you: ..." when a P0 or P1 is open), and footer lines that
+# Retired, parked teams included, then "Waiting on you: ..." when a P0 or P1 is open), the merge queue when any
+# PR is open (queue.sh: the ready PRs in the order to merge them, then "Not ready: ..."), and footer lines that
 # appear only when they apply: the focus, the disk (below warn_free_gb in config.toml) and a loop with no
 # Orchestrator to wake. --problems keeps only the teams that need someone. With a <team>, one row per agent of
 # that team instead: | Agent | Role | State | Model | Last action |. --json is the bare array of agents (of the
@@ -143,7 +144,11 @@ if $problems; then
     # shellcheck disable=SC2086
     render_table $pteams
   else render_line no_problems; fi
-else render_table; fi
+else
+  render_table
+  # The merge queue, rebuilt from GitHub and the registry (queue.sh), when any PR is open.
+  if q="$("$FLEET_SCRIPTS/queue.sh" 2>/dev/null)"; then render_queue "$q"; else warn "the merge queue could not be built"; fi
+fi
 [ ! -f "$FLEET_STATE_DIR/focus" ] || render_line focus team="$(cat "$FLEET_STATE_DIR/focus")"
 free="$(free_gb 2>/dev/null || true)"
 [ -z "$free" ] || [ "$free" -ge "$(warn_free_gb)" ] || render_line disk free="$free" warn="$(warn_free_gb)"

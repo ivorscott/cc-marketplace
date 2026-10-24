@@ -122,7 +122,8 @@ The Orchestrator and agents call these directly (from `scripts/`). You can call 
 | `machine-id.sh` | `id\|key\|label\|description\|hash\|show`: this machine's tracker identity, e.g. `fleet:3f9a2c1e`. The label description publishes `machine id sha256:<12 hex>`, never the full id; `linear.sh migrate` rewrites an older label that still holds the full id |
 | `status.sh` | `status.sh [<team>] [--problems] [--json] [--all [--claims FILE\|-]]` recomputes health, writes it to the registry and prints the waiting wake notices, then the team table (or, with a team, one row per agent) |
 | `registry.sh archive` | moves Retired rows with lessons and no open escalation to `fleet-archive.json` (`archive_after_days` in config.toml, default 0); `get --archived` and `list --with-archived` read both |
-| `tick.sh` | `tick.sh [--team T]` one JSON array of what changed since the last tick (stalled, dead, escalation, pr_ready, pr_merged, repo_without_team, disk), or nothing · reads PRs with read-only `gh pr view` through `FLEET_GH` |
+| `tick.sh` | `tick.sh [--team T]` one JSON array of what changed since the last tick (stalled, dead, escalation, pr_ready, pr_merged, pr_conflicting, repo_without_team, disk), or nothing, and each wake's reply in `notices.log` · reads PRs with read-only `gh pr view` through `FLEET_GH` |
+| `queue.sh` | the merge queue as JSON: the open PRs the fleet holds, the ready ones in the order to merge them (dependencies first, then fewest rebases, then oldest), the rest with what is missing. Rebuilt from GitHub and the registry on every call; `status` and the pr_ready/pr_merged wakes print it |
 | `tell.sh` | `tell.sh <team/role> <text> [--no-confirm]` sends and checks delivery, then prints `Told <team/role>: "…" (delivered)`; exit 1 not delivered, 2 pane at the shell |
 | `next.sh` | `next.sh <team> <issue> [--brief TEXT] [--assignment TEXT] [--issue-url URL]` after a merge, at a safe point (every agent idle, no background task): log `issue_done`, reassign, then restart every agent (`/exit`, a fresh session, its full brief as a file) |
 | `sandbox.sh` | `sandbox.sh [--keep] [--] [cmd...]` runs a reproduction with a temporary state and config root, shims for herdr, gh and curl, and no session, key or `FLEET_ROLE`; refuses the live roots |
@@ -357,6 +358,7 @@ in 4.1. Anything that newly exposes the key is a blocker; the items that touch t
 | `scripts/status.sh` | health computation |
 | `scripts/respawn.sh`, `metrics.sh`, `agent-lib.sh` | respawn a dead agent, per-PR metrics from `events.jsonl`, the agent-start functions boot and respawn share |
 | `scripts/tick.sh`, `tell.sh`, `next.sh` | loop tick, checked delivery (briefs as files), moving a team to its next issue |
+| `scripts/queue.sh` | the merge queue: which ready PRs to merge, in which order, and why |
 | `scripts/sandbox.sh` | reproductions away from the live fleet |
 | `rules/house.md` | the house rules every brief ends with (a repo's `.claude/fleet-rules.md` follows them) |
 | `scripts/retire.sh` | safe teardown: archives reports to `reports/fleet-archive/`, removes worktrees, removes the team's test cluster |

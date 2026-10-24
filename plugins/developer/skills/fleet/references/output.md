@@ -27,6 +27,27 @@ says why). Needs you is the team's most severe open escalation (`P1: <question>`
 its prompt`, `ask for its done step`, `agent gone: respawn or retire`, `brief not delivered`, `merge the PR`,
 `retire the team`), else `-`. `Waiting on you` appears only while a P0 or P1 is open. With no team: `No teams.`
 
+### merge queue
+
+```
+Merge in this order:
+| # | PR | Issue | Why this order | After merge |
+|---|---|---|---|---|
+| 1 | [repo #N](url) | [DEV-1](url) | <why> | <after merge> |
+Not ready: [repo #N](url) (<what is missing>)
+Linear order unknown (no key).
+```
+
+Rebuilt on every call by `scripts/queue.sh` from GitHub and the registry, printed only when a PR is open. Ready
+means the tester's signed SHA is the head, CI is green, the PR is mergeable, not a draft and not held. Why this order
+is the first rule that decides: a dependency (`blocks DEV-x`, `Part of DEV-x, slice n`, `base of #N`, `<repo> #N uses
+its contract`; the dependent says `needs <repo> #N`), then `fewest rebases` (shared files or migration numbers), then
+`oldest first`. After merge is `rebase after #N`, `renumber migration after #N` or `—`. With nothing ready the first
+line is `Merge in this order: none ready.` Not ready says what is missing: `no sign-off`, `signed <sha7> ≠ head`,
+`CI pending`, `CI red`, `no CI checks`, `conflicting`, `mergeable unknown`, `draft`, `held`, `waits for <repo> #N`,
+`dependency cycle with #N`, `GitHub unreadable`, or `other machine` for another machine's fleet PR. The note appears
+when two or more PRs are open and Linear could not be read.
+
 ### error
 
 ```
@@ -51,8 +72,8 @@ alone.
 
 ### status
 
-The wake notices not shown yet (each followed by a blank line), then the team table, then these lines, each only
-when it applies:
+The wake notices not shown yet (each followed by a blank line), then the team table, then the merge queue when a PR
+is open, then these lines, each only when it applies:
 
 ```
 Focus: <team>.
@@ -253,7 +274,8 @@ Sandbox at <dir>: <command> exited <code>.
 ## Wakes
 
 Tick renders each wake's reply into `notices.log` in the state dir; `fleet status` prints the ones not shown yet,
-once, above the table, so the answer to any wake is one `fleet status`, relayed as it is.
+once, above the table and the merge queue, so the answer to any wake is one `fleet status`, relayed as it is: after a
+`pr_ready` or a `pr_merged` that shows every ready PR in order, not only the new one.
 
 ### wake pr_ready
 
@@ -266,6 +288,18 @@ Ready to merge: [repo #N](url) for [DEV-1](url). Tester signed <sha7> = head, CI
 ```
 Merged [repo #N](url). Next: <move <team> to its next issue, or retire it|<team> parked>.
 ```
+
+`Next: unpark <team> and move it to its next issue, or retire it.` for a parked team.
+
+### wake pr_conflicting
+
+```
+Conflicting <team>/lead: [repo #N](url) conflicts after [repo #M](url). Lead told to bring it up to date with main and have the tester sign off again.
+```
+
+After a merge, a PR that was ready on the tick before and conflicts now: it leaves the queue, its team is unparked
+first when parked, and its lead is told once per (PR, head). When the unpark is refused: `Unpark refused (<why>):
+unpark it when a slot frees, then tell its lead.`
 
 ### wake pr_opened
 

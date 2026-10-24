@@ -155,6 +155,9 @@ case "$1 $2" in
 esac
 S
 chmod +x "$T/bin/herdr"; export HERDR_LOG="$T/herdr.log" AS="$T/as"; mkdir -p "$AS"
+# Nothing in the suite reaches GitHub: a gh on PATH logs the call and fails (the cases point FLEET_GH at shims).
+export REAL_GH_LOG="$T/realgh.log"; : >"$REAL_GH_LOG"
+printf '#!/usr/bin/env bash\necho "$*" >>"$REAL_GH_LOG"; exit 1\n' >"$T/bin/gh"; chmod +x "$T/bin/gh"
 
 # The golden fixture (DEV-408 item 17): a fleet with fixed times, rendered against scripts/test/golden/<entry>.md.
 # gfix points the state root at a fresh $T/gold and seeds the registry, an env and the event log; gold compares one
@@ -177,6 +180,8 @@ gfix() {
       row("build-api/tester"; "Worker"; "Idle"; "ga-tester"; "pga3") + {model: "sonnet", issue: "DEV-12", issue_url: "https://linear.app/acme/issue/DEV-12/export"},
       row("build-web/lead"; "Lead"; "Done"; "gw-lead"; "pgw1") + {model: "opus", issue: "DEV-13", outcome: "Shipped", pr: "https://github.com/acme/app-web/pull/121"},
       row("build-web/builder"; "Worker"; "Done"; "gw-builder"; "pgw2") + {model: "sonnet", issue: "DEV-13", outcome: "Shipped"},
+      row("build-web/tester"; "Worker"; "Done"; "gw-tester"; "pgw3") + {model: "sonnet", issue: "DEV-13", outcome: "Shipped",
+        pr: "https://github.com/acme/app-web/pull/121", signoff: {pr: "https://github.com/acme/app-web/pull/121", sha: "1111111", at: "2026-10-23T11:20:00Z"}},
       row("build-old/lead"; "Lead"; "Parked"; "go-lead"; "pgo1") + {model: "opus", issue: "DEV-9", parked_reason: "park", parked_at: "2026-10-23T18:00:00Z"},
       row("build-old/builder"; "Worker"; "Parked"; "go-builder"; "pgo2") + {model: "sonnet", issue: "DEV-9", parked_reason: "park", parked_at: "2026-10-23T18:00:00Z"},
       row("build-done/lead"; "Lead"; "Retired"; "gd-lead"; "pgd1") + {outcome: "Shipped", ended: "2026-10-24T06:00:00Z", discovered: [{message: "flaky smoke test", at: "2026-10-24T05:00:00Z"}]},
@@ -185,14 +190,47 @@ gfix() {
     envs: {"build-api": {cluster: "fleet-build-api", state: "Up", slot: 0, http_port: 8080, https_port: 8443, updated_at: "2026-10-24T08:00:00Z"}}}' >"$FLEET_REGISTRY"
   cat >"$FLEET_STATE_DIR/events.jsonl" <<'J'
 {"at":"2026-10-23T10:00:00Z","type":"boot","team":"build-web","issue":"DEV-13"}
-{"at":"2026-10-23T11:30:00Z","type":"pr_ready","team":"build-web","name":"build-web/lead","pr":"https://github.com/acme/app-web/pull/121","sha":"1111111aaaa"}
-{"at":"2026-10-23T12:00:00Z","type":"pr_merged","team":"build-web","name":"build-web/lead","pr":"https://github.com/acme/app-web/pull/121"}
+{"at":"2026-10-23T11:30:00Z","type":"pr_ready","team":"build-web","name":"build-web/lead","pr":"https://github.com/acme/app-web/pull/120","sha":"1111111aaaa"}
+{"at":"2026-10-23T12:00:00Z","type":"pr_merged","team":"build-web","name":"build-web/lead","pr":"https://github.com/acme/app-web/pull/120"}
 {"at":"2026-10-24T07:00:00Z","type":"boot","team":"build-api","issue":"DEV-12"}
 {"at":"2026-10-24T08:40:00Z","type":"signoff","team":"build-api","name":"build-api/tester","pr":"https://github.com/acme/app-api/pull/214","sha":"abc1234"}
 {"at":"2026-10-24T08:45:00Z","type":"pr_ready","team":"build-api","name":"build-api/tester","pr":"https://github.com/acme/app-api/pull/214","sha":"abc1234def"}
 {"at":"2026-10-24T08:50:00Z","type":"brief_delivered","team":"build-api","name":"build-api/builder"}
 J
+  # GitHub (the queue): app-web #121 signed, green and mergeable; app-api #214 not signed off. Linear: no relations.
+  mkdir -p "$G/ghd"; export GOLD_GH="$G/ghd" FLEET_GH="$G/gh-gold"
+  printf '#!/usr/bin/env bash\ncase "$1 $2" in "pr view") cat "$GOLD_GH/${3##*/}.json" ;; "pr list") echo "[]" ;; esac\n' >"$FLEET_GH"; chmod +x "$FLEET_GH"
+  for p in "app-api 214 abc1234def5678 fleet/dev-12-export DEV-12/export 2026-10-24T08:00:00Z api/export.go" "app-web 121 1111111aaaa fleet/dev-13-web DEV-13/web 2026-10-23T11:00:00Z web/app.ts"; do
+    set -- $p
+    jq -n --arg r "$1" --argjson n "$2" --arg h "$3" --arg b "$4" --arg i "$5" --arg c "$6" --arg f "$7" '{number: $n, url: "https://github.com/acme/\($r)/pull/\($n)",
+      state: "OPEN", title: "t", headRefOid: $h, headRefName: $b, baseRefName: "main", mergeable: "MERGEABLE", isDraft: false,
+      statusCheckRollup: [{__typename: "CheckRun", status: "COMPLETED", conclusion: "SUCCESS"}], body: "Fixes https://linear.app/acme/issue/\($i)",
+      createdAt: $c, files: [{path: $f}]}' >"$GOLD_GH/$2.json"
+  done
+  export LINEAR_STUB_KEY="${LINEAR_STUB_KEY:-KEYFIXTURE-gold}" LINEAR_DB="$G/linear.json" LINEAR_LOG="$G/linear.log" LINEAR_ARGV_LOG="$G/linear.argv" FLEET_CURL="$HERE/linear-stub.sh"
+  printf '%s\n' "$LINEAR_STUB_KEY" >"$FLEET_CONFIG_DIR/linear_api_key"; chmod 600 "$FLEET_CONFIG_DIR/linear_api_key"
+  jq -n '{team: "T1", states: {}, next: 1, labels: [], issues: [("DEV-12", "DEV-13") as $i | {id: $i, identifier: $i, team: {id: "T1"}, state: {id: "S", name: "In Progress"}, labelIds: [], comments: []}]}' >"$LINEAR_DB"
 }
+# The merge queue cases (DEV-408 item 18): qfresh <name> gives a fresh state root and empty gh answers; qpr writes one
+# PR's `gh pr view` answer; qteam adds a Done builder that holds the PR and its tester (signed off when a sha is given);
+# q runs queue.sh through the gh shim; qorder prints "repo#N|why|after ; ..." for the ready ones.
+QD="$T/q408"; mkdir -p "$QD/gh"; export QGHD="$QD/gh"
+printf '#!/usr/bin/env bash\ncase "$1 $2" in\n  "pr view") n="${3##*/}"; r="$(printf %%s "$3" | sed -E "s#https://[^/]+/[^/]+/([^/]+)/pull/.*#\\\\1#")"; cat "$QGHD/$r-$n.json" ;;\n  "pr list") cat "$QGHD/list-${4##*/}.json" 2>/dev/null || echo "[]" ;;\nesac\n' >"$QD/gh-shim"
+chmod +x "$QD/gh-shim"
+qfresh() { export FLEET_STATE_DIR="$QD/state.$1" FLEET_REGISTRY="$QD/state.$1/fleet.json"; mkdir -p "$FLEET_STATE_DIR"; rm -f "$QGHD"/*.json; }
+qpr() { # qpr <repo> <n> <head> <base> <created> <files json> <body> [mergeable] [title]
+  jq -cn --arg r "$1" --argjson n "$2" --arg h "$3" --arg b "$4" --arg c "$5" --argjson f "$6" --arg body "$7" --arg m "${8:-MERGEABLE}" --arg t "${9:-t}" \
+    '{number: $n, url: "https://github.com/acme/\($r)/pull/\($n)", state: "OPEN", title: $t, headRefOid: "aaaaaaa\($n)", headRefName: $h, baseRefName: $b,
+      mergeable: $m, isDraft: false, statusCheckRollup: [{__typename: "CheckRun", status: "COMPLETED", conclusion: "SUCCESS"}], body: $body,
+      createdAt: $c, files: ($f | map({path: .}))}' >"$QGHD/$1-$2.json"
+}
+qteam() { # qteam <team> <repo> <n> <issue> [signed sha]
+  "$REG" add "$(jq -cn --arg t "$1" --arg u "https://github.com/acme/$2/pull/$3" --arg i "$4" '{name: ($t + "/builder"), team: $t, tier: "Worker", status: "Done", herdr_ref: ($t + "-b"), pane: "p", pr: $u, issue: $i}')" >/dev/null
+  "$REG" add "$(jq -cn --arg t "$1" --arg i "$4" '{name: ($t + "/tester"), team: $t, tier: "Worker", status: "Done", herdr_ref: ($t + "-t"), pane: "p", issue: $i}')" >/dev/null
+  [ -z "${5:-}" ] || "$REG" signoff "$1/tester" "https://github.com/acme/$2/pull/$3" "$5" >/dev/null
+}
+q() { FLEET_GH="$QD/gh-shim" "$SCRIPTS/queue.sh"; }
+qorder() { q | jq -r '[.ready[] | "\(.url | sub(".*/acme/"; "") | sub("/pull/"; "#"))|\(.why)|\(.after)"] | join(" ; ")'; }
 gcfg() { printf '%s\n' "$@" >"$FLEET_CONFIG_DIR/config.toml"; } # gcfg ['key = value'...]: the whole config.toml, nothing else
 gold() { # gold <entry> <reply>
   local got name="${GOLD_PREFIX:-}dev408-17 output: golden $1"; got="$(printf '%s\n' "$2" | sed "s#$T#<T>#g")"
@@ -298,6 +336,10 @@ J
   gold status "$("$FL" status 2>&1)"
   gold escalate "$("$FL" escalate build-api/builder P1 "which port?" 8080 9090 "decide later" 2>&1)"
   unset FLEET_NOW GOLD_PREFIX
+  # dev408-18: the merge queue orders a base-branch dependency parent first
+  qfresh smoke; qpr app-api 1 fleet/dev-1-a main 2026-10-20T10:00:00Z '["a.go"]' x; qpr app-api 2 fleet/dev-2-b fleet/dev-1-a 2026-10-19T10:00:00Z '["b.go"]' y
+  qteam t1 app-api 1 DEV-1 aaaaaaa1; qteam t2 app-api 2 DEV-2 aaaaaaa2
+  eq "smoke: dev408-18 a base-branch dependency orders the parent first" "$(qorder)" "app-api#1|base of #2|— ; app-api#2|needs app-api #1|rebase after #1"
   printf '\n%d passed, %d failed\n' "$pass" "$failn"
   [ "$failn" = 0 ]; exit
 fi
@@ -3438,6 +3480,7 @@ for w in $WAKES; do
     claim_takeover) ev='{"type":"claim_takeover","team":"build-api","name":"build-api/lead","issue":"DEV-12","holder":"fleet:other"}' ;;
     weekly_summary) ev='{"type":"weekly_summary","team":"","name":"","week":"2026-W43"}' ;;
     escalation) ev='{"type":"escalation","team":"build-api","name":"build-api/lead","id":"20261024T080000Z-1","severity":"P1","message":"which database?","options":["postgres","sqlite"]}' ;;
+    pr_conflicting) ev='{"type":"pr_conflicting","team":"build-api","name":"build-api/lead","url":"https://github.com/acme/app-api/pull/214","merged":"https://github.com/acme/app-web/pull/121","lead_told":true}' ;;
     *) ev="$(jq -cn --arg t "$w" '{type: $t, team: "build-api", name: "build-api/builder"}')" ;;
   esac
   gold "wake-$w" "$(bash -c '. "$1/common.sh"; render_notice "$2"' _ "$SCRIPTS" "$ev")"
@@ -3478,10 +3521,93 @@ for c in $("$FL" help | sed -n '3,$p' | cut -d'`' -f2); do
   grep -qx "### $c" "$OUT_MD" || miss="$miss $c:heading"; [ -f "$GD/$c.md" ] || miss="$miss $c:golden"
 done
 for w in $WAKES; do grep -qx "### wake $w" "$OUT_MD" || miss="$miss wake-$w:heading"; [ -f "$GD/wake-$w.md" ] || miss="$miss wake-$w:golden"; done
-for s in "team table" error decision disk alert; do grep -qx "### $s" "$OUT_MD" || miss="$miss $s:heading"; done
+for s in "team table" "merge queue" error decision disk alert; do grep -qx "### $s" "$OUT_MD" || miss="$miss $s:heading"; done
 eq "dev408-17 output: every command and wake has an entry in output.md and a golden file" "$miss" ""
-eq "dev408-17 output: no golden file without an entry" "$(for f in "$GD"/*.md; do b="$(basename "$f" .md)"; case "$b" in wake-*) h="### wake ${b#wake-}" ;; *-*) h="### ${b%%-*}" ;; *) h="### $b" ;; esac; grep -qx "$h" "$OUT_MD" || echo "$b"; done)" ""
+eq "dev408-17 output: no golden file without an entry" "$(for f in "$GD"/*.md; do b="$(basename "$f" .md)"; case "$b" in wake-*) h="### wake ${b#wake-}" ;; *) h="### ${b//-/ }" ;; esac
+  grep -qx "$h" "$OUT_MD" || grep -qx "### ${b%%-*}" "$OUT_MD" || echo "$b"; done)" ""
 check "dev408-17 output: SKILL.md tells the Orchestrator to relay output verbatim" grep -q 'verbatim' "$SCRIPTS/../SKILL.md"
+
+# -- dev408-18: the merge queue (queue.sh), rebuilt from GitHub and the registry on every call
+qfresh base; qpr app-api 1 fleet/dev-1-a main 2026-10-20T10:00:00Z '["a.go"]' x; qpr app-api 2 fleet/dev-2-b fleet/dev-1-a 2026-10-19T10:00:00Z '["b.go"]' y
+qteam t1 app-api 1 DEV-1 aaaaaaa1; qteam t2 app-api 2 DEV-2 aaaaaaa2
+eq "dev408-18 queue: a base-branch dependency orders the parent first" "$(qorder)" "app-api#1|base of #2|— ; app-api#2|needs app-api #1|rebase after #1"
+qfresh blocks; qpr app-api 3 fleet/dev-3-a main 2026-10-21T10:00:00Z '["a.go"]' x; qpr app-api 4 fleet/dev-4-b main 2026-10-19T10:00:00Z '["b.go"]' y
+qteam t3 app-api 3 DEV-3 aaaaaaa3; qteam t4 app-api 4 DEV-4 aaaaaaa4
+jq -n '{team: "T1", states: {}, next: 1, labels: [], issues: [{id: "I3", identifier: "DEV-3", team: {id: "T1"}, state: {id: "S", name: "In Progress"}, labelIds: [], comments: [], blocks: ["DEV-4"]},
+  {id: "I4", identifier: "DEV-4", team: {id: "T1"}, state: {id: "S", name: "In Progress"}, labelIds: [], comments: []}]}' >"$LINEAR_DB"
+eq "dev408-18 queue: a Linear blocks dependency orders the blocker first, though it is newer" "$(qorder)" "app-api#3|blocks DEV-4|— ; app-api#4|needs app-api #3|—"
+mv "$FLEET_CONFIG_DIR/linear_api_key" "$QD/key.off"
+eq "dev408-18 queue: without a Linear key rule 1 skips Linear, and the queue says so" "$(q | jq -r '[.notes[], ([.ready[].url | sub(".*/pull/"; "#")] | join(","))] | join("|")')" "Linear order unknown (no key)|#4,#3"
+mv "$QD/key.off" "$FLEET_CONFIG_DIR/linear_api_key"
+qfresh contract; qpr app-web 5 fleet/dev-5-w main 2026-10-18T10:00:00Z '["w.ts"]' 'Depends on https://github.com/acme/app-api/pull/6'; qpr app-api 6 fleet/dev-6-a main 2026-10-21T10:00:00Z '["a.go"]' x
+qteam t5 app-web 5 DEV-5 aaaaaaa5; qteam t6 app-api 6 DEV-6 aaaaaaa6
+eq "dev408-18 queue: Depends on across two repos orders the contract PR first" "$(qorder)" "app-api#6|app-web #5 uses its contract|— ; app-web#5|needs app-api #6|—"
+qfresh series; qpr app-api 9 fleet/dev-9-c main 2026-10-17T10:00:00Z '["c.go"]' 'Part of DEV-7' MERGEABLE 'slice 2: handlers'
+qpr app-api 8 fleet/dev-8-b main 2026-10-21T10:00:00Z '["b.go"]' 'Part of https://linear.app/acme/issue/DEV-7/x' MERGEABLE 'slice 1: store'
+qteam t9 app-api 9 DEV-9 aaaaaaa9; qteam t8 app-api 8 DEV-8 aaaaaaa8
+eq "dev408-18 queue: a Part of series goes by slice" "$(qorder)" "app-api#8|Part of DEV-7, slice 1|— ; app-api#9|needs app-api #8|—"
+qfresh hub; qpr app-api 10 fleet/dev-10 main 2026-10-17T10:00:00Z '["a.go","b.go"]' x; qpr app-api 11 fleet/dev-11 main 2026-10-19T10:00:00Z '["a.go"]' x
+qpr app-api 12 fleet/dev-12 main 2026-10-18T10:00:00Z '["b.go"]' x
+qteam t10 app-api 10 DEV-10 aaaaaaa10; qteam t11 app-api 11 DEV-11 aaaaaaa11; qteam t12 app-api 12 DEV-12 aaaaaaa12
+eq "dev408-18 queue: a hub PR that overlaps two leaves comes last, rebasing after both" "$(qorder)" "app-api#12|fewest rebases|— ; app-api#11|fewest rebases|— ; app-api#10|fewest rebases|rebase after #12, #11"
+qfresh mig; qpr app-api 13 fleet/dev-13 main 2026-10-17T10:00:00Z '["db/migrations/0038_a.sql"]' x; qpr app-api 14 fleet/dev-14 main 2026-10-18T10:00:00Z '["db/migrations/0038_b.sql"]' x
+qteam t13 app-api 13 DEV-13 aaaaaaa13; qteam t14 app-api 14 DEV-14 aaaaaaa14
+eq "dev408-18 queue: a migration-number clash gets renumber after" "$(qorder)" "app-api#13|fewest rebases|— ; app-api#14|fewest rebases|renumber migration after #13"
+qfresh tie; qpr app-api 16 fleet/dev-16 main 2026-10-19T10:00:00Z '["x.go"]' x; qpr app-api 15 fleet/dev-15 main 2026-10-18T10:00:00Z '["y.go"]' x
+qteam t16 app-api 16 DEV-16 aaaaaaa16; qteam t15 app-api 15 DEV-15 aaaaaaa15
+eq "dev408-18 queue: a tie falls back to the oldest" "$(qorder)" "app-api#15|oldest first|— ; app-api#16|oldest first|—"
+qfresh notready
+qpr app-api 20 fleet/dev-20 main 2026-10-18T10:00:00Z '["a.go"]' x; qteam t20 app-api 20 DEV-20
+qpr app-api 21 fleet/dev-21 main 2026-10-18T10:00:00Z '["a.go"]' x UNKNOWN; qteam t21 app-api 21 DEV-21 aaaaaaa21
+qpr app-api 22 fleet/dev-22 main 2026-10-18T10:00:00Z '["a.go"]' x CONFLICTING; qteam t22 app-api 22 DEV-22 aaaaaaa22
+qpr app-api 23 fleet/dev-23 main 2026-10-18T10:00:00Z '["a.go"]' 'DO NOT MERGE'; qteam t23 app-api 23 DEV-23 bbbbbbb
+qpr app-api 24 fleet/dev-24 fleet/dev-25 2026-10-18T10:00:00Z '["c.go"]' x; qteam t24 app-api 24 DEV-24 aaaaaaa24
+qpr app-api 25 fleet/dev-25 fleet/dev-24 2026-10-18T10:00:00Z '["d.go"]' x; qteam t25 app-api 25 DEV-25 aaaaaaa25
+printf '[{"number": 30, "url": "https://github.com/acme/app-api/pull/30", "title": "t", "headRefName": "fleet/dev-30-x", "baseRefName": "main", "body": "", "createdAt": "2026-10-18T10:00:00Z", "files": [{"path": "e.go"}]},
+  {"number": 31, "url": "https://github.com/acme/app-api/pull/31", "title": "t", "headRefName": "someone/else", "baseRefName": "main", "body": "", "createdAt": "2026-10-18T10:00:00Z", "files": []}]' >"$QGHD/list-app-api.json"
+nr() { q | jq -r --arg n "$1" '[.not_ready[] | select(.url | endswith("/pull/" + $n)) | .missing] | first // "not listed"'; }
+eq "dev408-18 queue: not ready: no sign-off" "$(nr 20)" "no sign-off"
+eq "dev408-18 queue: not ready: mergeable UNKNOWN is never conflicting" "$(nr 21)" "mergeable unknown"
+eq "dev408-18 queue: not ready: conflicting" "$(nr 22)" "conflicting"
+eq "dev408-18 queue: not ready: signed another head, held" "$(nr 23)" "signed bbbbbbb ≠ head, held"
+eq "dev408-18 queue: a dependency cycle is named" "$(nr 24):$(nr 25)" "waits for app-api #25, dependency cycle with #25:waits for app-api #24, dependency cycle with #24"
+eq "dev408-18 queue: another machine's fleet PR is an order input, never ready; a non-fleet PR is not read" "$(nr 30):$(nr 31)" "other machine:not listed"
+eq "dev408-18 queue: with nothing ready the queue says so" "$(bash -c '. "$1/common.sh"; render_queue "$2"' _ "$SCRIPTS" "$(q)" | head -n 1)" "Merge in this order: none ready."
+check "dev408-18 queue: and each not-ready PR is one line" bash -c ". '$SCRIPTS/common.sh'; render_queue \"\$1\" | grep -qx 'Not ready: \[app-api #22\](https://github.com/acme/app-api/pull/22) (conflicting)'" _ "$(q)"
+qfresh waits; qpr app-api 40 fleet/dev-40 main 2026-10-18T10:00:00Z '["a.go"]' x; qpr app-api 41 fleet/dev-41 fleet/dev-40 2026-10-18T10:00:00Z '["b.go"]' x
+qteam t40 app-api 40 DEV-40; qteam t41 app-api 41 DEV-41 aaaaaaa41
+eq "dev408-18 queue: a ready PR whose parent is not ready waits for it" "$(nr 41)" "waits for app-api #40"
+qfresh none; "$REG" add '{"name":"tn/lead","team":"tn","tier":"Lead","status":"Working","herdr_ref":"x","pane":"p"}' >/dev/null
+eq "dev408-18 queue: no PR, no queue" "$(bash -c '. "$1/common.sh"; render_queue "$2"' _ "$SCRIPTS" "$(q)")" ""
+qfresh gh; qpr app-api 42 fleet/dev-42 main 2026-10-18T10:00:00Z '["a.go"]' x; qteam t42 app-api 42 DEV-42 aaaaaaa42
+eq "dev408-18 queue: with no gh at all, the queue says so" "$(FLEET_GH=nosuchgh "$SCRIPTS/queue.sh" | jq -r '[.notes[], .not_ready[].missing] | join("|")')" "Merge queue unknown: gh not found|GitHub unreadable"
+# the queue's shape, pinned: the contract, base-branch and migration rules and a not-ready PR together
+qfresh rich
+qpr app-api 10 fleet/dev-10-a main 2026-10-20T10:00:00Z '["a.go","db/migrations/0038_x.sql"]' x; qpr app-api 11 fleet/dev-11-b fleet/dev-10-a 2026-10-19T10:00:00Z '["b.go"]' x
+qpr app-api 12 fleet/dev-12-c main 2026-10-18T10:00:00Z '["c.go","db/migrations/0038_y.sql"]' x; qpr app-web 5 fleet/dev-5-w main 2026-10-21T10:00:00Z '["w.ts"]' 'Depends on https://github.com/acme/app-api/pull/12'
+qpr app-api 13 fleet/dev-13-d main 2026-10-17T10:00:00Z '["a.go"]' x
+qteam r10 app-api 10 DEV-10 aaaaaaa10; qteam r11 app-api 11 DEV-11 aaaaaaa11; qteam r12 app-api 12 DEV-12 aaaaaaa12; qteam r5 app-web 5 DEV-5 aaaaaaa5; qteam r13 app-api 13 DEV-13
+gold merge-queue "$(bash -c '. "$1/common.sh"; render_queue "$2"' _ "$SCRIPTS" "$(q)")"
+# after a merge, tick takes a PR that turned conflicting out of the queue, unparks its team and tells its lead, once
+qfresh tick; git init -q -b main "$QD/repo" 2>/dev/null
+for t in ta tb; do for r in lead builder tester; do
+  "$REG" add "$(jq -cn --arg t "$t" --arg r "$r" --arg repo "$QD/repo" '{name: ($t + "/" + $r), team: $t, tier: (if $r == "lead" then "Lead" else "Worker" end), template: "build",
+    harness: "claude", status: (if $r == "lead" then "Working" else "Done" end), herdr_ref: ($t + "-" + $r), pane: ("p" + $t + $r), workspace: "w", repo: $repo, cwd: $repo, assignment: "task", issue: ($t | ascii_upcase)}')" >/dev/null
+done; done
+"$REG" set ta/builder pr=https://github.com/acme/app-api/pull/50 >/dev/null; "$REG" signoff ta/tester https://github.com/acme/app-api/pull/50 aaaaaaa50 >/dev/null
+"$REG" set tb/builder pr=https://github.com/acme/app-api/pull/51 >/dev/null; "$REG" signoff tb/tester https://github.com/acme/app-api/pull/51 aaaaaaa51 >/dev/null
+qpr app-api 50 fleet/dev-50 main 2026-10-18T10:00:00Z '["a.go"]' x; qpr app-api 51 fleet/dev-51 main 2026-10-19T10:00:00Z '["a.go"]' x
+"$REG" park tb park >/dev/null
+qt() { PROMPT_SEQ=1 FLEET_FORCE=1 FLEET_GH="$QD/gh-shim" "$SCRIPTS/tick.sh" 2>/dev/null; } # PROMPT_SEQ: a prompt confirms at once
+t1="$(qt)"; eq "dev408-18 queue: tick reads a parked team's PR too (both ready)" "$(evc "$t1" pr_ready)" 2
+jq '.state = "MERGED"' "$QGHD/app-api-50.json" >"$QD/m.json" && mv "$QD/m.json" "$QGHD/app-api-50.json"
+jq '.mergeable = "CONFLICTING"' "$QGHD/app-api-51.json" >"$QD/m.json" && mv "$QD/m.json" "$QGHD/app-api-51.json"
+: >"$HERDR_LOG"; t2="$(qt)"; t3="$(qt)"
+eq "dev408-18 queue: a PR that was ready and conflicts after a merge: one pr_conflicting, once" "$(evc "$t2" pr_conflicting):$(evc "$t3" pr_conflicting)" "1:0"
+eq "dev408-18 queue: its parked team is unparked first" "$("$REG" list --team tb | jq -r '[.[].status] | map(select(. == "Parked")) | length')" 0
+eq "dev408-18 queue: and its lead is told exactly once to catch up and re-sign" "$(grep -c '^agent prompt tb-lead PR https://github.com/acme/app-api/pull/51 conflicts after https://github.com/acme/app-api/pull/50 merged' "$HERDR_LOG"):$(printf '%s' "$t2" | jq -r '.[] | select(.type == "pr_conflicting") | .lead_told')" "1:true"
+eq "dev408-18 queue: the conflict is in the event log for the morning report" "$(jq -r 'select(.type == "pr_conflicting") | .pr' "$FLEET_STATE_DIR/events.jsonl")" "https://github.com/acme/app-api/pull/51"
+eq "dev408-18 queue: and the PR has left the queue" "$(nr 51)" "conflicting"
 # ---- end DEV-408 ----
 
 printf '\n%d passed, %d failed\n' "$pass" "$failn"

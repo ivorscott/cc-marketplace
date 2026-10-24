@@ -5,8 +5,9 @@
 #
 #   tick.sh [--team T]
 #
-# A Parked team (park.sh) is skipped throughout: no nudge, no respawn, no Stalled or Zombie, no PR discovery or
-# PR events, and it still covers its repo for repo_without_team. Its claim is kept, so the heartbeat goes on.
+# A Parked team (park.sh) is skipped throughout: no nudge, no respawn, no Stalled or Zombie, no PR discovery, and it
+# still covers its repo for repo_without_team. Its claim is kept, so the heartbeat goes on. Its PR is still read: a
+# merge is a pr_merged, and a conflict after another PR's merge unparks it (pr_conflicting).
 # Each event that wakes the Orchestrator (WAKE_TYPES in common.sh) also gets its reply rendered once into
 # $FLEET_STATE_DIR/notices.log (references/output.md); `fleet status` prints the ones not shown yet.
 # Events (each has type, team, name; url where a PR exists). Each is reported once; what has
@@ -32,6 +33,9 @@
 #                   and the PR is not a draft (a stacked child must not go ready before its parent). Once per (PR, head SHA).
 #   pr_merged       the row's PR was merged; the Orchestrator answers with next.sh. Once per PR. A team marked
 #                   park --after-merge (or by focus) is parked by tick instead; the event says `parks`.
+#   pr_conflicting  after this tick's merge, a PR that was ready on the tick before is CONFLICTING: it leaves the merge
+#                   queue, its team is unparked if parked, and its lead is told to bring it up to date with main and
+#                   have the tester sign off again. Once per (PR, head); `unpark_refused` when a cap kept it parked.
 #   repo_without_team  a repo in config.toml `repos` with no live team, when it becomes so
 #   disk, disk_ok   free disk crossed below warn_free_gb, and recovered
 #   claim_takeover  a team's issue now carries another machine's label (once per team, issue and holder)
@@ -311,12 +315,14 @@ badrows="$(printf '%s' "$all_rows" | jq -r '[.[] | select(type == "object") | se
   or (.signoff != null and ((.signoff | type) != "object" or ((.signoff.sha // "") | type) != "string")) ) | (.name // "?" | tostring)] | join(", ")')"
 [ -z "$badrows" ] || warn "skipping malformed row(s) for PR checks: $badrows"
 prs="$(printf '%s' "$all_rows" | jq -c '
-  [.[] | select(type == "object") | select(((.pr // "") | type) == "string" and ((.repo // "") | type) == "string"
+  [.[] | select(type == "object" and .status == "Parked") | .team] as $parked
+  | [.[] | select(type == "object") | select(((.pr // "") | type) == "string" and ((.repo // "") | type) == "string"
       and (.signoff == null or ((.signoff | type) == "object" and ((.signoff.sha // "") | type) == "string")))
-    | select(.status != "Retired" and .status != "Parked" and (.pr // "") != "")]
+    | select(.status != "Retired" and (.pr // "") != "")]
   | group_by(.pr) | map(. as $g | {pr: .[0].pr, team: .[0].team, name: .[0].name, repo: (.[0].repo // ""),
       signoff: ([$g[] | select((.signoff | objects | .sha) != null and ((.name // "") | endswith("/tester")) and .team == $g[0].team) | .signoff.sha] | first // null),
-      park_after_merge: ([$g[] | .park_after_merge // empty] | first // null)})')"
+      park_after_merge: ([$g[] | .park_after_merge // empty] | first // null), parked: (($parked | index($g[0].team)) != null)})')"
+read_now=(); ready_now=(); merged_now=(); conflicting=() # this tick's view of each PR, for the after-merge rule below
 if [ "$(printf '%s' "$prs" | jq length)" != 0 ]; then
   if ! command -v "$FLEET_GH" >/dev/null 2>&1; then
     warn "$FLEET_GH not found; no PR events this tick"
@@ -335,10 +341,16 @@ if [ "$(printf '%s' "$prs" | jq length)" != 0 ]; then
       ev="$(jq -cn --argjson p "$p" --argjson g "$j" --slurpfile stf "$STATE_FILE" --argjson noci "$no_ci" "$PR_DEFS"'
         $g | pr_noci_ok($noci; $p.repo; $p.pr) as $nociok | ((.headRefOid // "") | ascii_downcase) as $head
         | if .state == "MERGED" then
-            (if (($stf[0].pr_merged_emitted // []) | index($p.pr)) == null then {type: "pr_merged", team: $p.team, name: $p.name, url: $p.pr} + (if $p.park_after_merge != null then {parks: $p.park_after_merge} else {} end) else null end)
+            (if (($stf[0].pr_merged_emitted // []) | index($p.pr)) == null then {type: "pr_merged", team: $p.team, name: $p.name, url: $p.pr} + (if $p.park_after_merge != null then {parks: $p.park_after_merge} else {} end) + (if $p.parked then {parked: true} else {} end) else null end)
           elif (pr_missing($p.signoff; $nociok) | length) == 0 and (($stf[0].pr_ready_emitted // []) | index($p.pr + "@" + $head)) == null
           then {type: "pr_ready", team: $p.team, name: $p.name, url: $p.pr, sha: $head, ci: pr_ci($nociok)}
           else null end')"
+      IFS=$'\t' read -r pst pready pmerge phead < <(jq -rn --argjson p "$p" --argjson g "$j" --argjson noci "$no_ci" "$PR_DEFS"'
+        $g | [.state, ((pr_missing($p.signoff; pr_noci_ok($noci; $p.repo; $p.pr)) | length) == 0), (.mergeable // ""), ((.headRefOid // "") | ascii_downcase)] | @tsv')
+      read_now+=("$url")
+      [ "$pready" != true ] || ready_now+=("$url")
+      [ "$pst" != OPEN ] || [ "$pmerge" != CONFLICTING ] || conflicting+=("$url"$'\t'"$phead"$'\t'"$(printf '%s' "$p" | jq -r .team)"$'\t'"$(printf '%s' "$p" | jq -r .parked)")
+      [ "$pst" != MERGED ] || merged_now+=("$url")
       [ "$ev" != "null" ] || continue
       add_events "[$ev]"
       case "$(printf '%s' "$ev" | jq -r .type)" in
@@ -357,6 +369,33 @@ if [ "$(printf '%s' "$prs" | jq length)" != 0 ]; then
     rm -f "$ghtmp"; ghtmp=""
   fi
 fi
+# After a merge: a PR that was ready the tick before and conflicts now leaves the merge queue. Its lead is told once
+# per (PR, head) to bring it up to date with main (as the house rules say: a merge commit in overnight mode) and have
+# the tester sign off again; a parked team is unparked first,
+# and when that is refused (a cap is full) nobody is told and the notice says so. The queue's own rebuild does the rest.
+if [ "${#merged_now[@]}" -gt 0 ]; then
+  mlist="$(printf '%s\n' "${merged_now[@]}" | paste -sd, - | sed 's/,/, /g')"
+  for c in ${conflicting[@]+"${conflicting[@]}"}; do
+    IFS=$'\t' read -r curl chead cteam cparked <<<"$c"
+    jq -e --arg u "$curl" '(.ready_prev // []) | index($u) != null' "$STATE_FILE" >/dev/null || continue
+    [ "$(jq --arg k "$curl@$chead" '(.conflict_told // []) | index($k) == null' "$STATE_FILE")" = true ] || continue
+    told=false; refused=""
+    if [ "$cparked" = true ] && ! "$FLEET_SCRIPTS/unpark.sh" "$cteam" >/dev/null 2>"$FLEET_STATE_DIR/unpark.err"; then
+      refused="$(grep -v '^fleet: warning:' "$FLEET_STATE_DIR/unpark.err" | head -n 1 | sed 's/^fleet: //')"; refused="${refused:-unpark failed}"
+    fi
+    rm -f "$FLEET_STATE_DIR/unpark.err"
+    if [ -z "$refused" ]; then
+      "$FLEET_SCRIPTS/tell.sh" "$cteam/lead" "PR $curl conflicts after $mlist merged; bring it up to date with main (as the house rules say) and have the tester sign off again" >/dev/null 2>&1 && told=true
+    fi
+    add_events "$(jq -cn --arg t "$cteam" --arg u "$curl" --arg m "$mlist" --argjson told "$told" --arg r "$refused" \
+      '[{type: "pr_conflicting", team: $t, name: ($t + "/lead"), url: $u, detail: ("after " + $m), merged: $m, lead_told: $told} + (if $r != "" then {unpark_refused: $r} else {} end)]')"
+    st_upd --arg k "$curl@$chead" '$st + {conflict_told: ((($st.conflict_told // []) + [$k]) | unique)}'
+  done
+fi
+# The ready set of the PRs read now replaces theirs; a PR not read this tick (--team) keeps its entry.
+st_upd --argjson read "$(printf '%s\n' ${read_now[@]+"${read_now[@]}"} | jq -Rsc 'split("\n") | map(select(. != ""))')" \
+  --argjson ready "$(printf '%s\n' ${ready_now[@]+"${ready_now[@]}"} | jq -Rsc 'split("\n") | map(select(. != ""))')" \
+  '$st + {ready_prev: ((($st.ready_prev // []) - $read) + $ready | unique)}'
 
 # --- repos without a team ---------------------------------------------------------------------
 # A parked team still covers its repo.
@@ -397,7 +436,7 @@ while IFS=$'\t' read -r etype eteam ename eurl esha; do
   [ -n "$etype" ] || continue
   [ "$eurl" != - ] || eurl=""; [ "$esha" != - ] || esha=""; [ "$eteam" != - ] || eteam=""
   ev_log "$etype" team="$eteam" name="$ename" pr="$eurl" sha="$esha"
-done < <(jq -r '.[] | select(.type | IN("pr_opened", "pr_ready", "pr_merged", "stalled", "dead", "failed", "needs_input", "stale_version")) | [.type, (.team // "-" | if . == "" then "-" else . end), .name, (.url // "-"), (.sha // "-")] | @tsv' "$EVENTS_FILE")
+done < <(jq -r '.[] | select(.type | IN("pr_opened", "pr_ready", "pr_merged", "pr_conflicting", "stalled", "dead", "failed", "needs_input", "stale_version")) | [.type, (.team // "-" | if . == "" then "-" else . end), .name, (.url // "-"), (.sha // "-")] | @tsv' "$EVENTS_FILE")
 
 # --- notices: each wake's reply, rendered once for `fleet status` (references/output.md) --------------------------
 while IFS= read -r ev; do
@@ -418,6 +457,8 @@ st_upd --argjson prs "$live_prs" --argjson esc "$live_esc" --argjson cl "$live_c
   + (if .pr_ready_emitted then {pr_ready_emitted: [.pr_ready_emitted[] | select(split("@")[0] as $u | $prs | index($u))]} else {} end)
   + (if .pr_merged_emitted then {pr_merged_emitted: [.pr_merged_emitted[] | select(. as $u | $prs | index($u))]} else {} end)
   + (if .pr_opened_emitted then {pr_opened_emitted: [.pr_opened_emitted[] | select(. as $u | $prs | index($u))]} else {} end)
+  + (if .ready_prev then {ready_prev: [.ready_prev[] | select(. as $u | $prs | index($u))]} else {} end)
+  + (if .conflict_told then {conflict_told: [.conflict_told[] | select(split("@")[0] as $u | $prs | index($u))]} else {} end)
   + (if .escalations_emitted then {escalations_emitted: [.escalations_emitted[] | select(. as $k | $esc | index($k))]} else {} end)
   + (if .takeover_emitted then {takeover_emitted: [.takeover_emitted[] | select(split("|")[0:2] | join("|") as $k | $cl | index($k))]} else {} end)
   + (if .stale_emitted then {stale_emitted: [.stale_emitted[] | select(split("|")[0] as $n | $live_names | index($n))]} else {} end)

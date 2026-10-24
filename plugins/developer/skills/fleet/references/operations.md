@@ -125,6 +125,10 @@ has `type`, `team`, `name` and, where a PR exists, the full `url`. Act on each:
 - `stalled`: the agent was nudged a tick ago ("run your done step or say what is missing") and is still stalled; there is one nudge per stall, flagged by `nudged_at` on the row.
 - `weekly_summary`: once per ISO week; its notice is the `metrics` reply (tick ran `metrics.sh --since 7d`, which wrote `reports/fleet-metrics-<date>.md`). Relay it.
 - `pr_opened`: a builder opened a PR without running done; tick recorded it on the row and told the lead.
+- `pr_conflicting`: after a merge, a PR that was ready on the tick before conflicts now. It left the merge queue;
+  tick unparked its team when it was parked and told its lead, once per (PR, head), to bring it up to date with main
+  and have the tester sign off again. When the unpark was refused (a cap is full), unpark the team when a slot frees.
+  Tick reads a parked team's PR for this (and for `pr_merged`), and nothing else of a parked team.
 - `escalation`, `stalled`, `dead`, `repo_without_team`, `disk`, `disk_ok`: as in routes B, E and F.
 
 `$F/tell.sh <team/role> <text>` is how you (and boot and next) send text. A brief (`--brief`) goes as a file:

@@ -65,7 +65,9 @@ done contract, escalation, caps, guards and debrief; mechanics that are not rout
 
 `$F/fleet status [<team>] [--problems] [--json] [--all]` recomputes health, writes it back and prints the status
 reply of `references/output.md`: the wake notices not shown yet, then the team table (Team, Issue, PR, a one-word
-State, Needs you), then the focus, the disk line (below `warn_free_gb`) and the loop line when they apply. `status <team>` prints one row per agent;
+State, Needs you), then the merge queue when a PR is open (every ready PR in the order to merge them, rebuilt from
+GitHub each time, then `Not ready: …`), then the focus, the disk line (below `warn_free_gb`) and the loop line when
+they apply. When the user asks what is ready to merge, the queue is the answer. `status <team>` prints one row per agent;
 `--all` adds a line for other machines' claims (Linear only); `--json` is the bare agent array. Relay it verbatim.
 
 Your move: **Needs input**, read the screen (`herdr agent read <ref> --source visible`) and apply the blocked-prompt
@@ -101,6 +103,8 @@ status`. Then act on each:
 - `stalled`: nudged once and still stalled. `pr_opened`: a builder opened a PR without `done`; tick told the lead.
 - `weekly_summary`: its notice is the metrics table and the report it wrote (`reports/fleet-metrics-<date>.md`).
 - `claim_takeover`: stop or hand off the team (F), tell the user, escalate P1; never fight back (operations.md).
+- `pr_conflicting`: a merge made a ready PR conflict; tick unparked its team and told its lead. Act only when the
+  notice says the unpark was refused (a cap is full): unpark the team when a slot frees.
 
 The tester records its verdict with `registry.sh signoff <name> <PR URL|N> <sha>`; tick calls a PR ready only when
 that SHA is the PR head. Details (tick lock, background tasks, event log, metrics): `references/operations.md`.

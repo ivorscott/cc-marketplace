@@ -587,6 +587,19 @@ render_escalations() {
     end'
 }
 
+# render_queue <queue.sh JSON>: "Merge in this order:" and | # | PR | Issue | Why this order | After merge | ("Merge in
+# this order: none ready." when nothing is), then "Not ready: [repo #N](url) (<what is missing>)" per open PR that is
+# not, then the queue's notes. Nothing at all when no PR is open.
+render_queue() {
+  jq -r 'if (.ready | length) == 0 and (.not_ready | length) == 0 then empty else
+      (if (.ready | length) == 0 then "Merge in this order: none ready." else
+        "Merge in this order:", "| # | PR | Issue | Why this order | After merge |", "|---|---|---|---|---|",
+        (.ready[] | "| \(.n) | \(.pr) | \(.issue) | \(.why) | \(.after) |") end),
+      (.not_ready[] | "Not ready: \(.pr) (\(.missing))"),
+      (.notes[] | "\(.).")
+    end' <<<"$1"
+}
+
 # render_metrics <metrics.sh --json array>: | Week | Issues shipped | PRs | Rework | Median cycle |, one row per ISO
 # week of the PRs' end (merge, else now): issues with a merged PR, PRs, rework rounds, the median minutes to ready.
 render_metrics() {
@@ -688,12 +701,18 @@ team_issue() {
 
 # render_notice <tick event JSON>: the reply to one wake (its entry under "Wakes" in references/output.md).
 render_notice() {
-  local e="$1" type team name url d o opts=()
+  local e="$1" type team name url d o n opts=()
   type="$(jq -r .type <<<"$e")"; team="$(jq -r '.team // ""' <<<"$e")"; name="$(jq -r '.name // ""' <<<"$e")"; url="$(jq -r '.url // ""' <<<"$e")"
   case "$type" in
     pr_ready) render_line pr_ready pr="$(pr_link "$url")" issue="$(team_issue "$team")" sha="$(jq -r '.sha // ""' <<<"$e" | cut -c1-7)" ci="$(jq -r '.ci // "green"' <<<"$e")" ;;
     pr_merged) d="move $team to its next issue, or retire it"; [ -z "$(jq -r '.parks // ""' <<<"$e")" ] || d="$team parked"
+      [ "$(jq -r '.parked // false' <<<"$e")" != true ] || d="unpark $team and move it to its next issue, or retire it"
       render_line pr_merged pr="$(pr_link "$url")" next="$d" ;;
+    pr_conflicting) d="$(jq -r '.unpark_refused // ""' <<<"$e")"
+      o="$(jq -r '.merged // ""' <<<"$e" | tr ',' '\n' | sed 's/^ *//' | while IFS= read -r u; do [ -z "$u" ] || pr_link "$u"; done | paste -sd, - | sed 's/,/, /g')"
+      if [ -n "$d" ]; then n="Unpark refused ($d): unpark it when a slot frees, then tell its lead"
+      else n="Lead told to bring it up to date with main and have the tester sign off again"; fi
+      render_line event event=Conflicting name="$name" what="$(pr_link "$url") conflicts after $o" next="$n" ;;
     pr_opened) render_line pr_opened pr="$(pr_link "$url")" issue="$(team_issue "$team")" told="Lead not reached: tell it to start the tester" ;;
     dead) render_line event event=Dead name="$name" what="its agent is gone" next="Tick respawns it once in $(const_int RESPAWN_WINDOW_HOURS 6)h, then escalates P1" ;;
     failed) render_line event event=Failed name="$name" what="a restart or its brief did not arrive" next="Re-send its brief or re-boot the team" ;;
@@ -713,7 +732,7 @@ render_notice() {
 
 # WAKE_TYPES: the tick events that wake the Orchestrator (loop-tick.sh) and get a notice (tick.sh); each has an entry
 # in references/output.md. An escalation wakes at any severity, pr_opened only when the lead could not be told.
-WAKE_TYPES="pr_ready pr_merged pr_opened dead failed stalled needs_input brief_failed claim_takeover weekly_summary escalation"
+WAKE_TYPES="pr_ready pr_merged pr_opened pr_conflicting dead failed stalled needs_input brief_failed claim_takeover weekly_summary escalation"
 # WAKE_JQ: the jq filter that keeps the events that wake, with $wake bound to WAKE_TYPES (--arg wake "$WAKE_TYPES").
 WAKE_JQ='select(type == "object") | select((.type as $t | $wake | split(" ") | index($t)) and (.type != "pr_opened" or .lead_told == false))'
 
