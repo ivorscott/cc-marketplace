@@ -178,6 +178,13 @@ docker_prunable_gb() {
     END { printf "%d\n", t }'
 }
 
+# Boot marker: boot writes its PID to boot_marker <team> before the team's first row and removes it when it exits, so
+# status (and tick through it) leaves the team alone while its agents are still being started: one not started yet
+# reads as gone, and two such ticks would respawn it beside boot's own start. `booting <team>` is true only while that
+# boot runs; a marker left by a boot killed hard counts for nothing.
+boot_marker() { printf '%s\n' "$FLEET_STATE_DIR/booting/$1"; }
+booting() { local p; p="$(cat "$(boot_marker "$1")" 2>/dev/null)" || return 1; [ -n "$p" ] && kill -0 "$p" 2>/dev/null; }
+
 # git_exclude <repo> <line>: add one line (a path pattern) to the repo's own .git/info/exclude, in the common git dir
 # so its worktrees share it, once. Never .gitignore. Not a git repo: nothing. A failure warns. Boot keeps .fleet/ out
 # of git with it, retire its report archive.

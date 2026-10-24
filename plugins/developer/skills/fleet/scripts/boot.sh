@@ -206,7 +206,9 @@ rollback() {
   rmdir "$FLEET_WORKTREES/$team" 2>/dev/null || true
   [ "$made_rows" = 0 ] || "$registry" retire "$team" --outcome Abandoned >/dev/null 2>&1 || warn "could not retire the rows of $team"
 }
-trap rollback EXIT; trap 'exit 130' INT; trap 'exit 143' TERM
+trap 'rollback; [ "$(cat "$(boot_marker "$team")" 2>/dev/null)" != "$$" ] || rm -f "$(boot_marker "$team")"' EXIT; trap 'exit 130' INT; trap 'exit 143' TERM
+# While this boot runs, status and tick leave the team's rows alone (common.sh, boot marker).
+mkdir -p "$(dirname "$(boot_marker "$team")")" && echo "$$" >"$(boot_marker "$team")" || warn "could not write the boot marker for $team"
 
 # 1. Workspace with the lead in its root pane.
 lead_agent="$(agent_name "$team-lead")"

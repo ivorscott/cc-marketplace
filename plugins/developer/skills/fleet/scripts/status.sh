@@ -81,6 +81,7 @@ for name in $(printf '%s' "$rows" | jq -r '.[] | select(.tier != "Orchestrator")
   r="$(printf '%s' "$rows" | jq -c --arg n "$name" '.[] | select(.name == $n)')"
   ref="$(printf '%s' "$r" | jq -r .herdr_ref)"; pane="$(printf '%s' "$r" | jq -r '.pane // ""')"
   tier="$(printf '%s' "$r" | jq -r .tier)"; tm="$(printf '%s' "$r" | jq -r .team)"
+  ! booting "$tm" || continue # boot is still starting this team's agents and sets their states itself
   old="$(printf '%s' "$r" | jq -r .status)"; esc="$(printf '%s' "$r" | jq -r '.escalation // ""')"
 
   herdr_state="$(hd agent get "$ref" 2>/dev/null | jq -r '.result.agent.agent_status // "gone"' || echo gone)"

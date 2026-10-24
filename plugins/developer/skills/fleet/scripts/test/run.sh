@@ -137,9 +137,11 @@ case "$1 $2" in
   # working unless PROMPT_NOSTATE is set, and `agent read` prints $AS/<agent>.read.
   # A pane started by the shim runs what boot types into it, so its env can be dumped: $AS/<pane>.env.
   "pane run") ( eval "${*:4}"; env ) >"$AS/$3.env" 2>/dev/null; echo '{}' ;;
-  # START_HOLD=<agent>: its start leaves $AS/held.<agent> and takes 2s, so a test can interrupt the boot there
+  # START_HOLD=<agent>: its start leaves $AS/held.<agent> and takes 2s, so a test can interrupt the boot there.
+  # START_WAIT=<agent>: its start leaves $AS/held.<agent> and waits until the test removes it (30s at most).
   "agent start") rm -f "$AS/$3" "$AS/$3.read" "$AS/exited.$3"
     if [ "${START_HOLD:-}" = "$3" ]; then : >"$AS/held.$3"; sleep 2; fi
+    if [ "${START_WAIT:-}" = "$3" ]; then : >"$AS/held.$3"; for _ in $(seq 1 300); do [ -e "$AS/held.$3" ] || break; sleep 0.1; done; fi
     echo '{}' ;;
   "agent list") [ -z "${AGENT_LIST_FAIL:-}" ] || exit 1; cat "$AS/agent-list.json" 2>/dev/null || echo '{}' ;;
   # A pane with $AS/<pane>.name answers `agent get <pane>` with that name and its pane id, as herdr does.
@@ -3956,6 +3958,21 @@ kill -TERM "$b8"; wait "$b8"; rc=$?
 eq "dev408-8 boot: interrupted after the panes (TERM at the second worker's start), it undoes what it made" "$rc:$(left8 i8t)" "143:0:0:none"
 eq "dev408-8 boot: the rows it wrote first are retired Abandoned" "$("$REG" list --team build-i8t | jq -r '([.[] | .status + "/" + (.outcome // "")] | unique | join(",")), length' | paste -sd: -)" "Retired/Abandoned:4"
 FLEET_FORCE=1 bt build i8t "$R8" task; eq "dev408-8 boot: and that name boots again too" "$BTRC" 0
+# R11: while boot is still starting agents (held at the builder's start, the tester and the lead not started), status
+# runs (each tick runs it) and must not mark the unstarted agents Zombie; the marker goes with the boot.
+START_WAIT=build-r11-builder FLEET_FORCE=1 "$SCRIPTS/boot.sh" build r11 "$R8" task >"$T/b11.out" 2>"$T/b11.err" & b11=$!
+for _ in $(seq 1 100); do [ -e "$AS/held.build-r11-builder" ] && break; sleep 0.1; done
+touch "$AS/exited.build-r11-tester" "$AS/exited.build-r11-lead" # not started yet: their panes show the shell
+"$SCRIPTS/status.sh" >/dev/null 2>&1; "$SCRIPTS/status.sh" >/dev/null 2>&1
+s11="$("$REG" list --team build-r11 | jq -r '[.[].status] | unique | join(",")')"; m11="$(cat "$FLEET_STATE_DIR/booting/build-r11" 2>/dev/null)"
+rm -f "$AS/held.build-r11-builder"; wait "$b11"; rc=$?
+eq "dev408-R11 boot: status during a boot leaves the unstarted agents alone (no Zombie), and the marker holds boot's PID until it exits" \
+  "$(printf '%s' "$s11" | grep -c Zombie):$([ "$m11" = "$b11" ] && echo pid):$rc:$([ -e "$FLEET_STATE_DIR/booting/build-r11" ] && echo left || echo gone)" "0:pid:0:gone"
+"$SCRIPTS/retire.sh" build-r11 >/dev/null 2>&1 || true
+sleep 0 & dead=$!; wait "$dead"; printf '%s\n' "$dead" >"$FLEET_STATE_DIR/booting/build-i8t"; echo gone >"$AS/build-i8t-lead"
+"$SCRIPTS/status.sh" >/dev/null 2>&1
+eq "dev408-R11 boot: a marker left by a boot that no longer runs counts for nothing" "$("$REG" get build-i8t/lead | jq -r .status)" Zombie
+rm -f "$FLEET_STATE_DIR/booting/build-i8t" "$AS/build-i8t-lead"
 git -C "$R8" branch fleet/build-lb/builder
 FLEET_FORCE=1 bt build lb "$R8" task
 eq "dev408-8 boot: a leftover branch blocks the name before anything is made, naming retire" \
