@@ -3911,6 +3911,14 @@ eq "dev408-8 retire: with no rows it removes the clean leftover branch and keeps
   "$rc:$(git -C "$R8" for-each-ref --format='%(refname:short)' refs/heads/fleet/build-lb/ | paste -sd, -):$([ -d "$W8/tester" ] && echo kept)" "0:fleet/build-lb/tester:kept"
 eq "dev408-8 retire: and names what it kept" "$(printf '%s\n' "$out8" | head -n 1)" "Retired build-lb (Abandoned): PRs none. Nothing archived. Kept: tester (unpushed commits)."
 eq "dev408-8 retire: a name with no rows and no leftovers still says nothing matches" "$("$SCRIPTS/retire.sh" build-nothing 2>&1 >/dev/null | grep -c "nothing live matches 'build-nothing'")" 1
+# R1: the user pushes the kept commit and retires again (no rows: the leftovers path): the tester's untracked report is
+# archived before the worktree goes, as a live retire does.
+git -C "$W8/tester" push -q origin fleet/build-lb/tester 2>/dev/null; echo 'the report' >"$W8/tester/DEV-8-tester.md"
+out8b="$(FLEET_ARCHIVE_DIR= "$SCRIPTS/retire.sh" build-lb 2>"$T/r8b.err")"; rc=$?
+eq "dev408-R1 retire: tidying a leftover worktree archives its untracked report first, then removes it" \
+  "$rc:$([ -d "$W8/tester" ] && echo kept || echo removed):$(cat "$R8/reports/fleet-archive/build-lb-tester/DEV-8-tester.md" 2>/dev/null)" "0:removed:the report"
+eq "dev408-R1 retire: and its line says where" "$(printf '%s\n' "$out8b" | head -n 1)" \
+  "Retired build-lb (Abandoned): PRs none. Archived to $(cd "$R8" && pwd -P)/reports/fleet-archive."
 
 # -- dev408-9: retire moves the team's issue on Linear (writes allowed, once per issue) and tidies the disk
 r9team() { # r9team <team> <issue> [PR number]: a lead and a builder on the issue, the builder with the PR

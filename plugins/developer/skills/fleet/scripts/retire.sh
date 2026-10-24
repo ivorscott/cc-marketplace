@@ -144,18 +144,23 @@ keep() { kept="$kept${kept:+, }$1 ($2)"; } # keep <what> <why>: named on the Ret
 
 # leftovers <team>: no live rows, but an earlier boot of the name left worktrees under $FLEET_WORKTREES/<team> or
 # fleet/<team>/* branches (an interrupted boot, or a retire that kept work). Each is removed when nothing on it would be
-# lost: a worktree as classify says; a branch with git branch -D only when none of its commits is on no other branch
-# and no remote. The rest are kept and named. Returns 1 when there is nothing.
+# lost: a worktree as classify says, its untracked reports archived first as a live retire does; a branch with git
+# branch -D only when none of its commits is on no other branch and no remote. The rest are kept and named. Returns 1
+# when there is nothing.
 leftovers() {
-  local team="$1" wt r b n why repos="" found=0
+  local team="$1" wt r b n why role repos="" found=0
   for wt in "$FLEET_WORKTREES/$team"/*; do
     [ -d "$wt" ] || continue
-    found=1
+    found=1; role="$(basename "$wt")"
     r="$(git -C "$wt" worktree list --porcelain 2>/dev/null | sed -n '1s/^worktree //p')"
     repos="$repos${r:+$r$'\n'}"
     classify "$wt"; why="$(keep_why)"
-    if [ -n "$why" ]; then warn "kept $wt: $why"; keep "$(basename "$wt")" "$why"
-    elif [ -z "$r" ] || ! git -C "$r" worktree remove --force "$wt" 2>/dev/null; then keep "$(basename "$wt")" "git worktree remove failed"; fi
+    if [ -n "$why" ]; then warn "kept $wt: $why"; keep "$role" "$why"
+    elif [ -z "$r" ]; then keep "$role" "git worktree remove failed"
+    elif ! archive_reports "$wt" "$team/$role" "$r"; then warn "kept $wt: could not archive its reports to $ARCHIVE_DIR"; keep "$role" "its reports could not be archived"
+    elif git -C "$r" worktree remove --force "$wt" 2>/dev/null; then
+      if [ -n "$C_REPORTS" ]; then warn "archived $(printf '%s\n' "$C_REPORTS" | grep -c .) report(s) from $wt to $ARCHIVE_DIR"; archived="$(dirname "$ARCHIVE_DIR")"; fi
+    else keep "$role" "git worktree remove failed"; fi
   done
   repos="$(printf '%s%s\n' "$repos" "$("$registry" list | jq -r --arg t "$team" '.[] | select(.team == $t) | .repo // empty')" | grep . | sort -u || true)"
   while IFS= read -r r; do
@@ -176,7 +181,7 @@ leftovers() {
 rows="$("$registry" list | jq --arg x "$target" '[.[] | select((.name == $x or .team == $x) and .status != "Retired")]')"
 if [ "$(printf '%s' "$rows" | jq length)" = "0" ]; then
   if [ "${target%%/*}" = "$target" ] && leftovers "$target"; then
-    reply "$(render_line retired team="$target" outcome="${outcome:-Abandoned}" kept="$kept")" "$(render_table)"
+    reply "$(render_line retired team="$target" outcome="${outcome:-Abandoned}" archived="$archived" kept="$kept")" "$(render_table)"
     exit 0
   fi
   die "nothing live matches '$target'"
