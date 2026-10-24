@@ -253,6 +253,13 @@ cfg_str() {
     v="$(sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$FLEET_CONFIG_DIR/config.toml" | head -1)"
   printf '%s\n' "${v:-$2}"
 }
+# cfg_bool <key> <default>: a TOML boolean (true or false, unquoted) from config.toml.
+cfg_bool() {
+  local v=""
+  [ -f "$FLEET_CONFIG_DIR/config.toml" ] &&
+    v="$(sed -nE "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*(true|false)([[:space:]#].*)?$/\1/p" "$FLEET_CONFIG_DIR/config.toml" | head -1)"
+  printf '%s\n' "${v:-$2}"
+}
 
 # This machine's tracker identity (see machine-id.sh). The claim label is <label_prefix><key>;
 # FLEET_LABEL_PREFIX wins over label_prefix in config.toml, default "fleet:".
@@ -279,7 +286,9 @@ build_brief() {
 }
 
 # house_rules <agent row name>: the fleet's house rules, then the agent's repository's .claude/fleet-rules.md
-# when it has one. The repository is the row's `repo`; without a row only the fleet's rules are printed.
+# when it has one, then the overnight block while `overnight = true` in config.toml. The repository is the row's
+# `repo`; without a row only the fleet's rules are printed. The block is part of the brief, so the agent's own session
+# holds the grant, and a respawn or next restart (their briefs come through here too) carries it.
 house_rules() {
   local repo f
   repo="$("$FLEET_SCRIPTS/registry.sh" get "$1" 2>/dev/null | jq -r '.repo // ""' 2>/dev/null)" || repo=""
@@ -287,7 +296,16 @@ house_rules() {
   cat "$FLEET_SKILL_DIR/rules/house.md" 2>/dev/null || warn "house rules missing: $FLEET_SKILL_DIR/rules/house.md"
   f="$repo/.claude/fleet-rules.md"
   if [ -n "$repo" ] && [ -f "$f" ]; then printf '\nRepository rules (%s):\n' "$f"; cat "$f"; fi
+  [ "$(cfg_bool overnight false)" = true ] || return 0
+  printf '\nOvernight mode (on until the user turns it off; it adds to the house rules and lifts none of them):\n'
+  printf -- '- A lead applies its own recommended option for a decision inside the issue'"'"'s scope, notes it in the PR body and runs `%s note %s decision "<the choice>"`.\n' "$FLEET_SCRIPTS/registry.sh" "$1"
+  printf -- '- Installs, IAM, AWS or production, branch protection, `gh pr ready` and closing a PR or an issue stay with the user: escalate them P1.\n'
+  printf -- '- A P0 still stops the team.\n'
+  printf -- '- Catch a branch up with the default branch with a merge commit, never a force-push.\n'
 }
+
+# local_time <epoch> <format>: the epoch in local time, with date's format (BSD date -r, else GNU date -d @).
+local_time() { date -r "$1" "+$2" 2>/dev/null || date -d "@$1" "+$2"; }
 
 # resume_brief <name> <expertise-file> <role brief>: what a respawned agent needs to carry on: its role
 # brief, its assignment, the last report file of its role, `git status` and `git log` of its branch,
@@ -750,6 +768,7 @@ render_line() {
     event) printf '%s %s: %s. %s.\n' "${L_event:-}" "${L_name:-}" "${L_what%.}" "${L_next%.}" ;;
     claim_takeover) printf '%s taken over by %s. Stop or hand off %s.\n' "${L_issue:-}" "${L_machine:-}" "${L_team:-}" ;;
     slot_free) printf 'Slot free (%s of %s teams running). Pick the next issue and boot it.\n' "${L_live:-?}" "${L_target:-?}" ;;
+    morning_report) printf 'Morning report %s: %s. Relay it as it is.\n' "${L_date:-}" "${L_path:-}" ;;
     debrief) printf '%s (%s): %s\n' "${L_team:-}" "${L_outcome:-}" "${L_lessons:-}" ;;
     discovered) printf 'Discovered work: %s\n' "${L_work:-}" ;;
     report) printf 'Report: %s\n' "${L_path:-}" ;;
@@ -801,6 +820,7 @@ render_notice() {
       render_decision P2 "$name" "$team runs plugin $(jq -r '.from // "an older version"' <<<"$e") and $d is installed. Switch it to $d at its next issue?" \
         "yes, at its next issue" "no, retire it after this issue" ;;
     slot_free) render_line slot_free live="$(jq -r '.live // "?"' <<<"$e")" target="$(jq -r '.target // "?"' <<<"$e")" ;;
+    morning_report) render_line morning_report date="$(jq -r '.date // ""' <<<"$e")" path="$(jq -r '.path // ""' <<<"$e")" ;;
     weekly_summary) "$FLEET_SCRIPTS/metrics.sh" --since 7d 2>/dev/null ;;
     escalation)
       while IFS= read -r o; do [ -z "$o" ] || opts+=("$o"); done < <(jq -r '.options[]? // empty' <<<"$e")
@@ -811,7 +831,7 @@ render_notice() {
 
 # WAKE_TYPES: the tick events that wake the Orchestrator (loop-tick.sh) and get a notice (tick.sh); each has an entry
 # in references/output.md. An escalation wakes at any severity, pr_opened only when the lead could not be told.
-WAKE_TYPES="pr_ready pr_merged pr_opened pr_conflicting dead failed stalled needs_input brief_failed claim_takeover claim_released claim_held_pr claim_lapsed stale_version slot_free weekly_summary escalation"
+WAKE_TYPES="pr_ready pr_merged pr_opened pr_conflicting dead failed stalled needs_input brief_failed claim_takeover claim_released claim_held_pr claim_lapsed stale_version slot_free weekly_summary morning_report escalation"
 # WAKE_JQ: the jq filter that keeps the events that wake, with $wake bound to WAKE_TYPES (--arg wake "$WAKE_TYPES").
 WAKE_JQ='select(type == "object") | select((.type as $t | $wake | split(" ") | index($t)) and (.type != "pr_opened" or .lead_told == false))'
 

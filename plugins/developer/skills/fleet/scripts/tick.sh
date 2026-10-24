@@ -330,6 +330,21 @@ if [ -n "$iv" ]; then
   done < <("$registry" list --live ${team:+--team "$team"} | jq -r '[.[] | select(.tier != "Orchestrator")] | sort_by(.team, (if .tier == "Lead" then 0 else 1 end), .name)[] | [.name, .team, (.plugin_version // "")] | @tsv')
 fi
 
+# --- blocked on a prompt ---------------------------------------------------------------------------------------
+# An agent herdr reports blocked (Needs input with no API-error detail and no open escalation of its own) on two ticks
+# in a row waits on a permission prompt nobody answers: one P1 escalation per blocked spell, which ends when it leaves
+# blocked. No screen is read. Always on, overnight or not; a fleet-wide view, so tick --team skips it.
+if [ -z "$team" ]; then
+  blocked_now="$("$registry" list --live | jq -c '[.[] | select(.tier != "Orchestrator" and .status == "Needs input"
+    and (.status_detail // "") == "" and (.escalation // "") == "") | .name]')"
+  for bn in $(jq -r --argjson p "$(jq -c '.blocked_prev // []' "$STATE_FILE")" --argjson t "$(jq -c '.blocked_told // []' "$STATE_FILE")" \
+    '.[] | select(. as $n | ($p | index($n)) != null and ($t | index($n)) == null)' <<<"$blocked_now"); do
+    "$registry" escalate "$bn" P1 "blocked on a permission prompt: look at its pane" >/dev/null 2>&1 || warn "could not escalate $bn, blocked on a prompt"
+    st_upd --arg n "$bn" '$st + {blocked_told: ((($st.blocked_told // []) + [$n]) | unique)}'
+  done
+  st_upd --argjson b "$blocked_now" '$st + {blocked_prev: $b, blocked_told: [($st.blocked_told // [])[] | select(. as $n | $b | index($n))]}'
+fi
+
 # --- escalations ------------------------------------------------------------------------------
 esc="$("$registry" escalations --open ${team:+--team "$team"})"
 add_events "$(jq -cn --argjson e "$esc" --slurpfile stf "$STATE_FILE" '
@@ -572,6 +587,21 @@ if [ -n "$prev_week" ] && [ "$prev_week" != "$sweek" ]; then
 fi
 st_upd --arg w "$sweek" '$st + {summary_week: $w}'
 
+# --- morning report ----------------------------------------------------------------------------------------
+# Overnight mode (overnight = true in config.toml): the first tick on or after 07:00 local time each day (the
+# FLEET_MORNING_HOUR constant) writes the morning report (metrics.sh --morning) to reports/fleet-morning-<date>.md
+# (common.sh report_dir: the Orchestrator's cwd) and wakes with its path, once per date.
+if [ -z "$team" ] && [ "$(cfg_bool overnight false)" = true ]; then
+  mday="$(local_time "$now_epoch" %Y-%m-%d)"
+  if [ "$(local_time "$now_epoch" %H | sed 's/^0//')" -ge "$(const_int MORNING_HOUR 7)" ] && [ "$(jq -r '.morning_date // ""' "$STATE_FILE")" != "$mday" ]; then
+    mpath="$(report_dir)/fleet-morning-$mday.md"
+    if mkdir -p "$(dirname "$mpath")" && FLEET_NOW="$now_iso" "$FLEET_SCRIPTS/metrics.sh" --morning >"$mpath" 2>/dev/null; then
+      add_events "$(jq -cn --arg p "$mpath" --arg d "$mday" '[{type: "morning_report", team: "", name: "", path: $p, date: $d, detail: ("the morning report is " + $p)}]')"
+    else warn "could not write the morning report to $mpath"; fi
+    st_upd --arg d "$mday" '$st + {morning_date: $d}'
+  fi
+fi
+
 # --- the event log ------------------------------------------------------------------------------------
 while IFS=$'\t' read -r etype eteam ename eurl esha eissue edetail; do
   [ -n "$etype" ] || continue
@@ -580,9 +610,10 @@ while IFS=$'\t' read -r etype eteam ename eurl esha eissue edetail; do
   ev_log "$etype" team="$eteam" name="$ename" pr="$eurl" sha="$esha" issue="$eissue" detail="$edetail"
 done < <(jq -r 'def d: if . == null or . == "" then "-" else tostring end;
   .[] | select(.type | IN("pr_opened", "pr_ready", "pr_merged", "pr_conflicting", "stalled", "dead", "failed", "needs_input", "stale_version", "slot_free",
-    "claim_released", "claim_held_pr", "claim_lapsed"))
+    "claim_takeover", "claim_released", "claim_held_pr", "claim_lapsed", "morning_report"))
   | [.type, (.team | d), (.name | d), (.url | d), (.sha | d), (if (.type | startswith("claim_")) then (.issue | d) else "-" end),
-     (if (.type | startswith("claim_")) then ("holder " + (.holder // "?") + (if .detail then ": " + .detail else "" end)) else "-" end)] | @tsv' "$EVENTS_FILE")
+     (if (.type | startswith("claim_")) then ("holder " + (.holder // "?") + (if .detail then ": " + .detail else "" end))
+      elif (.type | IN("pr_conflicting", "morning_report")) then (.detail | d) else "-" end)] | @tsv' "$EVENTS_FILE")
 
 # --- notices: each wake's reply, rendered once for `fleet status` (references/output.md) --------------------------
 while IFS= read -r ev; do

@@ -166,6 +166,21 @@ Boot starts every claude agent with `--session-id`, records the transcript path 
 Scripts now call the forge: `tick.sh` runs read-only `gh pr view` through `FLEET_GH` (default `gh`).
 A repo whose PRs have no CI is listed in `no_pr_ci = ["repo"]` in config.toml. UNVERIFIED: herdr's `state_change_seq` is observed, not documented; the transcript format across Claude Code updates; the pane-text handling; `herdr agent start` in the same pane after `/exit`; the `queued_command` attachment shape.
 
+### Overnight mode
+
+`overnight = true` in `config.toml` (default false) lets the fleet work while the user sleeps:
+
+- Every brief written while it is on (boot, respawn, next) ends with an "Overnight mode" block after the house rules,
+  so each agent's session holds the grant: a lead applies its own recommended option for a decision inside the
+  issue's scope, notes it in the PR body and runs `registry.sh note <name> decision "<choice>"`; installs, IAM, AWS
+  or production, branch protection, `gh pr ready` and closing a PR or issue stay with the user as a P1; a P0 still
+  stops the team; branches catch up with a merge commit, never a force-push (the house rules say the same).
+- The first tick on or after 07:00 local time each day writes the morning report (`metrics.sh --morning`) to
+  `reports/fleet-morning-<date>.md` under your cwd (the orchestrator row's), and wakes you with `morning_report`.
+
+Overnight or not, an agent herdr reports blocked on two ticks in a row (and with no question of its own open) gets one
+P1 escalation, "blocked on a permission prompt", per blocked spell. No screen is read.
+
 ### Disk
 
 The fleet cleans up as it goes:

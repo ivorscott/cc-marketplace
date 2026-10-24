@@ -461,6 +461,14 @@ Slot free (<n> of <N> teams running). Pick the next issue and boot it.
 `<N>` is `target_teams` on the orchestrator row; it comes once per (live count, target) while fewer teams run than
 the target and than `max_teams` (Parked teams do not count).
 
+### wake morning_report
+
+```
+Morning report <YYYY-MM-DD>: <path>. Relay it as it is.
+```
+
+Overnight mode: the first tick on or after 07:00 local time each day writes the report (`### morning report`).
+
 ### wake weekly_summary
 
 The metrics shape, with its `Report: <path>` line.
@@ -468,6 +476,45 @@ The metrics shape, with its `Report: <path>` line.
 ### wake escalation
 
 The decision form of the escalation, with its options.
+
+## Morning report
+
+### morning report
+
+`metrics.sh --morning [--since 12h]`, written by tick in overnight mode to `reports/fleet-morning-<date>.md`:
+
+```
+# Morning report <YYYY-MM-DD>
+
+## Ready to merge
+
+<the merge queue>
+
+## Decisions taken
+
+- <team/role>: <the choice>
+
+## UNVERIFIED
+
+- <team/role>: <the done summary's UNVERIFIED line>
+
+## Takeovers
+
+- DEV-1: taken over by <machine>
+- DEV-2: released from <machine> (heartbeat lapsed, no open PR)
+
+## Boots
+
+- <team> on DEV-1: <the search that picked it, or "named by the user">
+
+## Merge-order conflicts
+
+- [repo #N](url): conflicts after [repo #M](url)
+- [repo #N](url): conflicting now
+```
+
+The sections always come in this order, one line per entry, `none` for an empty one. Ready to merge is the merge
+queue as it is when the report is written.
 
 ## Disk and alerts
 

@@ -28,6 +28,10 @@ permission_mode = "auto"   # the Claude Code permission mode every agent starts 
 # forge_allow = ["Bash(gh pr view:*)", "Bash(gh pr checks:*)", "Bash(gh pr create:*)"]
 # no_pr_ci = ["repo-without-ci"]   # repos whose PRs have no CI: no checks counts as green
 
+# Overnight mode: leads decide inside the issue's scope (installs, cloud, prod, branch protection, `gh pr ready` and
+# closing stay P1), branches catch up with merge commits, and the first tick after 07:00 writes the morning report
+overnight = false
+
 # Registry
 archive_after_days = 0   # a Retired row with its lessons written moves to fleet-archive.json after this many days
 

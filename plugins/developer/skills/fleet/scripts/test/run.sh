@@ -3210,7 +3210,7 @@ eq "reassign: issue_done was logged with the outcome, summary and lessons first"
 eq "reassign: run twice logs nothing more (the row holds no outcome now)" "$("$REG" reassign ep-a DEV-12 >/dev/null 2>&1; evn issue_done)" 1
 
 # -- the config budget
-KEYS_CODE="$(cd "$SCRIPTS" && grep -ohE "(cfg_int|cfg_str|config_list) '?[a-z_]+" *.sh | awk '{print $2}' | tr -d "'" | sort -u)"
+KEYS_CODE="$(cd "$SCRIPTS" && grep -ohE "(cfg_int|cfg_str|cfg_bool|config_list) '?[a-z_]+" *.sh | awk '{print $2}' | tr -d "'" | sort -u)"
 KEYS_EX="$(bash -c ". '$SCRIPTS/common.sh'; config_pairs '$SCRIPTS/../config.example.toml' 1" | cut -f1 | grep -v '^\[' | sort -u)"
 eq "config: the keys the code reads are the keys config.example.toml lists" "$KEYS_CODE" "$KEYS_EX"
 check "config: the context_window table is listed" grep -q '^\[context_window\]' "$SCRIPTS/../config.example.toml"
@@ -3537,6 +3537,7 @@ for w in $WAKES; do
     pr_conflicting) ev='{"type":"pr_conflicting","team":"build-api","name":"build-api/lead","url":"https://github.com/acme/app-api/pull/214","merged":"https://github.com/acme/app-web/pull/121","lead_told":true}' ;;
     stale_version) ev='{"type":"stale_version","team":"build-api","name":"build-api/lead","from":"4.0.0","to":"4.1.0","detail":"runs 4.0.0, installed 4.1.0; waits for the go"}' ;;
     slot_free) ev='{"type":"slot_free","team":"","name":"","live":2,"target":3,"detail":"2 live < target 3"}' ;;
+    morning_report) ev='{"type":"morning_report","team":"","name":"","date":"2026-10-24","path":"<T>/reports/fleet-morning-2026-10-24.md"}' ;;
     claim_released) ev='{"type":"claim_released","team":"","name":"","issue":"DEV-2","holder":"fleet:other"}' ;;
     claim_held_pr) ev='{"type":"claim_held_pr","team":"","name":"","issue":"DEV-6","holder":"fleet:other","url":"https://github.com/acme/app-api/pull/9"}' ;;
     claim_lapsed) ev='{"type":"claim_lapsed","team":"","name":"","issue":"DEV-4","holder":"fleet:other","detail":"no heartbeat, so it is not proven lapsed"}' ;;
@@ -3921,6 +3922,46 @@ rm -f "$DKDIR/df" "$DKDIR/dangling"
 qfresh tf; mkdir -p "$QD/p12"; FLEET_FORCE=1 bt build tf "$QD/p12" task
 eq "dev408-12 boot: every pane gets the shared TF_PLUGIN_CACHE_DIR, and the directory exists" \
   "$(grep -c "^workspace create.*TF_PLUGIN_CACHE_DIR=$FLEET_STATE_DIR/tf-plugin-cache" "$HERDR_LOG"):$(grep -c "^pane split.*TF_PLUGIN_CACHE_DIR=$FLEET_STATE_DIR/tf-plugin-cache" "$HERDR_LOG"):$([ -d "$FLEET_STATE_DIR/tf-plugin-cache" ] && echo dir)" "1:3:dir"
+
+# -- dev408-11: overnight mode: the brief block, merge commits, a blocked agent's P1, the morning report
+qfresh night; "$REG" add '{"name":"n1/lead","team":"n1","tier":"Lead","status":"Working","herdr_ref":"n1-l","pane":"pn1"}' >/dev/null
+hrules() { bash -c '. "$1/common.sh"; house_rules n1/lead' _ "$SCRIPTS"; }
+gcfg; eq "dev408-11 overnight: off, a brief has no overnight block" "$(hrules | grep -c '^Overnight mode')" 0
+gcfg 'overnight = true'
+eq "dev408-11 overnight: on, the block follows the house rules, with the lead's decision note" "$(hrules | grep -c '^Overnight mode'):$(hrules | grep -c 'registry.sh note n1/lead decision')" "1:1"
+check "dev408-11 overnight: the house rules and the block agree: a merge commit, never a force-push" bash -c \
+  "grep -q 'while overnight mode is on: then catch up with a merge commit instead, and never force-push' '$SCRIPTS/../rules/house.md' && printf '%s' \"\$1\" | grep -q 'with a merge commit, never a force-push'" _ "$(hrules)"
+gcfg
+qfresh blocked; "$REG" add '{"name":"bk/builder","team":"bk","tier":"Worker","status":"Working","herdr_ref":"bk-b","pane":"pbk"}' >/dev/null
+echo blocked >"$AS/bk-b"; bkt() { "$SCRIPTS/tick.sh" >/dev/null 2>&1; }; nesc() { "$REG" escalations --open | jq length; }
+bkt; eq "dev408-11 blocked: blocked on one tick, no escalation" "$(nesc)" 0
+bkt; eq "dev408-11 blocked: blocked on two ticks in a row, one P1" "$("$REG" escalations --open | jq -r '[.[] | .severity + " " + .message] | join("|")')" "P1 blocked on a permission prompt: look at its pane"
+bkt; bkt; eq "dev408-11 blocked: and only one while the spell lasts" "$(nesc)" 1
+"$REG" resolve bk/builder "$("$REG" escalations --open | jq -r '.[0].id')" --note answered >/dev/null 2>&1
+echo working >"$AS/bk-b"; bkt; echo blocked >"$AS/bk-b"; bkt; bkt
+eq "dev408-11 blocked: a new spell, after it left blocked, escalates again" "$(nesc)" 1
+qfresh morning; mkdir -p "$QD/ocwd"
+"$REG" add "$(jq -cn --arg c "$QD/ocwd" '{name: "orchestrator", team: "orchestrator", tier: "Orchestrator", status: "Working", herdr_ref: "om", pane: "pom", cwd: $c}')" >/dev/null
+for t in mo1 mo2; do "$REG" add "$(jq -cn --arg t "$t" '{name: ($t + "/lead"), team: $t, tier: "Lead", status: "Working", herdr_ref: ($t + "-l"), pane: ("p" + $t)}')" >/dev/null; done
+"$REG" add '{"name":"mo1/builder","team":"mo1","tier":"Worker","status":"Done","herdr_ref":"mo1-b","pane":"pmb","summary":"export shipped; UNVERIFIED: the cluster smoke run"}' >/dev/null
+"$REG" note mo1/lead decision "chose postgres over sqlite" >/dev/null; "$REG" note mo1/lead picked "Todo by priority; DEV-81 first" >/dev/null
+qpr app-api 85 fleet/dev-85 main 2026-10-23T20:00:00Z '["a.go"]' x CONFLICTING; qteam mo3 app-api 85 DEV-85 aaaaaaa85
+{ printf '{"at":"2026-10-22T09:00:00Z","type":"boot","team":"old","issue":"DEV-80"}\n'
+  printf '{"at":"2026-10-24T01:00:00Z","type":"boot","team":"mo1","issue":"DEV-81","detail":"template build"}\n'
+  printf '{"at":"2026-10-24T02:00:00Z","type":"boot","team":"mo2","issue":"DEV-82","detail":"template build"}\n'
+  printf '{"at":"2026-10-24T03:00:00Z","type":"claim_takeover","team":"","name":"","issue":"DEV-83","detail":"holder fleet:other"}\n'
+  printf '{"at":"2026-10-24T04:00:00Z","type":"claim_released","team":"","name":"","issue":"DEV-84","detail":"holder fleet:pr: its heartbeat is old"}\n'
+  printf '{"at":"2026-10-24T05:00:00Z","type":"pr_conflicting","team":"mo3","name":"mo3/lead","pr":"https://github.com/acme/app-api/pull/86","detail":"after https://github.com/acme/app-api/pull/50"}\n'
+} >"$FLEET_STATE_DIR/events.jsonl"
+gold morning-report "$(TZ=UTC FLEET_NOW=2026-10-24T09:00:00Z FLEET_GH="$QD/gh-shim" "$SCRIPTS/metrics.sh" --morning 2>/dev/null)"
+gcfg 'overnight = true'; MR="$QD/ocwd/reports/fleet-morning-2026-10-24.md"
+mt() { TZ=UTC FLEET_NOW="$1" FLEET_GH="$QD/gh-shim" "$SCRIPTS/tick.sh" 2>/dev/null; }
+m1="$(mt 2026-10-24T06:59:00Z)"; eq "dev408-11 morning: before 07:00 no report" "$(evc "$m1" morning_report):$([ -e "$MR" ] && echo written || echo none)" "0:none"
+m2="$(mt 2026-10-24T07:00:00Z)"
+eq "dev408-11 morning: the first tick from 07:00 writes it under the Orchestrator's cwd and wakes with its path" "$(evc "$m2" morning_report):$(head -n 1 "$MR"):$(printf '%s' "$m2" | jq -r '.[] | select(.type == "morning_report") | .path')" "1:# Morning report 2026-10-24:$MR"
+eq "dev408-11 morning: once per date" "$(evc "$(mt 2026-10-24T08:00:00Z)" morning_report)" 0
+eq "dev408-11 morning: and the next date again" "$(evc "$(mt 2026-10-25T07:30:00Z)" morning_report)" 1
+gcfg; eq "dev408-11 morning: never with overnight off" "$(evc "$(mt 2026-10-26T08:00:00Z)" morning_report)" 0
 # ---- end DEV-408 ----
 
 printf '\n%d passed, %d failed\n' "$pass" "$failn"

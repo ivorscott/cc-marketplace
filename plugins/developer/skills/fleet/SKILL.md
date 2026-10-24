@@ -126,6 +126,11 @@ question box (AskUserQuestion): the wakes queue behind it. Ask in plain text and
 - `failed`: a row turned Failed (a restart or a brief that did not arrive); look at it.
 - `stalled`: nudged once and still stalled. `pr_opened`: a builder opened a PR without `done`; tick told the lead.
 - `weekly_summary`: its notice is the metrics table and the report it wrote (`reports/fleet-metrics-<date>.md`).
+- `morning_report` (overnight mode, `overnight = true` in config.toml): read the report it names and relay it as it is.
+  Overnight, leads decide inside the issue's scope (they note each decision), installs, cloud, production, branch
+  protection, `gh pr ready` and closing stay P1 for the user, and branches catch up with merge commits.
+- An agent blocked on a permission prompt for two ticks gets a P1 escalation ("blocked on a permission prompt"),
+  overnight or not: look at its pane and apply the blocked-prompt policy.
 - `claim_takeover`: stop or hand off the team (F), tell the user, escalate P1; never fight back (operations.md).
 - `claim_released`: tick freed another machine's lapsed claim; the issue can be picked (A, step 0). `claim_held_pr`
   and `claim_lapsed`: tick left another machine's claim alone (an open PR, writes off, or no heartbeat); relay it.
