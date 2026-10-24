@@ -53,7 +53,8 @@ done contract, escalation, caps, guards and debrief; mechanics that are not rout
 
 Before the first boot of a session, run `$F/fleet slim status`. When it says `Offer: due`, ask once, in plain text
 (never a question box): "Turn on slim, the fleet's panel style for herdr, and install herdr's Claude integration?
-(yes/no)". Yes → `$F/fleet slim on`; no → `$F/fleet slim off`. Either records the answer, so it is never asked again.
+It replaces your own [ui] lines in herdr's config and keeps a backup. (yes/no)". Yes → `$F/fleet slim on`; no →
+`$F/fleet slim off`. Either records the answer, so it is never asked again.
 
 0. **Pick** the issue yourself when the user names none (or a slot frees, Tick): never ask which one. Search the
    tracker (Todo, Backlog, and In Progress that is unclaimed or lapsed, across the repos in `repos`); skip a live
@@ -71,19 +72,25 @@ Before the first boot of a session, run `$F/fleet slim status`. When it says `Of
    writers their own `git worktree` on `fleet/<team>/<role>`, starts every agent (permission checks on,
    `permission_mode`), answers folder-trust only for the repo and those worktrees, sends each brief as a file with
    the done contract and house rules appended, and writes the registry rows. Pass `--issue DEV-123 --issue-url
-   <URL>` for an issue-bound team so the PR body gets the exact `Fixes <URL>` line. A repo with
+   <URL> --issue-title "<title>"` for an issue-bound team: the PR body gets the exact `Fixes <URL>` line and the team
+   table's Issue cell shows the title (from your search; status never calls the tracker for it). A repo with
    `.claude/fleet-env.json` gets a team test cluster (`references/operations.md`, "Team environment").
-3. It prints its line (each agent ✓, or ✗ and why) and the team table. Anything not `● Working` needs you now: go to
+3. It prints its line (each agent ✓, or ✗ and why) and the team table. Anything not `Working` needs you now: go to
    **B** for that agent.
 
 ## B. Status
 
 `$F/fleet status [<team>] [--problems] [--json] [--all]` recomputes health, writes it back and prints the status
 reply of `references/output.md`: the wake notices not shown yet, then the team table (a summary line, then Team,
-Issue, PR, State as a plain symbol and a word, Needs you), then the merge queue when a PR is open (every ready PR in the order to merge them, rebuilt from
-GitHub each time, then `Not ready: …`), then the focus, the disk line (below `warn_free_gb`) and the loop line when
-they apply. When the user asks what is ready to merge, the queue is the answer. `status <team>` prints one row per agent;
-`--all` adds a line for other machines' claims (Linear only); `--json` is the bare agent array. Relay it verbatim.
+Issue as the key and a short title, PR as its full URL, State as one word, Needs you), then the merge queue when a PR
+is open (every ready PR in the order to merge them, as tick built it in the last minute, then `Not ready: …`), then the
+focus, the disk line (below `warn_free_gb`), the loop line and the skill line when they apply. When the user asks what
+is ready to merge, the queue is the answer. `status <team>` prints one row per agent; `--all` adds a line for other
+machines' claims (it reads Linear itself); `--json` is the bare agent array. Relay it verbatim.
+
+One `$F/fleet status` call per request and per wake, relayed as it is: no extra reads (wakes.log, panes, PR bodies)
+unless the output itself names a problem to act on. When it says `Skill <v> is running and <v> is installed`, tell the
+user to restart this Claude Code session (or run /reload-plugins): until then you follow the old version's rules.
 
 Your move: **Needs input**, read the screen (`herdr agent read <ref> --source visible`) and apply the blocked-prompt
 policy (`references/operations.md`); **Stalled**, ask for its done step; **Zombie**, tick respawns it once, else
@@ -121,13 +128,15 @@ question box (AskUserQuestion): the wakes queue behind it. Ask in plain text and
   asks to keep N teams running). Pick and boot (A, step 0) over Todo, Backlog and unclaimed or lapsed In Progress
   across the repos in `repos`. When the only blocker is an open PR that is nearly ready (signed off, or CI green),
   boot plan-first: the lead's `--brief` says the planner runs and the builder waits for that merge.
-- `pr_merged`: run `$F/fleet next <team> <next issue> [--brief TEXT] [--issue-url URL]` at a safe point (every agent
+- `pr_merged`: run `$F/fleet next <team> <next issue> [--brief TEXT] [--issue-url URL] [--issue-title TEXT]` at a safe point (every agent
   idle); it logs `issue_done`, reassigns the rows and restarts every agent with a fresh brief. A team marked
   `--after-merge` was parked by tick instead (`parks` on the event).
 - `needs_input`, `brief_failed`: look at the pane; tick already re-sent them.
-- `stale_version`: a decision for the user (a newer plugin is installed). Relay it and wait. On yes, run that team's
-  `next` with `FLEET_VERSION_OK=1` when it moves; on no, retire the team after its PR merges. Without that yes,
-  `next` and `respawn --restart` refuse with exit 5; never set `FLEET_VERSION_OK=1` on your own.
+- `stale_version`: a decision for the user (a newer plugin is installed). Relay it and wait. On yes, record it once
+  for that version, `$F/registry.sh pref version_ok <installed version>`: every team then switches at its next
+  `next`, and tick stops asking. Then tell the user to restart this Claude Code session (or run /reload-plugins), so
+  you follow the new version's skill too. On no, retire the team after its PR merges. Without that yes, `next` and
+  `respawn --restart` refuse with exit 5; never record it on your own.
 - `dead`: tick respawned the agent, or filed a P1 escalation after a second death inside the window.
 - `failed`: a row turned Failed (a restart or a brief that did not arrive); look at it.
 - `stalled`: nudged once and still stalled. `pr_opened`: a builder opened a PR without `done`; tick told the lead.

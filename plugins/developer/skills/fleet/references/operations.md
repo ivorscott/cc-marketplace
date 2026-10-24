@@ -142,9 +142,12 @@ has `type`, `team`, `name` and, where a PR exists, the full `url`. Act on each:
   the pane, then re-send with `tell.sh <team/role> - --brief-file <path>` or re-boot the agent.
 - `stale_version`: a team runs an older plugin than the installed one, once per (team, installed version). Its
   restart at the next `next.sh` would switch it, and that waits for the user's go: relay the decision and wait.
-  `next.sh` and `respawn.sh --restart` refuse with exit 5, naming both versions, until they run with
-  `FLEET_VERSION_OK=1`, which only the user's yes allows. On no, retire the team after its PR merges. A plain
-  respawn of a dead agent does not ask.
+  `next.sh` and `respawn.sh --restart` refuse with exit 5, naming both versions, until the user's yes is recorded,
+  once per installed version: `registry.sh pref version_ok <installed version>`. Tick then asks nothing more for
+  that version (a newer install asks again), and the pending notice is dropped. After the yes, the user restarts the
+  Orchestrator's Claude Code session (or runs /reload-plugins): Claude Code keeps serving the skill text the session
+  started with, and `status` says so (`Skill <v> is running and <v> is installed`). On no, retire the team after its
+  PR merges. A plain respawn of a dead agent does not ask.
 - `needs_input`: the agent stopped on an API error (usually an expired login). The row shows `Needs input (login expired)` or `(API error)`; it is never nudged as stalled, and tick sends it one `continue` per 30 minutes, which works once the user has run /login. Tell the user.
 - `dead`: the row has been a Zombie on two ticks in a row (and `herdr agent list` works; when herdr itself is down tick skips classification and respawn), so tick already respawned the agent (`respawn.sh`) unless it died twice inside `respawn_window_hours` (default 6; `respawn_max`, default 1), in which case it filed a P1 escalation instead. Done and Retired rows are never respawned.
 - `stalled`: the agent was nudged a tick ago ("run your done step or say what is missing") and is still stalled; there is one nudge per stall, flagged by `nudged_at` on the row.

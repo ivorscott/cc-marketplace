@@ -171,7 +171,7 @@ leftovers() {
     while IFS= read -r b; do
       [ -n "$b" ] || continue
       found=1
-      ! git -C "$r" worktree list --porcelain 2>/dev/null | grep -qx "branch refs/heads/$b" || continue # held by a kept worktree
+      ! grep -qx "branch refs/heads/$b" <<<"$(git -C "$r" worktree list --porcelain 2>/dev/null)" || continue # held by a kept worktree
       n="$(git -C "$r" rev-list "$b" --not --exclude="refs/heads/$b" --branches --remotes 2>/dev/null | grep -c . || true)"
       if [ "$n" = 0 ]; then git -C "$r" branch -D "$b" >/dev/null 2>&1 || keep "$b" "git branch -D failed"
       else warn "kept branch $b in $r: $n commit(s) on no other branch or remote"; keep "$b" "$n commit$([ "$n" = 1 ] || echo s) on no other branch or remote"; fi

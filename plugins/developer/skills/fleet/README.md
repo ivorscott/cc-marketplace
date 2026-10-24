@@ -117,21 +117,21 @@ The Orchestrator and agents call these directly (from `scripts/`). You can call 
 
 | Script | Commands |
 |---|---|
-| `boot.sh` | `boot.sh [--issue ID --claimed-by KEY --labels a,b --scope 'repo: paths'] <template> <focus> <dir> [task…]` boots a team (`FLEET_FORCE=1` goes over the `max_agents` cap and the `min_free_gb` disk floor, never over another machine's claim). A takeover is done with `linear.sh takeover` before boot. It writes every row (Idle) before any agent starts; a boot that fails or is interrupted closes its workspace, removes the worktrees and branches it made and retires its rows (Abandoned), and a name with leftovers of an earlier boot is refused until `retire.sh <team>` tidies them |
+| `boot.sh` | `boot.sh [--issue ID --issue-url URL --issue-title TEXT --claimed-by KEY --labels a,b --scope 'repo: paths'] <template> <focus> <dir> [task…]` boots a team (`FLEET_FORCE=1` goes over the `max_agents` cap and the `min_free_gb` disk floor, never over another machine's claim). A takeover is done with `linear.sh takeover` before boot. It writes every row (Idle) before any agent starts; a boot that fails or is interrupted closes its workspace, removes the worktrees and branches it made and retires its rows (Abandoned), and a name with leftovers of an earlier boot is refused until `retire.sh <team>` tidies them |
 | `claim.sh` | `lease` prints now + `lease_hours` · `hb` reads the `heartbeat=` line of a label description (stdin) · `expired --lease ISO` says whether a lease has lapsed (the open-PR check is `linear.sh takeover`'s). Pure: it never calls a tracker |
 | `redact-check.sh` | `redact-check.sh --range <base>..<head>` counts the private terms in the lines a branch adds and its commit messages; prints counts only, never a term; exit 0 clean, 1 a match, 2 cannot run (no terms file, no terms, bad range). The terms live in `$FLEET_STATE_DIR/private/redact_terms.txt` (default `~/.local/state/fleet/private/redact_terms.txt`), outside every repo: one per line, blank lines and `#` lines ignored, mode 600 (it warns when the file is group- or world-readable). Every agent may run it: the house rules require it before sign-off and every push |
-| `slim.sh` | `slim.sh on\|off\|status` the slim panel style for herdr (`styles/slim.toml`), written only between markers in herdr's config, with a backup, the Claude integration and a reload; the choice is a registry pref, so the offer is made once. The Orchestrator's only |
+| `slim.sh` | `slim.sh on\|off\|status` the slim panel style for herdr (`styles/slim.toml`), written between markers in herdr's config (replacing a hand-written `[ui]` style there), with a backup, the Claude integration and a reload; the choice is a registry pref, so the offer is made once. The Orchestrator's only |
 | `linear.sh` | claims and heartbeat on the Linear API: `claim <ISSUE> [--dry-run]` · `heartbeat` (one mutation) · `holder <ISSUE>` (with `lapsed`), `peers` and `blocks <ISSUE…>` (read-only) · `takeover <ISSUE> [--repo OWNER/NAME]` (refuses while a PR is open) · `release <ISSUE> [--lapsed]` (removes this machine's label, or with `--lapsed` a lapsed machine's, under takeover's guards) · `state <ISSUE> <Done\|Verify\|Todo>` · `migrate [--dry-run]` · `has-key`. Key in `~/.config/fleet/linear_api_key` (mode 600) or `LINEAR_API_KEY`; none: exit 3. Writes need `linear_writes` (below): off, the default, exits 3 too. Never posts claim or lease comments |
 | `chat.sh` | `channel` and `allow` print `chat_channel` and `chat_allow` · `format <event> …` prints the one-line message. It never posts or reads; the Orchestrator does with its own chat tools |
 | `machine-id.sh` | `id\|key\|label\|description\|hash\|show`: this machine's tracker identity, e.g. `fleet:3f9a2c1e`. The label description publishes `machine id sha256:<12 hex>`, never the full id; `linear.sh migrate` rewrites an older label that still holds the full id |
-| `status.sh` | `status.sh [<team>] [--problems] [--json] [--all [--claims FILE\|-]]` recomputes health, writes it to the registry and prints the waiting wake notices, then the team table (or, with a team, one row per agent) |
-| `registry.sh archive` | moves Retired rows with lessons and no open escalation to `fleet-archive.json` (`archive_after_days` in config.toml, default 0); `get --archived` and `list --with-archived` read both |
-| `tick.sh` | `tick.sh [--team T]` one JSON array of what changed since the last tick (stalled, dead, escalation, pr_ready, pr_merged, pr_conflicting, repo_without_team, disk), or nothing, and each wake's reply in `notices.log` · reads PRs with read-only `gh pr view` through `FLEET_GH` |
-| `queue.sh` | the merge queue as JSON: the open PRs the fleet holds, the ready ones in the order to merge them (dependencies first, then fewest rebases, then oldest), the rest with what is missing. Rebuilt from GitHub and the registry on every call; `status` and the pr_ready/pr_merged wakes print it |
-| `tell.sh` | `tell.sh <team/role> <text> [--no-confirm]` sends and checks delivery, then prints `Told <team/role>: "…" (delivered)`; exit 1 not delivered, 2 pane at the shell |
-| `next.sh` | `next.sh <team> <issue> [--brief TEXT] [--assignment TEXT] [--issue-url URL]` after a merge, at a safe point (every agent idle, no background task): log `issue_done`, reassign, then restart every agent (`/exit`, a fresh session, its full brief as a file) |
+| `status.sh` | `status.sh [<team>] [--problems] [--json] [--all]` recomputes health, writes it to the registry and prints the waiting wake notices, then the team table (or, with a team, one row per agent); `--all` reads other machines' claims from Linear |
+| `registry.sh archive` | moves Retired rows with lessons and no open escalation to `fleet-archive.json` (`archive_after_days` in config.toml, default 0), and past 512 KB also those with no lessons; `get --archived` and `list --with-archived` read both |
+| `tick.sh` | `tick.sh [--team T]` one JSON array of what changed since the last tick (stalled, dead, escalation, pr_ready, pr_merged, pr_conflicting, repo_without_team, disk), or nothing, and each wake's reply in `notices.log` · reads PRs with read-only `gh pr view` and `gh pr list` through `FLEET_GH`, and builds the merge queue once for status |
+| `queue.sh` | the merge queue as JSON: the open PRs the fleet holds (one read-only `gh pr list` per repo; a PR whose head branch a local team pushed is ours even when no row names it yet), the ready ones in the order to merge them (dependencies first, then fewest rebases, then oldest), the rest with what is missing. `status` reuses the one tick built in the last minute; the pr_ready/pr_merged wakes print it |
+| `tell.sh` | `tell.sh <team/role> <text> [--no-confirm]` sends and checks delivery, then prints `Told <team/role>: "…" (delivered)`, or `(queued)` for an agent busy in a turn; exit 1 not delivered, 2 pane at the shell |
+| `next.sh` | `next.sh <team> <issue> [--brief TEXT] [--assignment TEXT] [--issue-url URL] [--issue-title TEXT]` after a merge, at a safe point (every agent idle, no background task): log `issue_done`, reassign, then restart every agent (`/exit`, a fresh session, its full brief as a file) |
 | `sandbox.sh` | `sandbox.sh [--keep] [--] [cmd...]` runs a reproduction with a temporary state and config root, shims for herdr, gh and curl, and no session, key or `FLEET_ROLE`; refuses the live roots |
-| `respawn.sh` | `respawn.sh <team/role>` starts a Zombie row again from the row (same role, worktree, branch, model; new session id) and sends a resume brief; `tick.sh` calls it within the budget `respawn_max` (1) per `respawn_window_hours` (6) |
+| `respawn.sh` | `respawn.sh <team/role>` starts a Zombie row again from the row (same role, worktree, branch, model; new session id) and sends a resume brief; `tick.sh` calls it within the budget `respawn_max` (1) per `respawn_window_hours` (6). `--restart` (next's) waits for the agent to be idle, never types into a busy one, and confirms Claude's exit dialog |
 | `metrics.sh` | `metrics.sh [--since 7d] [--json]` the weekly table (issues shipped, PRs, rework, median cycle) and a report file with one row per PR: minutes to ready, rework rounds, stalls, missed messages, tokens (from `events.jsonl` and the agents' transcripts) |
 | `retire.sh` | `retire.sh <team\|team/role> [--outcome O] [--verify]` safe teardown; `--summary <target...>` the read-only line the user answers before a retire. A whole team's issue follows the outcome on Linear when writes are on (Shipped → Done, or Verify with `--verify`, once its PR merged; Abandoned, Failed or no outcome → Todo, claim released; a PR that says "Part of <issue>", in any case, leaves it); reports are archived to the team repo's `reports/fleet-archive/`, and build output (`node_modules`, `.terraform`, `bin`, `test-results`, ...) never keeps a worktree. A team name with no live rows but leftovers of an earlier boot (`fleet/<team>/*` branches, worktrees) is tidied: what would lose nothing is removed, the rest kept and named |
 | `env.sh` | `up [--branch B] <team>` creates the team's cluster (exit 75 = queued at `max_envs`) · `down <team>` removes it, with its images and builder · `status` lists every env |
@@ -199,7 +199,9 @@ reported, the worktrees with commits on no remote, and every worktree a retire w
 The fleet shows each team on herdr's panel with herdr's report-metadata (source `fleet`): the team's workspace gets
 the tokens `issue` (`DEV-12`), `pr` (`#214`) and `state` (the team table's word), and each agent's pane gets `role`
 and `state`. Boot, park, unpark and a one-agent retire report them; tick reports a team again only when its state,
-PR or issue changed. A herdr config row names them as `$issue`, `$pr`, `$state` and `$role`, for example:
+PR or issue changed. The workspace or pane id comes first in the call (herdr 0.9 refuses the options before it), and a
+token with no value is cleared (`--clear-token`). A herdr config row names them as `$issue`, `$pr`, `$state` and
+`$role`, for example:
 
 ```toml
 [ui.sidebar.agents]
@@ -210,7 +212,8 @@ rows = [["state_icon", "workspace", "$state"], ["$issue", "$pr"]]
 ```
 
 An agent's line then reads like `◐ build-api · builder · working`, which names its team without dividers. A call
-herdr refuses is one warning, never a failure.
+herdr refuses is one warning naming herdr's reason, never a failure, and nothing more is pushed while that herdr
+version runs (`herdr_meta.refused` in the state dir; a new herdr tries again).
 
 ### Slim panel style
 
@@ -222,18 +225,26 @@ the agent states, agents sorted by space, and the rows above. The Orchestrator o
   `# fleet slim:begin` and `# fleet slim:end` (the begin line names the plugin version, so a later version replaces
   exactly that block), installs the Claude integration if it is missing and reloads herdr. A reload herdr refuses
   puts the backup back. When your config already declares `[ui]`, `[ui.sidebar.agents]` or `[ui.sidebar.spaces]`
-  (or one of slim's keys) outside the markers, nothing changes: it prints the lines to merge yourself (TOML forbids
-  a table twice).
+  (or sets one of slim's keys) outside the markers, slim replaces that hand-written style (TOML forbids a table
+  twice): those tables, each up to the next table header, and those keys go, the block is written, and the reply says
+  `Replaced <tables and keys>`. The backup holds your version.
 - `fleet slim off` removes only the block between the markers; your own keys and the integration stay.
 - `fleet slim status` says whether it is on, whether the integration is current and whether the offer is due.
 
-Your config outside the markers is never edited. Without the fleet: delete the lines between the markers, then run
+Outside the markers, only a conflicting `[ui]` style is ever edited. Without the fleet: delete the lines between the markers, then run
 `herdr server reload-config`. Before, an agent's line is herdr's default; after, it reads like
 `◐ build-api · builder · working`.
 
 ## Running the loop from launchd
 
-`scripts/schedule.sh install` writes a small launcher, `$FLEET_STATE_DIR/bin/fleet-tick`, and `~/Library/LaunchAgents/fleet.tick.plist` (label: `schedule_label`; interval: `tick_secs`, default 300), loads it, and waits for the first tick: if that fails it unloads the job and prints the last log line. The launcher reads the plugin's `installPath` from `~/.claude/plugins/installed_plugins.json` each run, so a plugin update takes effect on the next tick and a swept old version cannot break the job. The job also runs whenever the escalation inbox changes (`WatchPaths`), so a P0 starts a tick within seconds. `uninstall` and `status` do the rest; `status` says whether the loop is healthy (a good tick within twice `tick_secs`).
+`scripts/schedule.sh install` writes a small launcher, `$FLEET_STATE_DIR/bin/fleet-tick`, and `~/Library/LaunchAgents/fleet.tick.plist` (label: `schedule_label`; interval: `tick_secs`, default 300), loads it, and waits for the first tick: if that fails it unloads the job and prints the last log line. The launcher reads the plugin's `installPath` from `~/.claude/plugins/installed_plugins.json` each run, so a plugin update takes effect on the next tick and a swept old version cannot break the job. The job also runs whenever the escalation inbox changes (`WatchPaths`), so a P0 starts a tick within seconds. `uninstall` and `status` do the rest; `status` says whether the loop is healthy (a good tick within twice `tick_secs`), and when a gap is the Mac sleeping (pmset's log shows a sleep after the last good tick and a wake just now) it says `the Mac slept <from>–<to>, not a broken loop` instead of a problem.
+
+### Keeping the Mac awake
+
+launchd runs no tick while the Mac sleeps, so a sleeping Mac stops the heartbeat and the wakes. To keep it awake
+while a fleet runs: run `caffeinate -i` in a herdr pane (until you stop it), or `sudo pmset -c sleep 0` (never sleep on
+the charger; `sudo pmset -c sleep 10` undoes it), or turn on "Prevent automatic sleeping on power adapter when the
+display is off" in System Settings → Battery → Options (Energy on a desktop Mac). The display may still sleep.
 
 Each run is `scripts/loop-tick.sh`: one `tick.sh`, no model. It wakes the Orchestrator for every event someone must act on: a ready or merged PR, any escalation (the Orchestrator answers P2 itself), a dead or stalled agent, a taken-over claim, an agent that needs input, a failed brief, a plugin version switch to decide, the weekly summary, or a PR the lead could not be told about. Low disk and a repo with no team go to alerts instead. A wake is lines appended to `wakes.log` in the state dir (mode 600, at most 500 lines, then it moves to `wakes.log.1`), in a fixed template, one line per event, `fleet tick: <type> <team> <name> <issue> <PR url> <esc id>`; nothing is typed into a pane, and an agent's own words never reach the file. The Orchestrator registers once per session with `registry.sh orchestrator here` (which prints the log's path) and follows the file with `Monitor` on `tail -n 0 -F`; `install` and `status` remind you while none is registered, and until then the lines go to a desktop notification too, as they do while the registered row names no transcript that exists (the no-reply alert reads it, so without one a wake could otherwise reach no one). Output goes to `loop.log` in the state dir. Overlapping ticks are handled by the tick lock in `tick.sh`. On Linux, run `loop-tick.sh` from a systemd user timer instead (no code here). The Linear heartbeat runs only when `linear_writes` in `config.toml` is `on` or `test:<TEAM>` (default off).
 
@@ -373,7 +384,9 @@ in 4.1. Anything that newly exposes the key is a blocker; the items that touch t
 - **Quote and separator edge cases:** a `;`, `|` or `(` inside a quoted `grep` argument splits the segment, so
   `grep -E 'a|b' -r x ~` is allowed; a backslash-newline continuation (`grep \` then `-r x ~` on the next line) resets the
   scan; `/bin/\Find ~` and `GREP\ -r x ~` are cheap evasion variants; a mixed-case tool inside a wrapper's quoted string
-  (`watch "Grep -r x ~"`, `$(which Grep) -r x ~`) is matched in lower case only.
+  (`watch "Grep -r x ~"`, `$(which Grep) -r x ~`) is matched in lower case only. Since 4.1.1 the glob rule skips
+  heredoc bodies and the glob characters inside quotes (the shell expands neither), so a heredoc that a later
+  `bash file` runs is read as text only, like `sh -c` strings.
 - **Tool list:** GNU's abbreviated `--recurs` and the long `--directories=recurse` are not recognised, nor `bsdtar` or
   `scp -r`. Prose over-denial is by design: an unquoted `echo Tree ~` and quoted prose that mentions `grep -r` and `~`
   are denied (agents quote their prose); so is `ls -ltr ~; echo Find`.
@@ -432,6 +445,46 @@ in 4.1. Anything that newly exposes the key is a blocker; the items that touch t
     of git through `.git/info/exclude`, and retire deletes the plan.
 20. **Plain state symbols** in every table (`● ○ ◐ ✗ ‖ ✓`), a summary line above the team table, P0 and P1 in bold,
     and `✓` or `✗ <missing>` for each PR's readiness.
+
+## What changed in 4.1.1
+
+Fixes from the first day of 4.1 (DEV-512), one per item:
+
+1. **Our PR is ours.** The merge queue and tick match a PR's head branch to the local team (a row's branch,
+   `fleet/<team>/…` or `fleet/<issue key>-…`), so a PR pushed from any branch is never "other machine", and tick
+   records it on the builder's row (`pr_opened`).
+2. **Handled notices go.** A notice is dropped once retire, next or resolve handled it, the version switch has the
+   user's yes, or its row is no longer Failed.
+3. **`status --all` reads other machines' claims itself** (`linear.sh peers`); `--claims` is gone. With no key it says
+   `Other machines: unknown (no Linear key).`
+4. **herdr's Claude integration reads current.** Its status is read whole: a `| grep -q` let herdr die of SIGPIPE, which
+   read as "missing". The same pipe shape is gone from tell and retire.
+5. **Panel metadata reaches herdr.** The id goes first, an empty value is cleared, and a refusal is one warning with
+   herdr's reason, then no push while that herdr version runs.
+6. **Slim takes over a hand-written style:** backup, the conflicting `[ui]` tables and keys out, the block in.
+7. **A message to a busy agent is `(queued)`,** exit 0, with no enter pressed into its input line.
+8. **The guard reads globs as the shell does:** a glob in a heredoc body or inside quotes is not a path, so a scratch
+   file with a regex in it passes; `"$HOME"/.config/f*/*` stays denied.
+9. **A sleeping Mac is not a broken loop:** `schedule status` says when the Mac slept; "Keeping the Mac awake" above.
+10. **The version-switch yes is kept** once per installed version (`registry.sh pref version_ok <version>`);
+    `FLEET_VERSION_OK` is gone.
+11. **Old config keys warn once** per change of config.toml in tick; boot still warns on every run.
+12. **A restart into a pane whose agent name herdr still holds** retries the start, as for a busy pane.
+13. **Only a hold line holds a PR** (`Do not merge`, `Hold:`); `Merge after #N` orders the queue and holds
+    `pr_ready` while #N is open.
+14. **Claude's exit dialog** during a restart gets one enter.
+15. **Status is faster:** one jq pass per row, one `gh pr list` per repo, and the queue tick built in the last minute.
+16. **A registry over 1 MB works:** no JSON goes in argv, and past 512 KB the archive also moves Retired rows with no
+    lessons.
+17. **A skill older than the plugin installed is named** by status (restart the session or run /reload-plugins), and
+    SKILL.md asks for one `fleet status` per request and per wake, relayed as it is.
+18. **State is a word** in the team table, the agent table and the queue; the summary line counts in words.
+19. **The Issue cell is `DEV-505 <short title>`,** the key linked to the issue's short URL (an OSC 8 link in a
+    terminal); boot and next take `--issue-title`.
+20. **The PR cell is the PR's full URL,** in every table, line and wake.
+21. **A brief that arrives late** brings its row back from Failed: no failed wake, no re-send.
+22. **`respawn --restart` waits for an idle agent** and types nothing into a busy one.
+23. **A flaky test is fixed:** the suite's herdr shim writes each log line whole.
 
 ## Files
 

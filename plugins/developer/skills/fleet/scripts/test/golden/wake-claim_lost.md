@@ -1,1 +1,1 @@
-Claim lost build-api: [DEV-12](https://linear.app/acme/issue/DEV-12/export) lost this machine's label: another machine released the claim as lapsed. Claim it again with fleet claim DEV-12 while no one holds it, or stop build-api.
+Claim lost build-api: [DEV-12](https://linear.app/acme/issue/DEV-12) export lost this machine's label: another machine released the claim as lapsed. Claim it again with fleet claim DEV-12 while no one holds it, or stop build-api.

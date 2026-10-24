@@ -4,7 +4,7 @@
 
 Merge in this order: none ready.
 
-Not ready: [app-api #85](https://github.com/acme/app-api/pull/85) ✗ conflicting
+Not ready: https://github.com/acme/app-api/pull/85 ✗ conflicting
 
 ## Decisions taken
 
@@ -26,5 +26,5 @@ Not ready: [app-api #85](https://github.com/acme/app-api/pull/85) ✗ conflictin
 
 ## Merge-order conflicts
 
-- [app-api #86](https://github.com/acme/app-api/pull/86): conflicts after [app-api #50](https://github.com/acme/app-api/pull/50)
-- [app-api #85](https://github.com/acme/app-api/pull/85): conflicting now
+- https://github.com/acme/app-api/pull/86: conflicts after https://github.com/acme/app-api/pull/50
+- https://github.com/acme/app-api/pull/85: conflicting now

@@ -21,7 +21,7 @@
 #                                                          Orchestrator, on the lead's row). The last two go to `notes`
 #   registry.sh retire <name|team> [--outcome O]           also closes the rows' open escalations ("closed at retire")
 #   registry.sh signoff <name> <pr-url|N> <sha>            the tester's sign-off: records the PR and the exact SHA verified
-#   registry.sh reassign <team> <issue> [--assignment TEXT] [--issue-url URL] [--claimed-by KEY]
+#   registry.sh reassign <team> <issue> [--assignment TEXT] [--issue-url URL] [--issue-title TEXT] [--claimed-by KEY]
 #                                                          move a team to a new issue (next.sh): logs issue_done for the old one,
 #                                                          clears the old outcome, PR and sign-off, rewrites the assignment;
 #                                                          workers go Idle, the lead Working
@@ -33,7 +33,8 @@
 #   registry.sh env-set <team> key=value ...               update a team environment
 #   registry.sh env-get <team>
 #   registry.sh env-release <team>                         mark the environment Down, freeing its slot
-#   registry.sh archive                                    move Retired rows to fleet-archive.json (lessons written, no open escalation, ended archive_after_days ago)
+#   registry.sh archive                                    move Retired rows to fleet-archive.json (lessons written, no open escalation, ended archive_after_days ago;
+#                                                          past the 512 KB size cap, also the rows with no lessons)
 #   registry.sh orchestrator here [--transcript PATH]   the Orchestrator registers its pane; prints the row and `wakes` (the log to follow)
 #   registry.sh pref <key> [value]                         a fleet-wide choice (the top-level `prefs`): print it (nothing
 #                                                          when unset), or set it
@@ -271,26 +272,32 @@ case "$cmd" in
   archive)
     # Retired rows leave the live file once their lessons exist (debrief reads rows with an outcome
     # and no lessons, so those stay) and no escalation is open, archive_after_days after they ended.
+    # Past the size cap (fleet.json over REGISTRY_CAP_KB, 512) the Retired rows with no lessons go too, each with the
+    # lesson "Archived <date> without a debrief (fleet.json over 512 KB)": every command reads the whole file, and
+    # one that only grows ends up slowing all of them.
     # The archive is written and verified first, then the rows are removed, so a failure between the
     # two leaves a row in both files and the next run finishes the move.
     lock
-    days="$(archive_after_days)"
-    moved="$(jq -c --argjson d "$days" --arg now "$(now)" "$ESC_DEFS"'
+    days="$(archive_after_days)"; cap="$(const_int REGISTRY_CAP_KB 512)"; at="${FLEET_NOW:-$(now)}"; over=false
+    [ "$(wc -c <"$FLEET_REGISTRY" | tr -d ' ')" -le $((cap * 1024)) ] || over=true
+    lesson="Archived $(jq -rn --arg t "$at" '$t | fromdateiso8601 | strftime("%d %b %Y") | sub("^0"; "")') without a debrief (fleet.json over $cap KB)"
+    moved="$(jq -c --argjson d "$days" --arg now "$at" --argjson over "$over" "$ESC_DEFS"'
       [.agents | to_entries[] | select(.value.status == "Retired"
-        and ((.value.lessons // "") != "")
+        and (((.value.lessons // "") != "") or $over)
         and ([.value | escs[] | select(.resolved_at == null)] | length == 0)
         and ((.value.ended // "") != "" and (($now | fromdateiso8601) - (.value.ended | fromdateiso8601)) >= ($d * 86400)))
         | .key]' "$FLEET_REGISTRY")"
     if [ "$moved" != "[]" ]; then
       [ -f "$ARCHIVE" ] || printf '{"agents":{}}\n' >"$ARCHIVE"
       tmp="$(mktemp "$ARCHIVE.XXXXXX")"
-      jq --argjson names "$moved" --slurpfile live "$FLEET_REGISTRY" \
-        '.agents += ($live[0].agents | with_entries(select(.key | IN($names[]))))' "$ARCHIVE" >"$tmp" &&
-        jq -e --argjson names "$moved" '. as $a | $names | all(. as $n | $a.agents[$n] != null)' "$tmp" >/dev/null ||
+      jq --slurpfile names <(printf '%s' "$moved") --slurpfile live "$FLEET_REGISTRY" --arg l "$lesson" '$names[0] as $names
+        | .agents += ($live[0].agents | with_entries(select(.key | IN($names[]))
+            | if (.value.lessons // "") == "" then .value.lessons = $l else . end))' "$ARCHIVE" >"$tmp" &&
+        jq -e --slurpfile names <(printf '%s' "$moved") '. as $a | $names[0] | all(. as $n | $a.agents[$n] != null)' "$tmp" >/dev/null ||
         { rm -f "$tmp"; die "archive write failed; $FLEET_REGISTRY left unchanged"; }
       mv "$tmp" "$ARCHIVE"
       tmp="$(mktemp "$FLEET_REGISTRY.XXXXXX")"
-      jq --argjson names "$moved" '.agents |= with_entries(select(.key | IN($names[]) | not))' "$FLEET_REGISTRY" >"$tmp" &&
+      jq --slurpfile names <(printf '%s' "$moved") '$names[0] as $names | .agents |= with_entries(select(.key | IN($names[]) | not))' "$FLEET_REGISTRY" >"$tmp" &&
         jq -e '.agents | type == "object"' "$tmp" >/dev/null || { rm -f "$tmp"; die "archive: live registry write failed; rows are in $ARCHIVE and still live"; }
       mv "$tmp" "$FLEET_REGISTRY"
     fi
@@ -329,12 +336,13 @@ case "$cmd" in
     ev_log signoff team="$(jq -r --arg n "$name" '.agents[$n].team // ""' "$FLEET_REGISTRY")" name="$name" pr="$pr" sha="$sha"
     ;;
   reassign)
-    team="${1:?usage: reassign <team> <issue> [--assignment TEXT] [--issue-url URL] [--claimed-by KEY]}"; issue="${2:?usage: reassign <team> <issue>}"; shift 2
-    assignment=""; iurl=""; cby=""
+    team="${1:?usage: reassign <team> <issue> [--assignment TEXT] [--issue-url URL] [--issue-title TEXT] [--claimed-by KEY]}"; issue="${2:?usage: reassign <team> <issue>}"; shift 2
+    assignment=""; iurl=""; ititle=""; cby=""
     while [ $# -gt 0 ]; do
       case "$1" in
         --assignment) assignment="${2:?--assignment needs text}"; shift 2 ;;
         --issue-url) iurl="${2:?--issue-url needs a URL}"; shift 2 ;;
+        --issue-title) ititle="${2:?--issue-title needs text}"; shift 2 ;;
         --claimed-by) cby="${2:?--claimed-by needs a machine key}"; shift 2 ;;
         *) die "unknown reassign option: $1" ;;
       esac
@@ -357,7 +365,7 @@ case "$cmd" in
     # One update for every row: a half-moved team would be worse than an unmoved one.
     # claimed_by follows the new issue: the claim next.sh made, or none when it moved the team unclaimed (tick's
     # claim_lost reads it).
-    update --arg t "$team" --arg i "$issue" --arg a "$assignment" --arg u "$iurl" --arg cb "$cby" --arg now "$(now)" "$DERIVE"'
+    update --arg t "$team" --arg i "$issue" --arg a "$assignment" --arg u "$iurl" --arg it "$ititle" --arg cb "$cby" --arg now "$(now)" "$DERIVE"'
       .agents |= with_entries(
         if .value.team == $t and .value.status != "Retired" and .value.tier != "Orchestrator" then
           .value |= (
@@ -365,6 +373,7 @@ case "$cmd" in
             | norm | esc_close("closed at next"; $now)
             | derive | .issue = $i | .assignment = $a
             | (if $u != "" then .issue_url = $u else del(.issue_url) end)
+            | (if $it != "" then .issue_title = $it else del(.issue_title) end)
             | (if $cb != "" then .claimed_by = $cb else del(.claimed_by) end)
             | .status = (if .tier == "Lead" then "Working" else "Idle" end) | .updated_at = $now)
         else . end)'

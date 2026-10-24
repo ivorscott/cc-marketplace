@@ -64,7 +64,7 @@ if $morning; then
     | if .type == "claim_takeover" then "- \(.issue // "?"): taken over by \($h)"
       elif .type == "claim_lost" then "- \(.issue // "?"): this machine'"'"'s claim was released by another machine (\(.team // "?"))"
       else "- \(.issue // "?"): released from \($h) (heartbeat lapsed, no open PR)" end' <<<"$events")"
-  section "Boots" "$(jq -r --argjson rows "$rows" '.[] | select(.type == "boot") | .team as $t
+  section "Boots" "$(jq -r --slurpfile rows <(printf '%s' "$rows") '$rows[0] as $rows | .[] | select(.type == "boot") | .team as $t
     | ([$rows[] | select(.name == ($t + "/lead")) | (.notes // [])[] | select(.kind == "picked") | .message] | last) as $why
     | "- \($t)\(if (.issue // "") != "" then " on " + .issue else "" end): \($why // "named by the user")"' <<<"$events")"
   section "Merge-order conflicts" "$( { jq -r "$RENDER_DEFS"'.[] | select(.type == "pr_conflicting")
@@ -116,7 +116,7 @@ out='[]'
 while IFS= read -r p; do
   [ -n "$p" ] || continue
   tk="$(tokens_for "$(printf '%s' "$p" | jq -r .team)" "$(printf '%s' "$p" | jq -r .started_at)" "$(printf '%s' "$p" | jq -r .end_at)")"
-  out="$(jq -cn --argjson o "$out" --argjson p "$p" --argjson t "${tk:-0}" '$o + [$p + {tokens: $t}]')"
+  out="$(jq -c --argjson p "$p" --argjson t "${tk:-0}" '. + [$p + {tokens: $t}]' <<<"$out")"
 done < <(printf '%s' "$prs" | jq -c '.[]')
 
 if $json; then printf '%s\n' "$out"; exit 0; fi

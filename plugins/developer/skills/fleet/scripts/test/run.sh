@@ -13,7 +13,7 @@ check() { # check <desc> <cmd...>
   local d="$1"; shift; if "$@" >/dev/null 2>&1; then ok "$d"; else bad "$d"; fi
 }
 eq() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1 (got '$2', want '$3')"; fi; }
-told() { case "$1" in "Told "*" (delivered)" | "Told "*" (sent)") echo true ;; *) echo false ;; esac; } # tell.sh's reply line: was it delivered?
+told() { case "$1" in "Told "*" (delivered)" | "Told "*" (sent)" | "Told "*" (queued)") echo true ;; *) echo false ;; esac; } # tell.sh's reply line: was it delivered?
 
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
 # The suite never touches the live fleet: FLEET_TEST=1 makes common.sh refuse a registry, state dir or inbox under the
@@ -22,8 +22,9 @@ export FLEET_REAL_HOME="$HOME" FLEET_TEST=1
 export FLEET_STATE_DIR="$T/state" FLEET_CONFIG_DIR="$T/config" FLEET_REGISTRY="$T/state/fleet.json" FLEET_INBOX="$T/state/escalations.jsonl" FLEET_WORKTREES="$T/state/worktrees"
 export FLEET_SESSION=test FLEET_MACHINE=test HOME="$T/home"; mkdir -p "$HOME" "$FLEET_CONFIG_DIR" "$T/bin"
 # CI time: every wait or timeout override at its minimum, so no case waits on a real timeout.
-export FLEET_TELL_POLL=0.1 FLEET_TELL_CONFIRM_SECS=2 FLEET_EXIT_WAIT_SECS=1 FLEET_CLAIM_SETTLE_SECS=0 FLEET_INSTALL_WAIT=3
+export FLEET_TELL_POLL=0.1 FLEET_TELL_CONFIRM_SECS=2 FLEET_EXIT_WAIT_SECS=1 FLEET_CLAIM_SETTLE_SECS=0 FLEET_INSTALL_WAIT=3 FLEET_START_RETRY_SECS=0
 unset FLEET_WORKTREE KUBECONFIG FLEET_ROLE FLEET_NAME FLEET_TEAM
+export FLEET_TTY=0 # replies as markdown, wherever the suite runs (a case sets FLEET_TTY=1 for the terminal form)
 REG="$SCRIPTS/registry.sh"; ENV="$SCRIPTS/env.sh"
 
 # Docker is always a stub: FLEET_DOCKER points at it, and a docker shim first on PATH records
@@ -109,6 +110,7 @@ chmod +x "$T/up.sh" "$T/down.sh" "$T/bin/nc"; export PATH="$T/bin:$PATH"
 # boot.sh and retire.sh with a shim herdr
 cat >"$T/bin/herdr" <<'S'
 #!/usr/bin/env bash
+[ "${1:-}" != --version ] || { echo "herdr ${HERDR_VERSION:-0.9.1}"; exit 0; } # DEV-512 item 5
 shift 2 # --session <name>
 # Log a --settings file by its content, so allow-list checks read what the agent gets.
 logged=(); prev=""
@@ -116,7 +118,10 @@ for a in "$@"; do
   if [ "$prev" = "--settings" ] && [ -f "$a" ]; then logged+=("$(cat "$a")"); else logged+=("$a"); fi
   prev="$a"
 done
-echo "${logged[*]}" >>"$HERDR_LOG"
+# One line per call, whole: parallel restarts log long lines (the --settings content), so a line is appended under a
+# lock (DEV-512 item 23: two lines written at once came out interleaved).
+until mkdir "$HERDR_LOG.lock" 2>/dev/null; do sleep 0.01; done
+echo "${logged[*]}" >>"$HERDR_LOG"; rmdir "$HERDR_LOG.lock"
 case "$1 $2" in
   "workspace create") echo '{"result":{"workspace":{"workspace_id":"w1"},"root_pane":{"pane_id":"p0"}}}' ;;
   # SPLIT_FAIL_AT=<n>: the n-th split fails (DEV-408 item 8, a boot that dies after the first panes)
@@ -139,7 +144,10 @@ case "$1 $2" in
   "pane run") ( eval "${*:4}"; env ) >"$AS/$3.env" 2>/dev/null; echo '{}' ;;
   # START_HOLD=<agent>: its start leaves $AS/held.<agent> and takes 2s, so a test can interrupt the boot there.
   # START_WAIT=<agent>: its start leaves $AS/held.<agent> and waits until the test removes it (30s at most).
-  "agent start") rm -f "$AS/$3" "$AS/$3.read" "$AS/exited.$3"
+  # NAME_TAKEN=<file holding n>: the next n starts are refused with agent_name_taken (DEV-512 item 12)
+  "agent start") if [ -n "${NAME_TAKEN:-}" ] && [ "$(cat "$NAME_TAKEN" 2>/dev/null || echo 0)" -gt 0 ]; then
+      echo $(($(cat "$NAME_TAKEN") - 1)) >"$NAME_TAKEN"; echo '{"error":{"code":"agent_name_taken","message":"agent name is taken"}}'; exit 1; fi
+    rm -f "$AS/$3" "$AS/$3.read" "$AS/exited.$3"
     if [ "${START_HOLD:-}" = "$3" ]; then : >"$AS/held.$3"; sleep 2; fi
     if [ "${START_WAIT:-}" = "$3" ]; then : >"$AS/held.$3"; for _ in $(seq 1 300); do [ -e "$AS/held.$3" ] || break; sleep 0.1; done; fi
     echo '{}' ;;
@@ -164,16 +172,23 @@ case "$1 $2" in
             else jq -nc --arg c "$4" '{type: "user", message: {role: "user", content: $c}}' >>"$xt"; fi
           fi
         fi ;;
-      /exit) [ -n "${EXIT_STUCK:-}" ] || : >"$AS/exited.$3" ;;
+      # EXIT_DIALOG=1: Claude asks first, as it does with background work running, until enter confirms (DEV-512 item 14)
+      /exit) if [ -n "${EXIT_DIALOG:-}" ]; then printf 'Background work is running\n\n  1. Exit and stop tasks\n\nEnter to confirm\n' >"$AS/$3.read"; : >"$AS/$3.dialog"
+             elif [ -z "${EXIT_STUCK:-}" ]; then : >"$AS/exited.$3"; fi ;;
     esac
     echo '{}' ;;
-  "agent send-keys") [ -z "${ENTER_WORKS:-}" ] || echo working >"$AS/$3"; echo '{}' ;;
+  "agent send-keys") [ -z "${ENTER_WORKS:-}" ] || echo working >"$AS/$3"
+    if [ -e "$AS/$3.dialog" ] && [ "$4" = enter ]; then rm -f "$AS/$3.dialog" "$AS/$3.read"; : >"$AS/exited.$3"; fi; echo '{}' ;;
   "agent read") cat "$AS/$3.read" 2>/dev/null || true ;;
   "notification show") if [ -n "${NOTIFY_FAIL:-}" ]; then echo "herdr: no server" >&2; exit 1; fi; echo '{}' ;;
-  # herdr's Claude integration: current unless HERDR_INTEGRATION says otherwise (DEV-408 item 13).
-  "integration status") printf '%s\n' "${HERDR_INTEGRATION:-claude: current}" ;;
-  # the panel metadata (DEV-408 item 14); META_FAIL=1 makes herdr refuse it
-  "workspace report-metadata" | "pane report-metadata") [ -z "${META_FAIL:-}" ] || exit 1; echo '{}' ;;
+  # herdr's Claude integration: current unless HERDR_INTEGRATION says otherwise (DEV-408 item 13), or the whole
+  # answer in HERDR_INTEGRATION_FILE (DEV-512 item 4: a long one).
+  "integration status") if [ -n "${HERDR_INTEGRATION_FILE:-}" ]; then cat "$HERDR_INTEGRATION_FILE"; else printf '%s\n' "${HERDR_INTEGRATION:-claude: current}"; fi ;;
+  # the panel metadata (DEV-408 item 14); META_FAIL=1 makes herdr refuse it. Like herdr 0.9, the id comes first: an
+  # option before it is refused (DEV-512 item 5).
+  "workspace report-metadata" | "pane report-metadata")
+    case "${3:-}" in --*) echo "unknown option: ${4:-}" >&2; exit 2 ;; esac
+    [ -z "${META_FAIL:-}" ] || { echo '{"error":{"code":"metadata_refused","message":"metadata refused"}}' >&2; exit 1; }; echo '{}' ;;
   # slim (DEV-408 item 15): RELOAD_FAIL=1 makes herdr refuse to reload its config
   "server reload-config") [ -z "${RELOAD_FAIL:-}" ] || exit 1; echo '{}' ;;
   *) echo '{}' ;;
@@ -199,10 +214,10 @@ gfix() {
       status: $st, herdr_ref: $ref, pane: $pane, workspace: "gw1", repo: $r, cwd: $r, machine: "test", assignment: "task",
       started: "2026-10-24T07:00:00Z", updated_at: "2026-10-24T08:30:00Z", discovered: [], escalations: []};
     {agents: ([
-      row("build-api/lead"; "Lead"; "Working"; "ga-lead"; "pga1") + {model: "opus", issue: "DEV-12", issue_url: "https://linear.app/acme/issue/DEV-12/export",
+      row("build-api/lead"; "Lead"; "Working"; "ga-lead"; "pga1") + {model: "opus", issue: "DEV-12", issue_url: "https://linear.app/acme/issue/DEV-12/export", issue_title: "API: export",
         escalation: "P1", escalations: [{id: "20261024T080000Z-1", severity: "P1", message: "which database?", options: ["postgres", "sqlite"], at: "2026-10-24T08:00:00Z"}]},
-      row("build-api/builder"; "Worker"; "Working"; "ga-builder"; "pga2") + {model: "sonnet", issue: "DEV-12", issue_url: "https://linear.app/acme/issue/DEV-12/export", pr: "https://github.com/acme/app-api/pull/214"},
-      row("build-api/tester"; "Worker"; "Idle"; "ga-tester"; "pga3") + {model: "sonnet", issue: "DEV-12", issue_url: "https://linear.app/acme/issue/DEV-12/export"},
+      row("build-api/builder"; "Worker"; "Working"; "ga-builder"; "pga2") + {model: "sonnet", issue: "DEV-12", issue_url: "https://linear.app/acme/issue/DEV-12/export", issue_title: "API: export", pr: "https://github.com/acme/app-api/pull/214"},
+      row("build-api/tester"; "Worker"; "Idle"; "ga-tester"; "pga3") + {model: "sonnet", issue: "DEV-12", issue_url: "https://linear.app/acme/issue/DEV-12/export", issue_title: "API: export"},
       row("build-web/lead"; "Lead"; "Done"; "gw-lead"; "pgw1") + {model: "opus", issue: "DEV-13", outcome: "Shipped", pr: "https://github.com/acme/app-web/pull/121"},
       row("build-web/builder"; "Worker"; "Done"; "gw-builder"; "pgw2") + {model: "sonnet", issue: "DEV-13", outcome: "Shipped"},
       row("build-web/tester"; "Worker"; "Done"; "gw-tester"; "pgw3") + {model: "sonnet", issue: "DEV-13", outcome: "Shipped",
@@ -224,7 +239,14 @@ gfix() {
 J
   # GitHub (the queue): app-web #121 signed, green and mergeable; app-api #214 not signed off. Linear: no relations.
   mkdir -p "$G/ghd"; export GOLD_GH="$G/ghd" FLEET_GH="$G/gh-gold"
-  printf '#!/usr/bin/env bash\ncase "$1 $2" in "pr view") cat "$GOLD_GH/${3##*/}.json" ;; "pr list") echo "[]" ;; esac\n' >"$FLEET_GH"; chmod +x "$FLEET_GH"
+  cat >"$FLEET_GH" <<'S'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "pr view") cat "$GOLD_GH/${3##*/}.json" ;;
+  "pr list") jq -s --arg r "${4##*/}" '[.[] | select(.url | contains("/" + $r + "/pull/"))]' "$GOLD_GH"/*.json ;;
+esac
+S
+  chmod +x "$FLEET_GH"
   for p in "app-api 214 abc1234def5678 fleet/dev-12-export DEV-12/export 2026-10-24T08:00:00Z api/export.go" "app-web 121 1111111aaaa fleet/dev-13-web DEV-13/web 2026-10-23T11:00:00Z web/app.ts"; do
     set -- $p
     jq -n --arg r "$1" --argjson n "$2" --arg h "$3" --arg b "$4" --arg i "$5" --arg c "$6" --arg f "$7" '{number: $n, url: "https://github.com/acme/\($r)/pull/\($n)",
@@ -240,7 +262,15 @@ J
 # PR's `gh pr view` answer; qteam adds a Done builder that holds the PR and its tester (signed off when a sha is given);
 # q runs queue.sh through the gh shim; qorder prints "repo#N|why|after ; ..." for the ready ones.
 QD="$T/q408"; mkdir -p "$QD/gh"; export QGHD="$QD/gh"
-printf '#!/usr/bin/env bash\ncase "$1 $2" in\n  "pr view") n="${3##*/}"; r="$(printf %%s "$3" | sed -E "s#https://[^/]+/[^/]+/([^/]+)/pull/.*#\\\\1#")"; cat "$QGHD/$r-$n.json" ;;\n  "pr list") cat "$QGHD/list-${4##*/}.json" 2>/dev/null || echo "[]" ;;\nesac\n' >"$QD/gh-shim"
+# `pr list --repo acme/<r>` answers every qpr PR of <r> and the PRs in list-<r>.json (other machines' ones).
+cat >"$QD/gh-shim" <<'S'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "pr view") n="${3##*/}"; r="$(printf %s "$3" | sed -E "s#https://[^/]+/[^/]+/([^/]+)/pull/.*#\\1#")"; cat "$QGHD/$r-$n.json" ;;
+  "pr list") r="${4##*/}"; { for f in "$QGHD/$r"-[0-9]*.json; do [ ! -f "$f" ] || cat "$f"; done
+      [ ! -f "$QGHD/list-$r.json" ] || jq -c '.[]' "$QGHD/list-$r.json"; } | jq -s . ;;
+esac
+S
 chmod +x "$QD/gh-shim"
 qfresh() { export FLEET_STATE_DIR="$QD/state.$1" FLEET_REGISTRY="$QD/state.$1/fleet.json"; mkdir -p "$FLEET_STATE_DIR"; rm -f "$QGHD"/*.json; }
 qpr() { # qpr <repo> <n> <head> <base> <created> <files json> <body> [mergeable] [title]
@@ -366,6 +396,13 @@ J
   eq "smoke: guard: a push to main is denied" "$(sbg 'git push origin main')" deny
   eq "smoke: guard: ls -ltr ~ is allowed" "$(sbg 'ls -ltr ~')" allow
   eq "smoke: guard: a quoted commit message is allowed" "$(sbg 'git commit -m "Find it; npm install foo"')" allow
+  # dev512-8: a glob the shell never expands (a heredoc body, quoted text) is not a path; one it does expand still is
+  eq "smoke: dev512-8 guard: a heredoc body holding a JS regex is allowed" "$(sbg "cat > /tmp/claude-501/scratch/ident.ts <<'EOF'
+export const isName = (v: string) => /[A-Za-z]{3,}/.test(v);
+EOF")" allow
+  eq "smoke: dev512-8 guard: ls /*, cat \"\$HOME\"/.config/f*/* and a heredoc naming the key file stay denied" "$(sbg 'ls /*'):$(sbg 'cat "$HOME"/.config/f*/*'):$(sbg "cat <<'EOF'
+~/.config/fleet/linear_api""_key
+EOF")" "deny:deny:deny"
   check "smoke: the tester brief says never run the full suite locally" bash -c "jq -r '.workers[] | select(.role == \"tester\") | .brief' '$SCRIPTS/../templates/build.json' | grep -q 'Never run the full suite locally'"
   check "smoke: the house rules hold the one-test-run rule" grep -q 'One test run per PR head, and it is CI' "$SCRIPTS/../rules/house.md"
   # dev408-16: the dispatcher lists every command once, with an example, no internal script, every Step 0 route
@@ -395,6 +432,203 @@ J
   # dev408-6: a background task stopped with TaskStop no longer counts
   bgk "$SM/k2.jsonl" TaskStop task_id; bgk "$SM/k3.jsonl"
   eq "smoke: dev408-6 a stopped background task does not count, a running one does" "$(bgn "$SM/k2.jsonl") $(bgn "$SM/k3.jsonl")" "0 1"
+  # ---- DEV-512 (4.1.1): one case or two per item, each in its own state root (dfresh), acme names only ----
+  dfresh() { # a fresh state root and config, the smoke gh shim, and no Linear key (gfix leaves its own)
+    export FLEET_STATE_DIR="$SM/d512-$1" FLEET_REGISTRY="$SM/d512-$1/fleet.json" FLEET_GH="$SM/gh-shim"; mkdir -p "$FLEET_STATE_DIR"; gcfg
+    rm -f "$FLEET_CONFIG_DIR/linear_api""_key"
+  }
+  # dev512-16: a registry of 1.2 MB (340 Retired rows without lessons, padded) passes no JSON in argv: every reply
+  # works, then tick archives the rows past the size cap and status says so once
+  dfresh 16; echo working >"$AS/d16-lead"
+  jq -nc '{agents: (([range(0; 340) | tostring as $i | {name: "build-r\($i)/builder", team: "build-r\($i)", tier: "Worker", status: "Retired",
+      outcome: "Shipped", herdr_ref: "r\($i)", pane: "p", ended: "2026-10-20T00:00:00Z", updated_at: "2026-10-20T00:00:00Z", summary: "done",
+      discovered: [], escalations: [{id: "e\($i)", severity: "P2", message: ("y" * 3200), at: "2026-10-19T00:00:00Z", resolved_at: "2026-10-19T01:00:00Z"}]}]
+    + [{name: "build-live/lead", team: "build-live", tier: "Lead", status: "Working", herdr_ref: "d16-lead", pane: "p16", issue: "DEV-12",
+      discovered: [], escalations: []}]) | map({(.name): .}) | add)}' >"$FLEET_REGISTRY"
+  r16=""
+  for c in "status.sh" "status.sh --json" "prime.sh" "debrief.sh" "metrics.sh --morning" "fleet escalations"; do
+    # shellcheck disable=SC2086
+    FLEET_NOW=2026-10-24T09:00:00Z "$SCRIPTS"/$c >/dev/null 2>"$SM/d16.err"; r16="$r16 ${c%% *}:$?:$(grep -c 'Argument list too long' "$SM/d16.err")"
+  done
+  eq "smoke: dev512-16 a 1.2 MB registry: every reply exits 0, no argument list too long" "$r16" " status.sh:0:0 status.sh:0:0 prime.sh:0:0 debrief.sh:0:0 metrics.sh:0:0 fleet:0:0"
+  kb16=$((($(wc -c <"$FLEET_REGISTRY" | tr -d ' ') + 1023) / 1024)); FLEET_NOW=2026-10-24T09:00:00Z "$SCRIPTS/tick.sh" >/dev/null 2>"$SM/d16.err"
+  eq "smoke: dev512-16 tick archives the rows past the cap, each with the archive lesson" \
+    "$?:$(grep -c 'Argument list too long' "$SM/d16.err"):$([ "$(wc -c <"$FLEET_REGISTRY")" -lt 524288 ] && echo under):$(jq '[.agents[] | select(.lessons == "Archived 24 Oct 2026 without a debrief (fleet.json over 512 KB)")] | length' "$FLEET_STATE_DIR/fleet-archive.json" 2>/dev/null)" "0:0:under:340"
+  s1="$("$SCRIPTS/status.sh" 2>&1)"; s2="$("$SCRIPTS/status.sh" 2>&1)"
+  eq "smoke: dev512-16 status prints the archived line once, with the size before" "$(printf '%s\n' "$s1" | grep -c "^Registry: moved 340 Retired rows .*was $kb16 KB"):$(printf '%s\n' "$s2" | grep -c '^Registry: moved')" "1:0"
+  GOLD_PREFIX="smoke: "; gold archived "$(printf '%s\n' "$s1" | grep '^Registry: moved' | sed -E 's/was [0-9]+ KB/was <KB> KB/')"; unset GOLD_PREFIX
+  # dev512-4: herdr's integration status is read whole: a claude line first, then 400 KB more, which kills a
+  # `| grep -q` reader's producer with SIGPIPE under pipefail
+  dfresh 4; { echo 'claude: current (v10) (hooks installed)'; for i in $(seq 1 8000); do echo "codex: not installed, padding line $i ......."; done; } >"$SM/integ.txt"
+  o4="$(HERDR_INTEGRATION_FILE="$SM/integ.txt" "$SCRIPTS/status.sh" 2>&1)"
+  eq "smoke: dev512-4 a long integration status reads current: no status line, slim status says current" \
+    "$(printf '%s\n' "$o4" | grep -c 'herdr Claude integration'):$(HERDR_INTEGRATION_FILE="$SM/integ.txt" FLEET_HERDR_CONFIG="$FLEET_STATE_DIR/herdr.toml" "$SCRIPTS/slim.sh" status 2>&1 | sed -n 's/.*integration: \([a-z]*\)\..*/\1/p')" "0:current"
+  # dev512-5: the panel metadata puts the id first and clears an empty token; a herdr that refuses it is warned
+  # about once, and not asked again while the same herdr version runs
+  dfresh 5; "$REG" add '{"name": "build-m5/lead", "team": "build-m5", "tier": "Lead", "status": "Working", "herdr_ref": "m5-lead", "pane": "pm5", "workspace": "wm5", "issue": "DEV-12"}' >/dev/null
+  : >"$HERDR_LOG"; bash -c '. "$1/common.sh"; herdr_meta build-m5' _ "$SCRIPTS" 2>"$SM/m5.err"
+  eq "smoke: dev512-5 the id goes first and an empty pr is cleared, and herdr takes it" \
+    "$(grep -c 'warning' "$SM/m5.err"):$(grep -c '^workspace report-metadata wm5 --source fleet --token issue=DEV-12 --clear-token pr --token state=Working$' "$HERDR_LOG"):$(grep -c '^pane report-metadata pm5 --source fleet --token role=lead --token state=Working$' "$HERDR_LOG")" "0:1:1"
+  : >"$HERDR_LOG"; for _ in 1 2; do META_FAIL=1 bash -c '. "$1/common.sh"; herdr_meta build-m5' _ "$SCRIPTS" 2>>"$SM/m5r.err"; done
+  eq "smoke: dev512-5 a refusing herdr: one warning with its reason over two pushes, and no second call" \
+    "$(grep -c 'warning' "$SM/m5r.err"):$(grep -c 'metadata refused' "$SM/m5r.err"):$(grep -c 'report-metadata' "$HERDR_LOG")" "1:1:1"
+  # dev512-1 and dev512-15: a team with no PR on its rows, a repo whose origin is acme/app-api, and two open PRs:
+  # #222 (fleet/dev-1-edit-name, pushed by the team on DEV-1) and #300 (fleet/dev-77-other, nobody here). The gh shim
+  # logs every call; `pr list` answers the open list (narrowed by --head when given), `pr view` one PR.
+  dfresh 1; D1="$SM/d512-1"; git init -q -b main "$D1/repo"; git -C "$D1/repo" remote add origin https://github.com/acme/app-api.git
+  for n in 222:fleet/dev-1-edit-name 300:fleet/dev-77-other; do
+    jq -cn --argjson n "${n%%:*}" --arg h "${n#*:}" '{number: $n, url: "https://github.com/acme/app-api/pull/\($n)", state: "OPEN", title: "t", headRefOid: "c0ffee\($n)",
+      headRefName: $h, baseRefName: "main", mergeable: "MERGEABLE", isDraft: false, isCrossRepository: false, body: "Fixes it", createdAt: "2026-10-24T08:00:00Z",
+      statusCheckRollup: [{__typename: "CheckRun", status: "COMPLETED", conclusion: "SUCCESS"}], files: [{path: "api/\($n).go"}]}' >"$D1/${n%%:*}.json"
+  done
+  jq -s . "$D1/222.json" "$D1/300.json" >"$D1/list.json"
+  printf '#!/usr/bin/env bash\necho "$*" >>"$D1/gh.log"\nh=""; p=""; for a in "$@"; do [ "$p" != --head ] || h="$a"; p="$a"; done\ncase "$1 $2" in "pr list") jq --arg h "$h" '"'"'[.[] | select($h == "" or .headRefName == $h)]'"'"' "$D1/list.json" ;; "pr view") cat "$D1/${3##*/}.json" ;; esac\n' >"$D1/gh"
+  chmod +x "$D1/gh"; export D1
+  for r in lead:Lead:Working builder:Worker:Idle tester:Worker:Idle; do
+    "$REG" add "$(jq -cn --arg r "$D1/repo" --arg n "build-d1/${r%%:*}" --arg t "$(echo "$r" | cut -d: -f2)" --arg s "${r##*:}" \
+      '{name: $n, team: "build-d1", tier: $t, status: $s, herdr_ref: ($n | sub("/"; "-")), pane: "p", repo: $r, issue: "DEV-1", branch: ("fleet/" + $n)}')" >/dev/null
+  done
+  eq "smoke: dev512-1 the queue calls the team's unrecorded PR ours (no sign-off yet), and keeps another's as other machine" \
+    "$(FLEET_GH="$D1/gh" "$SCRIPTS/queue.sh" | jq -r '[.not_ready[] | "\(.url | sub(".*/pull/"; "#"))=\(.missing | join(","))"] | join(" ")')" "#222=no sign-off #300=other machine"
+  o1="$(FLEET_GH="$D1/gh" FLEET_NOW=2026-10-24T09:00:00Z "$SCRIPTS/tick.sh" 2>/dev/null)"
+  eq "smoke: dev512-1 tick records it on the builder row, with one pr_opened" \
+    "$("$REG" get build-d1/builder | jq -r '.pr // ""'):$(printf '%s' "$o1" | jq '[.[] | select(.type == "pr_opened")] | length')" "https://github.com/acme/app-api/pull/222:1"
+  # dev512-15: status right after a tick reuses the tick's queue (no GitHub call); a minute later, or after a new
+  # sign-off, it rebuilds it; queue.sh reads each repo with one pr list and views no PR
+  : >"$D1/gh.log"; FLEET_GH="$D1/gh" FLEET_NOW=2026-10-24T09:00:30Z "$SCRIPTS/status.sh" >/dev/null 2>&1; g0="$(grep -c . "$D1/gh.log")"
+  FLEET_GH="$D1/gh" FLEET_NOW=2026-10-24T09:01:01Z "$SCRIPTS/status.sh" >/dev/null 2>&1; g1="$(grep -c . "$D1/gh.log")"
+  "$REG" signoff build-d1/tester https://github.com/acme/app-api/pull/222 c0ffee222 >/dev/null
+  FLEET_GH="$D1/gh" FLEET_NOW=2026-10-24T09:01:02Z "$SCRIPTS/status.sh" >/dev/null 2>&1; g2="$(grep -c . "$D1/gh.log")"
+  eq "smoke: dev512-15 status after a tick: no gh call; 61 s later it rebuilds; a new sign-off rebuilds" "$g0:$([ "$g1" -gt "$g0" ] && echo rebuilt):$([ "$g2" -gt "$g1" ] && echo rebuilt)" "0:rebuilt:rebuilt"
+  : >"$D1/gh.log"; FLEET_GH="$D1/gh" "$SCRIPTS/queue.sh" >/dev/null
+  eq "smoke: dev512-15 queue.sh: one pr list for the repo, no pr view" "$(grep -c '^pr list --repo acme/app-api --state open' "$D1/gh.log"):$(grep -c '^pr view' "$D1/gh.log")" "1:0"
+  # dev512-18, -19, -20: the team table's State, Issue and PR cells, on the golden fixture
+  gfix; gcfg; export FLEET_NOW=2026-10-24T09:00:00Z
+  st="$("$SCRIPTS/status.sh" 2>&1)"; sa="$("$SCRIPTS/status.sh" build-api 2>&1)"
+  eq "smoke: dev512-18 State is a word: no symbol on the summary line or a row of the team table, agent table or queue" \
+    "$(printf '%s\n%s\n' "$st" "$sa" | grep -E '^[0-9]+ teams? ·|^\| ' | grep -c '[●○◐✗‖✓]')" 0
+  eq "smoke: dev512-18 the summary line counts in words" "$(printf '%s\n' "$st" | head -n 1)" "3 teams · 1 working · 1 parked · 1 done"
+  eq "smoke: dev512-19 the Issue cell is the short link, then the title without its prefix" \
+    "$(printf '%s\n' "$st" | grep '^| build-api ' | cut -d'|' -f3)" " [DEV-12](https://linear.app/acme/issue/DEV-12) export "
+  eq "smoke: dev512-19 a long title is cut at a word boundary within 40 characters" \
+    "$(bash -c '. "$1/common.sh"; jq -rn --arg t "$2" "$RENDER_DEFS"'"'"'$t | short_title'"'"'' _ "$SCRIPTS" "Web: the creators summary and filters and billing events in the audit log")" "the creators summary and filters and"
+  eq "smoke: dev512-19 in a terminal the key is an OSC 8 link to the short URL" \
+    "$(FLEET_TTY=1 "$SCRIPTS/status.sh" 2>&1 | grep '^| build-api ' | cut -d'|' -f3)" "$(printf ' \033]8;;https://linear.app/acme/issue/DEV-12\033\\DEV-12\033]8;;\033\\ export ')"
+  eq "smoke: dev512-20 the PR cell is the URL itself, in the team table and the queue" \
+    "$(printf '%s\n' "$st" | grep '^| build-api ' | cut -d'|' -f4):$(printf '%s\n' "$st" | grep '^| 1 | ' | cut -d'|' -f3)" " https://github.com/acme/app-api/pull/214 : https://github.com/acme/app-web/pull/121 "
+  eq "smoke: dev512-20 no golden file shows a [repo #N] label" "$(cat "$GD"/*.md | grep -c '\[app-[a-z]* #')" 0
+  unset FLEET_NOW
+  # dev512-2: a notice drops out once retire, next or resolve handled it; one nobody handled still shows
+  dfresh 2; D2="$SM/d512-2"; export D2
+  for n in 31 32 33; do jq -cn --argjson n "$n" '{state: "MERGED", mergeable: "UNKNOWN", statusCheckRollup: [], headRefOid: "abc\($n)", body: "", isDraft: false,
+    url: "https://github.com/acme/app-api/pull/\($n)"}' >"$D2/$n.json"; done
+  printf '#!/usr/bin/env bash\ncat "$D2/${3##*/}.json"\n' >"$D2/gh"; chmod +x "$D2/gh"
+  for t in n2:31 x2:32 k2:33; do for r in lead:Lead builder:Worker; do
+    "$REG" add "$(jq -cn --arg t "build-${t%%:*}" --arg r "${r%%:*}" --arg tier "${r##*:}" --arg u "https://github.com/acme/app-api/pull/${t##*:}" \
+      '{name: "\($t)/\($r)", team: $t, tier: $tier, status: "Done", herdr_ref: "\($t)-\($r)", pane: "p", issue: "DEV-\($u | split("/") | last)", pr: $u}')" >/dev/null
+  done; done
+  "$REG" add '{"name": "build-e2/lead", "team": "build-e2", "tier": "Lead", "status": "Working", "herdr_ref": "e2-lead", "pane": "p", "issue": "DEV-34"}' >/dev/null
+  "$REG" escalate build-e2/lead P1 "which db for the export?" >/dev/null 2>&1
+  FLEET_GH="$D2/gh" "$SCRIPTS/tick.sh" >/dev/null 2>&1
+  "$REG" retire build-n2 >/dev/null; "$REG" reassign build-x2 DEV-99 >/dev/null
+  "$REG" resolve build-e2/lead "$("$REG" escalations --open --team build-e2 | jq -r '.[0].id')" >/dev/null
+  o2="$(FLEET_GH="$D2/gh" "$SCRIPTS/status.sh" 2>&1)"
+  eq "smoke: dev512-2 after retire, next and resolve their notices are gone; an unhandled merge still shows" \
+    "$(printf '%s\n' "$o2" | grep -c '^Merged .*pull/31'):$(printf '%s\n' "$o2" | grep -c '^Merged .*pull/32'):$(printf '%s\n' "$o2" | grep -c 'which db'):$(printf '%s\n' "$o2" | grep -c '^Merged .*pull/33')" "0:0:0:1"
+  # dev512-3: status --all reads the other machines' claims itself; with no Linear key it says they are unknown
+  dfresh 3; kf="linear_api""_key"; printf '%s\n' "$LINEAR_STUB_KEY" >"$FLEET_CONFIG_DIR/$kf"; chmod 600 "$FLEET_CONFIG_DIR/$kf"
+  jq -n '{team: "T1", states: {}, next: 100, labels: [{id: "L1", name: "fleet", description: "", parent: null},
+    {id: "L2", name: "fleet:other", description: "other host\nheartbeat=2026-10-18T06:00:00Z", parent: {id: "L1", name: "fleet"}}],
+    issues: [{id: "I2", identifier: "DEV-2", team: {id: "T1"}, state: {id: "S0", name: "In Progress"}, labelIds: ["L2"], comments: []}]}' >"$LINEAR_DB"
+  a3="$(FLEET_NOW=2026-10-18T09:00:00Z "$SCRIPTS/status.sh" --all 2>&1 | grep '^Other machines')"; rm -f "$FLEET_CONFIG_DIR/$kf"
+  eq "smoke: dev512-3 status --all lists a peer's claim with no flag, and says unknown without a key" \
+    "$a3|$("$SCRIPTS/status.sh" --all 2>&1 | grep '^Other machines')" "Other machines: DEV-2 on other (heartbeat 3h ago, lapsed).|Other machines: unknown (no Linear key)."
+  # dev512-6: slim takes over a hand-written style: backup, the conflicting tables out, the block in; [keys] stays
+  dfresh 6; H6="$FLEET_STATE_DIR/herdr.toml"
+  printf '[keys]\nprefix = "ctrl-b"\n\n[ui]\nsidebar_width = 30\n\n[ui.sidebar.agents]\nrows = ["$name"]\n' >"$H6"; cp "$H6" "$SM/h6.orig"
+  o6="$(FLEET_HERDR_CONFIG="$H6" "$SCRIPTS/slim.sh" on 2>&1)"; rc=$?; b6="$(printf '%s\n' "$o6" | sed -n 's/.*Backup at \(.*\)\. Replaced.*/\1/p')"
+  eq "smoke: dev512-6 slim on replaces a hand-written [ui]: exit 0, one [ui] inside the markers, [keys] kept, the backup is the original" \
+    "$rc:$(grep -c '^\[ui\]' "$H6"):$(awk '/^# fleet slim:begin/ { on = 1 } /^# fleet slim:end/ { on = 0 } on && /^\[ui\]/' "$H6" | grep -c .):$(grep -c '^\[keys\]' "$H6"):$(cmp -s "$b6" "$SM/h6.orig" && echo same)" "0:1:1:1:same"
+  cp "$SM/h6.orig" "$H6"; RELOAD_FAIL=1 FLEET_HERDR_CONFIG="$H6" "$SCRIPTS/slim.sh" on >/dev/null 2>&1; rc=$?
+  eq "smoke: dev512-6 a reload herdr refuses puts the original back" "$rc:$(cmp -s "$H6" "$SM/h6.orig" && echo same)" "1:same"
+  # dev512-7: a message to an agent busy in a long turn is queued, and that counts as delivered; idle and silent does not
+  dfresh 7; "$REG" add '{"name": "build-t7/lead", "team": "build-t7", "tier": "Lead", "status": "Working", "herdr_ref": "t7-lead", "pane": "p"}' >/dev/null
+  echo working >"$AS/t7-lead"; : >"$HERDR_LOG"; o7="$(PROMPT_NOSTATE=1 "$SCRIPTS/tell.sh" build-t7/lead "focus on the export" 2>/dev/null)"; rc=$?
+  eq "smoke: dev512-7 a busy agent takes the message as queued: exit 0, (queued), no enter pressed" "$rc:$o7:$(grep -c '^agent send-keys t7-lead' "$HERDR_LOG")" '0:Told build-t7/lead: "focus on the export" (queued):0'
+  echo idle >"$AS/t7-lead"; PROMPT_NOSTATE=1 "$SCRIPTS/tell.sh" build-t7/lead "anyone there" >/dev/null 2>&1
+  eq "smoke: dev512-7 an idle agent with no sign of the message still exits 1" "$?" 1
+  # dev512-9: a gap in the ticks that a sleep of the Mac explains says so, from pmset's log (its own offset applied)
+  dfresh 9; LA9="$FLEET_STATE_DIR/la"; mkdir -p "$LA9"; : >"$LA9/fleet.tick.plist"; printf '#!/usr/bin/env bash\nexit 0\n' >"$SM/lctl9"; chmod +x "$SM/lctl9"
+  jq -n '{last_good: ("2026-10-24T16:30:00Z" | fromdateiso8601)}' >"$FLEET_STATE_DIR/loop.state.json"
+  printf '2026-10-24 17:37:12 +0100 Sleep               \tEntering Sleep state due to Idle Sleep\n2026-10-24 17:50:00 +0100 Wake Requests       \t[process=x]\n2026-10-24 18:03:01 +0100 Wake                \tWake from Deep Idle [CDNVA] : due to UserActivity\n' >"$SM/pm9.log"
+  printf '#!/usr/bin/env bash\ncat "$PM9"\n' >"$SM/pmset9"; chmod +x "$SM/pmset9"
+  sch9() { PM9="$1" FLEET_PMSET="$SM/pmset9" FLEET_LAUNCH_AGENTS="$LA9" FLEET_LAUNCHCTL="$SM/lctl9" FLEET_NOW=2026-10-24T17:05:00Z "$SCRIPTS/schedule.sh" status 2>&1 | head -n 1; }
+  eq "smoke: dev512-9 a gap the Mac slept through says so; with no sleep in pmset's log it is a problem" "$(sch9 "$SM/pm9.log" | sed 's/.*ago)\. //')|$(sch9 /dev/null | sed 's/.*ago)\. //')" \
+    "the Mac slept 17:37–18:03, not a broken loop.|problem: no good tick within 10 min."
+  # dev512-10: the user's go for a version switch is recorded once per installed version (registry.sh pref version_ok)
+  dfresh 10; for r in lead:Lead builder:Worker; do "$REG" add "$(jq -cn --arg r "${r%%:*}" --arg t "${r##*:}" '{name: "build-v10/\($r)", team: "build-v10", tier: $t,
+    status: "Idle", herdr_ref: "v10-\($r)", pane: "p", plugin_version: "4.1.0"}')" >/dev/null; done
+  echo working >"$AS/v10-lead"
+  v1="$(FLEET_INSTALLED_VERSION=4.1.1 "$SCRIPTS/tick.sh" 2>/dev/null)"; "$REG" pref version_ok 4.1.1 >/dev/null
+  vs="$(FLEET_INSTALLED_VERSION=4.1.1 "$SCRIPTS/status.sh" 2>&1)"; rm -f "$FLEET_STATE_DIR/tick.state.json"
+  v2="$(FLEET_INSTALLED_VERSION=4.1.1 "$SCRIPTS/tick.sh" 2>/dev/null)"; FLEET_INSTALLED_VERSION=4.1.1 "$SCRIPTS/next.sh" build-v10 DEV-5 >/dev/null 2>&1; rcn=$?
+  v3="$(FLEET_INSTALLED_VERSION=4.1.2 "$SCRIPTS/tick.sh" 2>/dev/null)"
+  eq "smoke: dev512-10 once the go is recorded: no question in status or tick, next passes the version check; a newer version asks again" \
+    "$(evc "$v1" stale_version):$(printf '%s\n' "$vs" | grep -c 'runs plugin 4.1.0'):$(evc "$v2" stale_version):$rcn:$(evc "$v3" stale_version)" "1:0:0:1:1"
+  # dev512-11: an unknown config key is warned about once per change of config.toml, not on every tick
+  dfresh 11; gcfg 'max_agents = 12'; for _ in 1 2; do "$SCRIPTS/tick.sh" >/dev/null 2>>"$SM/d11.err"; done; w1="$(grep -c "unknown key 'max_agents'" "$SM/d11.err")"
+  gcfg 'max_agents = 12' 'max_teams = 3'; "$SCRIPTS/tick.sh" >/dev/null 2>>"$SM/d11.err"
+  eq "smoke: dev512-11 two ticks warn once; a changed config.toml warns again" "$w1:$(grep -c "unknown key 'max_agents'" "$SM/d11.err")" "1:2"
+  # the restart cases: drow <team/role> <pane> adds a live builder that respawn --restart can restart
+  drow() { "$REG" add "$(jq -cn --arg n "$1" --arg p "$2" --arg r "$SM/repo" '{name: $n, team: ($n | split("/")[0]), tier: "Worker", template: "build",
+    harness: "claude", status: "Idle", herdr_ref: ($n | sub("/"; "-")), pane: $p, repo: $r, cwd: $r, assignment: "task", issue: "DEV-1"}')" >/dev/null; }
+  # dev512-12: a restart into a pane whose agent name herdr still holds retries the start, as for a busy pane
+  dfresh 12; drow build-r12/builder p12; echo 2 >"$SM/taken12"
+  NAME_TAKEN="$SM/taken12" "$SCRIPTS/respawn.sh" build-r12/builder --restart >/dev/null 2>"$SM/r12.err"; rc=$?
+  eq "smoke: dev512-12 agent_name_taken twice, then the start goes through: restarted, not Failed" "$rc:$("$REG" get build-r12/builder | jq -r .status)" "0:Idle"
+  # dev512-14: Claude's exit dialog (background work running) is confirmed with one enter; with no dialog none is sent
+  dfresh 14; drow build-r14/builder p14; drow build-s14/builder p14b; : >"$HERDR_LOG"
+  EXIT_DIALOG=1 "$SCRIPTS/respawn.sh" build-r14/builder --restart >/dev/null 2>&1; rc=$?
+  "$SCRIPTS/respawn.sh" build-s14/builder --restart >/dev/null 2>&1; rc2=$?
+  eq "smoke: dev512-14 the exit dialog gets one enter and the restart goes through; no dialog, no enter" \
+    "$rc:$(grep -c '^agent send-keys build-r14-builder enter' "$HERDR_LOG"):$rc2:$(grep -c '^agent send-keys build-s14-builder' "$HERDR_LOG")" "0:1:0:0"
+  # dev512-22: respawn --restart types nothing into an agent that is busy; it fails and the agent keeps its session
+  dfresh 22; gcfg 'brief_idle_secs = 1'; drow build-r22/builder p22; echo working >"$AS/build-r22-builder"; : >"$HERDR_LOG"
+  "$SCRIPTS/respawn.sh" build-r22/builder --restart >/dev/null 2>"$SM/r22.err"; rc=$?
+  eq "smoke: dev512-22 a busy agent is not restarted: exit 1, no /exit typed" "$rc:$(grep -c '/exit' "$HERDR_LOG"):$(grep -c 'is busy (working)' "$SM/r22.err")" "1:0:1"
+  # dev512-13: only an explicit hold line holds a PR; "merge after #N" orders the queue and holds pr_ready until #N is gone
+  eq "smoke: dev512-13 a Merge order heading is not a hold; Do not merge and Hold: lines are" "$(bash -c '. "$1/common.sh"; for b in "## Merge order
+Merge this one first." "Do not merge until the API ships" "  hold: waiting on design" "We do not merge on Fridays."; do jq -rn --arg b "$b" "$PR_DEFS"'"'"'{body: $b} | pr_held'"'"'; done | paste -sd, -' _ "$SCRIPTS")" "false,true,true,false"
+  qfresh d13; qpr app-api 1 fleet/dev-1-a main 2026-10-20T10:00:00Z '["a.go"]' x; qpr app-api 2 fleet/dev-2-b main 2026-10-19T10:00:00Z '["b.go"]' "Merge after #1, it needs the new column."
+  qteam t1 app-api 1 DEV-1 aaaaaaa1; qteam t2 app-api 2 DEV-2 aaaaaaa2
+  eq "smoke: dev512-13 merge after #1 puts #1 first and #2 needs it" "$(qorder)" "app-api#1|app-api #2 merges after it|— ; app-api#2|needs app-api #1|—"
+  dfresh 13; GH_DIR="$SM/d512-13"; export GH_DIR
+  ghset 1 OPEN MERGEABLE "$GREEN" aaaaaaa1 x; ghset 2 OPEN MERGEABLE "$GREEN" aaaaaaa2 "Merge after #1."
+  "$REG" add '{"name": "t13/builder", "team": "t13", "tier": "Worker", "status": "Working", "herdr_ref": "t13-b", "pane": "p", "pr": "https://github.com/o/r/pull/2"}' >/dev/null
+  "$REG" add '{"name": "t13/tester", "team": "t13", "tier": "Worker", "status": "Working", "herdr_ref": "t13-t", "pane": "p"}' >/dev/null
+  "$REG" signoff t13/tester https://github.com/o/r/pull/2 aaaaaaa2 >/dev/null; echo working >"$AS/t13-b"; echo working >"$AS/t13-t"
+  e1="$("$SCRIPTS/tick.sh" 2>/dev/null)"; ghset 1 MERGED UNKNOWN '[]' aaaaaaa1 x; e2="$("$SCRIPTS/tick.sh" 2>/dev/null)"
+  eq "smoke: dev512-13 no pr_ready for #2 while #1 is open; it comes once #1 merged" "$(evc "$e1" pr_ready):$(evc "$e2" pr_ready)" "0:1"
+  # dev512-17: the skill text in use older than the plugin installed says to restart the session; SKILL.md B says one call
+  dfresh 17
+  eq "smoke: dev512-17 status names a newer installed plugin, and says nothing when it is the same" \
+    "$(FLEET_INSTALLED_VERSION=9.9.9 "$SCRIPTS/status.sh" 2>&1 | grep -c '^Skill .* is running and 9.9.9 is installed: restart this Claude Code session (or run /reload-plugins)\.$'):$(FLEET_INSTALLED_VERSION="$(jq -r .version "$SCRIPTS/../../../.claude-plugin/plugin.json")" "$SCRIPTS/status.sh" 2>&1 | grep -c '^Skill ')" "1:0"
+  check "smoke: dev512-17 SKILL.md B: one fleet status call per request and per wake, relayed as it is" grep -q 'One `$F/fleet status` call per request and per wake, relayed as it is' "$SCRIPTS/../SKILL.md"
+  # dev512-21: a brief that arrives after tell gave up (a slow start) brings its row back: no failed wake, no re-send
+  dfresh 21; drow build-b21/builder p21; tr21="$(bash -c '. "$1/common.sh"; transcript_dir_for "$2"' _ "$SCRIPTS" "$SM/repo")/b21.jsonl"
+  mkdir -p "$(dirname "$tr21")"; : >"$tr21"; "$REG" set build-b21/builder transcript="$tr21" >/dev/null
+  BRIEF_LOST=1 "$SCRIPTS/tell.sh" build-b21/builder "your brief" --brief >/dev/null 2>&1; "$REG" set build-b21/builder status=Failed >/dev/null
+  echo idle >"$AS/build-b21-builder"; BRIEF_LOST=1 "$SCRIPTS/tick.sh" >/dev/null 2>&1 # the failed wake, one re-send that is lost too, brief_failed
+  lb="$("$REG" get build-b21/builder | jq -r .last_brief)"; jq -nc --arg c "Read your brief: $lb (id $(basename "$lb" .md))" '{type: "user", message: {role: "user", content: $c}}' >>"$tr21"
+  echo idle >"$AS/build-b21-builder"; : >"$HERDR_LOG"; e21="$(BRIEF_LOST=1 "$SCRIPTS/tick.sh" 2>/dev/null)"; o21="$("$SCRIPTS/status.sh" 2>&1)"
+  eq "smoke: dev512-21 the late brief restores the row: not Failed, no failed event or re-send, its wakes dropped" \
+    "$("$REG" get build-b21/builder | jq -r '[.status, (.brief_failed_at // "")] | join(",")'):$(evc "$e21" failed):$(grep -c 'Read your brief' "$HERDR_LOG"):$(printf '%s\n' "$o21" | grep -c '^Failed build-b21\|^Brief failed build-b21')" "Idle,:0:0:0"
+  # dev512-23: parallel herdr calls with long arguments log whole lines (the flaky next case)
+  dfresh 23; head -c 100000 /dev/zero | tr '\0' x >"$SM/long23"; : >"$HERDR_LOG"
+  for i in $(seq 1 12); do herdr --session test agent start "a23-$i" --settings "$SM/long23" >/dev/null & done; wait
+  eq "smoke: dev512-23 twelve parallel calls with 100 KB arguments log twelve whole lines" "$(grep -c '^agent start a23-[0-9]* --settings x' "$HERDR_LOG"):$(awk 'length($0) > 100000' "$HERDR_LOG" | grep -vc '^agent start a23-[0-9]* --settings x*$')" "12:0"
+  # dev512-24: the version is 4.1.1 and the README says what changed in it
+  eq "smoke: dev512-24 plugin.json reads 4.1.1, and the README has its What changed section" "$(jq -r .version "$SCRIPTS/../../../.claude-plugin/plugin.json"):$(grep -c '^## What changed in 4.1.1' "$SCRIPTS/../README.md")" "4.1.1:1"
   printf '\n%d passed, %d failed\n' "$pass" "$failn"
   [ "$failn" = 0 ]; exit
 fi
@@ -950,21 +1184,27 @@ for o in "--takeover-of x" "--lease-expires 2026-10-18T08:00:00Z" "--last-activi
 done
 eq "boot: a new claim's row carries no lease_expires" "$("$REG" get build-own1/builder | jq -r '.lease_expires // "none"')" none
 
-# status --all: peers from linear.sh peers
-CF="$T/claims.json"
-echo '[{"machine":"3f9a2c1e","label":"fleet:3f9a2c1e","issue":"DEV-9","heartbeat":"2026-10-18T09:50:00Z"},
-      {"machine":"9b1d4e07","label":"fleet:9b1d4e07","issue":"DEV-10","heartbeat":null},
-      {"machine":"5555aaaa","label":"fleet:5555aaaa","issue":"DEV-11","heartbeat":"2026-10-18T05:00:00Z"}]' >"$CF"
-FLEET_NOW=2026-10-18T10:00:00Z DF_GB=100 "$SCRIPTS/status.sh" --all --claims "$CF" >"$T/all.out" 2>"$T/all.err"
+# status --all: the other machines' claims, read with linear.sh peers (DEV-512 item 3: there is no --claims), from the
+# fake Linear API: three machines' labels on DEV-9 (heartbeat 10 minutes old), DEV-10 (none) and DEV-11 (5 hours).
+PL="$T/peers"; mkdir -p "$PL"; kf="linear_api""_key"
+jq -n '{team: "T1", states: {}, next: 100, labels: [{id: "L0", name: "fleet", description: "", parent: null},
+    {id: "L1", name: "fleet:3f9a2c1e", description: "a\nheartbeat=2026-10-18T09:50:00Z", parent: {id: "L0", name: "fleet"}},
+    {id: "L2", name: "fleet:9b1d4e07", description: "b", parent: {id: "L0", name: "fleet"}},
+    {id: "L3", name: "fleet:5555aaaa", description: "c\nheartbeat=2026-10-18T05:00:00Z", parent: {id: "L0", name: "fleet"}}],
+  issues: [{id: "I9", identifier: "DEV-9", team: {id: "T1"}, state: {id: "S", name: "In Progress"}, labelIds: ["L1"], comments: []},
+    {id: "I10", identifier: "DEV-10", team: {id: "T1"}, state: {id: "S", name: "In Progress"}, labelIds: ["L2"], comments: []},
+    {id: "I11", identifier: "DEV-11", team: {id: "T1"}, state: {id: "S", name: "In Progress"}, labelIds: ["L3"], comments: []}]}' >"$PL/db.json"
+pst() { LINEAR_STUB_KEY=KEYFIXTURE-peers LINEAR_DB="$PL/db.json" LINEAR_LOG="$PL/log" FLEET_CURL="$HERE/linear-stub.sh" "$SCRIPTS/status.sh" "$@"; }
+printf 'KEYFIXTURE-peers\n' >"$FLEET_CONFIG_DIR/$kf"; chmod 600 "$FLEET_CONFIG_DIR/$kf"
+FLEET_NOW=2026-10-18T10:00:00Z DF_GB=100 pst --all >"$T/all.out" 2>"$T/all.err"
 eq "status --all: one line names each peer claim, its heartbeat age and a lapsed lease" "$(grep '^Other machines:' "$T/all.out")" "Other machines: DEV-9 on 3f9a2c1e (heartbeat 10m ago); DEV-10 on 9b1d4e07 (no heartbeat); DEV-11 on 5555aaaa (heartbeat 5h ago, lapsed)."
 check "status --all: the local teams are in the team table" grep -q '^| build-own1 |' "$T/all.out"
 eq "status --all: no lease column, no SAME KEY?" "$(grep -c 'LEASE\|SAME KEY' "$T/all.out")" 0
-DF_GB=100 "$SCRIPTS/status.sh" --all >"$T/all3.out" 2>/dev/null; check "status --all without claims says so" grep -q '^Other machines: not provided' "$T/all3.out"
-eq "status --all --json: bare array with machine and source" "$(DF_GB=100 "$SCRIPTS/status.sh" --all --json --claims "$CF" build-own1 2>/dev/null | jq -c '[.[] | [.source, .machine]] | unique')" '[["registry","test"],["tracker","3f9a2c1e"],["tracker","5555aaaa"],["tracker","9b1d4e07"]]'
-cat "$CF" | DF_GB=100 "$SCRIPTS/status.sh" --all --json --claims - build-own1 2>/dev/null | jq -e 'type == "array"' >/dev/null; eq "status --all: --claims - reads stdin" "$?" 0
-eq "status --claims without --all dies" "$("$SCRIPTS/status.sh" --claims "$CF" >/dev/null 2>&1; echo $?)" 1
-eq "status --all: an unreadable claims file dies" "$(DF_GB=100 "$SCRIPTS/status.sh" --all --claims "$T/none.json" >/dev/null 2>&1; echo $?)" 1
-echo '{}' >"$T/bad.json"; eq "status --all: claims that are not an array die" "$(DF_GB=100 "$SCRIPTS/status.sh" --all --claims "$T/bad.json" >/dev/null 2>&1; echo $?)" 1
+eq "status --all: Linear is read only (no mutation)" "$(grep -c '^mutation' "$PL/log")" 0
+eq "status --all --json: bare array with machine and source" "$(DF_GB=100 pst --all --json build-own1 2>/dev/null | jq -c '[.[] | [.source, .machine]] | unique')" '[["registry","test"],["tracker","3f9a2c1e"],["tracker","5555aaaa"],["tracker","9b1d4e07"]]'
+rm -f "$FLEET_CONFIG_DIR/$kf"
+DF_GB=100 pst --all >"$T/all3.out" 2>/dev/null; check "status --all without a Linear key says the other machines are unknown" grep -qx 'Other machines: unknown (no Linear key).' "$T/all3.out"
+eq "status: --claims is gone (an unknown option)" "$("$SCRIPTS/status.sh" --all --claims "$T/x.json" >/dev/null 2>&1; echo $?)" 1
 eq "status without --all has no Other machines line" "$(DF_GB=100 "$SCRIPTS/status.sh" 2>/dev/null | grep -c '^Other machines')" 0
 
 # chat.sh: settings and format only, never the network
@@ -1212,7 +1452,7 @@ cat >"$T/gh-shim" <<'S'
 #!/usr/bin/env bash
 echo "$*" >>"$GH_LOG"
 [ -z "${GH_SLEEP:-}" ] || sleep "$GH_SLEEP"
-if [ "$2" = list ]; then # gh pr list --head <branch> ...
+if [ "$2" = list ]; then # gh pr list --state open ... (tick's discovery: list.open.json)
   b="${4//\//-}"; [ ! -e "$GH_DIR/list.$b.fail" ] || { echo "HTTP 502" >&2; exit 1; }
   cat "$GH_DIR/list.$b.json" 2>/dev/null || echo '[]'; exit 0
 fi
@@ -1337,7 +1577,7 @@ out="$("$SCRIPTS/tick.sh" 2>"$T/tick.err")"; rc=$?
 eq "tick: a quiet tick prints nothing" "$out" ""
 eq "tick: a quiet tick exits 0" "$rc" 0
 eq "tick: a quiet tick logs nothing" "$(wc -c <"$T/tick.err" | tr -d ' ')" 0
-eq "tick: gh is not called when no row has a PR" "$(wc -l <"$GH_LOG" | tr -d ' ')" 0
+eq "tick: with no PR on a row, gh views no PR and lists the repo's open PRs once (dev512-15: the queue for status)" "$(grep -c '^pr view' "$GH_LOG"):$(grep -c '^pr list --repo o/r --state open ' "$GH_LOG"):$(wc -l <"$GH_LOG" | tr -d ' ')" "0:1:1"
 tkr() { rm -f "$FLEET_STATE_DIR/tick.state.json"; "$SCRIPTS/tick.sh" 2>"$T/tick.err"; }
 ready() { evc "$(tkr)" pr_ready; } # fresh state each time: how many pr_ready events would this PR produce
 "$REG" signoff tk/tester https://github.com/o/r/pull/12 "${H1:0:7}" >/dev/null
@@ -1351,8 +1591,11 @@ printf 'no_pr_ci = ["ra"]\n' >>"$FLEET_CONFIG_DIR/config.toml"
 eq "tick: no checks and repo in no_pr_ci → ready" "$(ready)" 1
 ghset 12 OPEN MERGEABLE "$GREEN" "$H2" ok;         eq "tick: sign-off SHA not the head → not ready" "$(ready)" 0
 ghset 12 CLOSED MERGEABLE "$GREEN" "$H1" ok;       eq "tick: closed PR → not ready" "$(ready)" 0
-for body in "DO NOT MERGE yet" "do not merge" "Merge order: B before C" "before/after screenshots"; do
+for body in "DO NOT MERGE yet" "do not merge" "Hold: until the API ships"; do
   ghset 12 OPEN MERGEABLE "$GREEN" "$H1" "$body";  eq "tick: body '$body' → not ready" "$(ready)" 0
+done
+for body in "Merge order: B before C" "before/after screenshots" "## Merge order"; do
+  ghset 12 OPEN MERGEABLE "$GREEN" "$H1" "$body";  eq "tick: body '$body' → ready (dev512-13: not a hold line)" "$(ready)" 1
 done
 ghset 12 OPEN MERGEABLE "$GREEN" "$H1" ok
 rm -f "$FLEET_STATE_DIR/tick.state.json"
@@ -1408,7 +1651,7 @@ eq "tick: --team limits the events" "$(evc "$("$SCRIPTS/tick.sh" --team nosuch 2
 d1="$("$SCRIPTS/tick.sh" 2>/dev/null)"
 eq "tick: an agent herdr cannot find on two ticks in a row is reported dead" "$(printf '%s' "$d1" | jq -r '[.[] | select(.type == "dead") | .name] | join(",")')" tk/tester
 check "tick: bad option fails" bash -c "! '$SCRIPTS/tick.sh' --bogus"
-eq "tick: only gh shim calls were made through FLEET_GH" "$(grep -vc '^pr view https://github.com/o/r/pull/12 --json state,mergeable,statusCheckRollup,headRefOid,body,url,isDraft$' "$GH_LOG" | tr -d ' ')" 0
+eq "tick: only gh shim calls were made through FLEET_GH" "$(grep -vcE '^pr view https://github.com/o/r/pull/12 --json state,mergeable,statusCheckRollup,headRefOid,body,url,isDraft$|^pr list --repo o/r --state open ' "$GH_LOG" | tr -d ' ')" 0
 eq "tick: an escalation event carries its id" "$(printf '%s' "$e1" | jq -r '[.[] | select(.type == "escalation") | .id] | first | test("^[0-9TZ]+-[0-9]+$")')" true
 eq "no real gh call was made" "$(wc -l <"$REAL_GH_LOG" | tr -d ' ')" 0
 
@@ -1434,7 +1677,8 @@ eq "tell: an increased state_change_seq is delivery" "$rc:$(told "$out")" "0:tru
 eq "scripts reach Claude's projects dir only through projects_dir" "$(grep -l 'claude/projects' "$SCRIPTS"/*.sh | xargs -n1 basename | tr '\n' ' ')" "common.sh "
 eq "projects_dir follows HOME" "$(HOME=/nowhere-x . "$SCRIPTS/common.sh"; HOME=/nowhere-x projects_dir)" /nowhere-x/.claude/projects
 
-# -- PR discovery (builder skipped done): the branch is read from the worktree, same-repo PRs only
+# -- PR discovery (builder skipped done): one open list per repo, a PR matched to the team by its head branch (the branch
+# read from the worktree and written back to the row), same-repo PRs only
 git init -q "$T/pdwt"; git -C "$T/pdwt" checkout -q -b fleet/dev-9-thing; git -C "$T/pdwt" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
 arow2 pd/lead Lead pd-l "" ""
 # boot's real row shape: the row says fleet/<team>/<role>, the worktree is on the branch the builder pushed
@@ -1442,15 +1686,15 @@ arow2 pd/lead Lead pd-l "" ""
 : >"$GH_LOG"; : >"$HERDR_LOG"; rm -f "${AS:?}"/*
 out="$("$SCRIPTS/tick.sh" 2>/dev/null)"
 eq "tick: no PR yet → no pr_opened" "$(evc "$out" pr_opened)" 0
-eq "tick: the branch is looked up from the worktree, not the row (and asks for isCrossRepository)" "$(grep -c '^pr list --head fleet/dev-9-thing --json number,url,headRefOid,state,isCrossRepository$' "$GH_LOG")" 1
+eq "tick: one open-PR list for the repo (with isCrossRepository)" "$(grep -c '^pr list --state open --limit 200 --json number,url,headRefName,state,isCrossRepository$' "$GH_LOG")" 1
 eq "tick: the row's boot-time branch was never used" "$(grep -c 'fleet/pd/builder' "$GH_LOG" || true)" 0
 eq "tick: the real branch is written back to the row" "$("$REG" get pd/builder | jq -r .branch)" fleet/dev-9-thing
-echo '[{"number":9,"url":"https://github.com/o/r/pull/9","headRefOid":"abc","state":"CLOSED","isCrossRepository":false}]' >"$GH_DIR/list.fleet-dev-9-thing.json"
+echo '[{"number":9,"url":"https://github.com/o/r/pull/9","headRefName":"fleet/dev-9-thing","state":"CLOSED","isCrossRepository":false}]' >"$GH_DIR/list.open.json"
 eq "tick: a closed PR on the branch is ignored" "$(evc "$("$SCRIPTS/tick.sh" 2>/dev/null)" pr_opened)" 0
-echo '[{"number":8,"url":"https://github.com/fork/r/pull/8","headRefOid":"abc","state":"OPEN","isCrossRepository":true}]' >"$GH_DIR/list.fleet-dev-9-thing.json"
+echo '[{"number":8,"url":"https://github.com/fork/r/pull/8","headRefName":"fleet/dev-9-thing","state":"OPEN","isCrossRepository":true}]' >"$GH_DIR/list.open.json"
 fk="$("$SCRIPTS/tick.sh" 2>/dev/null)"
 eq "tick: a fork PR on the same branch name is skipped" "$(evc "$fk" pr_opened):$("$REG" get pd/builder | jq -r '.pr // ""')" "0:"
-echo '[{"number":8,"url":"https://github.com/fork/r/pull/8","headRefOid":"abc","state":"OPEN","isCrossRepository":true},{"number":9,"url":"https://github.com/o/r/pull/9","headRefOid":"abc","state":"OPEN","isCrossRepository":false}]' >"$GH_DIR/list.fleet-dev-9-thing.json"
+echo '[{"number":8,"url":"https://github.com/fork/r/pull/8","headRefName":"fleet/dev-9-thing","state":"OPEN","isCrossRepository":true},{"number":9,"url":"https://github.com/o/r/pull/9","headRefName":"fleet/dev-9-thing","state":"OPEN","isCrossRepository":false}]' >"$GH_DIR/list.open.json"
 ghset 9 OPEN MERGEABLE "$GREEN" "abc" ok
 o1="$("$SCRIPTS/tick.sh" 2>/dev/null)"; o2="$("$SCRIPTS/tick.sh" 2>/dev/null)"
 eq "tick: the same-repo PR is chosen over the fork's and reported as pr_opened with its URL" "$(printf '%s' "$o1" | jq -c '[.[] | select(.type == "pr_opened") | .url, .name, .team]')" '["https://github.com/o/r/pull/9","pd/builder","pd"]'
@@ -1458,16 +1702,16 @@ eq "tick: pr_opened is emitted once (a second run is quiet)" "$(evc "$o2" pr_ope
 eq "tick: the PR is recorded on the builder's row" "$("$REG" get pd/builder | jq -r .pr)" https://github.com/o/r/pull/9
 eq "tick: the branch write-back is stable across runs" "$("$REG" get pd/builder | jq -r .branch)" fleet/dev-9-thing
 check "tick: the lead was told to start the tester" grep -q '^agent prompt pd-l PR https://github.com/o/r/pull/9 is open; start the tester' "$HERDR_LOG"
-touch "$GH_DIR/list.fleet-dev-9-thing.fail"; "$REG" set pd/builder pr= >/dev/null
+touch "$GH_DIR/list.open.fail"; "$REG" set pd/builder pr= >/dev/null
 err="$("$SCRIPTS/tick.sh" 2>&1 >/dev/null)"
-check "tick: a gh pr list failure (the dependency is down) is logged, not fatal" grep -q 'gh could not list PRs for fleet/dev-9-thing' <<<"$err"
-rm -f "$GH_DIR/list.fleet-dev-9-thing.fail"
-echo 'this is not json {' >"$GH_DIR/list.fleet-dev-9-thing.json"
+check "tick: a gh pr list failure (the dependency is down) is logged, not fatal" grep -q "gh could not list the open PRs in $T/ra" <<<"$err"
+rm -f "$GH_DIR/list.open.fail"
+echo 'this is not json {' >"$GH_DIR/list.open.json"
 bad="$("$SCRIPTS/tick.sh" 2>"$T/bad.err")"; rc=$?
 eq "tick: unparseable gh output (bad input) is skipped, exit 0, no event" "$rc:$(evc "$bad" pr_opened)" "0:0"
-echo '[{"number":9,"url":"https://github.com/o/r/pull/9","headRefOid":"abc","state":"OPEN","isCrossRepository":"maybe"}]' >"$GH_DIR/list.fleet-dev-9-thing.json"
+echo '[{"number":9,"url":"https://github.com/o/r/pull/9","headRefName":"fleet/dev-9-thing","state":"OPEN","isCrossRepository":"maybe"}]' >"$GH_DIR/list.open.json"
 eq "tick: a non-boolean isCrossRepository does not pick a PR it cannot vouch for" "$(evc "$("$SCRIPTS/tick.sh" 2>/dev/null)" pr_opened)" 0
-rm -f "$GH_DIR/list.fleet-dev-9-thing.json"
+rm -f "$GH_DIR/list.open.json"
 git -C "$T/pdwt" checkout -q --detach
 "$SCRIPTS/tick.sh" >/dev/null 2>&1; eq "tick: a detached worktree falls back to the row's branch" "$("$REG" get pd/builder | jq -r .branch)" fleet/dev-9-thing
 git -C "$T/pdwt" checkout -q fleet/dev-9-thing
@@ -1609,13 +1853,19 @@ check "F3: and it is named in a warning" grep -q 'malformed row' "$T/tk.err"
 eq "F3: and the good tester row still gets its pr_ready" "$(evc "$out" pr_ready)" 1
 jq 'del(.agents["fx/bad"])' "$FLEET_REGISTRY" >"$T/r.tmp" && mv "$T/r.tmp" "$FLEET_REGISTRY"
 
-# -- the ready gate: a draft, and the fleet's own "stacked on / merge after", are held
+# -- the ready gate: a draft and a hold line are held; "Stacked on", "Merge after" and "Depends on" a PR hold it while
+# that PR is open (DEV-512 item 13)
 rm -f "$FLEET_STATE_DIR/tick.state.json"
 rdy() { rm -f "$FLEET_STATE_DIR/tick.state.json"; evc "$("$SCRIPTS/tick.sh" 2>/dev/null)" pr_ready; }
 ghset 41 OPEN MERGEABLE "$GREEN" "$H1" "Closes https://linear.app/devpies/issue/DEV-1"; eq "ready gate: a plain open PR is ready (control)" "$(rdy)" 1
 ghset 41 OPEN MERGEABLE "$GREEN" "$H1" ok true; eq "ready gate: a draft PR is not ready" "$(rdy)" 0
-for body in "Stacked on #42 (C). Merge after #42; rebased onto main once #42 merges." "stacked on #3" "Merge before #9" "merge after the parent" "DO NOT MERGE" "merge order: b then c" "before/after screenshots"; do
+ghset 42 OPEN MERGEABLE "$GREEN" "$H2" x
+for body in "Stacked on #42 (C). Merge after #42; rebased onto main once #42 merges." "Merge after #42" "Depends on https://github.com/o/r/pull/42" "DO NOT MERGE" "Hold: design review"; do
   ghset 41 OPEN MERGEABLE "$GREEN" "$H1" "$body"; eq "ready gate: body '$body' holds the PR" "$(rdy)" 0
+done
+ghset 42 MERGED MERGEABLE "$GREEN" "$H2" x
+for body in "Merge after #42" "Merge before #9" "merge after the parent" "merge order: b then c" "before/after screenshots"; do
+  ghset 41 OPEN MERGEABLE "$GREEN" "$H1" "$body"; eq "ready gate: body '$body' does not hold it (#42 merged)" "$(rdy)" 1
 done
 ghset 41 OPEN MERGEABLE "$GREEN" "$H1" "Closes DEV-1; merged after review by Ivor" ; eq "ready gate: 'merged after' in prose is not 'merge after'" "$(rdy)" 1
 ghset 41 OPEN MERGEABLE "$GREEN" "$H1" ok
@@ -2906,9 +3156,11 @@ before_t="$("$REG" list --team build-hb | jq -c '[.[] | {(.name): .transcript}] 
 PV_="$("$REG" get build-hb/lead | jq -r '.plugin_version // ""')"
 FLEET_INSTALLED_VERSION=99.0.0 "$SCRIPTS/next.sh" build-hb DEV-8 >/dev/null 2>"$T/next.err"; rc=$?
 eq "next: dev408-10 a newer installed plugin refuses with exit 5, nothing changed" "$rc:$("$REG" list --team build-hb | jq -c '[.[].issue] | unique'):$(grep -c '^agent prompt' "$HERDR_LOG" || true)" '5:["DEV-7"]:0'
-check "next: dev408-10 and it names both versions and the way on" grep -q "build-hb runs plugin $PV_ and 99.0.0 is installed.*run it again with FLEET_VERSION_OK=1" "$T/next.err"
-out="$(FLEET_INSTALLED_VERSION=99.0.0 FLEET_VERSION_OK=1 "$SCRIPTS/next.sh" build-hb DEV-8 --brief "Start on DEV-8 now" --issue-url https://tracker.example/issue/DEV-8 2>"$T/next.err")"; rc=$?
-eq "next: exits 0 (dev408-10: with FLEET_VERSION_OK=1 the newer plugin does not stop it)" "$rc" 0
+check "next: dev408-10 and it names both versions and the way on" grep -q "build-hb runs plugin $PV_ and 99.0.0 is installed.*registry.sh pref version_ok 99.0.0" "$T/next.err"
+"$REG" pref version_ok 99.0.0 >/dev/null
+out="$(FLEET_INSTALLED_VERSION=99.0.0 "$SCRIPTS/next.sh" build-hb DEV-8 --brief "Start on DEV-8 now" --issue-url https://tracker.example/issue/DEV-8 2>"$T/next.err")"; rc=$?
+"$REG" pref version_ok "" >/dev/null
+eq "next: exits 0 (dev512-10: with the go recorded for 99.0.0 the newer plugin does not stop it)" "$rc" 0
 eq "next: every agent got /exit once" "$(grep -c '^agent prompt build-hb-[a-z]* /exit' "$HERDR_LOG")" "$nb"
 eq "next: and a fresh start with a new session id" "$(grep '^agent start build-hb-' "$HERDR_LOG" | grep -c -- '--session-id')" "$nb"
 eq "next: every transcript path changed (the old one is kept in transcripts)" "$("$REG" list --team build-hb | jq --argjson b "$before_t" '[.[] | $b[.name] as $o | select(.transcript != $o and ((.transcripts // []) | index($o) != null))] | length')" "$nb"
@@ -3129,7 +3381,7 @@ eq "tick: and its status stays Parked" "$(stat_of ep-a/lead)" Parked
 
 # status: a parked team is one row, State Parked
 st="$("$SCRIPTS/status.sh" 2>/dev/null)"
-check "status: a parked team's row says Parked" bash -c "printf '%s\n' \"\$1\" | grep -q '^| ep-a |.*| ‖ Parked | - |\$'" _ "$st"
+check "status: a parked team's row says Parked" bash -c "printf '%s\n' \"\$1\" | grep -q '^| ep-a |.*| Parked | - |\$'" _ "$st"
 eq "status: one row for the team" "$(printf '%s\n' "$st" | grep -c '^| ep-a |')" 1
 
 # -- unpark
@@ -3441,7 +3693,7 @@ eq "dev408-0 groundwork: not ready: no checks, outside no_pr_ci" "$("$D4/prm" "$
 eq "dev408-0 groundwork: ready: no checks in a no_pr_ci repo" "$("$D4/prm" "$(pgx '.statusCheckRollup = []')" abc1234 true)" ""
 eq "dev408-0 groundwork: not ready: conflicting" "$("$D4/prm" "$(pgx '.mergeable = "CONFLICTING"')" abc1234)" "conflicting"
 eq "dev408-0 groundwork: not ready: mergeable UNKNOWN is 'mergeable unknown', never conflicting" "$("$D4/prm" "$(pgx '.mergeable = "UNKNOWN"')" abc1234):$("$D4/prm" "$(pgx 'del(.mergeable)')" abc1234)" "mergeable unknown:mergeable unknown"
-eq "dev408-0 groundwork: not ready: draft, held" "$("$D4/prm" "$(pgx '.isDraft = true')" abc1234):$("$D4/prm" "$(pgx '.body = "merge after #12"')" abc1234)" "draft:held"
+eq "dev408-0 groundwork: not ready: draft, held (a Hold: line; dev512-13: merge after #N is order, not a hold)" "$("$D4/prm" "$(pgx '.isDraft = true')" abc1234):$("$D4/prm" "$(pgx '.body = "Hold: until #12 merges"')" abc1234):$("$D4/prm" "$(pgx '.body = "merge after #12"')" abc1234)" "draft:held:"
 eq "dev408-0 groundwork: not ready: closed, and every reason at once in a fixed order" "$("$D4/prm" "$(pgx '.state = "CLOSED"')" abc1234):$("$D4/prm" "$(pgx '.isDraft = true | .mergeable = "CONFLICTING"')" "")" "closed:no sign-off, conflicting, draft"
 eq "dev408-0 groundwork: no_pr_ci matches the repo name, owner/name or path" "$(bash -c ". '$SCRIPTS/common.sh'; jq -rn \"\$PR_DEFS\"'[([\"api\"], [\"o/api\"], [\"/x/api\"], [\"web\"]) as \$n | pr_noci_ok(\$n; \"/x/api\"; \"https://github.com/o/api/pull/1\")] | map(tostring) | join(\",\")'")" "true,true,true,false"
 # tick reads the same rule: an UNKNOWN mergeable never fires pr_ready; once GitHub says MERGEABLE it does, once
@@ -3585,8 +3837,8 @@ gold escalate "$("$FL" escalate build-api/builder P1 "which port?" 8080 9090 "de
 eid="$("$REG" escalations --open --team build-api | jq -r '[.[] | select(.message == "which port?")][0].id')"
 gold resolve "$("$FL" resolve build-api/builder "$eid" --note "use 8080" 2>&1 | sed "s#$eid#<id>#")"
 gold respawn "$("$FL" respawn build-api/tester 2>&1)"
-gold boot "$(FLEET_FORCE=1 "$FL" boot --issue DEV-50 --issue-url https://linear.app/acme/issue/DEV-50/gold build gold "$G/repo" "gold task" 2>/dev/null)"
-gold next "$("$FL" next build-web DEV-14 --issue-url https://linear.app/acme/issue/DEV-14/next 2>/dev/null)"
+gold boot "$(FLEET_FORCE=1 "$FL" boot --issue DEV-50 --issue-url https://linear.app/acme/issue/DEV-50/gold --issue-title "Web: the gold standard" build gold "$G/repo" "gold task" 2>/dev/null)"
+gold next "$("$FL" next build-web DEV-14 --issue-url https://linear.app/acme/issue/DEV-14/next --issue-title "API: the next one, with a title well past forty characters" 2>/dev/null)"
 gold park "$("$FL" park build-gold 2>&1)"
 gold unpark "$(FLEET_FORCE=1 "$FL" unpark build-old 2>&1)"
 gold focus "$(FLEET_FORCE=1 "$FL" focus build-api --now 2>&1)"
@@ -3671,7 +3923,7 @@ eq "dev408-18 queue: not ready: signed another head, held" "$(nr 23)" "signed bb
 eq "dev408-18 queue: a dependency cycle is named" "$(nr 24):$(nr 25)" "waits for app-api #25, dependency cycle with #25:waits for app-api #24, dependency cycle with #24"
 eq "dev408-18 queue: another machine's fleet PR is an order input, never ready; a non-fleet PR is not read" "$(nr 30):$(nr 31)" "other machine:not listed"
 eq "dev408-18 queue: with nothing ready the queue says so" "$(bash -c '. "$1/common.sh"; render_queue "$2"' _ "$SCRIPTS" "$(q)" | head -n 1)" "Merge in this order: none ready."
-check "dev408-18 queue: and each not-ready PR is one line, a ✗ per missing check (dev408-20)" bash -c ". '$SCRIPTS/common.sh'; render_queue \"\$1\" | grep -qx 'Not ready: \[app-api #23\](https://github.com/acme/app-api/pull/23) ✗ signed bbbbbbb ≠ head · ✗ held'" _ "$(q)"
+check "dev408-18 queue: and each not-ready PR is one line, its URL, a ✗ per missing check (dev408-20)" bash -c ". '$SCRIPTS/common.sh'; render_queue \"\$1\" | grep -qx 'Not ready: https://github.com/acme/app-api/pull/23 ✗ signed bbbbbbb ≠ head · ✗ held'" _ "$(q)"
 qfresh waits; qpr app-api 40 fleet/dev-40 main 2026-10-18T10:00:00Z '["a.go"]' x; qpr app-api 41 fleet/dev-41 fleet/dev-40 2026-10-18T10:00:00Z '["b.go"]' x
 qteam t40 app-api 40 DEV-40; qteam t41 app-api 41 DEV-41 aaaaaaa41
 eq "dev408-18 queue: a ready PR whose parent is not ready waits for it" "$(nr 41)" "waits for app-api #40"
@@ -3726,7 +3978,7 @@ eq "dev408-R6 queue: a ready PR that read mergeable unknown for a tick, then con
   "$(printf '%s' "$c2" | jq -r '[.[] | select(.type == "pr_conflicting") | .url] | join(",")')" "https://github.com/acme/app-api/pull/55"
 eq "dev408-R6 queue: a lead that could not be told is named so in the notice" \
   "$(bash -c '. "$1/common.sh"; render_notice "$2"' _ "$SCRIPTS" '{"type":"pr_conflicting","team":"te","name":"te/lead","url":"https://github.com/acme/app-api/pull/54","merged":"","lead_told":false}')" \
-  "Conflicting te/lead: [app-api #54](https://github.com/acme/app-api/pull/54) conflicts with main. Lead not reached: tell it to bring it up to date with main and have the tester sign off again."
+  "Conflicting te/lead: https://github.com/acme/app-api/pull/54 conflicts with main. Lead not reached: tell it to bring it up to date with main and have the tester sign off again."
 
 # -- dev408-5: the redact check (counts only; exit 0 clean, 1 a match, 2 cannot run)
 RR="$T/r408"; rfix "$RR"; RS="$T/rs408"; rterms "$RS"; RTF="$RS/private/redact_terms.txt"
@@ -3768,21 +4020,24 @@ eq "dev408-6 background tasks: a stop that names another task does not end this 
 rv() { "$SCRIPTS/respawn.sh" rv/builder "$@" >/dev/null 2>"$T/rv.err"; echo $?; }
 eq "dev408-10 respawn --restart: a newer installed plugin refuses with exit 5" "$(FLEET_INSTALLED_VERSION=2.0.0 rv --restart)" 5
 check "dev408-10 respawn --restart: and names both versions" grep -q 'rv/builder runs plugin 1.0.0 and 2.0.0 is installed' "$T/rv.err"
-eq "dev408-10 respawn --restart: FLEET_VERSION_OK=1 goes on (to the next check: no such template)" "$(FLEET_INSTALLED_VERSION=2.0.0 FLEET_VERSION_OK=1 rv --restart)" 1
+"$REG" pref version_ok 2.0.0 >/dev/null
+eq "dev408-10 respawn --restart: the go recorded for 2.0.0 goes on (to the next check: no such template)" "$(FLEET_INSTALLED_VERSION=2.0.0 rv --restart)" 1
+"$REG" pref version_ok "" >/dev/null
 eq "dev408-10 respawn --restart: an equal installed version goes on" "$(FLEET_INSTALLED_VERSION=1.0.0 rv --restart)" 1
 eq "dev408-10 respawn: a plain respawn of a dead agent does not ask" "$(FLEET_INSTALLED_VERSION=2.0.0 rv)" 1
 "$REG" retire rv/builder >/dev/null 2>&1 || true
 
-# -- dev408-20: plain symbols. The golden files pin the shapes; this pins the summary line's grouping (✗ blocked is
-# Stalled, Failed and Zombie together; ◐ waiting is an agent that needs input) and the singular.
+# -- dev408-20, as DEV-512 item 18 changed it: State is a word, never a symbol. The golden files pin the shapes; this
+# pins the summary line's grouping (blocked is Stalled, Failed and Zombie together; waiting is an agent that needs
+# input) and the singular.
 S20="$T/s20"; mkdir -p "$S20"
 s20() { FLEET_REGISTRY="$S20/fleet.json" FLEET_STATE_DIR="$S20" "$@"; }
 for x in "sa:Stalled" "sb:Zombie" "sc:Failed" "sd:Needs input" "se:Idle" "sf:Working"; do
   s20 "$REG" add "$(jq -cn --arg t "${x%%:*}" --arg s "${x#*:}" '{name: ($t + "/lead"), team: $t, tier: "Lead", status: $s, herdr_ref: $t, pane: "p"}')" >/dev/null
 done
-eq "dev408-20 symbols: the summary line counts the teams by state group" "$(s20 bash -c '. "$1/common.sh"; render_table | head -n 1' _ "$SCRIPTS")" "6 teams · ● 1 working · ○ 1 idle · ◐ 1 waiting · ✗ 3 blocked"
-eq "dev408-20 symbols: each State is its symbol and word" "$(s20 bash -c '. "$1/common.sh"; render_table' _ "$SCRIPTS" | awk -F' [|] ' '/^[|] s/ {print $4}' | paste -sd, -)" "✗ Stalled,✗ Zombie,✗ Failed,◐ Waiting,○ Idle,● Working"
-eq "dev408-20 symbols: one team is singular" "$(s20 bash -c '. "$1/common.sh"; render_table sf | head -n 1' _ "$SCRIPTS")" "1 team · ● 1 working"
+eq "dev408-20 words: the summary line counts the teams by state group" "$(s20 bash -c '. "$1/common.sh"; render_table | head -n 1' _ "$SCRIPTS")" "6 teams · 1 working · 1 idle · 1 waiting · 3 blocked"
+eq "dev408-20 words: each State is one word" "$(s20 bash -c '. "$1/common.sh"; render_table' _ "$SCRIPTS" | awk -F' [|] ' '/^[|] s/ {print $4}' | paste -sd, -)" "Stalled,Zombie,Failed,Waiting,Idle,Working"
+eq "dev408-20 words: one team is singular" "$(s20 bash -c '. "$1/common.sh"; render_table sf | head -n 1' _ "$SCRIPTS")" "1 team · 1 working"
 
 # -- dev408-13: agent state comes from herdr's Claude integration and the transcript; nothing reads the screen
 qfresh i13; mkdir -p "$QD/p13"
@@ -4145,14 +4400,15 @@ gcfg; eq "dev408-11 morning: never with overnight off" "$(evc "$(mt 2026-10-26T0
 qfresh meta; mkdir -p "$QD/p14"
 FLEET_FORCE=1 bt --issue DEV-140 build mt "$QD/p14" task
 eq "dev408-14 meta: boot reports the workspace's issue, PR and state, and each pane's role and state" \
-  "$(grep '^workspace report-metadata' "$HERDR_LOG"):$(grep -c '^pane report-metadata --source fleet p[0-9]* --token role=[a-z]* --token state=' "$HERDR_LOG")" \
-  "workspace report-metadata --source fleet w1 --token issue=DEV-140 --token pr= --token state=Working:4"
+  "$(grep '^workspace report-metadata' "$HERDR_LOG"):$(grep -c '^pane report-metadata p[0-9]* --source fleet --token role=[a-z]* --token state=' "$HERDR_LOG")" \
+  "workspace report-metadata w1 --source fleet --token issue=DEV-140 --clear-token pr --token state=Working:4"
 : >"$HERDR_LOG"; "$SCRIPTS/tick.sh" >/dev/null 2>&1; : >"$HERDR_LOG"; "$SCRIPTS/tick.sh" >/dev/null 2>&1
 eq "dev408-14 meta: a tick with nothing changed reports nothing" "$(grep -c 'report-metadata' "$HERDR_LOG")" 0
 "$REG" set build-mt/builder pr=https://github.com/acme/app-api/pull/14 >/dev/null; : >"$HERDR_LOG"; "$SCRIPTS/tick.sh" >/dev/null 2>&1
-eq "dev408-14 meta: a new PR is reported on the next tick" "$(grep -c '^workspace report-metadata --source fleet w1 --token issue=DEV-140 --token pr=#14 ' "$HERDR_LOG")" 1
+eq "dev408-14 meta: a new PR is reported on the next tick" "$(grep -c '^workspace report-metadata w1 --source fleet --token issue=DEV-140 --token pr=#14 ' "$HERDR_LOG")" 1
 META_FAIL=1 FLEET_FORCE=1 bt build mf "$QD/p14" task
 eq "dev408-14 meta: herdr refusing the metadata warns once and never fails the boot" "$BTRC:$(grep -c 'herdr did not take the panel metadata of build-mf' "$T/bt.err")" "0:1"
+rm -f "$FLEET_STATE_DIR/herdr_meta.refused" # the refusal is per herdr version; later cases' herdr takes it
 
 # -- dev408-15: slim, the fleet's panel style for herdr: written between markers, offered once, nothing else touched
 qfresh slim; HC="$QD/herdr.toml"; printf '# mine\n[keys]\nquit = "q"\n' >"$HC"; cp "$HC" "$QD/mine.toml"
@@ -4170,10 +4426,11 @@ sl on >/dev/null; eq "dev408-15 slim: a second on replaces the block, never two"
 eq "dev408-15 slim: status once on" "$(sl status)" "Slim: on. herdr Claude integration: current. Offer: done."
 sl off >/dev/null; eq "dev408-15 slim: off removes only the block and records the choice" "$(grep -c 'fleet slim' "$HC"):$(grep -c '^quit = "q"$' "$HC"):$("$REG" pref slim)" "0:1:off"
 eq "dev408-15 slim: with a choice recorded the offer is never due again" "$(sl status)" "Slim: off. herdr Claude integration: current. Offer: done."
-printf '[ui]\nsidebar_width = 30\n' >>"$HC"; cp "$HC" "$QD/before.toml"; o15="$(sl on 2>"$T/sl.err")"; rc=$?
-eq "dev408-15 slim: a [ui] table outside the markers: nothing changes, the lines to merge are printed, exit 3" \
-  "$rc:$(cmp -s "$HC" "$QD/before.toml" && echo same):$(printf '%s' "$o15" | grep -c '^sidebar_width = 40$'):$(grep -c 'already sets \[ui\] outside' "$T/sl.err")" "3:same:1:1"
-eq "dev408-15 slim: and status says conflict" "$(sl status | cut -d. -f1)" "Slim: conflict"
+printf '[ui]\nsidebar_width = 30\n' >>"$HC"; cp "$HC" "$QD/before.toml"
+eq "dev408-15 slim: a hand-written [ui] outside the markers: status says conflict" "$(sl status | cut -d. -f1)" "Slim: conflict"
+o15="$(sl on 2>"$T/sl.err")"; rc=$?
+eq "dev512-6 slim: on replaces it: exit 0, one [ui] and the fleet's width, the user's other lines kept, and it says what went" \
+  "$rc:$(grep -c '^\[ui\]' "$HC"):$(grep -c '^sidebar_width = ' "$HC"):$(grep -c '^quit = "q"$' "$HC"):$(printf '%s' "$o15" | sed 's/.*Replaced //')" "0:1:1:1:[ui], sidebar_width."
 cp "$QD/mine.toml" "$HC"; RELOAD_FAIL=1 sl on >/dev/null 2>"$T/sl.err"; rc=$?
 eq "dev408-15 slim: a reload herdr refuses puts the config back as it was, exit 1" "$rc:$(cmp -s "$HC" "$QD/mine.toml" && echo restored)" "1:restored"
 FLEET_ROLE=worker sl status >/dev/null 2>"$T/sl.err"; eq "dev408-15 slim: an agent is refused" "$?:$(grep -c "slim.sh is the Orchestrator's" "$T/sl.err")" "1:1"
