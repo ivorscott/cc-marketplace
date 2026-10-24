@@ -1302,7 +1302,8 @@ rm -rf "$T/sc"
 # -- tick
 rm -f "$FLEET_STATE_DIR/tick.state.json" "$AS"/*
 export FLEET_STATE_DIR="$T/tstate" FLEET_REGISTRY="$T/tstate/fleet.json" FLEET_INBOX="$T/tstate/escalations.jsonl"; mkdir -p "$FLEET_STATE_DIR"
-arow tk/lead Lead tk-l; arow tk/builder Worker tk-b; arow tk/tester Worker tk-t
+# The lead stays working, so the signed-off team is not parked on pr_ready here (DEV-408 item 2 has its own cases).
+arow tk/lead Lead tk-l Working; echo working >"$AS/tk-l"; arow tk/builder Worker tk-b; arow tk/tester Worker tk-t
 : >"$GH_LOG"
 out="$("$SCRIPTS/tick.sh" 2>"$T/tick.err")"; rc=$?
 eq "tick: a quiet tick prints nothing" "$out" ""
