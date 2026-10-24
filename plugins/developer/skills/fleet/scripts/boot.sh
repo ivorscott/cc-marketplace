@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Boot one team: workspace → worktrees → panes → agents → briefs → registry rows.
+# Boot one team: workspace → worktrees → panes → registry rows (Idle) → agents → briefs.
 #
 #   boot.sh [--issue ID --claimed-by KEY --labels a,b --scope 'repo: p1, p2' --peer-claim ...]
 #           <template> <focus> <repo-dir> [task text...]
@@ -8,6 +8,11 @@
 # template JSON file. <focus> becomes the team name <template>-<focus>. The task text
 # defaults to <focus>. Prints "Booted <team> on <issue> in <repo>: lead ✓ ..." (✗ with the reason for an agent
 # that did not start or whose brief did not arrive), then the team table (references/output.md).
+#
+# A boot that fails or is interrupted (INT, TERM) after it created something undoes what this run made: it closes the
+# workspace, removes the worktrees and fleet/<team>/* branches it made and retires its rows (Abandoned), so the same
+# name boots again. Before anything is created, it refuses a name with leftovers of an earlier boot (fleet/<team>/*
+# branches in the repo, or a $FLEET_WORKTREES/<team> directory), naming `retire.sh <team>`.
 #
 # Every Claude agent also gets the tracker_allow and forge_allow lists from config.toml, so
 # reading tickets (Linear, Jira, ...) and pull/merge requests (gh, glab, ...) never blocks
@@ -82,6 +87,10 @@ nworkers="$(jq '.workers | length' "$tpl")"
 
 # One team name, one live team.
 [ "$("$registry" list --team "$team" --live | jq length)" = "0" ] || die "team $team is already live; retire it first"
+# Leftovers of an earlier boot of this name (an interrupted one, or a retire that kept work) are never reused.
+left="$(git -C "$repo" for-each-ref --format='%(refname:short)' "refs/heads/fleet/$team/" 2>/dev/null | paste -sd' ' -)" || left=""
+[ ! -d "$FLEET_WORKTREES/$team" ] || left="$left${left:+ }$FLEET_WORKTREES/$team"
+[ -z "$left" ] || die "$team has leftovers of an earlier boot ($left)" "Run fleet retire $team first: it removes what is clean and names the rest"
 
 # Claim: refuse an issue another machine holds, warn about overlapping scope.
 trim() { local v="$1"; v="${v#"${v%%[![:space:]]*}"}"; printf '%s' "${v%"${v##*[![:space:]]}"}"; }
@@ -174,14 +183,33 @@ is_git=false; git -C "$repo" rev-parse --git-dir >/dev/null 2>&1 && is_git=true
 # it, saying so once. Its first herdr call, after every refusal.
 herdr_integration_ok || warn "herdr's Claude integration is not current, so agent state may be wrong; run herdr integration install claude"
 
+# Rollback: a boot that fails or is interrupted once it has created something undoes only what this run made (an
+# EXIT trap, armed with the workspace and disarmed once the reply is printed): it closes the workspace, removes the
+# worktrees and the fleet/<team>/* branches it made, and retires the rows it wrote with outcome Abandoned. The same
+# name then boots again.
+made_ws=""; made_wts=(); made_brs=(); made_rows=0; armed=0
+rollback() {
+  [ "$armed" = 1 ] || return 0
+  armed=0; local x
+  warn "boot of $team did not finish; undoing what it made"
+  [ -z "$made_ws" ] || hd workspace close "$made_ws" >/dev/null 2>&1 || warn "could not close workspace $made_ws"
+  for x in ${made_wts[@]+"${made_wts[@]}"}; do git -C "$repo" worktree remove --force "$x" >/dev/null 2>&1 || warn "could not remove worktree $x"; done
+  for x in ${made_brs[@]+"${made_brs[@]}"}; do git -C "$repo" branch -D "$x" >/dev/null 2>&1 || warn "could not delete branch $x"; done
+  rmdir "$FLEET_WORKTREES/$team" 2>/dev/null || true
+  [ "$made_rows" = 0 ] || "$registry" retire "$team" --outcome Abandoned >/dev/null 2>&1 || warn "could not retire the rows of $team"
+}
+trap rollback EXIT; trap 'exit 130' INT; trap 'exit 143' TERM
+
 # 1. Workspace with the lead in its root pane.
 lead_agent="$(agent_name "$team-lead")"
 lead_name="$team/lead"
+armed=1
 ws_json="$(hd workspace create --cwd "$repo" --label "$team" --no-focus \
-  --env FLEET_ROLE=lead --env "FLEET_NAME=$lead_name" --env "FLEET_TEAM=$team" --env "FLEET_STATE_DIR=$FLEET_STATE_DIR" ${env_args[@]+"${env_args[@]}"})"
-workspace="$(printf '%s' "$ws_json" | jq -r .result.workspace.workspace_id)"
-lead_pane="$(printf '%s' "$ws_json" | jq -r .result.root_pane.pane_id)"
-[ -n "$workspace" ] && [ "$workspace" != "null" ] || die "workspace create failed: $ws_json"
+  --env FLEET_ROLE=lead --env "FLEET_NAME=$lead_name" --env "FLEET_TEAM=$team" --env "FLEET_STATE_DIR=$FLEET_STATE_DIR" ${env_args[@]+"${env_args[@]}"})" || ws_json=""
+workspace="$(printf '%s' "$ws_json" | jq -r '.result.workspace.workspace_id // empty' 2>/dev/null || true)"
+lead_pane="$(printf '%s' "$ws_json" | jq -r '.result.root_pane.pane_id // empty' 2>/dev/null || true)"
+[ -n "$workspace" ] || die "workspace create failed: $ws_json"
+made_ws="$workspace"
 
 # 2. Worker panes (first to the right of the lead, the rest stacked below it), worktrees.
 workers_json="[]"; prev=""
@@ -194,6 +222,7 @@ for i in $(seq 0 $((nworkers - 1))); do
     worktree="$FLEET_WORKTREES/$team/$role"; branch="fleet/$team/$role"
     mkdir -p "$(dirname "$worktree")"
     git -C "$repo" worktree add -q -b "$branch" "$worktree" >/dev/null 2>&1 || die "git worktree add failed for $worktree"
+    made_wts+=("$worktree"); made_brs+=("$branch")
     # A force push with lease also has to include what the remote had when we last fetched (push.useForceIfIncludes).
     git -C "$worktree" config push.useForceIfIncludes true >/dev/null 2>&1 || warn "could not set push.useForceIfIncludes in $worktree"
     cwd="$worktree"
@@ -202,7 +231,8 @@ for i in $(seq 0 $((nworkers - 1))); do
   pane="$(hd pane split "${split[@]}" --cwd "$cwd" --no-focus \
     --env FLEET_ROLE=worker --env "FLEET_NAME=$name" --env "FLEET_TEAM=$team" \
     --env "FLEET_WORKTREE=$worktree" --env "FLEET_STATE_DIR=$FLEET_STATE_DIR" \
-    ${env_args[@]+"${env_args[@]}"} | jq -r .result.pane.pane_id)"
+    ${env_args[@]+"${env_args[@]}"} | jq -r '.result.pane.pane_id // empty')" || pane=""
+  [ -n "$pane" ] || die "pane split failed for $name"
   prev="$pane"
   workers_json="$(printf '%s' "$workers_json" | jq -c --argjson w "$w" --arg n "$name" --arg a "$agent" \
     --arg p "$pane" --arg c "$cwd" --arg wt "$worktree" --arg b "$branch" \
@@ -236,43 +266,55 @@ deliver() {
 
 expertise_for() { local f="$repo/.claude/experts/$1.md"; [ -f "$f" ] && printf '%s' "$f" || true; }
 
-# 3. Start workers, register them, send their briefs.
+# 3. Every row first, Idle (D8), so an interrupted boot never leaves an agent the registry does not know (the rollback
+# retires them). Each row names its session's transcript before the agent starts.
 for i in $(seq 0 $((nworkers - 1))); do
   w="$(printf '%s' "$workers_json" | jq -c ".[$i]")"
   get() { printf '%s' "$w" | jq -r ".$1 // \"\""; }
   kind="$(get kind)"; kind="${kind:-claude}"
   if ! command -v "$kind" >/dev/null 2>&1; then warn "$kind not on PATH; $(get agent) falls back to claude"; kind=claude; fi
-  allow="$(printf '%s' "$w" | jq -c '.allow // []')"
   session_id=""; row_transcript=""
   if [ "$kind" = "claude" ]; then
     session_id="$(new_uuid)"; row_transcript="$(transcript_dir_for "$(get cwd)")/$session_id.jsonl"
   fi
-  status="$(start_agent "$(get agent)" "$kind" "$(get pane)" "$(get model)" Worker "$(get worktree)" "$allow")"
-  ex="$(expertise_for "$(get role)")"
-  "$registry" add "$(row "$(get name)" Worker "$(get agent)" "$(get pane)" "$kind" "$(get model)" "$status" "$(get cwd)" "$(get worktree)" "$(get branch)" "$ex")"
+  "$registry" add "$(row "$(get name)" Worker "$(get agent)" "$(get pane)" "$kind" "$(get model)" Idle "$(get cwd)" "$(get worktree)" "$(get branch)" "$(expertise_for "$(get role)")")" >/dev/null
+  made_rows=1
+  workers_json="$(printf '%s' "$workers_json" | jq -c --argjson i "$i" --arg k "$kind" --arg s "$session_id" '.[$i] += {kind: $k, session_id: $s}')"
+done
+lead_kind="$(jq -r '.lead.kind // "claude"' "$tpl")"; lead_model="$(jq -r '.lead.model // ""' "$tpl")"
+command -v "$lead_kind" >/dev/null 2>&1 || { warn "$lead_kind not on PATH; the lead falls back to claude"; lead_kind=claude; }
+lead_session=""; row_transcript=""
+if [ "$lead_kind" = "claude" ]; then
+  lead_session="$(new_uuid)"; row_transcript="$(transcript_dir_for "$repo")/$lead_session.jsonl"
+fi
+"$registry" add "$(row "$lead_name" Lead "$lead_agent" "$lead_pane" "$lead_kind" "$lead_model" Idle "$repo" "" "" "$(expertise_for lead)")" >/dev/null
+made_rows=1
+
+# 4. Start the workers (each row turns Working or Zombie) and send their briefs.
+for i in $(seq 0 $((nworkers - 1))); do
+  w="$(printf '%s' "$workers_json" | jq -c ".[$i]")"
+  get() { printf '%s' "$w" | jq -r ".$1 // \"\""; }
+  session_id="$(get session_id)"
+  status="$(start_agent "$(get agent)" "$(get kind)" "$(get pane)" "$(get model)" Worker "$(get worktree)" "$(printf '%s' "$w" | jq -c '.allow // []')")"
+  "$registry" set "$(get name)" status="$status" >/dev/null
   if [ "$status" = "Working" ]; then
-    brief="$(build_brief "$(get name)" "$ex" "$(render "$(get brief)" "$(get name)" "$(get worktree)" "$worker_agents")")"
+    brief="$(build_brief "$(get name)" "$(expertise_for "$(get role)")" "$(render "$(get brief)" "$(get name)" "$(get worktree)" "$worker_agents")")"
     deliver "$(get name)" "$brief"
   fi
 done
 
-# 4. Start the lead last, so its brief can name live workers.
-lead_kind="$(jq -r '.lead.kind // "claude"' "$tpl")"; lead_model="$(jq -r '.lead.model // ""' "$tpl")"
-command -v "$lead_kind" >/dev/null 2>&1 || { warn "$lead_kind not on PATH; the lead falls back to claude"; lead_kind=claude; }
-session_id=""; row_transcript=""
-if [ "$lead_kind" = "claude" ]; then
-  session_id="$(new_uuid)"; row_transcript="$(transcript_dir_for "$repo")/$session_id.jsonl"
-fi
+# 5. Start the lead last, so its brief can name live workers.
+session_id="$lead_session"
 status="$(start_agent "$lead_agent" "$lead_kind" "$lead_pane" "$lead_model" Lead "" "$(jq -c '.lead.allow // []' "$tpl")")"
-ex="$(expertise_for lead)"
-"$registry" add "$(row "$lead_name" Lead "$lead_agent" "$lead_pane" "$lead_kind" "$lead_model" "$status" "$repo" "" "" "$ex")"
+"$registry" set "$lead_name" status="$status" >/dev/null
 if [ "$status" = "Working" ]; then
-  brief="$(build_brief "$lead_name" "$ex" "$(render "$(jq -r .lead.brief "$tpl")" "$lead_name" "" "$worker_agents")")"
+  brief="$(build_brief "$lead_name" "$(expertise_for lead)" "$(render "$(jq -r .lead.brief "$tpl")" "$lead_name" "" "$worker_agents")")"
   deliver "$lead_name" "$brief"
 fi
 
 ev_log boot team="$team" issue="$issue" detail="template $template"
 reply "$(render_line booted team="$team" issue="$(issue_link "$issue" "$issue_url")" repo="$(basename "$repo")" agents="$(roles_line "$team")")" "$(render_table)"
+armed=0 # booted: from here on a failed brief marks its row Failed, and nothing is rolled back
 if [ "${#failed_agents[@]}" -gt 0 ]; then
   warn "brief not delivered to: ${failed_agents[*]} (rows set to Failed)"
   exit 1

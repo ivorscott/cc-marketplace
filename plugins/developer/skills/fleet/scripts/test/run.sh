@@ -106,7 +106,9 @@ done
 echo "${logged[*]}" >>"$HERDR_LOG"
 case "$1 $2" in
   "workspace create") echo '{"result":{"workspace":{"workspace_id":"w1"},"root_pane":{"pane_id":"p0"}}}' ;;
-  "pane split") n=$(( $(grep -c '^pane split' "$HERDR_LOG") )); echo "{\"result\":{\"pane\":{\"pane_id\":\"p$n\"}}}" ;;
+  # SPLIT_FAIL_AT=<n>: the n-th split fails (DEV-408 item 8, a boot that dies after the first panes)
+  "pane split") n=$(( $(grep -c '^pane split' "$HERDR_LOG") )); [ "${SPLIT_FAIL_AT:-0}" != "$n" ] || exit 1
+    echo "{\"result\":{\"pane\":{\"pane_id\":\"p$n\"}}}" ;;
   "pane process-info")
     if [ -n "${GONE_ONCE:-}" ] && [ -e "$GONE_ONCE" ]; then rm -f "$GONE_ONCE"; exit 1; fi
     # an agent that got /exit shows its shell until it is started again
@@ -122,7 +124,10 @@ case "$1 $2" in
   # working unless PROMPT_NOSTATE is set, and `agent read` prints $AS/<agent>.read.
   # A pane started by the shim runs what boot types into it, so its env can be dumped: $AS/<pane>.env.
   "pane run") ( eval "${*:4}"; env ) >"$AS/$3.env" 2>/dev/null; echo '{}' ;;
-  "agent start") rm -f "$AS/$3" "$AS/$3.read" "$AS/exited.$3"; echo '{}' ;;
+  # START_HOLD=<agent>: its start leaves $AS/held.<agent> and takes 2s, so a test can interrupt the boot there
+  "agent start") rm -f "$AS/$3" "$AS/$3.read" "$AS/exited.$3"
+    if [ "${START_HOLD:-}" = "$3" ]; then : >"$AS/held.$3"; sleep 2; fi
+    echo '{}' ;;
   "agent list") [ -z "${AGENT_LIST_FAIL:-}" ] || exit 1; cat "$AS/agent-list.json" 2>/dev/null || echo '{}' ;;
   # A pane with $AS/<pane>.name answers `agent get <pane>` with that name and its pane id, as herdr does.
   "agent get") echo "{\"result\":{\"agent\":{\"agent_status\":\"$(cat "$AS/$3" 2>/dev/null || echo idle)\",\"state_change_seq\":$(cat "$AS/$3.seq" 2>/dev/null || echo 0)$([ ! -f "$AS/$3.name" ] || printf ',"name":"%s","pane_id":"%s"' "$(cat "$AS/$3.name")" "$3")}}}" ;;
@@ -3810,6 +3815,35 @@ jq '.headRefOid = "ccccccc70"' "$QGHD/app-api-70.json" >"$QD/h.json" && mv "$QD/
 eq "dev408-7 nudge: a new head nudges again" "$(grep -c '^agent prompt n70-lead PR https://github.com/acme/app-api/pull/70 head is now ccccccc and the builder is idle' "$HERDR_LOG")" 1
 check "dev408-7 nudge: the lead brief waits on idle and blocked, and re-checks a wait that timed out" bash -c \
   "jq -r .lead.brief '$SCRIPTS/../templates/build.json' | grep -q -- '--until idle --until blocked' && jq -r .lead.brief '$SCRIPTS/../templates/build.json' | grep -q 'when a wait times out'"
+
+# -- dev408-8: an interrupted boot undoes what it made; leftovers block a name, and retire tidies them
+qfresh boot8; R8="$QD/r8"; git init -q -b main "$R8"; git -C "$R8" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+git init -q --bare "$QD/r8.git"; git -C "$R8" remote add origin "$QD/r8.git"; git -C "$R8" push -q origin main 2>/dev/null
+left8() { # left8 <focus>: what boot left of build-<focus>: live rows, fleet branches, its worktrees directory
+  printf '%s:%s:%s' "$("$REG" list --team "build-$1" --live | jq length)" "$(git -C "$R8" for-each-ref --format=x "refs/heads/fleet/build-$1/" | grep -c . || true)" \
+    "$([ -d "$FLEET_STATE_DIR/worktrees/build-$1" ] && echo dir || echo none)"
+}
+SPLIT_FAIL_AT=2 FLEET_FORCE=1 bt build i8 "$R8" task
+eq "dev408-8 boot: a pane split that fails after the first undoes the boot: no rows, branches or worktrees, workspace closed" \
+  "$BTRC:$(left8 i8):$("$REG" list --team build-i8 | jq length):$(grep -c '^workspace close' "$HERDR_LOG")" "1:0:0:none:0:1"
+FLEET_FORCE=1 bt build i8 "$R8" task; eq "dev408-8 boot: and the same name boots again" "$BTRC:$(left8 i8 | cut -d: -f2)" "0:2"
+START_HOLD=build-i8t-builder FLEET_FORCE=1 "$SCRIPTS/boot.sh" build i8t "$R8" task >"$T/b8.out" 2>"$T/b8.err" & b8=$!
+for _ in $(seq 1 100); do [ -e "$AS/held.build-i8t-builder" ] && break; sleep 0.1; done
+kill -TERM "$b8"; wait "$b8"; rc=$?
+eq "dev408-8 boot: interrupted after the panes (TERM at the second worker's start), it undoes what it made" "$rc:$(left8 i8t)" "143:0:0:none"
+eq "dev408-8 boot: the rows it wrote first are retired Abandoned" "$("$REG" list --team build-i8t | jq -r '([.[] | .status + "/" + (.outcome // "")] | unique | join(",")), length' | paste -sd: -)" "Retired/Abandoned:4"
+FLEET_FORCE=1 bt build i8t "$R8" task; eq "dev408-8 boot: and that name boots again too" "$BTRC" 0
+git -C "$R8" branch fleet/build-lb/builder
+FLEET_FORCE=1 bt build lb "$R8" task
+eq "dev408-8 boot: a leftover branch blocks the name before anything is made, naming retire" \
+  "$BTRC:$(grep -c 'build-lb has leftovers of an earlier boot (fleet/build-lb/builder). Run fleet retire build-lb first' "$T/bt.err"):$(wc -l <"$HERDR_LOG" | tr -d ' ')" "1:1:0"
+W8="$FLEET_STATE_DIR/worktrees/build-lb"; mkdir -p "$W8"; git -C "$R8" worktree add -q -b fleet/build-lb/tester "$W8/tester" 2>/dev/null
+git -C "$W8/tester" -c user.email=t@t -c user.name=t commit -q --allow-empty -m wip
+out8="$("$SCRIPTS/retire.sh" build-lb 2>"$T/r8.err")"; rc=$?
+eq "dev408-8 retire: with no rows it removes the clean leftover branch and keeps the worktree with an unpushed commit" \
+  "$rc:$(git -C "$R8" for-each-ref --format='%(refname:short)' refs/heads/fleet/build-lb/ | paste -sd, -):$([ -d "$W8/tester" ] && echo kept)" "0:fleet/build-lb/tester:kept"
+eq "dev408-8 retire: and names what it kept" "$(printf '%s\n' "$out8" | head -n 1)" "Retired build-lb (Abandoned): PRs none. Nothing archived. Kept: tester (unpushed commits)."
+eq "dev408-8 retire: a name with no rows and no leftovers still says nothing matches" "$("$SCRIPTS/retire.sh" build-nothing 2>&1 >/dev/null | grep -c "nothing live matches 'build-nothing'")" 1
 # ---- end DEV-408 ----
 
 printf '\n%d passed, %d failed\n' "$pass" "$failn"

@@ -13,6 +13,9 @@
 # ("Nothing archived." when no report was copied; "Kept: ..." only when something was kept), then the team table
 # (references/output.md). The files and commits that kept a worktree are named on stderr.
 #
+# A team name with no live rows but leftovers of an earlier boot (worktrees under $FLEET_WORKTREES/<team>, fleet/<team>/*
+# branches: an interrupted boot, or a retire that kept work) is tidied instead of refused: what would lose nothing is
+# removed, the rest kept and named (boot refuses a name with leftovers and names this).
 # Never closes panes or workspaces the registry doesn't record as fleet-created. Worktrees
 # are big (node_modules, build output), so a retire removes them, but only after looking:
 #   - build outputs (node_modules/, *.tsbuildinfo, dist/, .next/, coverage/) are ignored;
@@ -120,11 +123,48 @@ require_herdr
 target="${1:?usage: retire.sh <team | team/role> [--outcome O]}"; shift
 outcome=""; [ "${1:-}" = "--outcome" ] && outcome="${2:-}"
 
-rows="$("$registry" list | jq --arg x "$target" '[.[] | select((.name == $x or .team == $x) and .status != "Retired")]')"
-[ "$(printf '%s' "$rows" | jq length)" != "0" ] || die "nothing live matches '$target'"
-
 kept=""; archived=""
 keep() { kept="$kept${kept:+, }$1 ($2)"; } # keep <what> <why>: named on the Retired line
+
+# leftovers <team>: no live rows, but an earlier boot of the name left worktrees under $FLEET_WORKTREES/<team> or
+# fleet/<team>/* branches (an interrupted boot, or a retire that kept work). Each is removed when nothing on it would be
+# lost: a worktree as classify says; a branch with git branch -D only when none of its commits is on no other branch
+# and no remote. The rest are kept and named. Returns 1 when there is nothing.
+leftovers() {
+  local team="$1" wt r b n why repos="" found=0
+  for wt in "$FLEET_WORKTREES/$team"/*; do
+    [ -d "$wt" ] || continue
+    found=1
+    r="$(git -C "$wt" worktree list --porcelain 2>/dev/null | sed -n '1s/^worktree //p')"
+    repos="$repos${r:+$r$'\n'}"
+    classify "$wt"; why="$(keep_why)"
+    if [ -n "$why" ]; then warn "kept $wt: $why"; keep "$(basename "$wt")" "$why"
+    elif [ -z "$r" ] || ! git -C "$r" worktree remove --force "$wt" 2>/dev/null; then keep "$(basename "$wt")" "git worktree remove failed"; fi
+  done
+  repos="$(printf '%s%s\n' "$repos" "$("$registry" list | jq -r --arg t "$team" '.[] | select(.team == $t) | .repo // empty')" | grep . | sort -u || true)"
+  while IFS= read -r r; do
+    [ -d "$r" ] || continue
+    while IFS= read -r b; do
+      [ -n "$b" ] || continue
+      found=1
+      ! git -C "$r" worktree list --porcelain 2>/dev/null | grep -qx "branch refs/heads/$b" || continue # held by a kept worktree
+      n="$(git -C "$r" rev-list "$b" --not --exclude="refs/heads/$b" --branches --remotes 2>/dev/null | grep -c . || true)"
+      if [ "$n" = 0 ]; then git -C "$r" branch -D "$b" >/dev/null 2>&1 || keep "$b" "git branch -D failed"
+      else warn "kept branch $b in $r: $n commit(s) on no other branch or remote"; keep "$b" "$n commit$([ "$n" = 1 ] || echo s) on no other branch or remote"; fi
+    done < <(git -C "$r" for-each-ref --format='%(refname:short)' "refs/heads/fleet/$team/" 2>/dev/null)
+  done <<<"$repos"
+  rmdir "$FLEET_WORKTREES/$team" 2>/dev/null || true
+  [ "$found" = 1 ]
+}
+
+rows="$("$registry" list | jq --arg x "$target" '[.[] | select((.name == $x or .team == $x) and .status != "Retired")]')"
+if [ "$(printf '%s' "$rows" | jq length)" = "0" ]; then
+  if [ "${target%%/*}" = "$target" ] && leftovers "$target"; then
+    reply "$(render_line retired team="$target" outcome="${outcome:-Abandoned}" kept="$kept")" "$(render_table)"
+    exit 0
+  fi
+  die "nothing live matches '$target'"
+fi
 whole_team=false; printf '%s' "$rows" | jq -e --arg x "$target" 'all(.team == $x)' >/dev/null && [ "${target%%/*}" = "$target" ] && whole_team=true
 
 if $whole_team; then
