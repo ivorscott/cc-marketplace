@@ -3809,6 +3809,36 @@ tstat() { "$REG" list --team "$1" | jq -r '[.[].status] | unique | join(",")'; }
 eq "dev408-2 park: signed off with every agent Done or Idle, the team parks (Done rows stay Done), and pr_ready still wakes" "$(evc "$pk" pr_ready):$(tstat s60):$("$REG" get s60/lead | jq -r .parked_reason)" "3:Done,Parked:signed-off"
 eq "dev408-2 park: an agent still working means no park" "$(tstat s61 | grep -c Parked)" 0
 eq "dev408-2 park: work that is not pushed refuses the park: one warning, the team keeps its slot, the tick goes on" "$rc:$(tstat s62):$(grep -c 's62 is signed off but could not park, so it keeps its slot: not parking s62' "$T/pk.err")" "0:Done,Idle:1"
+# The tester keeps its report uncommitted under reports/: park ignores only untracked files there.
+pkwt() { # pkwt <dir> [tracked]: a repo with a.go (and, given tracked, reports/old.md) committed and pushed to its own origin
+  git init -q -b main "$1"; git init -q --bare "$1-origin.git"; git -C "$1" remote add origin "$1-origin.git"; echo a >"$1/a.go"
+  [ -z "${2:-}" ] || { mkdir -p "$1/reports"; echo old >"$1/reports/old.md"; }
+  git -C "$1" add -A; git -C "$1" -c user.email=t@t -c user.name=t commit -q -m init; git -C "$1" push -q origin main 2>/dev/null
+}
+pkteam() { # pkteam <team> <worktree>: an Idle lead and a Done tester working in that worktree
+  "$REG" add "$(jq -cn --arg t "$1" '{name: ($t + "/lead"), team: $t, tier: "Lead", status: "Idle", herdr_ref: ($t + "-lead"), pane: ("p" + $t)}')" >/dev/null
+  "$REG" add "$(jq -cn --arg t "$1" --arg w "$2" '{name: ($t + "/tester"), team: $t, tier: "Worker", status: "Done", herdr_ref: ($t + "-t"), pane: ("pt" + $t), worktree: $w}')" >/dev/null
+}
+qfresh rpark
+pkwt "$QD/rp1"; mkdir -p "$QD/rp1/reports"; echo r >"$QD/rp1/reports/DEV-1-tester.md"; pkteam rp1 "$QD/rp1"
+pkwt "$QD/rp2" tracked; echo r >"$QD/rp2/reports/DEV-2-tester.md"; echo r >"$QD/rp2/reports/run 2.md"; pkteam rp2 "$QD/rp2"
+pkwt "$QD/rp3"; mkdir -p "$QD/rp3/reports"; echo r >"$QD/rp3/reports/DEV-3-tester.md"; echo n >"$QD/rp3/notes.txt"; pkteam rp3 "$QD/rp3"
+pkwt "$QD/rp4" tracked; echo changed >"$QD/rp4/reports/old.md"; pkteam rp4 "$QD/rp4"
+for t in rp1 rp2 rp3 rp4; do "$SCRIPTS/park.sh" "$t" >/dev/null 2>"$T/$t.err"; echo "$?" >"$T/$t.rc"; done
+eq "dev408-2 park: an untracked report under reports/ does not refuse it, whether reports/ is tracked or new, quoted names too" \
+  "$(cat "$T/rp1.rc"):$(tstat rp1):$(cat "$T/rp2.rc"):$(tstat rp2)" "0:Done,Parked:0:Done,Parked"
+eq "dev408-2 park: an untracked file outside reports/ still refuses, naming the worktree" \
+  "$(cat "$T/rp3.rc"):$(tstat rp3):$(grep -c "rp3/tester: uncommitted changes in $QD/rp3" "$T/rp3.err")" "1:Done,Idle:1"
+eq "dev408-2 park: a changed tracked file under reports/ still refuses" "$(cat "$T/rp4.rc"):$(tstat rp4):$(grep -c 'rp4/tester: uncommitted changes' "$T/rp4.err")" "1:Done,Idle:1"
+qfresh signed2
+"$REG" add '{"name":"orchestrator","team":"orchestrator","tier":"Orchestrator","status":"Working","herdr_ref":"o3","pane":"po3"}' >/dev/null; "$REG" set orchestrator target_teams=1 >/dev/null
+qpr app-api 63 fleet/dev-63 main 2026-10-18T10:00:00Z '["d.go"]' x; pkwt "$QD/wt63"; mkdir -p "$QD/wt63/reports"; echo r >"$QD/wt63/reports/DEV-63-tester.md"
+pkteam s63 "$QD/wt63"; "$REG" add '{"name":"s63/builder","team":"s63","tier":"Worker","status":"Done","herdr_ref":"s63-b","pane":"pb","pr":"https://github.com/acme/app-api/pull/63","issue":"DEV-63"}' >/dev/null
+"$REG" signoff s63/tester https://github.com/acme/app-api/pull/63 aaaaaaa63 >/dev/null
+pk3="$(FLEET_GH="$QD/gh-shim" "$SCRIPTS/tick.sh" 2>"$T/pk3.err")"
+eq "dev408-2 park: on pr_ready, tick parks a signed-off team whose tester's report is untracked under reports/, and the slot frees" \
+  "$(tstat s63):$("$REG" get s63/lead | jq -r .parked_reason):$(grep -c 'could not park' "$T/pk3.err"):$(printf '%s' "$pk3" | jq -r '[.[] | select(.type == "slot_free") | .detail] | join(",")')" \
+  "Done,Parked:signed-off:0:0 live < target 1"
 qfresh picked; mkdir -p "$QD/p2"
 FLEET_FORCE=1 bt --issue DEV-70 --issue-url https://linear.app/acme/issue/DEV-70/x build pk "$QD/p2" task
 "$REG" note build-pk/lead picked "Todo by priority; DEV-70 is the oldest P1" >/dev/null

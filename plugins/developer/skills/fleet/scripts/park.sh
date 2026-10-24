@@ -9,7 +9,8 @@
 # its repo for repo_without_team. A Parked team does not count against max_teams.
 #
 # It refuses at once, changing nothing, when herdr does not answer, when a worktree of the team has changes
-# that are not committed, or when it has commits that are on no remote. It never waits.
+# that are not committed (an untracked file under reports/, where the tester keeps its report, does not count), or
+# when it has commits that are on no remote. It never waits.
 # --after-merge parks nothing now: the team's rows are marked, and tick parks the team when its PR merges
 # instead of the Orchestrator giving it the next issue. Bring a team back with unpark.sh.
 # Internal: --reason <focus:team> (focus.sh) or signed-off (tick, after a sign-off) sets the parked_reason / the mark.
@@ -47,11 +48,14 @@ fi
 # herdr first: with it down the panes cannot be closed, and rows must not say Parked while the panes live on.
 hd agent list >/dev/null 2>&1 || die "herdr is not answering; $team is not parked and no row changed"
 
-# Work that would be lost or stranded: refuse for the whole team, naming every worktree.
+# Work that would be lost or stranded: refuse for the whole team, naming every worktree. An untracked file under
+# reports/ is not: the tester keeps its report there uncommitted, so a signed-off team would otherwise never park.
+# Tracked changes anywhere (reports/ too) and untracked files anywhere else still refuse. git quotes a path with
+# unusual characters, hence both forms.
 refused=""
 while IFS=$'\t' read -r name wt; do
   [ -n "$wt" ] && [ -d "$wt" ] || continue
-  if [ -n "$(git -C "$wt" status --porcelain 2>/dev/null | head -n 1)" ]; then refused="$refused
+  if [ -n "$(git -C "$wt" status --porcelain 2>/dev/null | grep -v -e '^?? reports/' -e '^?? "reports/' | head -n 1)" ]; then refused="$refused
   $name: uncommitted changes in $wt"; continue; fi
   if [ "$(git -C "$wt" rev-list --count HEAD --not --remotes 2>/dev/null || echo 0)" != 0 ]; then refused="$refused
   $name: commits in $wt that are on no remote"; fi
