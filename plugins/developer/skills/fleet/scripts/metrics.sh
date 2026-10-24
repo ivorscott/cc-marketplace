@@ -13,7 +13,9 @@
 #                   the team's transcripts (only the session files on the team's rows, live and archived:
 #                   each `transcript` and the earlier ones in `transcripts`) between the PR's start and
 #                   its merge (or now); lines are parsed one at a time and unparsable ones skipped
-# Reads $FLEET_STATE_DIR/events.jsonl and the registry; writes nothing.
+# Reads $FLEET_STATE_DIR/events.jsonl and the registry. The reply is the weekly table, | Week | Issues shipped | PRs |
+# Rework | Median cycle |, then "Report: <path>": reports/fleet-metrics-<date>.md (common.sh report_dir), which holds
+# that table and one row per PR. --json prints the per-PR rows instead and writes nothing.
 # UNVERIFIED: the transcript line shape (`.timestamp`, `.type == "assistant"`, `.message.usage`).
 # Command: Show per-PR metrics from the event log · e.g. fleet metrics --since 7d
 set -euo pipefail
@@ -83,6 +85,12 @@ while IFS= read -r p; do
 done < <(printf '%s' "$prs" | jq -c '.[]')
 
 if $json; then printf '%s\n' "$out"; exit 0; fi
-if [ "$(printf '%s' "$out" | jq length)" = 0 ]; then printf 'no PRs in the last %s\n' "$since"; exit 0; fi
-printf '%s' "$out" | jq -r '(["PR", "TEAM", "READY_MIN", "REWORK", "STALLS", "MISSED", "TOKENS"] | @tsv),
-  (.[] | [.pr, .team, (.ready_minutes // "-"), .rework_rounds, .stalls, .missed_messages, .tokens] | map(tostring) | @tsv)' | column -t -s $'\t'
+if [ "$(printf '%s' "$out" | jq length)" = 0 ]; then render_line no_prs since="$since"; exit 0; fi
+# The reply is the weekly table; the report file holds it and one row per PR.
+weekly="$(render_metrics "$out")"
+report="$(report_dir)/fleet-metrics-${now_iso:0:10}.md"
+mkdir -p "$(dirname "$report")" || die "cannot create $(dirname "$report")"
+{ printf '# Fleet metrics, the last %s to %s\n\n%s\n\n' "$since" "${now_iso:0:10}" "$weekly"
+  render_metrics_prs "$out"; } >"$report" || die "cannot write $report"
+printf '%s\n' "$weekly"
+render_line report path="$report"

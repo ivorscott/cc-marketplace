@@ -13,6 +13,7 @@ check() { # check <desc> <cmd...>
   local d="$1"; shift; if "$@" >/dev/null 2>&1; then ok "$d"; else bad "$d"; fi
 }
 eq() { if [ "$2" = "$3" ]; then ok "$1"; else bad "$1 (got '$2', want '$3')"; fi; }
+told() { case "$1" in "Told "*" (delivered)" | "Told "*" (sent)") echo true ;; *) echo false ;; esac; } # tell.sh's reply line: was it delivered?
 
 T="$(mktemp -d)"; trap 'rm -rf "$T"' EXIT
 # The suite never touches the live fleet: FLEET_TEST=1 makes common.sh refuse a registry, state dir or inbox under the
@@ -154,6 +155,51 @@ case "$1 $2" in
 esac
 S
 chmod +x "$T/bin/herdr"; export HERDR_LOG="$T/herdr.log" AS="$T/as"; mkdir -p "$AS"
+
+# The golden fixture (DEV-408 item 17): a fleet with fixed times, rendered against scripts/test/golden/<entry>.md.
+# gfix points the state root at a fresh $T/gold and seeds the registry, an env and the event log; gold compares one
+# reply with its golden file, after $T is written as <T>. FLEET_GOLDEN_UPDATE=1 writes the files instead (review the diff).
+GD="$HERE/golden"
+gfix() {
+  G="$T/gold"; rm -rf "$G"; mkdir -p "$G/state" "$G/repo"
+  export FLEET_STATE_DIR="$G/state" FLEET_REGISTRY="$G/state/fleet.json" FLEET_INBOX="$G/state/escalations.jsonl" FLEET_WORKTREES="$G/state/worktrees"
+  git init -q -b main "$G/repo"; git -C "$G/repo" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+  git init -q --bare "$G/origin.git"; git -C "$G/repo" remote add origin "$G/origin.git"; git -C "$G/repo" push -q origin main 2>/dev/null
+  rm -f "$AS"/g[aowd]-*; echo working >"$AS/ga-lead"; echo working >"$AS/ga-builder"
+  jq -n --arg r "$G/repo" '
+    def row($n; $tier; $st; $ref; $pane): {name: $n, team: ($n | split("/")[0]), tier: $tier, template: "build", harness: "claude",
+      status: $st, herdr_ref: $ref, pane: $pane, workspace: "gw1", repo: $r, cwd: $r, machine: "test", assignment: "task",
+      started: "2026-10-24T07:00:00Z", updated_at: "2026-10-24T08:30:00Z", discovered: [], escalations: []};
+    {agents: ([
+      row("build-api/lead"; "Lead"; "Working"; "ga-lead"; "pga1") + {model: "opus", issue: "DEV-12", issue_url: "https://linear.app/acme/issue/DEV-12/export",
+        escalation: "P1", escalations: [{id: "20261024T080000Z-1", severity: "P1", message: "which database?", options: ["postgres", "sqlite"], at: "2026-10-24T08:00:00Z"}]},
+      row("build-api/builder"; "Worker"; "Working"; "ga-builder"; "pga2") + {model: "sonnet", issue: "DEV-12", issue_url: "https://linear.app/acme/issue/DEV-12/export", pr: "https://github.com/acme/app-api/pull/214"},
+      row("build-api/tester"; "Worker"; "Idle"; "ga-tester"; "pga3") + {model: "sonnet", issue: "DEV-12", issue_url: "https://linear.app/acme/issue/DEV-12/export"},
+      row("build-web/lead"; "Lead"; "Done"; "gw-lead"; "pgw1") + {model: "opus", issue: "DEV-13", outcome: "Shipped", pr: "https://github.com/acme/app-web/pull/121"},
+      row("build-web/builder"; "Worker"; "Done"; "gw-builder"; "pgw2") + {model: "sonnet", issue: "DEV-13", outcome: "Shipped"},
+      row("build-old/lead"; "Lead"; "Parked"; "go-lead"; "pgo1") + {model: "opus", issue: "DEV-9", parked_reason: "park", parked_at: "2026-10-23T18:00:00Z"},
+      row("build-old/builder"; "Worker"; "Parked"; "go-builder"; "pgo2") + {model: "sonnet", issue: "DEV-9", parked_reason: "park", parked_at: "2026-10-23T18:00:00Z"},
+      row("build-done/lead"; "Lead"; "Retired"; "gd-lead"; "pgd1") + {outcome: "Shipped", ended: "2026-10-24T06:00:00Z", discovered: [{message: "flaky smoke test", at: "2026-10-24T05:00:00Z"}]},
+      row("build-done/builder"; "Worker"; "Retired"; "gd-builder"; "pgd2") + {outcome: "Partial", ended: "2026-10-24T06:00:00Z", lessons: "push before done"}
+    ] | map({(.name): .}) | add),
+    envs: {"build-api": {cluster: "fleet-build-api", state: "Up", slot: 0, http_port: 8080, https_port: 8443, updated_at: "2026-10-24T08:00:00Z"}}}' >"$FLEET_REGISTRY"
+  cat >"$FLEET_STATE_DIR/events.jsonl" <<'J'
+{"at":"2026-10-23T10:00:00Z","type":"boot","team":"build-web","issue":"DEV-13"}
+{"at":"2026-10-23T11:30:00Z","type":"pr_ready","team":"build-web","name":"build-web/lead","pr":"https://github.com/acme/app-web/pull/121","sha":"1111111aaaa"}
+{"at":"2026-10-23T12:00:00Z","type":"pr_merged","team":"build-web","name":"build-web/lead","pr":"https://github.com/acme/app-web/pull/121"}
+{"at":"2026-10-24T07:00:00Z","type":"boot","team":"build-api","issue":"DEV-12"}
+{"at":"2026-10-24T08:40:00Z","type":"signoff","team":"build-api","name":"build-api/tester","pr":"https://github.com/acme/app-api/pull/214","sha":"abc1234"}
+{"at":"2026-10-24T08:45:00Z","type":"pr_ready","team":"build-api","name":"build-api/tester","pr":"https://github.com/acme/app-api/pull/214","sha":"abc1234def"}
+{"at":"2026-10-24T08:50:00Z","type":"brief_delivered","team":"build-api","name":"build-api/builder"}
+J
+}
+gcfg() { printf '%s\n' "$@" >"$FLEET_CONFIG_DIR/config.toml"; } # gcfg ['key = value'...]: the whole config.toml, nothing else
+gold() { # gold <entry> <reply>
+  local got name="${GOLD_PREFIX:-}dev408-17 output: golden $1"; got="$(printf '%s\n' "$2" | sed "s#$T#<T>#g")"
+  if [ "${FLEET_GOLDEN_UPDATE:-}" = 1 ]; then printf '%s\n' "$got" >"$GD/$1.md"; ok "$name (written)"; return; fi
+  if [ -f "$GD/$1.md" ] && [ "$got" = "$(cat "$GD/$1.md")" ]; then ok "$name"
+  else bad "$name"; diff <(cat "$GD/$1.md" 2>/dev/null) <(printf '%s\n' "$got") | head -n 12 | sed 's/^/      /'; fi
+}
 # ---- run.sh --smoke: the critical cases only (CI). The full suite (no flag) stays for local runs. --------------
 if [ "${1:-}" = --smoke ]; then
   SM="$T/smoke"; mkdir -p "$SM"; export FLEET_FORCE=
@@ -245,7 +291,13 @@ J
     printf '%s\n' "$sc" | grep -qx "$r" || miss="$miss $r"; done
   eq "smoke: dev408-16 every SKILL.md Step 0 route is a command" "$miss" ""
   "$FL" bogus >/dev/null 2>&1; eq "smoke: dev408-16 an unknown command exits 2" "$?" 2
+  "$SCRIPTS/status.sh" >/dev/null 2>&1 # shows the waiting notices once, so both runs below print the same
   eq "smoke: dev408-16 fleet status prints what status.sh prints" "$(FLEET_NOW=2026-10-24T09:00:00Z "$FL" status 2>&1)" "$(FLEET_NOW=2026-10-24T09:00:00Z "$SCRIPTS/status.sh" 2>&1)"
+  # dev408-17: the team table and the decision form match their golden files
+  GOLD_PREFIX="smoke: "; gfix; gcfg; export FLEET_NOW=2026-10-24T09:00:00Z DF_GB=500
+  gold status "$("$FL" status 2>&1)"
+  gold escalate "$("$FL" escalate build-api/builder P1 "which port?" 8080 9090 "decide later" 2>&1)"
+  unset FLEET_NOW GOLD_PREFIX
   printf '\n%d passed, %d failed\n' "$pass" "$failn"
   [ "$failn" = 0 ]; exit
 fi
@@ -461,23 +513,23 @@ eq "templates name no tracker or forge tool" "$(cat "$SCRIPTS"/../templates/*.js
 eq "boot without file: no KUBECONFIG arg (3.0.1 behaviour)" "$(grep -c -- '--env KUBECONFIG' "$HERDR_LOG")" 0
 check "boot without file: no env dir" test ! -e "$FLEET_STATE_DIR/env/build-plainbt"
 
-# No env anywhere: status header and retire JSON are the 3.0.1 ones
+# No env anywhere: the team's agent table and the retire line say nothing about an env
 : >"$HERDR_LOG"; "$SCRIPTS/boot.sh" build plainst "$T/plain" task >/dev/null 2>&1
 saved="$(cat "$FLEET_REGISTRY")"; jq 'del(.envs)' <<<"$saved" >"$FLEET_REGISTRY"
-eq "no envs: status header is the 3.0.1 one" "$("$SCRIPTS/status.sh" --verbose --team build-plainst 2>/dev/null | sed -n 2p | tr -s ' ')" "AGENT TIER STATUS ESC HERDR ASSIGNMENT"
-"$SCRIPTS/retire.sh" build-plainst >"$T/r0.json" 2>"$T/r0.err"
-eq "no envs: retire prints no env line" "$(cat "$T/r0.err" "$T/r0.json" | grep -ci 'environment\|env\.sh\|nothing to do')" 0
-eq "no envs: retire JSON keys are the 3.0.1 ones" "$(jq -c 'keys' "$T/r0.json")" '["kept_worktrees","retired"]'
+eq "no envs: status <team> prints the agent table" "$("$SCRIPTS/status.sh" build-plainst 2>/dev/null | head -n 1)" "| Agent | Role | State | Model | Last action |"
+"$SCRIPTS/retire.sh" build-plainst >"$T/r0.out" 2>"$T/r0.err"
+eq "no envs: retire prints no env line" "$(cat "$T/r0.err" "$T/r0.out" | grep -ci 'environment\|env\.sh\|nothing to do')" 0
+eq "no envs: retire prints its line" "$(head -n 1 "$T/r0.out")" "Retired build-plainst (Abandoned): PRs none. Nothing archived."
 printf '%s' "$saved" >"$FLEET_REGISTRY"
 
-# status column, then retire cleans the env up
+# env status, then retire cleans the env up
 "$ENV" up build-envt >/dev/null 2>&1
-eq "status shows slot and state" "$("$SCRIPTS/status.sh" --verbose --team build-envt 2>/dev/null | awk 'NR==3 {print $5}')" slot-0-Up
-: >"$STUB_LOG"; "$SCRIPTS/retire.sh" build-envt >"$T/retire.json" 2>/dev/null
+eq "env status shows the team's env state" "$("$ENV" status build-envt)" "Env build-envt: Up. Context fleet-build-envt."
+: >"$STUB_LOG"; "$SCRIPTS/retire.sh" build-envt >"$T/retire.out" 2>/dev/null
 eq "retire runs the stub down" "$(calls down)" 1
 eq "retire frees the slot" "$("$REG" env-get build-envt | jq -r .state)" Down
 check "retire removes the env directory" test ! -e "$FLEET_STATE_DIR/env/build-envt"
-eq "retire omits kept_envs when none were kept" "$(jq -c 'has("kept_envs")' "$T/retire.json")" false
+eq "retire keeps no test cluster when down worked" "$(grep -c 'test cluster' "$T/retire.out")" 0
 : >"$STUB_LOG"; "$SCRIPTS/retire.sh" build-plainbt >/dev/null 2>&1; eq "retire without env runs no down" "$(calls down)" 0
 
 # env.sh refuses a foreign cluster before anything runs
@@ -522,31 +574,26 @@ check "missing kubectl: up fails naming it" grep -q 'missing tool: no-such-kubec
 git -C "$T/repo" worktree add -q -b keep-br "$T/wt-keep" >/dev/null 2>&1
 mkdir -p "$T/wt-keep/src"; echo 'package x' >"$T/wt-keep/src/new.go"
 "$REG" add "$(jq -cn --arg t build-keep --arg r "$T/repo" --arg w "$T/wt-keep" '{name: "build-keep/tester", team: $t, repo: $r, tier: "Worker", status: "Working", herdr_ref: "x", pane: "p", worktree: $w}')"
-"$SCRIPTS/retire.sh" build-keep >"$T/keep.json" 2>"$T/keep.err"
-eq "retire keeps a worktree with untracked files" "$(jq -c '.kept_worktrees' "$T/keep.json")" "[\"$T/wt-keep\"]"
-eq "retire lists untracked files in kept_untracked" "$(jq -c --arg w "$T/wt-keep" '.kept_untracked[$w] | sort' "$T/keep.json")" '["src/new.go"]'
+"$SCRIPTS/retire.sh" build-keep >"$T/keep.out" 2>"$T/keep.err"
+check "retire keeps a worktree with untracked files" test -d "$T/wt-keep"
+eq "retire names the kept worktree and why" "$(head -n 1 "$T/keep.out")" "Retired build-keep (Abandoned): PRs none. Nothing archived. Kept: tester (untracked files)."
 check "retire warns with the untracked file name" grep -q '?? src/new.go' "$T/keep.err"
 
-# retire --summary: read-only, needs no herdr, gathers PRs, UNVERIFIED, escalations, worktrees
+# retire --summary: read-only, needs no herdr, one line the user answers
 git -C "$T/repo" remote set-url origin git@github.com:acme/widgets.git
 git -C "$T/repo" worktree add -q -b sum-br "$T/wt-sum" >/dev/null 2>&1
 echo r >"$T/wt-sum/report.md"
 "$REG" add "$(jq -cn --arg r "$T/repo" --arg w "$T/wt-sum" '{name: "build-sum/tester", team: "build-sum", repo: $r, tier: "Worker", status: "Done", herdr_ref: "x", pane: "p", worktree: $w, outcome: "Shipped", summary: "PASS on abc (PR #12); live curl UNVERIFIED"}')"
 "$REG" add "$(jq -cn --arg r "$T/repo" '{name: "build-sum/lead", team: "build-sum", repo: $r, tier: "Lead", status: "Done", herdr_ref: "y", pane: "q", outcome: "Shipped", summary: "PR #12 and PR #13 open"}')"
 "$REG" escalate build-sum/lead P1 "decide archived_at" >/dev/null 2>&1
+git -C "$T/plain" remote add origin https://gitlab.example.com/grp/sub/app.git
+"$REG" add "$(jq -cn --arg r "$T/plain" '{name: "build-sum/builder", team: "build-sum", repo: $r, tier: "Worker", status: "Done", herdr_ref: "z", pane: "r", outcome: "Partial", summary: "opened MR !7"}')"
 before="$(cat "$FLEET_REGISTRY")"
-: >"$HERDR_LOG"; HERDR_ENV= FLEET_SESSION= "$SCRIPTS/retire.sh" --summary build-sum >"$T/sum.json" 2>"$T/sum.err"; rc=$?
+: >"$HERDR_LOG"; HERDR_ENV= FLEET_SESSION= "$SCRIPTS/retire.sh" --summary build-sum >"$T/sum.out" 2>"$T/sum.err"; rc=$?
 eq "summary: runs without herdr" "$rc" 0
 eq "summary: registry unchanged" "$(cat "$FLEET_REGISTRY")" "$before"
 eq "summary: no herdr calls" "$(wc -l <"$HERDR_LOG" | tr -d ' ')" 0
-eq "summary: PRs deduped with the GitHub repo" "$(jq -c '[.prs[] | [.host, .repo, .number]]' "$T/sum.json")" '[["github.com","acme/widgets",12],["github.com","acme/widgets",13]]'
-git -C "$T/plain" remote add origin https://gitlab.example.com/grp/sub/app.git
-"$REG" add "$(jq -cn --arg r "$T/plain" '{name: "build-sum/builder", team: "build-sum", repo: $r, tier: "Worker", status: "Done", herdr_ref: "z", pane: "r", outcome: "Shipped", summary: "opened MR !7"}')"
-"$SCRIPTS/retire.sh" --summary build-sum >"$T/sum2.json" 2>/dev/null
-eq "summary: GitLab MR with its host and subgroup project" "$(jq -c '[.prs[] | select(.number == 7) | [.host, .repo]]' "$T/sum2.json")" '[["gitlab.example.com","grp/sub/app"]]'
-eq "summary: UNVERIFIED rows" "$(jq -c '[.unverified[].name]' "$T/sum.json")" '["build-sum/tester"]'
-eq "summary: open escalation" "$(jq -c '[.escalations[] | [.name, .severity, .open]]' "$T/sum.json")" '[["build-sum/lead","P1",true]]'
-eq "summary: a report-only worktree is not kept, its report would be archived" "$(jq -c '[.worktrees[] | [.kept, .untracked, .archive]]' "$T/sum.json")" '[[false,[],["report.md"]]]'
+eq "summary: one line with the reported outcomes; a report-only worktree is not kept" "$(cat "$T/sum.out")" "Retire build-sum? Outcome Partial/Shipped. Unpushed: none. Kept: none. Reply yes to retire."
 "$SCRIPTS/retire.sh" --summary build-nope >/dev/null 2>&1; rc=$?
 check "summary: unknown target fails" test "$rc" != 0
 
@@ -561,49 +608,49 @@ mkdir -p "$W/reports" "$W/node_modules/pkg" "$W/packages/a/node_modules" "$W/dis
 echo n >"$W/notes.md"; echo r >"$W/reports/r.md"; echo m >"$W/node_modules/pkg/i.js"; echo m >"$W/packages/a/node_modules/y"
 echo b >"$W/tsconfig.tsbuildinfo"; echo b >"$W/dist/o.js"; echo b >"$W/.next/c"; echo b >"$W/coverage/lcov"
 "$SCRIPTS/retire.sh" --summary build-arc >"$T/arc.sum" 2>/dev/null
-eq "summary: build outputs ignored, reports listed for archive" "$(jq -c '[.worktrees[] | [.kept, .untracked, (.archive | sort)]]' "$T/arc.sum")" '[[false,[],["notes.md","reports/r.md"]]]'
+eq "summary: build outputs and reports keep nothing" "$(cat "$T/arc.sum")" "Retire build-arc? Outcome Abandoned. Unpushed: none. Kept: none. Reply yes to retire."
 check "summary changes nothing on disk" test -d "$W/node_modules" -a ! -e "$T/archive"
-"$SCRIPTS/retire.sh" build-arc >"$T/arc.json" 2>"$T/arc.err"
+"$SCRIPTS/retire.sh" build-arc >"$T/arc.out" 2>"$T/arc.err"
 check "retire removes a worktree holding only reports and build outputs" test ! -e "$W"
 eq "retire: no leftover git worktree" "$(git -C "$T/repo" worktree list | grep -c "$W" || true)" 0
 check "retire archives the root report" cmp -s "$T/archive/build-arc-builder/notes.md" <(echo n)
 check "retire archives reports/ files" cmp -s "$T/archive/build-arc-builder/reports/r.md" <(echo r)
 eq "retire: archived reports only (no build output copied)" "$(cd "$T/archive/build-arc-builder" && find . -type f | sort | tr '\n' ' ')" './notes.md ./reports/r.md '
-eq "retire JSON: nothing kept, archive dir named" "$(jq -c --arg w "$W" '[.kept_worktrees, .archived[$w]]' "$T/arc.json")" "[[],\"$T/archive/build-arc-builder\"]"
+eq "retire: nothing kept, the archive named" "$(head -n 1 "$T/arc.out")" "Retired build-arc (Abandoned): PRs none. Archived to $T/archive."
 
 mkwt build-unp builder; W="$T/wt-build-unp-builder"
 echo c >"$W/c.txt"; git -C "$W" add c.txt; git -C "$W" -c user.email=t@t -c user.name=t commit -q -m wip; sha="$(git -C "$W" rev-parse --short HEAD)"
 echo r >"$W/report.md"
 "$SCRIPTS/retire.sh" --summary build-unp >"$T/unp.sum" 2>/dev/null
-eq "summary: unpushed commit means kept, SHA named" "$(jq -c '[.worktrees[] | [.kept, .unpushed]]' "$T/unp.sum")" "[[true,[\"$sha\"]]]"
-"$SCRIPTS/retire.sh" build-unp >"$T/unp.json" 2>"$T/unp.err"
+eq "summary: an unpushed commit is counted and keeps the worktree" "$(cat "$T/unp.sum")" "Retire build-unp? Outcome Abandoned. Unpushed: builder (1 commit). Kept: builder (unpushed commits). Reply yes to retire."
+"$SCRIPTS/retire.sh" build-unp >"$T/unp.out" 2>"$T/unp.err"
 check "retire keeps a worktree with an unpushed commit" test -d "$W"
-eq "retire names the unpushed commit in JSON" "$(jq -c --arg w "$W" '.kept_unpushed[$w]' "$T/unp.json")" "[\"$sha\"]"
+eq "retire names the kept worktree and why" "$(head -n 1 "$T/unp.out")" "Retired build-unp (Abandoned): PRs none. Nothing archived. Kept: builder (unpushed commits)."
 check "retire warns with the unpushed SHA" grep -q "unpushed commits in $W: $sha" "$T/unp.err"
 check "a kept worktree archives nothing" test ! -e "$T/archive/build-unp-builder"
 
 mkwt build-src builder; W="$T/wt-build-src-builder"
 mkdir -p "$W/src"; echo 'package x' >"$W/src/new.go"; echo r >"$W/report.md"; mkdir -p "$W/node_modules"; echo m >"$W/node_modules/i"
-"$SCRIPTS/retire.sh" build-src >"$T/src.json" 2>"$T/src.err"
+"$SCRIPTS/retire.sh" build-src >"$T/src.out" 2>"$T/src.err"
 check "retire keeps a worktree with untracked source" test -d "$W"
-eq "retire names untracked source, not reports or build output" "$(jq -c --arg w "$W" '.kept_untracked[$w]' "$T/src.json")" '["src/new.go"]'
-check "retire warns naming the source file" grep -q '?? src/new.go' "$T/src.err"
+eq "retire keeps it for the untracked source, not the report or build output" "$(head -n 1 "$T/src.out")" "Retired build-src (Abandoned): PRs none. Nothing archived. Kept: builder (untracked files)."
+check "retire warns naming the source file, and only it" bash -c "grep -q '?? src/new.go' '$T/src.err' && ! grep -q 'report.md\|node_modules' '$T/src.err'"
 
 mkwt build-mod builder; W="$T/wt-build-mod-builder"
 echo changed >"$W/tracked.txt"
-"$SCRIPTS/retire.sh" build-mod >"$T/mod.json" 2>"$T/mod.err"
+"$SCRIPTS/retire.sh" build-mod >"$T/mod.out" 2>"$T/mod.err"
 check "retire keeps a worktree with uncommitted tracked edits" test -d "$W"
 check "retire names the edited file" grep -q 'uncommitted in .*tracked.txt' "$T/mod.err"
-eq "retire JSON lists kept_modified" "$(jq -c --arg w "$W" '.kept_modified[$w] | length' "$T/mod.json")" 1
+eq "retire says the uncommitted change kept it" "$(head -n 1 "$T/mod.out")" "Retired build-mod (Abandoned): PRs none. Nothing archived. Kept: builder (uncommitted changes)."
 
 mkwt build-bad builder2; W="$T/wt-build-bad-builder2"; echo r >"$W/r.md"; echo f >"$T/afile"
-FLEET_ARCHIVE_DIR="$T/afile/sub" "$SCRIPTS/retire.sh" build-bad >"$T/ba.json" 2>"$T/ba.err"
+FLEET_ARCHIVE_DIR="$T/afile/sub" "$SCRIPTS/retire.sh" build-bad >"$T/ba.out" 2>"$T/ba.err"
 check "a failed archive copy keeps the worktree" test -d "$W"
 check "a failed archive copy says why" grep -q 'could not archive' "$T/ba.err"
 
 mkwt build-one builder; mkwt build-one tester
 echo r >"$T/wt-build-one-builder/report.md"
-"$SCRIPTS/retire.sh" build-one/builder >"$T/one.json" 2>/dev/null
+"$SCRIPTS/retire.sh" build-one/builder >"$T/one.out" 2>/dev/null
 check "single-agent retire removes its worktree" test ! -e "$T/wt-build-one-builder"
 check "single-agent retire archives under <team>-<role>" test -f "$T/archive/build-one-builder/report.md"
 check "single-agent retire leaves the other worktree" test -d "$T/wt-build-one-tester"
@@ -629,9 +676,9 @@ check "unreadable df is warned about" grep -q 'cannot read free disk' "$T/b.err"
 cp "$T/config.bak" "$FLEET_CONFIG_DIR/config.toml"
 
 # status shows free disk
-eq "status: first line shows free disk" "$(DF_GB=100 "$SCRIPTS/status.sh" --verbose --team build-nope 2>/dev/null | head -1)" 'disk: 100 GiB free (warn below 75, boot refuses below 40)'
-eq "status: LOW below warn_free_gb" "$(DF_GB=60 "$SCRIPTS/status.sh" --verbose --team build-nope 2>/dev/null | head -1 | grep -c ' LOW$')" 1
-eq "status --json stays a bare array" "$(DF_GB=60 "$SCRIPTS/status.sh" --team build-nope --json 2>/dev/null | jq -r type)" array
+eq "status: no disk line above warn_free_gb" "$(DF_GB=100 "$SCRIPTS/status.sh" 2>/dev/null | grep -c '^Disk:')" 0
+eq "status: the disk line below warn_free_gb" "$(DF_GB=60 "$SCRIPTS/status.sh" 2>/dev/null | grep '^Disk:')" "Disk: 60 GB free (warn below 75)."
+eq "status --json stays a bare array" "$(DF_GB=60 "$SCRIPTS/status.sh" build-nope --json 2>/dev/null | jq -r type)" array
 
 # Machine identity (machine-id.sh): run with a PATH of symlinks plus per-case shims, so a
 # missing ioreg/powershell/uuidgen is really missing.
@@ -721,14 +768,13 @@ eq "machine-id: Linux maps to Linux" "$(mid "$d" description | cut -d' ' -f3)" L
 shim "$d" uname 'echo CYGWIN_NT'; eq "machine-id: CYGWIN maps to Windows" "$(jf "$(mid "$d" show)" os)" Windows
 shim "$d" uname 'echo Plan9'; eq "machine-id: anything else maps to unknown OS" "$(jf "$(mid "$d" show)" os)" "unknown OS"
 
-# status: the machine footer, the conditional ISSUE column
+# status names no machine (prime does); a team without an issue shows - in its Issue cell
 cp "$FLEET_CONFIG_DIR/config.toml" "$T/config.bak2"
-eq "status: last line is the machine footer" "$(DF_GB=100 "$SCRIPTS/status.sh" --verbose --team build-nope 2>/dev/null | tail -1)" "machine: fleet:test"
+eq "status: no machine footer" "$(DF_GB=100 "$SCRIPTS/status.sh" 2>/dev/null | grep -c '^machine:')" 0
 echo 'machine_name = "Mac 1"' >>"$FLEET_CONFIG_DIR/config.toml"
-eq "status: the footer shows machine_name" "$(DF_GB=100 "$SCRIPTS/status.sh" --verbose --team build-nope 2>/dev/null | tail -1)" "machine: fleet:test (Mac 1)"
-eq "status: the disk line is still first" "$(DF_GB=100 "$SCRIPTS/status.sh" --verbose --team build-nope 2>/dev/null | head -1)" 'disk: 100 GiB free (warn below 75, boot refuses below 40)'
-eq "status --json has no machine footer" "$(DF_GB=100 "$SCRIPTS/status.sh" --team build-nope --json 2>/dev/null | grep -c machine:)" 0
-eq "status: no ISSUE column without an issue" "$(DF_GB=100 "$SCRIPTS/status.sh" --verbose --team build-plain 2>/dev/null | grep -c ISSUE)" 0
+eq "prime: names the machine by machine_name" "$(DF_GB=100 "$SCRIPTS/prime.sh" 2>/dev/null | head -n 1 | cut -d: -f1)" "Fleet on Mac 1"
+eq "status --json has no machine footer" "$(DF_GB=100 "$SCRIPTS/status.sh" build-nope --json 2>/dev/null | grep -c machine:)" 0
+eq "status: a team without an issue shows - in its Issue cell" "$(DF_GB=100 "$SCRIPTS/status.sh" 2>/dev/null | grep -c '^| build-plain | - |')" 1
 cp "$T/config.bak2" "$FLEET_CONFIG_DIR/config.toml"
 
 # boot: refusal of an issue another machine holds
@@ -777,7 +823,7 @@ bt build ovj "$T/plain" t; eq "boot: no --scope never warns" "$(grep -c overlaps
 bt --scope ': src' build ovk "$T/plain" t
 eq "boot: the scope repo defaults to the repo-dir name" "$("$REG" get build-ovk/builder | jq -r .scope.repo)" plain
 bt --issue DEV-12 build iss1 "$T/plain" t
-eq "status: the ISSUE column appears once a row has an issue" "$(DF_GB=100 "$SCRIPTS/status.sh" --verbose --team build-iss1 2>/dev/null | sed -n 2p | grep -c ISSUE)" 1
+eq "status: a team's issue is in its row" "$(DF_GB=100 "$SCRIPTS/status.sh" 2>/dev/null | grep -c '^| build-iss1 | DEV-12 |')" 1
 
 # claim.sh: lease arithmetic, the heartbeat parse, expiry
 CL="$SCRIPTS/claim.sh"
@@ -808,21 +854,17 @@ CF="$T/claims.json"
 echo '[{"machine":"3f9a2c1e","label":"fleet:3f9a2c1e","issue":"DEV-9","heartbeat":"2026-10-18T09:50:00Z"},
       {"machine":"9b1d4e07","label":"fleet:9b1d4e07","issue":"DEV-10","heartbeat":null},
       {"machine":"5555aaaa","label":"fleet:5555aaaa","issue":"DEV-11","heartbeat":"2026-10-18T05:00:00Z"}]' >"$CF"
-FLEET_NOW=2026-10-18T10:00:00Z DF_GB=100 "$SCRIPTS/status.sh" --all --claims "$CF" --team build-own1 >"$T/all.out" 2>"$T/all.err"
-check "status --all: MACHINE and HEARTBEAT columns" grep -q 'MACHINE *HEARTBEAT' "$T/all.out"
-check "status --all: a peer row shows the issue and the heartbeat age" grep -Eq 'fleet:3f9a2c1e .*Claimed .*DEV-9 .*3f9a2c1e .*10m' "$T/all.out"
-check "status --all: a label without a heartbeat is flagged" grep -Eq 'fleet:9b1d4e07 .*Claimed \(no heartbeat\)' "$T/all.out"
-check "status --all: a heartbeat older than lease_hours is lapsed" grep -Eq 'fleet:5555aaaa .*Claimed \(heartbeat lapsed\)' "$T/all.out"
-check "status --all: the local team is a registry row on this machine" grep -Eq '^build-own1/builder .*test' "$T/all.out"
+FLEET_NOW=2026-10-18T10:00:00Z DF_GB=100 "$SCRIPTS/status.sh" --all --claims "$CF" >"$T/all.out" 2>"$T/all.err"
+eq "status --all: one line names each peer claim, its heartbeat age and a lapsed lease" "$(grep '^Other machines:' "$T/all.out")" "Other machines: DEV-9 on 3f9a2c1e (heartbeat 10m ago); DEV-10 on 9b1d4e07 (no heartbeat); DEV-11 on 5555aaaa (heartbeat 5h ago, lapsed)."
+check "status --all: the local teams are in the team table" grep -q '^| build-own1 |' "$T/all.out"
 eq "status --all: no lease column, no SAME KEY?" "$(grep -c 'LEASE\|SAME KEY' "$T/all.out")" 0
-eq "status --all: the footer stays last" "$(DF_GB=100 "$SCRIPTS/status.sh" --all --claims "$CF" --team build-nope 2>/dev/null | tail -1)" "machine: fleet:test"
-DF_GB=100 "$SCRIPTS/status.sh" --all --team build-own1 >"$T/all3.out" 2>/dev/null; check "status --all without claims says so" grep -q '^peer claims: not provided' "$T/all3.out"
-eq "status --all --json: bare array with machine and source" "$(DF_GB=100 "$SCRIPTS/status.sh" --all --json --claims "$CF" --team build-own1 2>/dev/null | jq -c '[.[] | [.source, .machine]] | unique')" '[["registry","test"],["tracker","3f9a2c1e"],["tracker","5555aaaa"],["tracker","9b1d4e07"]]'
-cat "$CF" | DF_GB=100 "$SCRIPTS/status.sh" --all --json --claims - --team build-own1 2>/dev/null | jq -e 'type == "array"' >/dev/null; eq "status --all: --claims - reads stdin" "$?" 0
+DF_GB=100 "$SCRIPTS/status.sh" --all >"$T/all3.out" 2>/dev/null; check "status --all without claims says so" grep -q '^Other machines: not provided' "$T/all3.out"
+eq "status --all --json: bare array with machine and source" "$(DF_GB=100 "$SCRIPTS/status.sh" --all --json --claims "$CF" build-own1 2>/dev/null | jq -c '[.[] | [.source, .machine]] | unique')" '[["registry","test"],["tracker","3f9a2c1e"],["tracker","5555aaaa"],["tracker","9b1d4e07"]]'
+cat "$CF" | DF_GB=100 "$SCRIPTS/status.sh" --all --json --claims - build-own1 2>/dev/null | jq -e 'type == "array"' >/dev/null; eq "status --all: --claims - reads stdin" "$?" 0
 eq "status --claims without --all dies" "$("$SCRIPTS/status.sh" --claims "$CF" >/dev/null 2>&1; echo $?)" 1
 eq "status --all: an unreadable claims file dies" "$(DF_GB=100 "$SCRIPTS/status.sh" --all --claims "$T/none.json" >/dev/null 2>&1; echo $?)" 1
 echo '{}' >"$T/bad.json"; eq "status --all: claims that are not an array die" "$(DF_GB=100 "$SCRIPTS/status.sh" --all --claims "$T/bad.json" >/dev/null 2>&1; echo $?)" 1
-eq "status without --all has no MACHINE column" "$(DF_GB=100 "$SCRIPTS/status.sh" --verbose --team build-own1 2>/dev/null | grep -c MACHINE)" 0
+eq "status without --all has no Other machines line" "$(DF_GB=100 "$SCRIPTS/status.sh" 2>/dev/null | grep -c '^Other machines')" 0
 
 # chat.sh: settings and format only, never the network
 CH="$SCRIPTS/chat.sh"
@@ -897,15 +939,16 @@ eq "resolving the last one moves status off Needs input" "$("$REG" get esc/solo 
 "$REG" done esc/builder --outcome Shipped --summary "PR ready" >/dev/null 2>&1
 eq "a Done agent's escalation is still open" "$("$REG" escalations --open --team esc | jq '[.[] | select(.name == "esc/builder" and .severity == "P1")] | length')" 1
 eq "list --problems includes a Done row with an open escalation" "$("$REG" list --problems | jq '[.[] | select(.name == "esc/builder")] | length')" 1
-eq "retire --summary shows it open" "$("$SCRIPTS/retire.sh" --summary esc 2>/dev/null | jq '[.escalations[] | select(.message == "still open" and .open)] | length')" 1
-eq "retire --summary shows a resolved one closed" "$("$SCRIPTS/retire.sh" --summary esc 2>/dev/null | jq '[.escalations[] | select(.message == "which db?" and (.open | not))] | length')" 1
+eq "fleet escalations shows it open" "$("$SCRIPTS/fleet" escalations --team esc 2>/dev/null | grep 'still open' | grep -c '(resolved)')" 0
+eq "fleet escalations marks a resolved one" "$("$SCRIPTS/fleet" escalations --team esc 2>/dev/null | grep 'which db?' | grep -c '(resolved)')" 1
 "$REG" set esc/builder status=Idle >/dev/null 2>&1
 eq "set status keeps the open escalation" "$("$REG" escalations --open --team esc | jq '[.[] | select(.name == "esc/builder")] | length')" 4
 check "set escalation= is refused" bash -c "! '$REG' set esc/builder escalation="
 check "set escalations= is refused" bash -c "! '$REG' set esc/builder escalations=[]"
 "$REG" add '{"name":"esc/builder","team":"esc","note":"re-add"}'
 eq "add on an existing row keeps its escalations" "$("$REG" get esc/builder | jq '.escalations | length')" 5
-eq "status.sh lists open escalations after the table" "$("$SCRIPTS/status.sh" 2>/dev/null | grep -c 'still open')" 1
+eq "status shows the team's most severe open escalation in its row" "$("$SCRIPTS/status.sh" 2>/dev/null | grep '^| esc |' | grep -c '| P1: still open |$')" 1
+eq "status: a P1 is waiting on the user" "$("$SCRIPTS/status.sh" 2>/dev/null | grep '^Waiting on you:' | grep -c 'esc/builder P1: still open')" 1
 # notify: a failing herdr call is logged, not hidden, and does not fail the command
 err="$(NOTIFY_FAIL=1 "$REG" escalate esc/builder P2 "n1" 2>&1 >/dev/null)"; rc=$?
 eq "escalate exits 0 when the notification fails" "$rc" 0
@@ -956,14 +999,13 @@ printf '%s' "$saved" >"$FLEET_REGISTRY"
 "$REG" escalate esc3/tester P1 "t1" >/dev/null 2>&1
 "$REG" escalate esc3/tester P2 "t2" >/dev/null 2>&1
 "$REG" resolve esc3/tester "$("$REG" escalations --team esc3 | jq -r '[.[] | select(.message == "t2")][0].id')" --note "mine" >/dev/null 2>&1
-eq "retire --summary lists the open one before the go" "$("$SCRIPTS/retire.sh" --summary esc3 2>/dev/null | jq '[.escalations[] | select(.open)] | length')" 3
-"$SCRIPTS/retire.sh" esc3 >"$T/r3.json" 2>/dev/null
+eq "before the go, three are open on the team" "$("$REG" escalations --open --team esc3 | jq length)" 3
+"$SCRIPTS/retire.sh" esc3 >"$T/r3.out" 2>/dev/null
 eq "retire leaves nothing open on the team" "$("$REG" escalations --open --team esc3 | jq length)" 0
 eq "retire records 'closed at retire'" "$("$REG" escalations --team esc3 | jq -c 'map(select(.resolution == "closed at retire") | .message) | sort')" '["first","second","t1"]'
 eq "retire keeps an earlier resolution note" "$("$REG" escalations --team esc3 | jq -r '[.[] | select(.message == "t2")][0].resolution')" mine
 eq "retire clears .escalation" "$("$REG" get esc3/builder | jq -r .escalation)" ""
-eq "retire output lists closed_escalations" "$(jq -r '.closed_escalations | map(.name) | sort | join(",")' "$T/r3.json")" "esc3/builder,esc3/builder,esc3/tester"
-eq "retire --summary afterwards shows them closed" "$("$SCRIPTS/retire.sh" --summary esc3 2>/dev/null | jq '[.escalations[] | select(.open)] | length')" 0
+eq "retire prints its line" "$(head -n 1 "$T/r3.out")" "Retired esc3 (Abandoned): PRs none. Nothing archived."
 # status ignores Retired agents' escalations, not Done agents'
 "$REG" add '{"name":"esc4/a","team":"esc4","tier":"Worker","status":"Working"}'
 "$REG" escalate esc4/a P2 "retired-open" >/dev/null 2>&1
@@ -980,7 +1022,7 @@ for bad in '"[]"' '{}' '5'; do
   for c in "$SCRIPTS/status.sh" "$SCRIPTS/status.sh --problems" "$REG list --problems" "$REG escalations --open" "$SCRIPTS/retire.sh --summary bad"; do
     $c >"$T/bad.out" 2>/dev/null; eq "escalations=$bad: ${c##*/} exits 0" "$?" 0
   done
-  check "escalations=$bad: a row after the bad one is still listed" grep -q 'zlast/row' <(  "$SCRIPTS/status.sh" --verbose 2>/dev/null)
+  check "escalations=$bad: a team after the bad one is still listed" grep -q '^| zlast |' <(  "$SCRIPTS/status.sh" 2>/dev/null)
   "$REG" escalate bad/row P2 "after" >/dev/null 2>&1
   eq "escalations=$bad: escalate normalises to an array" "$("$REG" get bad/row | jq -c '.escalations | map(.message)')" '["after"]'
   "$REG" retire bad >/dev/null 2>&1
@@ -1052,7 +1094,7 @@ eq "get --archived finds it" "$("$REG" get --archived ca/w | jq -r .name)" ca/w
 check "get --archived still finds a live row" bash -c "'$REG' get --archived cd/z"
 eq "list does not show archived rows" "$("$REG" list --team ca | jq length)" 0
 eq "list --with-archived does" "$("$REG" list --with-archived --team ca | jq length)" 2
-eq "retire --summary reports the archived team's rows" "$("$SCRIPTS/retire.sh" --summary ca 2>/dev/null | jq -c '[.. | objects | select(.name? == "ca/w")] | length > 0')" true
+eq "retire --summary is for live teams: an archived one is refused" "$("$SCRIPTS/retire.sh" --summary ca >/dev/null 2>&1; echo $?)" 1
 eq "a debrief-queue row is still found after an archive run" "$("$REG" list | jq -c '[.[] | select(.outcome != null and (.lessons // "") == "") | .name] | sort')" '["cb/x"]'
 export FLEET_STATE_DIR="$_cstate" FLEET_REGISTRY="$_creg"; [ -n "$_cinbox" ] && export FLEET_INBOX="$_cinbox" || unset FLEET_INBOX
 check "SKILL.md documents the registry archive" grep -q 'registry.sh archive' "$SCRIPTS/../SKILL.md" "$SCRIPTS/../references/operations.md"
@@ -1102,26 +1144,26 @@ evc() { printf '%s' "$1" | jq -s --arg t "$2" '[.[][]? | select(.type == $t)] | 
 arow tl/builder Worker tl-b
 rm -f "$AS"/*
 out="$("$SCRIPTS/tell.sh" tl/builder "do the thing" 2>/dev/null)"; rc=$?
-eq "tell: delivered when the agent goes working" "$rc:$(printf '%s' "$out" | jq -r .delivered)" "0:true"
+eq "tell: delivered when the agent goes working" "$rc:$(told "$out")" "0:true"
 rm -f "$AS"/*; : >"$AS/tl-b.read"
 out="$(PROMPT_NOSTATE=1 PROMPT_ECHO=1 "$SCRIPTS/tell.sh" tl/builder "echoed into the transcript only" 2>/dev/null)"; rc=$?
-eq "tell: delivered when the text is echoed in the transcript" "$rc:$(printf '%s' "$out" | jq -r .delivered)" "0:true"
+eq "tell: delivered when the text is echoed in the transcript" "$rc:$(told "$out")" "0:true"
 rm -f "$AS"/*; printf '● earlier output\n────────\n❯ Try: ship the thing to prod next\n────────\n' >"$AS/tl-b.read"
 out="$(PROMPT_NOSTATE=1 "$SCRIPTS/tell.sh" tl/builder "Try: ship the thing to prod next" 2>/dev/null)"; rc=$?
-eq "tell: ghost text in the input box is not delivery (exit 1)" "$rc:$(printf '%s' "$out" | jq -r .delivered)" "1:false"
+eq "tell: ghost text in the input box is not delivery (exit 1)" "$rc:$(told "$out")" "1:false"
 rm -f "$AS"/*; : >"$HERDR_LOG"
 out="$(PROMPT_NOSTATE=1 ENTER_WORKS=1 "$SCRIPTS/tell.sh" tl/builder "needs an enter" 2>/dev/null)"; rc=$?
-eq "tell: retry once (enter) succeeds on the second poll" "$rc:$(printf '%s' "$out" | jq -r .delivered)" "0:true"
+eq "tell: retry once (enter) succeeds on the second poll" "$rc:$(told "$out")" "0:true"
 check "tell: the retry pressed enter" grep -q '^agent send-keys tl-b enter' "$HERDR_LOG"
 rm -f "$AS"/*
 out="$(PROMPT_NOSTATE=1 "$SCRIPTS/tell.sh" tl/builder "never arrives" --no-confirm 2>/dev/null)"; rc=$?
-eq "tell: --no-confirm needs only herdr's acceptance" "$rc:$(printf '%s' "$out" | jq -r .delivered)" "0:true"
+eq "tell: --no-confirm needs only herdr's acceptance" "$rc:$(told "$out")" "0:true"
 out="$(PROMPT_FAIL=1 "$SCRIPTS/tell.sh" tl/builder "x" 2>/dev/null)"; rc=$?
-eq "tell: a send herdr rejects is exit 1" "$rc:$(printf '%s' "$out" | jq -r .delivered)" "1:false"
+eq "tell: a send herdr rejects is exit 1" "$rc:$(told "$out")" "1:false"
 export DEAD_ONCE="$T/dead_once_a"; : >"$DEAD_ONCE"
-out="$("$SCRIPTS/tell.sh" tl/builder "x" 2>/dev/null)"; rc=$?
+out="$("$SCRIPTS/tell.sh" tl/builder "x" 2>&1 >/dev/null)"; rc=$?
 unset DEAD_ONCE
-eq "tell: a pane back at the shell exits 2" "$rc:$(printf '%s' "$out" | jq -r .reason)" "2:pane is a shell"
+eq "tell: a pane back at the shell exits 2, in the error form" "$rc:$out" "2:tell: not delivered to tl/builder: its pane is back at the shell. Respawn it (fleet respawn tl/builder) or retire it."
 echo gone >"$AS/tl-b"; "$SCRIPTS/tell.sh" tl/builder "x" >/dev/null 2>&1; eq "tell: an agent herdr cannot find exits 2" "$?" 2
 rm -f "$AS"/*
 check "tell: bad option fails" bash -c "! '$SCRIPTS/tell.sh' tl/builder x --bogus"
@@ -1279,16 +1321,16 @@ arow2() { "$REG" add "$(jq -cn --arg n "$1" --arg t "${1%%/*}" --arg tier "$2" -
 arow2 sd/builder Worker sd-b "" "$TRD/b.jsonl"
 rm -f "$AS"/*; : >"$TRD/b.jsonl"
 out="$(PROMPT_NOSTATE=1 PROMPT_TRANSCRIPT="$TRD/b.jsonl" "$SCRIPTS/tell.sh" sd/builder "ship the transcript line please" 2>/dev/null)"; rc=$?
-eq "tell: a user line in the transcript is delivery" "$rc:$(printf '%s' "$out" | jq -r .delivered)" "0:true"
+eq "tell: a user line in the transcript is delivery" "$rc:$(told "$out")" "0:true"
 jq -nc '{type: "user", message: {content: "an old message that must not count"}}' >>"$TRD/b.jsonl"
 out="$(PROMPT_NOSTATE=1 "$SCRIPTS/tell.sh" sd/builder "an old message that must not count" 2>/dev/null)"; rc=$?
-eq "tell: a matching line from before the send is not delivery" "$rc:$(printf '%s' "$out" | jq -r .delivered)" "1:false"
+eq "tell: a matching line from before the send is not delivery" "$rc:$(told "$out")" "1:false"
 jq -nc '{type: "assistant", message: {content: "a reply that starts with the text"}}' >>"$TRD/b.jsonl"
 out="$(PROMPT_NOSTATE=1 "$SCRIPTS/tell.sh" sd/builder "a reply that starts with the text" 2>/dev/null)"; rc=$?
-eq "tell: only type user counts, not assistant" "$rc:$(printf '%s' "$out" | jq -r .delivered)" "1:false"
+eq "tell: only type user counts, not assistant" "$rc:$(told "$out")" "1:false"
 rm -f "$AS"/*
 out="$(PROMPT_NOSTATE=1 PROMPT_SEQ=1 "$SCRIPTS/tell.sh" sd/builder "state change seq only" 2>/dev/null)"; rc=$?
-eq "tell: an increased state_change_seq is delivery" "$rc:$(printf '%s' "$out" | jq -r .delivered)" "0:true"
+eq "tell: an increased state_change_seq is delivery" "$rc:$(told "$out")" "0:true"
 
 eq "scripts reach Claude's projects dir only through projects_dir" "$(grep -l 'claude/projects' "$SCRIPTS"/*.sh | xargs -n1 basename | tr '\n' ' ')" "common.sh "
 eq "projects_dir follows HOME" "$(HOME=/nowhere-x . "$SCRIPTS/common.sh"; HOME=/nowhere-x projects_dir)" /nowhere-x/.claude/projects
@@ -1486,14 +1528,14 @@ eq "A2: transcript_dir_for maps / . _ and spaces" "$(. "$SCRIPTS/common.sh"; tra
 AR="$AS/fx-b.read"; rm -f "${AS:?}"/*
 printf '● did something\n> repeated message text for A3\n\n────────\n❯ \n────────\n' >"$AR"
 out="$(PROMPT_NOSTATE=1 PROMPT_ECHO=1 "$SCRIPTS/tell.sh" fx/builder "repeated message text for A3" 2>/dev/null)"; rc=$?
-eq "A3: a text sent twice confirms on its second copy" "$rc:$(printf '%s' "$out" | jq -r .delivered)" "0:true"
+eq "A3: a text sent twice confirms on its second copy" "$rc:$(told "$out")" "0:true"
 rm -f "${AS:?}"/*; printf '● did something\n> repeated message text for A3\n\n────────\n❯ \n────────\n' >"$AR"
 out="$(PROMPT_NOSTATE=1 "$SCRIPTS/tell.sh" fx/builder "repeated message text for A3" 2>/dev/null)"; rc=$?
-eq "A3: a copy that was already on screen is not delivery" "$rc:$(printf '%s' "$out" | jq -r .delivered)" "1:false"
+eq "A3: a copy that was already on screen is not delivery" "$rc:$(told "$out")" "1:false"
 rm -f "${AS:?}"/*
 out="$(PROMPT_NOSTATE=1 "$SCRIPTS/tell.sh" fx/builder "   " 2>/dev/null)"; rc=$?
-eq "A3: an all-space text has no needle, so the screen cannot confirm it" "$rc:$(printf '%s' "$out" | jq -r .delivered)" "1:false"
-out="$("$SCRIPTS/tell.sh" fx/builder "   " 2>/dev/null)"; eq "A3: but herdr's state change still does" "$?:$(printf '%s' "$out" | jq -r .delivered)" "0:true"
+eq "A3: an all-space text has no needle, so the screen cannot confirm it" "$rc:$(told "$out")" "1:false"
+out="$("$SCRIPTS/tell.sh" fx/builder "   " 2>/dev/null)"; eq "A3: but herdr's state change still does" "$?:$(told "$out")" "0:true"
 
 # -- F7: tick's gh temp file comes from mktemp
 check "F7: tick.sh uses mktemp for the gh error file" grep -q 'ghtmp="$(mktemp)"' "$SCRIPTS/tick.sh"
@@ -1509,7 +1551,7 @@ bgfix() { # bgfix <file> <start timestamp> <tool name> <result text> [notificati
     [ -z "${5:-}" ] || jq -nc --arg i "$5" '{type: "user", message: {content: ("<task-notification><task-id>" + $i + "</task-id><status>completed</status></task-notification>")}}'
   } >"$1"
 }
-bgstatus() { "$SCRIPTS/status.sh" --team fxbg --json 2>/dev/null | jq -r --arg n "$1" '.[] | select(.name == $n) | .status'; }
+bgstatus() { "$SCRIPTS/status.sh" fxbg --json 2>/dev/null | jq -r --arg n "$1" '.[] | select(.name == $n) | .status'; }
 bgfix "$TRB/running.jsonl" 2026-10-19T11:00:00Z Bash "Command running in background with ID: bgjob1. Output is being written to: /x"
 bgfix "$TRB/done.jsonl" 2026-10-19T11:00:00Z Bash "Command running in background with ID: bgjob1. Output is being written to: /x" bgjob1
 bgfix "$TRB/mon.jsonl" 2026-10-19T11:00:00Z Monitor "Monitor started · task mon1" 
@@ -1767,7 +1809,7 @@ rm -f "$FLEET_STATE_DIR/loop.state.json"
 mkdir -p "$PLUG/v4/skills/fleet/scripts"; cp "$SCRIPTS/"*.sh "$PLUG/v4/skills/fleet/scripts/"
 jq -n --arg p "$PLUG/v4" '{plugins: {"developer@cc-marketplace": [{installPath: $p}]}}' >"$FLEET_INSTALLED_PLUGINS"
 # install / uninstall
-eq "schedule: status before install" "$(sch status)" "not installed"
+eq "schedule: status before install" "$(sch status | head -n 1)" "Fleet loop: not installed. Last good tick never. problem: the job is not installed."
 sch install >"$T/inst0.out"; P="$LA/fleet.tick.plist"
 check "schedule: install tells the Orchestrator to register its pane" grep -q 'registry.sh orchestrator here' "$T/inst0.out"
 check "schedule: install writes the plist" test -f "$P"
@@ -1777,12 +1819,12 @@ cp "$P" "$T/plist.before"; : >"$LCL"
 eq "schedule: a second install says so" "$(sch install)" "already installed: fleet.tick"
 eq "schedule: and changes nothing" "$(grep -c '^bootstrap\|^bootout' "$LCL" || true)$(cmp -s "$P" "$T/plist.before" && echo same)" 0same
 st="$(sch status)"
-check "schedule: status says loaded, the last exit and healthy" bash -c "printf '%s' '$st' | grep -q '^loaded: fleet.tick' && printf '%s' '$st' | grep -q '^last exit: 0' && printf '%s' '$st' | grep -q '^healthy'"
-check "schedule: status shows the last good tick" bash -c "printf '%s' '$st' | grep -q '^last good tick: '"
-check "schedule: status says no Orchestrator is registered" bash -c "printf '%s' '$st' | grep -q '^no Orchestrator registered'"
-check "status: one line says the loop has no Orchestrator to wake" bash -c "'$SCRIPTS/status.sh' 2>/dev/null | grep -q '^loop: no Orchestrator registered'"
+check "schedule: status is one line: loaded and healthy" bash -c "printf '%s\n' '$st' | head -n 1 | grep -Eq '^Fleet loop: loaded\. Last good tick .* \([0-9]+ min ago\)\. healthy\.$'"
+check "schedule: status shows the last good tick" bash -c "printf '%s\n' '$st' | head -n 1 | grep -q 'Last good tick 20'"
+check "schedule: status says no Orchestrator is registered" bash -c "printf '%s\n' '$st' | grep -q '^Loop: no Orchestrator registered'"
+check "status: one line says the loop has no Orchestrator to wake" bash -c "'$SCRIPTS/status.sh' 2>/dev/null | grep -q '^Loop: no Orchestrator registered'"
 jq '.last_good = 1000' "$FLEET_STATE_DIR/loop.state.json" >"$T/ls.tmp" && mv "$T/ls.tmp" "$FLEET_STATE_DIR/loop.state.json"
-check "schedule: no good tick within 2x tick_secs is UNHEALTHY" bash -c "FLEET_LAUNCH_AGENTS='$LA' FLEET_LAUNCHCTL='$T/lctl' '$SCH' status | grep -q '^UNHEALTHY'"
+check "schedule: no good tick within 2x tick_secs is a problem" bash -c "FLEET_LAUNCH_AGENTS='$LA' FLEET_LAUNCHCTL='$T/lctl' '$SCH' status | grep -q 'problem: no good tick within'"
 sch uninstall >/dev/null
 check "schedule: uninstall removes the plist" test ! -e "$P"
 check "schedule: and boots it out" grep -q '^bootout gui/501/fleet.tick' "$LCL"
@@ -1911,12 +1953,13 @@ rm -f "$FLEET_STATE_DIR/loop.state.json"; : >"$ALERTLOG"
 echo "fleet: tick_skipped: another tick holds x (pid 1); remove it if no tick is running" >"$FTERR"; lt >/dev/null 2>"$T/sk.err"; skrc=$?
 eq "failed runs: tick_skipped is not a good tick" "$skrc:$(jq -r '.last_good // "none"' "$FLEET_STATE_DIR/loop.state.json")" "1:none"
 : >"$FTERR"; echo 'junk' >"$FTJ"; lt >/dev/null 2>&1; lt >/dev/null 2>&1
-eq "failed runs: junk output counts up to an alert (no reset in between)" "$(jq -r .fails "$FLEET_STATE_DIR/loop.state.json"):$(grep -c '3 failed runs' "$ALERTLOG")" "3:1"
+eq "failed runs: junk output counts up to an alert (no reset in between)" "$(jq -r .fails "$FLEET_STATE_DIR/loop.state.json"):$(grep -c 'failed 3 runs in a row' "$ALERTLOG")" "3:1"
 : >"$FTJ"
 # M4: no good tick within 2x tick_secs alerts once
 jq '.last_good = 1000' "$FLEET_STATE_DIR/loop.state.json" >"$T/ls.tmp" && mv "$T/ls.tmp" "$FLEET_STATE_DIR/loop.state.json"
 touch "$FTFAIL"; lt >/dev/null 2>&1; lt >/dev/null 2>&1; rm -f "$FTFAIL"
-eq "unhealthy: no good tick within 2x tick_secs alerts once" "$(grep -c 'no good tick in' "$ALERTLOG")" 1
+eq "unhealthy: no good tick within 2x tick_secs alerts once" "$(grep -c 'no good fleet tick in' "$ALERTLOG")" 1
+check "alert: the text is the Alert form, with its next step" grep -Eq '^Alert: no good fleet tick in [0-9]+ min\. Run fleet schedule status\.$' "$ALERTLOG"
 # herdr down: one alert, no wake
 rm -f "$FLEET_STATE_DIR/loop.state.json"; : >"$ALERTLOG"; newwake; echo "fleet: warning: herdr agent list failed; no classification or respawn this tick" >"$FTERR"
 echo '[{"type":"dead","team":"t","name":"t/builder"}]' >"$FTJ"; lt >/dev/null 2>&1; lt >/dev/null 2>&1
@@ -2525,7 +2568,7 @@ a1="$("$SCRIPTS/tick.sh" 2>/dev/null)"
 eq "api error: the row shows Needs input" "$("$REG" get build-apx/builder | jq -r .status)" "Needs input"
 eq "api error: with the reason on the row" "$("$REG" get build-apx/builder | jq -r .status_detail)" "login expired"
 echo idle >"$AS/build-apx-builder"
-check "api error: and in the status table" bash -c "'$SCRIPTS/status.sh' --verbose | grep -q 'Needs input (login expired)'"
+check "api error: and in the status table" bash -c "'$SCRIPTS/status.sh' | grep -q '| login expired |$'"
 eq "api error: needs_input is reported once, with the reason" "$(printf '%s' "$a1" | jq -c '[.[] | select(.type == "needs_input") | [.name, .detail]]')" '[["build-apx/builder","login expired"]]'
 eq "api error: no stall nudge" "$(grep -c 'went idle without running' "$HERDR_LOG" || true)" 0
 eq "api error: one continue" "$(grep -c '^agent prompt build-apx-builder continue' "$HERDR_LOG" || true)" 1
@@ -2621,8 +2664,9 @@ eq "metrics: stalls" "$(printf '%s' "$mj" | jq '.[0].stalls')" 1
 eq "metrics: missed messages" "$(printf '%s' "$mj" | jq '.[0].missed_messages')" 1
 eq "metrics: tokens only from the files on the team rows (a bad line skipped, a stray file in the dir ignored), in the window" "$(printf '%s' "$mj" | jq '.[0].tokens')" 3030
 eq "metrics: the PR and team" "$(printf '%s' "$mj" | jq -c '[.[0].pr, .[0].team, .[0].issue]')" "[\"$PR\",\"mt\",\"DEV-5\"]"
-"$SCRIPTS/metrics.sh" --since 7d >"$T/m.out"; check "metrics: the table has a header and the PR" bash -c "grep -q 'READY_MIN' '$T/m.out' && grep -q 'pull/50' '$T/m.out'"
-eq "metrics: a window with nothing says so" "$("$SCRIPTS/metrics.sh" --since 1d)" "no PRs in the last 1d"
+"$SCRIPTS/metrics.sh" --since 7d >"$T/m.out"; check "metrics: the weekly table, then the report path" bash -c "head -n 1 '$T/m.out' | grep -qx '| Week | Issues shipped | PRs | Rework | Median cycle |' && tail -n 1 '$T/m.out' | grep -q '^Report: '"
+check "metrics: the report holds the weekly table and the PR" bash -c "f=\"\$(sed -n 's/^Report: //p' '$T/m.out')\"; grep -q '^| Week |' \"\$f\" && grep -q 'pull/50' \"\$f\""
+eq "metrics: a window with nothing says so" "$("$SCRIPTS/metrics.sh" --since 1d)" "No PRs in the last 1d."
 check "metrics: a bad --since is refused" bash -c "! '$SCRIPTS/metrics.sh' --since forever"
 unset FLEET_NOW
 
@@ -2693,27 +2737,27 @@ TB="$HOME/.claude/projects/tb"; mkdir -p "$TB"; : >"$TB/t.jsonl"
 "$REG" add "$(jq -cn --arg tr "$TB/t.jsonl" '{name: "tb/builder", team: "tb", tier: "Worker", status: "Idle", herdr_ref: "tb-b", pane: "p", repo: "/x", transcript: $tr}')"
 rm -f "${AS:?}"/*; : >"$HERDR_LOG"
 out="$("$SCRIPTS/tell.sh" tb/builder "the whole brief text" --brief 2>/dev/null)"; rc=$?
-eq "tell --brief: delivered when the transcript shows the id" "$rc:$(printf '%s' "$out" | jq -r .delivered)" "0:true"
+eq "tell --brief: delivered when the transcript shows the id" "$rc:$(told "$out")" "0:true"
 bf="$("$REG" get tb/builder | jq -r .last_brief)"
 eq "tell --brief: the brief is in the file (mode 600), not typed" "$(cat "$bf"):$(modeof "$bf"):$(grep -c 'the whole brief text' "$HERDR_LOG" || true)" "the whole brief text:600:0"
 check "tell --brief: the pointer names the file and its id" grep -q "^agent prompt tb-b Read your brief: $bf (id $(basename "$bf" .md))" "$HERDR_LOG"
 rm -f "${AS:?}"/*; out="$(BRIEF_QUEUED=1 "$SCRIPTS/tell.sh" tb/builder "queued brief" --brief 2>/dev/null)"
-eq "tell --brief: a queued_command attachment with the id counts" "$(printf '%s' "$out" | jq -r .delivered)" true
+eq "tell --brief: a queued_command attachment with the id counts" "$(told "$out")" true
 rm -f "${AS:?}"/*; out="$(BRIEF_LOST=1 "$SCRIPTS/tell.sh" tb/builder "lost brief" --brief 2>/dev/null)"; rc=$?
-eq "tell --brief: no id in the transcript is not delivered (exit 1)" "$rc:$(printf '%s' "$out" | jq -r .delivered)" "1:false"
+eq "tell --brief: no id in the transcript is not delivered (exit 1)" "$rc:$(told "$out")" "1:false"
 check "tell --brief: and the row is marked for one re-send" test -n "$("$REG" get tb/builder | jq -r '.brief_failed_at // ""')"
 rm -f "${AS:?}"/*; out="$(BRIEF_LOST=1 PROMPT_SEQ=1 "$SCRIPTS/tell.sh" tb/builder "seq only" --brief 2>/dev/null)"
-eq "tell --brief: a state change alone is not delivery" "$(printf '%s' "$out" | jq -r .delivered)" false
+eq "tell --brief: a state change alone is not delivery" "$(told "$out")" false
 jq -nc '{type: "user", message: {content: "Read your brief: /x/other.md (id b1234unrelated)"}}' >>"$TB/t.jsonl"
 rm -f "${AS:?}"/*; out="$(BRIEF_LOST=1 "$SCRIPTS/tell.sh" tb/builder "another" --brief 2>/dev/null)"
-eq "tell --brief: an id it never sent does not count (bad input)" "$(printf '%s' "$out" | jq -r .delivered)" false
+eq "tell --brief: an id it never sent does not count (bad input)" "$(told "$out")" false
 echo working >"$AS/tb-b"; : >"$HERDR_LOG"
-out="$("$SCRIPTS/tell.sh" tb/builder "while busy" --brief 2>/dev/null)"; rc=$?
-eq "tell --brief: an agent that is not idle in time gets nothing (exit 1)" "$rc:$(printf '%s' "$out" | jq -r .reason)" "1:not idle"
+out="$("$SCRIPTS/tell.sh" tb/builder "while busy" --brief 2>&1 >/dev/null)"; rc=$?
+eq "tell --brief: an agent that is not idle in time gets nothing (exit 1)" "$rc:$(printf '%s' "$out" | grep -c ': not idle after ')" "1:1"
 eq "tell --brief: nothing was typed" "$(grep -c '^agent prompt tb-b' "$HERDR_LOG" || true)" 0
 rm -f "${AS:?}"/*; : >"$HERDR_LOG"
 out="$("$SCRIPTS/tell.sh" tb/builder - --brief-file "$bf" 2>/dev/null)"
-eq "tell --brief-file: re-sends the pointer to the same file and id" "$(printf '%s' "$out" | jq -r .delivered):$(grep -c "Read your brief: $bf (id $(basename "$bf" .md))" "$HERDR_LOG")" "true:1"
+eq "tell --brief-file: re-sends the pointer to the same file and id" "$(told "$out"):$(grep -c "Read your brief: $bf (id $(basename "$bf" .md))" "$HERDR_LOG")" "true:1"
 
 # -- M1: an early exit still records THIS brief as last_brief, with the issue it was for
 "$REG" set tb/builder last_brief="$T/old-brief.md" issue=DEV-OLD >/dev/null; rm -f "${AS:?}"/*
@@ -2870,9 +2914,10 @@ LIVEDIR="$HOME/.local/state/fleet"; mkdir -p "$LIVEDIR"
 printf '{"agents":{"live/row":{"name":"live/row","team":"live","tier":"Worker","status":"Working","herdr_ref":"x","pane":"p"}}}\n' >"$LIVEDIR/fleet.json"
 livesum="$(cksum <"$LIVEDIR/fleet.json")"; : >"$HERDR_LOG"
 out="$(FLEET_ROLE=worker LINEAR_API_KEY=KEYFIXTURE HERDR_ENV=1 "$SCRIPTS/sandbox.sh" -- bash -c 'printf "%s|%s|%s|%s|%s\n" "${FLEET_ROLE:-none}" "${LINEAR_API_KEY:-none}" "${HERDR_ENV:-none}" "$FLEET_SESSION" "$("$F/registry.sh" path)"')"
-eq "sandbox: no role, no key, no herdr env, a fake session" "$(printf '%s' "$out" | cut -d'|' -f1-4)" "none|none|none|fleet-sandbox"
-check "sandbox: the registry is in a temporary root" bash -c "case '$(printf '%s' "$out" | cut -d'|' -f5)' in '$LIVEDIR'/*) exit 1 ;; */fleet-sandbox.*/state/fleet.json) exit 0 ;; *) exit 1 ;; esac"
-eq "sandbox: AWS_*, KUBECONFIG and FLEET_GH are unset too" "$(AWS_PROFILE=prod AWS_SECRET_ACCESS_KEY=x KUBECONFIG=/k FLEET_GH=/g "$SCRIPTS/sandbox.sh" -- bash -c 'echo "${AWS_PROFILE:-}${AWS_SECRET_ACCESS_KEY:-}${KUBECONFIG:-}${FLEET_GH:-}"')" ""
+eq "sandbox: no role, no key, no herdr env, a fake session" "$(printf '%s\n' "$out" | head -n 1 | cut -d'|' -f1-4)" "none|none|none|fleet-sandbox"
+check "sandbox: the registry is in a temporary root" bash -c "case '$(printf '%s\n' "$out" | head -n 1 | cut -d'|' -f5)' in '$LIVEDIR'/*) exit 1 ;; */fleet-sandbox.*/state/fleet.json) exit 0 ;; *) exit 1 ;; esac"
+check "sandbox: it ends with its line, the command and its exit code" bash -c "printf '%s\n' \"\$1\" | tail -n 1 | grep -Eq '^Sandbox at .*/fleet-sandbox\.[A-Za-z0-9]+: bash -c .* exited 0\.$'" _ "$out"
+eq "sandbox: AWS_*, KUBECONFIG and FLEET_GH are unset too" "$(AWS_PROFILE=prod AWS_SECRET_ACCESS_KEY=x KUBECONFIG=/k FLEET_GH=/g "$SCRIPTS/sandbox.sh" -- bash -c 'echo "${AWS_PROFILE:-}${AWS_SECRET_ACCESS_KEY:-}${KUBECONFIG:-}${FLEET_GH:-}"' | head -n 1)" ""
 "$SCRIPTS/sandbox.sh" --state-dir "$LIVEDIR" -- true 2>"$T/sb.err"; eq "sandbox: refuses the live state root" "$?" 1
 "$SCRIPTS/sandbox.sh" --state-dir "$LIVEDIR/sub" -- true 2>/dev/null; eq "sandbox: and anything under it" "$?" 1
 "$SCRIPTS/sandbox.sh" --config-dir "$HOME/.config/fleet" -- true 2>/dev/null; eq "sandbox: and the live config root" "$?" 1
@@ -2971,10 +3016,10 @@ eq "tick: a parked team covers its repo (no repo_without_team)" "$(evc "$t1$t2$t
 eq "tick: and its status stays Parked" "$(stat_of ep-a/lead)" Parked
 : >"$FLEET_CONFIG_DIR/config.toml"; rm -f "$AS/ep-a-lead" "$AS/ep-a-builder"
 
-# status: one compact line for a parked team
+# status: a parked team is one row, State Parked
 st="$("$SCRIPTS/status.sh" 2>/dev/null)"
-check "status: a parked team gets one line" bash -c "printf '%s' '$st' | grep -q '^parked: ep-a (park, since '"
-eq "status: and no table row" "$(printf '%s' "$st" | grep -c '^ep-a/')" 0
+check "status: a parked team's row says Parked" bash -c "printf '%s\n' \"\$1\" | grep -q '^| ep-a |.*| Parked | - |\$'" _ "$st"
+eq "status: one row for the team" "$(printf '%s\n' "$st" | grep -c '^| ep-a |')" 1
 
 # -- unpark
 : >"$HERDR_LOG"; echo '{}' >/dev/null
@@ -2993,7 +3038,7 @@ check "unpark: and names that team" grep -q 'ep-d live on' "$T/u.err"
 "$REG" retire ep-d >/dev/null
 export GONE_ONCE="$T/gone_once_e"; : >"$GONE_ONCE"
 out="$("$UNPARK" ep-a 2>"$T/u.err")"; rc=$?; unset GONE_ONCE
-eq "unpark: restores the team from its rows" "$rc:$(printf '%s' "$out" | jq -r .unparked)" "0:true"
+eq "unpark: restores the team from its rows" "$rc:$(printf '%s\n' "$out" | grep -c '^Unparked ep-a: .* back\.$')" "0:1"
 eq "unpark: every row is Working again, the park fields cleared" "$("$REG" list --team ep-a | jq -c '[.[] | [.status, (.parked_at // ""), (.parked_reason // "")]] | unique')" '[["Working","",""]]'
 eq "unpark: both agents were started again" "$(nstartp)" 2
 eq "unpark: the lead got a new workspace (its pane was closed)" "$(grep -c '^workspace create' "$HERDR_LOG" || true)" 1
@@ -3022,17 +3067,17 @@ check "next: and says to unpark" grep -q 'is parked' "$T/n.err"
 "$PARK" ep-c >/dev/null 2>&1                       # parked by hand: focus --clear must leave it alone
 echo wip >"$T/ewt/fleet-ep-b-b/wip.txt"
 fo="$("$FOCUS" ep-a --now 2>/dev/null)"
-eq "focus --now: parks the other live team, refuses the dirty one" "$(printf '%s' "$fo" | jq -c '[.parked, .refused]')" '[[],["ep-b"]]'
+eq "focus --now: parks the other live team, refuses the dirty one" "$(printf '%s\n' "$fo" | head -n 1)" "Focused on ep-a: parked none. Refused: ep-b."
 rm -f "$T/ewt/fleet-ep-b-b/wip.txt"
 "$FOCUS" ep-a --now >/dev/null 2>&1; eq "focus: a second focus is refused until cleared" "$?" 1
 "$FOCUS" --clear >/dev/null 2>&1
 fo="$("$FOCUS" ep-a --now 2>/dev/null)"
-eq "focus --now: now ep-b parks too" "$(printf '%s' "$fo" | jq -c '[.parked, .refused]')" '[["ep-b"],[]]'
+eq "focus --now: now ep-b parks too" "$(printf '%s\n' "$fo" | head -n 1)" "Focused on ep-a: parked ep-b."
 eq "focus: the reason names the focus" "$("$REG" get ep-b/lead | jq -r .parked_reason)" focus:ep-a
-check "focus: the status has one focus line" bash -c "'$SCRIPTS/status.sh' 2>/dev/null | grep -qx 'focus: ep-a'"
+check "focus: the status has one focus line" bash -c "'$SCRIPTS/status.sh' 2>/dev/null | grep -qx 'Focus: ep-a.'"
 eq "focus: focus_set is logged" "$(evn focus_set)" 2
 fc="$("$FOCUS" --clear 2>/dev/null)"
-eq "focus --clear: unparks only the teams focus parked" "$(printf '%s' "$fc" | jq -c '[.unparked, .refused]')" '[["ep-b"],[]]'
+eq "focus --clear: unparks only the teams focus parked" "$(printf '%s\n' "$fc" | head -n 1)" "Focus cleared: unparked ep-b."
 eq "focus --clear: the team parked by hand stays parked" "$(stat_of ep-c/lead)" Parked
 eq "focus --clear: the focus line is gone" "$(test -f "$FLEET_STATE_DIR/focus" && echo yes || echo no)" no
 eq "focus: focus_cleared is logged" "$(evn focus_cleared)" 2
@@ -3337,14 +3382,15 @@ ln -s "$FL" "$D4/fleet-link"; eq "dev408-16 commands: a symlink to fleet finds i
 FLEET_NOW=2026-10-24T09:00:00Z "$SCRIPTS/status.sh" >/dev/null 2>&1
 a="$(FLEET_NOW=2026-10-24T09:00:00Z "$FL" status 2>&1; echo "rc=$?")"; b="$(FLEET_NOW=2026-10-24T09:00:00Z "$SCRIPTS/status.sh" 2>&1; echo "rc=$?")"
 eq "dev408-16 commands: fleet status prints what status.sh prints, with its exit status" "$a" "$b"
-check "dev408-16 commands: and that output is a team table" grep -q '^TEAM' <<<"$a"
+check "dev408-16 commands: and that output is a team table" grep -q '^| Team |' <<<"$a"
 eq "dev408-16 commands: arguments pass through unchanged" "$("$FL" status --json | jq -c '[.[].name] | sort')" "$("$SCRIPTS/status.sh" --json | jq -c '[.[].name] | sort')"
 "$FL" escalate g4/lead P2 "which port?" >/dev/null 2>&1
-eid="$("$FL" escalations --open | jq -r '[.[] | select(.message == "which port?")][0].id')"
+eid="$("$REG" escalations --open | jq -r '[.[] | select(.message == "which port?")][0].id')"
+eq "dev408-16 commands: fleet escalations lists it in its table" "$("$FL" escalations --open | grep -c "^| $eid | P2 | g4/lead | which port? |")" 1
 "$FL" resolve g4/lead "$eid" --note 8080 >/dev/null 2>&1
 eq "dev408-16 commands: escalate, escalations and resolve run registry.sh's" "$("$REG" escalations --team g4 | jq -r '[.[] | select(.message == "which port?")][0] | [.resolution, (.resolved_at != null)] | map(tostring) | join("|")')" "8080|true"
 d4cfg 'linear_writes = "on"'; d4db
-eq "dev408-16 commands: fleet holder runs linear.sh holder" "$(FLEET_NOW=2026-10-18T09:00:00Z "$FL" holder DEV-2)" "$(FLEET_NOW=2026-10-18T09:00:00Z "$LIN" holder DEV-2)"
+eq "dev408-16 commands: fleet holder runs linear.sh holder and says it in one line" "$(FLEET_NOW=2026-10-18T09:00:00Z "$FL" holder DEV-2)" "DEV-2: held by fleet:other (heartbeat 3h ago, lapsed)."
 d4cfg
 # prime: the counts, then the status output
 "$REG" escalate g4/lead P1 "need a decision" >/dev/null 2>&1
@@ -3358,8 +3404,84 @@ for r in lead builder tester; do "$REG" add "$(jq -cn --arg r "$r" '{name: ("r4/
 "$REG" note r4/builder discovered "flaky ci" >/dev/null
 "$REG" retire r4/lead --outcome Shipped >/dev/null; "$REG" retire r4/builder --outcome Partial >/dev/null; "$REG" retire r4/tester --outcome Shipped >/dev/null
 "$REG" set r4/tester lessons="sign the exact head" >/dev/null
-eq "dev408-16 commands: debrief lists the team, its outcomes and the agents whose lessons are due, then discovered work" "$("$FL" debrief)" "r4 (Partial/Shipped): lessons due from lead, builder
+eq "dev408-16 commands: debrief lists the team, its outcomes and each agent's lesson or that it is due, then discovered work" "$("$FL" debrief)" "r4 (Partial/Shipped): lead: lesson due; builder: lesson due; tester: sign the exact head
 Discovered work: flaky ci (r4/builder)"
+
+# -- dev408-17: one output shape per command and wake
+# tick renders each wake's reply into notices.log, and status shows a notice once, above its table
+"$REG" escalate g4/lead P2 "use the cache?" yes no >/dev/null 2>&1
+FLEET_GH="$G4" "$SCRIPTS/tick.sh" >/dev/null 2>&1
+eq "dev408-17 output: tick renders a wake's reply into notices.log" "$(tail -n 1 "$FLEET_STATE_DIR/notices.log" | jq -r .text)" "P2 g4/lead: use the cache?
+A) yes (recommended) · B) no
+Reply A or B."
+s1="$("$SCRIPTS/status.sh" 2>/dev/null)"; s2="$("$SCRIPTS/status.sh" 2>/dev/null)"
+nl="$(printf '%s\n' "$s1" | grep -n '^P2 g4/lead: use the cache?$' | cut -d: -f1)"; tl="$(printf '%s\n' "$s1" | grep -n '^| Team |' | cut -d: -f1)"
+eq "dev408-17 output: status prints the notice above the table, then never again" "$([ -n "$nl" ] && [ -n "$tl" ] && [ "$nl" -lt "$tl" ] && echo above):$(printf '%s\n' "$s2" | grep -c 'use the cache')" "above:0"
+# every entry, rendered from the golden fixture (FLEET_NOW, a seeded registry and event log, the herdr shim)
+gfix; gcfg; export FLEET_NOW=2026-10-24T09:00:00Z DF_GB=500
+gold help "$("$FL" help)"
+gold status "$("$FL" status 2>&1)"
+gold status-team "$("$FL" status build-api 2>&1)"
+gold disk "$(DF_GB=40 "$FL" status 2>&1 | grep '^Disk:')"
+gold escalations "$("$FL" escalations --open 2>&1)"
+gold prime "$("$FL" prime 2>&1)"
+gold debrief "$("$FL" debrief 2>&1)"
+gold env "$("$FL" env status build-api 2>&1)"
+gold metrics "$("$FL" metrics 2>&1)"
+WAKES="$(bash -c '. "$1/common.sh"; printf "%s" "$WAKE_TYPES"' _ "$SCRIPTS")"
+for w in $WAKES; do
+  case "$w" in
+    pr_ready) ev='{"type":"pr_ready","team":"build-api","name":"build-api/tester","url":"https://github.com/acme/app-api/pull/214","sha":"abc1234def5678","ci":"green"}' ;;
+    pr_merged) ev='{"type":"pr_merged","team":"build-web","name":"build-web/lead","url":"https://github.com/acme/app-web/pull/121"}' ;;
+    pr_opened) ev='{"type":"pr_opened","team":"build-api","name":"build-api/builder","url":"https://github.com/acme/app-api/pull/214","lead_told":false}' ;;
+    needs_input) ev='{"type":"needs_input","team":"build-api","name":"build-api/builder","detail":"login expired"}' ;;
+    claim_takeover) ev='{"type":"claim_takeover","team":"build-api","name":"build-api/lead","issue":"DEV-12","holder":"fleet:other"}' ;;
+    weekly_summary) ev='{"type":"weekly_summary","team":"","name":"","week":"2026-W43"}' ;;
+    escalation) ev='{"type":"escalation","team":"build-api","name":"build-api/lead","id":"20261024T080000Z-1","severity":"P1","message":"which database?","options":["postgres","sqlite"]}' ;;
+    *) ev="$(jq -cn --arg t "$w" '{type: $t, team: "build-api", name: "build-api/builder"}')" ;;
+  esac
+  gold "wake-$w" "$(bash -c '. "$1/common.sh"; render_notice "$2"' _ "$SCRIPTS" "$ev")"
+done
+gold retire-ask "$("$FL" retire --summary build-web 2>&1)"
+mkdir -p "$G/la"; : >"$G/la/fleet.tick.plist"; printf '#!/bin/sh\n[ "$1" = print ]\n' >"$G/lctl"; chmod +x "$G/lctl"
+jq -n --argjson g "$(jq -rn '"2026-10-24T08:57:00Z" | fromdateiso8601')" '{last_good: $g}' >"$FLEET_STATE_DIR/loop.state.json"
+gold schedule "$(FLEET_LAUNCH_AGENTS="$G/la" FLEET_LAUNCHCTL="$G/lctl" "$FL" schedule status 2>&1)"
+gcfg 'linear_writes = "on"'; d4db
+gold holder "$(FLEET_NOW=2026-10-18T09:00:00Z "$FL" holder DEV-2 2>&1)"
+gold claim "$("$FL" claim DEV-1 2>&1)"
+gold takeover "$(FLEET_GH="$G4" FLEET_NOW=2026-10-18T09:00:00Z "$FL" takeover DEV-2 2>&1)"
+gcfg
+gold sandbox "$("$FL" sandbox -- true 2>&1 | sed -E 's#at .*/fleet-sandbox\.[A-Za-z0-9]+:#at <sandbox>:#')"
+gold error "$("$FL" status build-nosuch 2>&1 >/dev/null)"
+gold tell "$("$FL" tell build-api/tester "hello there" 2>&1)"
+gold decision "$("$FL" escalate build-api/tester P2 "rename the flag?" 2>&1)"
+gold escalate "$("$FL" escalate build-api/builder P1 "which port?" 8080 9090 "decide later" 2>&1)"
+eid="$("$REG" escalations --open --team build-api | jq -r '[.[] | select(.message == "which port?")][0].id')"
+gold resolve "$("$FL" resolve build-api/builder "$eid" --note "use 8080" 2>&1 | sed "s#$eid#<id>#")"
+gold respawn "$("$FL" respawn build-api/tester 2>&1)"
+gold boot "$(FLEET_FORCE=1 "$FL" boot --issue DEV-50 --issue-url https://linear.app/acme/issue/DEV-50/gold build gold "$G/repo" "gold task" 2>/dev/null)"
+gold next "$("$FL" next build-web DEV-14 --issue-url https://linear.app/acme/issue/DEV-14/next 2>/dev/null)"
+gold park "$("$FL" park build-gold 2>&1)"
+gold unpark "$(FLEET_FORCE=1 "$FL" unpark build-old 2>&1)"
+gold focus "$(FLEET_FORCE=1 "$FL" focus build-api --now 2>&1)"
+gold focus-show "$("$FL" focus 2>&1)"
+gold focus-clear "$(FLEET_FORCE=1 "$FL" focus --clear 2>&1)"
+gold retire "$("$FL" retire build-gold --outcome Abandoned 2>&1)"
+printf '#!/usr/bin/env bash\necho "fleet: warning: herdr agent list failed; no classification or respawn this tick" >&2\necho "[]"\n' >"$G/fake-tick"
+printf '#!/bin/sh\necho "$1" >>"%s"\n' "$G/alert.log" >"$G/alert-cmd"; chmod +x "$G/fake-tick" "$G/alert-cmd"
+gcfg "alert_cmd = \"$G/alert-cmd\""; FLEET_TICK="$G/fake-tick" /bin/bash "$SCRIPTS/loop-tick.sh" >/dev/null 2>&1; gcfg
+gold alert "$(cat "$G/alert.log" 2>/dev/null)"
+unset FLEET_NOW DF_GB
+# every command in fleet help and every wake has an entry in output.md and a golden file
+OUT_MD="$SCRIPTS/../references/output.md"; miss=""
+for c in $("$FL" help | sed -n '3,$p' | cut -d'`' -f2); do
+  grep -qx "### $c" "$OUT_MD" || miss="$miss $c:heading"; [ -f "$GD/$c.md" ] || miss="$miss $c:golden"
+done
+for w in $WAKES; do grep -qx "### wake $w" "$OUT_MD" || miss="$miss wake-$w:heading"; [ -f "$GD/wake-$w.md" ] || miss="$miss wake-$w:golden"; done
+for s in "team table" error decision disk alert; do grep -qx "### $s" "$OUT_MD" || miss="$miss $s:heading"; done
+eq "dev408-17 output: every command and wake has an entry in output.md and a golden file" "$miss" ""
+eq "dev408-17 output: no golden file without an entry" "$(for f in "$GD"/*.md; do b="$(basename "$f" .md)"; case "$b" in wake-*) h="### wake ${b#wake-}" ;; *-*) h="### ${b%%-*}" ;; *) h="### $b" ;; esac; grep -qx "$h" "$OUT_MD" || echo "$b"; done)" ""
+check "dev408-17 output: SKILL.md tells the Orchestrator to relay output verbatim" grep -q 'verbatim' "$SCRIPTS/../SKILL.md"
 # ---- end DEV-408 ----
 
 printf '\n%d passed, %d failed\n' "$pass" "$failn"

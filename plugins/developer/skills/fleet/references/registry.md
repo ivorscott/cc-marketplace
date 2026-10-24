@@ -63,8 +63,7 @@ with a warning, so it cannot block other writes; `escalate`, `resolve` and `reti
 `registry.sh archive` (run after every `retire.sh`) moves Retired rows to `fleet-archive.json` in the
 state dir once `lessons` is written, no escalation is open, and `archive_after_days` (config.toml,
 default 0) have passed since `ended`. Rows without lessons stay: they are the debrief queue.
-`list` and `status` read the live file only; `get --archived <name>`, `list --with-archived` and
-`retire.sh --summary` read both.
+`list` and `status` read the live file only; `get --archived <name>` and `list --with-archived` read both.
 ## Who may write what
 
 `registry.sh set` from an agent (its pane has `FLEET_ROLE`) takes only `status`, `summary`, `nudged_at`,

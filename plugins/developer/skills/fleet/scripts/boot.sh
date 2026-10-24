@@ -6,7 +6,8 @@
 #
 # <template> is a name from ../templates (build, review, research) or a path to a
 # template JSON file. <focus> becomes the team name <template>-<focus>. The task text
-# defaults to <focus>. Prints the booted team as JSON on stdout.
+# defaults to <focus>. Prints "Booted <team> on <issue> in <repo>: lead ✓ ..." (✗ with the reason for an agent
+# that did not start or whose brief did not arrive), then the team table (references/output.md).
 #
 # Every Claude agent also gets the tracker_allow and forge_allow lists from config.toml, so
 # reading tickets (Linear, Jira, ...) and pull/merge requests (gh, glab, ...) never blocks
@@ -267,8 +268,8 @@ if [ "$status" = "Working" ]; then
 fi
 
 ev_log boot team="$team" issue="$issue" detail="template $template"
-"$registry" list --team "$team" |
-  jq --arg ws "$workspace" --arg team "$team" '{team: $team, workspace: $ws, agents: [.[] | {name, herdr_ref, pane, status, worktree}]}'
+render_line booted team="$team" issue="$(issue_link "$issue" "$issue_url")" repo="$(basename "$repo")" agents="$(roles_line "$team")"
+render_table
 if [ "${#failed_agents[@]}" -gt 0 ]; then
   warn "brief not delivered to: ${failed_agents[*]} (rows set to Failed)"
   exit 1

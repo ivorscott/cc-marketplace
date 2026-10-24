@@ -24,7 +24,12 @@ if [ "${FLEET_TEST:-}" = 1 ]; then
   unset _live
 fi
 
-die() { printf 'fleet: %s\n' "$*" >&2; exit 1; }
+# die <what failed> [the one next step]: the message on stderr, and exit 1. With a next step the line is
+# "fleet: <what failed>. <next step>." (the error form of references/output.md, which the dispatcher relays).
+die() {
+  if [ $# -ge 2 ] && [ -n "$2" ]; then printf 'fleet: %s. %s.\n' "${1%.}" "${2%.}" >&2; else printf 'fleet: %s\n' "$*" >&2; fi
+  exit 1
+}
 warn() { printf 'fleet: warning: %s\n' "$*" >&2; }
 now() { date -u +%Y-%m-%dT%H:%M:%SZ; }
 
@@ -242,7 +247,7 @@ contract() {
   [ -n "$expertise" ] && x=" Before you start, read your expertise file $expertise and follow it."
   printf '%s' "
 
-Fleet rules for $name.$x Stay on this one task. If you notice unrelated work, run \`$registry note $name discovered \"<what>\"\` instead of doing it. If you need a decision you cannot make, run \`$registry escalate $name P1 \"<question>\"\` and wait. P1 is only for a decision the user must make; \"PR ready\" goes through done, not an escalation. If you stop to wait for instructions, first run \`$registry set $name status=Idle\`. When your part is finished: push your \`fleet/<slug>\` branch if you have one (with \`--force-with-lease\`, never to the default branch), then run \`$registry done $name --outcome <Shipped|Partial|Failed> --summary \"<one line>\"\`, then stop. Going idle without that command marks you Stalled."
+Fleet rules for $name.$x Stay on this one task. If you notice unrelated work, run \`$registry note $name discovered \"<what>\"\` instead of doing it. If you need a decision you cannot make, run \`$registry escalate $name P1 \"<question>\" \"<recommended option>\" \"<other option>\"\` (options optional, your recommendation first) and wait. P1 is only for a decision the user must make; \"PR ready\" goes through done, not an escalation. If you stop to wait for instructions, first run \`$registry set $name status=Idle\`. When your part is finished: push your \`fleet/<slug>\` branch if you have one (with \`--force-with-lease\`, never to the default branch), then run \`$registry done $name --outcome <Shipped|Partial|Failed> --summary \"<one line>\"\`, then stop. Going idle without that command marks you Stalled."
 }
 
 # build_brief <name> <expertise-file> <text>: a brief plus the fleet rules and the house rules.
@@ -483,3 +488,256 @@ transcript_bg_running() {
 
 # footer_bg_running <screen text>: the pane footer says "N shell(s)" or "N monitor(s)" still running.
 footer_bg_running() { printf '%s\n' "$1" | tail -n 8 | grep -Eq '[0-9]+ (shell|monitor)s?([ ,.]|$)'; }
+
+# report_dir: where fleet reports go: reports/ under the Orchestrator's cwd when its row records one (registry.sh
+# orchestrator here), else reports/ in the state dir (a launchd job's cwd is /).
+report_dir() {
+  local d; d="$("$FLEET_SCRIPTS/registry.sh" get orchestrator 2>/dev/null | jq -r '.cwd // ""' 2>/dev/null)" || d=""
+  if [ -n "$d" ] && [ -d "$d" ]; then printf '%s/reports\n' "$d"; else printf '%s/reports\n' "$FLEET_STATE_DIR"; fi
+}
+
+# --- replies ---------------------------------------------------------------------------------------------
+# Every user-facing reply has one shape, listed in references/output.md and pinned by scripts/test/golden/: the
+# team table, the agent table, the decision form, the error form and one line per command or wake (render_line).
+# Scripts print through these functions, never with a printf of their own, so every machine shows the same thing
+# and the Orchestrator relays it as it is.
+
+# RENDER_DEFS: jq definitions the tables share. md makes text safe in a table cell; issue_cell and pr_cell give
+# [DEV-1](url) and [repo #N](url) (or the bare key, or -); word is the one-word state of an agent status; rank
+# orders those words, worst last; ago($now) turns an ISO time into "5m ago", "3h ago" or "2d ago".
+RENDER_DEFS='def md: tostring | gsub("[\r\n\t]+"; " ") | gsub("\\|"; "\\|");
+  def issue_cell($k; $u): if ($k // "") == "" then "-" elif ($u // "") == "" then $k else "[\($k)](\($u))" end;
+  def pr_cell($u): if ($u // "") == "" then "-"
+    else ([$u | capture("^https?://[^/]+/[^/]+/(?<r>[^/]+)/(pull|merge_requests)/(?<n>[0-9]+)")] | first) as $m
+      | if $m == null then "[PR](\($u))" else "[\($m.r) #\($m.n)](\($u))" end end;
+  def word: {"Working": "Working", "Booting": "Working", "Idle": "Idle", "Needs input": "Idle", "Stalled": "Stalled",
+    "Zombie": "Zombie", "Failed": "Failed", "Done": "Done", "Parked": "Parked"}[.] // "Idle";
+  def rank: {"Parked": 0, "Done": 1, "Idle": 2, "Working": 3, "Stalled": 4, "Failed": 5, "Zombie": 6}[.] // 2;
+  def ago($now): if (. // "") == "" then "-"
+    else ([(($now - (sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601)) / 60 | floor), 0] | max) as $m
+      | if $m < 60 then "\($m)m ago" elif $m < 2880 then "\($m / 60 | floor)h ago" else "\($m / 1440 | floor)d ago" end end;
+  '
+
+# issue_link <key> [url] and pr_link <url>: the Issue and PR cells as a reply line writes them.
+issue_link() { if [ -z "${1:-}" ]; then return 0; elif [ -n "${2:-}" ]; then printf '[%s](%s)' "$1" "$2"; else printf '%s' "$1"; fi; }
+pr_link() { jq -rn --arg u "${1:-}" "$RENDER_DEFS"'pr_cell($u)'; }
+# roles_line <team>: each agent's role and a mark, lead first: "lead ✓ builder ✗ (did not start)".
+roles_line() {
+  "$FLEET_SCRIPTS/registry.sh" list --team "$1" | jq -r '[.[] | select(.status != "Retired")] | sort_by(if .tier == "Lead" then 0 else 1 end)
+    | map((.name | split("/")[1:] | join("/")) + " " + (if .status == "Failed" then "✗ (brief not delivered)"
+        elif .status == "Zombie" then "✗ (did not start)" else "✓" end)) | join(" ")'
+}
+
+# render_table [team...]: the team table of the registry as it stands (no herdr call): one row per team that has a
+# row not yet Retired, or only the teams named, then "Waiting on you: ..." when a P0 or P1 is open. "No teams." when
+# there is none. State is the worst agent state in one word (Parked when the team is parked); Needs you is the
+# team's most severe open escalation, else what its state needs, else -.
+render_table() {
+  local rows esc only
+  rows="$("$FLEET_SCRIPTS/registry.sh" list)" || return 1
+  esc="$("$FLEET_SCRIPTS/registry.sh" escalations --open --not-retired 2>/dev/null)" || esc='[]'
+  only="$(printf '%s\n' "$@" | jq -Rsc 'split("\n") | map(select(. != ""))')"
+  jq -rn --argjson rows "$rows" --argjson esc "$esc" --argjson only "$only" "$RENDER_DEFS"'
+    def shown: ($only | length) == 0 or (. as $t | $only | index($t) != null);
+    [$rows[] | select(.tier != "Orchestrator" and .status != "Retired" and (.team // "") != "" and (.team | shown))]
+    | group_by(.team) | map(. as $g | $g[0].team as $t
+      | ([$esc[] | select(.team == $t)] | sort_by({"P0": 0, "P1": 1, "P2": 2}[.severity] // 3) | first) as $e
+      | (if any($g[]; .status == "Parked") then "Parked" else ($g | map(.status | word) | sort_by(rank) | last) end) as $state
+      | ($g | map(.pr // "") | map(select(. != "")) | first // "") as $pr
+      | {team: $t,
+         issue: issue_cell(($g | map(.issue // "") | map(select(. != "")) | first // ""); ($g | map(.issue_url // "") | map(select(. != "")) | first // "")),
+         pr: pr_cell($pr), state: $state,
+         needs: (if $e != null then "\($e.severity): \($e.message | .[0:60])"
+           elif any($g[]; .status == "Needs input") then ($g | map(.status_detail // "") | map(select(. != "")) | first // "answer its prompt")
+           elif $state == "Zombie" then "agent gone: respawn or retire"
+           elif $state == "Stalled" then "ask for its done step"
+           elif $state == "Failed" then "brief not delivered"
+           elif $state == "Done" then (if $pr != "" then "merge the PR" else "retire the team" end)
+           else "-" end)}) as $t
+    | if ($t | length) == 0 then "No teams." else
+        "| Team | Issue | PR | State | Needs you |", "|---|---|---|---|---|",
+        ($t[] | "| \(.team | md) | \(.issue) | \(.pr) | \(.state) | \(.needs | md) |"),
+        ([$esc[] | select((.severity | IN("P0", "P1")) and (.team | shown)) | "\(.name) \(.severity): \(.message | .[0:60] | md)"]
+          | if length > 0 then "Waiting on you: " + join("; ") else empty end)
+      end'
+}
+
+# render_agent_table <team>: | Agent | Role | State | Model | Last action |, the lead first. The last action is the
+# agent's newest event in events.jsonl (type and age), else when its row last changed. Returns 1 for no such team.
+render_agent_table() {
+  local rows ev f
+  rows="$("$FLEET_SCRIPTS/registry.sh" list --team "$1" | jq -c '[.[] | select(.status != "Retired" and .tier != "Orchestrator")]')" || return 1
+  [ "$(jq length <<<"$rows")" != 0 ] || return 1
+  f="$(events_file)"; ev='{}'
+  [ ! -s "$f" ] || ev="$(jq -Rn --arg t "$1" '[inputs | fromjson? // empty | select(type == "object" and .team == $t and (.name // "") != "")]
+    | group_by(.name) | map({key: .[0].name, value: (max_by(.at) | {type, at})}) | from_entries' "$f")"
+  jq -rn --argjson rows "$rows" --argjson ev "$ev" --argjson now "$(jq -rn --arg t "${FLEET_NOW:-$(now)}" '$t | fromdateiso8601')" "$RENDER_DEFS"'
+    "| Agent | Role | State | Model | Last action |", "|---|---|---|---|---|",
+    ($rows | sort_by((if .tier == "Lead" then 0 else 1 end), .name)[] | ($ev[.name] // null) as $e
+      | "| \(.name | md) | \(.name | split("/")[1:] | join("/") | md) | \(.status | word) | \(if (.model // "") == "" then "-" else (.model | md) end) | \(if $e != null then "\($e.type) \($e.at | ago($now))" else "updated \(.updated_at | ago($now))" end) |")'
+}
+
+# render_escalations <escalations JSON (registry.sh escalations)>: | Id | Severity | Agent | Question | Age |, oldest
+# first, a resolved one marked; "No escalations." when there is none.
+render_escalations() {
+  jq -rn --argjson e "$1" --argjson now "$(jq -rn --arg t "${FLEET_NOW:-$(now)}" '$t | fromdateiso8601')" "$RENDER_DEFS"'
+    if ($e | length) == 0 then "No escalations." else
+      "| Id | Severity | Agent | Question | Age |", "|---|---|---|---|---|",
+      ($e | sort_by(.at)[] | "| \(.id) | \(.severity) | \(.name | md) | \(.message | .[0:80] | md)\(if .resolved_at != null then " (resolved)" else "" end) | \(.at | ago($now)) |")
+    end'
+}
+
+# render_metrics <metrics.sh --json array>: | Week | Issues shipped | PRs | Rework | Median cycle |, one row per ISO
+# week of the PRs' end (merge, else now): issues with a merged PR, PRs, rework rounds, the median minutes to ready.
+render_metrics() {
+  jq -rn --argjson p "$1" '
+    def wk: sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601 | gmtime | strftime("%G-W%V");
+    def dur: if . == null then "-" elif . < 60 then "\(.)m" else "\(. / 60 | floor)h \(. % 60)m" end;
+    def median: sort | if length == 0 then null else .[(length - 1) / 2 | floor] end;
+    "| Week | Issues shipped | PRs | Rework | Median cycle |", "|---|---|---|---|---|",
+    ($p | map(. + {week: ((.merged_at // .end_at) | wk)}) | group_by(.week)[]
+      | "| \(.[0].week) | \([.[] | select(.merged_at != null) | .issue // empty] | unique | length) | \(length) | \([.[].rework_rounds] | add // 0) | \([.[].ready_minutes // empty] | median | dur) |")'
+}
+# render_metrics_prs <metrics.sh --json array>: the report's per-PR table.
+render_metrics_prs() {
+  jq -rn --argjson p "$1" "$RENDER_DEFS"'
+    "| PR | Team | Issue | Ready (min) | Rework | Stalls | Missed | Tokens |", "|---|---|---|---|---|---|---|---|",
+    ($p[] | "| \(pr_cell(.pr)) | \(.team // "-" | md) | \(.issue // "-" | md) | \(.ready_minutes // "-") | \(.rework_rounds) | \(.stalls) | \(.missed_messages) | \(.tokens) |")'
+}
+
+# render_decision <P0|P1|P2> <team/role> <question> [option...]: the decision form. The first option is the
+# recommended one; with no options it is the question line alone.
+render_decision() {
+  local p="$1" who="$2" q="$3" letters=ABCDEFGHIJ i=0 o opts="" reply=""; shift 3
+  printf '%s %s: %s\n' "$p" "$who" "$q"
+  [ $# -gt 0 ] || return 0
+  for o in "$@"; do
+    [ "$i" -lt 10 ] || break
+    if [ "$i" = 0 ]; then opts="${letters:0:1}) $o (recommended)"; else opts="$opts · ${letters:$i:1}) $o"; fi
+    i=$((i + 1))
+  done
+  case "$i" in
+    1) reply="A" ;;
+    *) reply="$(printf '%s' "${letters:0:$((i - 1))}" | sed 's/./&, /g; s/, $//') or ${letters:$((i - 1)):1}" ;;
+  esac
+  printf '%s\nReply %s.\n' "$opts" "$reply"
+}
+
+# render_error <command> <what failed> [next step]: the error form, "<command>: <what failed>. <next step>."; the
+# next step defaults to "Run fleet help <command>".
+render_error() { local n="${3:-Run fleet help $1}"; printf '%s: %s. %s.\n' "$1" "${2%.}" "${n%.}"; }
+
+# render_line <entry> key=value...: one line of the catalogue (references/output.md), filled from the named values.
+render_line() {
+  local e="$1" kv k L_cause="" L_next="" L_what=""; shift
+  for kv in "$@"; do
+    k="${kv%%=*}"; case "$k" in "" | *[!a-z_]*) continue ;; esac
+    local "L_$k"; printf -v "L_$k" '%s' "${kv#*=}"
+  done
+  case "$e" in
+    booted) printf 'Booted %s%s in %s: %s\n' "${L_team:-}" "${L_issue:+ on $L_issue}" "${L_repo:-}" "${L_agents:-}" ;;
+    moved) printf 'Moved %s: %s → %s\n' "${L_team:-}" "${L_from:--}" "${L_to:-}" ;;
+    retire_ask) printf 'Retire %s? Outcome %s. Unpushed: %s. Kept: %s. Reply yes to retire.\n' "${L_team:-}" "${L_outcome:-Abandoned}" "${L_unpushed:-none}" "${L_kept:-none}" ;;
+    retired) printf 'Retired %s (%s): PRs %s. %s%s%s\n' "${L_team:-}" "${L_outcome:-Abandoned}" "${L_prs:-none}" \
+      "$([ -n "${L_archived:-}" ] && printf 'Archived to %s.' "$L_archived" || printf 'Nothing archived.')" \
+      "${L_kept:+ Kept: $L_kept.}" "${L_issue_state:+ Issue → $L_issue_state.}" ;;
+    parked) printf 'Parked %s: slot free, worktrees and claim kept.\n' "${L_team:-}" ;;
+    park_marked) printf 'Marked %s: it parks when its PR merges.\n' "${L_team:-}" ;;
+    unparked) printf 'Unparked %s: %s back.\n' "${L_team:-}" "${L_agents:-}" ;;
+    focused) printf 'Focused on %s: parked %s.%s\n' "${L_team:-}" "${L_parked:-none}" "${L_refused:+ Refused: $L_refused.}" ;;
+    focus_marked) printf 'Focused on %s: %s park when their PRs merge.%s\n' "${L_team:-}" "${L_marked:-none}" "${L_refused:+ Refused: $L_refused.}" ;;
+    focus_cleared) printf 'Focus cleared: unparked %s.%s\n' "${L_unparked:-none}" "${L_refused:+ Refused: $L_refused.}" ;;
+    focus) printf 'Focus: %s.\n' "${L_team:-none}" ;;
+    no_problems) printf 'No problems.\n' ;;
+    other_machines) printf 'Other machines: %s.\n' "${L_list:-none}" ;;
+    loop_unregistered) printf 'Loop: no Orchestrator registered, so wakes reach desktop notifications only. Run registry.sh orchestrator here in its pane.\n' ;;
+    respawned) printf 'Respawned %s (%s): %s.\n' "${L_name:-}" "${L_model:-default model}" "${L_state:-}" ;;
+    restarted) printf 'Restarted %s (%s): %s.\n' "${L_name:-}" "${L_model:-default model}" "${L_state:-}" ;;
+    told) printf 'Told %s: "%s" (%s)\n' "${L_name:-}" "${L_text:-}" "${L_how:-delivered}" ;;
+    resolved) printf 'Resolved %s for %s: %s.\n' "${L_id:-}" "${L_name:-}" "${L_decision:-no note}" ;;
+    prime) printf 'Fleet on %s: %s teams, %s open escalations, %s problems.\n' "${L_machine:-}" "${L_teams:-0}" "${L_escalations:-0}" "${L_problems:-0}" ;;
+    loop) printf 'Fleet loop: %s. Last good tick %s. %s.\n' "${L_loaded:-not loaded}" "${L_when:-never}" "${L_health:-problem}" ;;
+    env) printf 'Env %s: %s. Context fleet-%s.\n' "${L_team:-}" "${L_state:-Down}" "${L_team:-}" ;;
+    claimed) printf 'Claimed %s for %s.\n' "${L_issue:-}" "${L_machine:-}" ;;
+    took_over) printf 'Took over %s from %s (heartbeat %s).\n' "${L_issue:-}" "${L_machine:-}" "${L_age:-unknown}" ;;
+    holder) if [ -n "${L_machine:-}" ]; then printf '%s: held by %s (heartbeat %s%s).\n' "${L_issue:-}" "$L_machine" "${L_age:-none}" "${L_lapsed:+, lapsed}"
+            else printf '%s: held by nobody.\n' "${L_issue:-}"; fi ;;
+    sandbox) printf 'Sandbox at %s: %s exited %s.%s\n' "${L_dir:-}" "${L_cmd:-}" "${L_code:-0}" "${L_kept:+ Kept.}" ;;
+    disk) printf 'Disk: %s GB free (warn below %s).%s\n' "${L_free:-?}" "${L_warn:-?}" "${L_held:+ Fleet holds $L_held GB. Reclaimed ${L_reclaimed:-0} GB.}" ;;
+    alert) printf 'Alert: %s. %s.\n' "${L_cause%.}" "${L_next%.}" ;;
+    pr_ready) printf 'Ready to merge: %s%s. Tester signed %s = head, CI %s, mergeable.\n' "${L_pr:-}" "${L_issue:+ for $L_issue}" "${L_sha:-}" "${L_ci:-green}" ;;
+    pr_merged) printf 'Merged %s. Next: %s.\n' "${L_pr:-}" "${L_next:-}" ;;
+    pr_opened) printf 'PR opened: %s%s. %s.\n' "${L_pr:-}" "${L_issue:+ for $L_issue}" "${L_told:-Lead told to start the tester}" ;;
+    event) printf '%s %s: %s. %s.\n' "${L_event:-}" "${L_name:-}" "${L_what%.}" "${L_next%.}" ;;
+    claim_takeover) printf '%s taken over by %s. Stop or hand off %s.\n' "${L_issue:-}" "${L_machine:-}" "${L_team:-}" ;;
+    debrief) printf '%s (%s): %s\n' "${L_team:-}" "${L_outcome:-}" "${L_lessons:-}" ;;
+    discovered) printf 'Discovered work: %s\n' "${L_work:-}" ;;
+    report) printf 'Report: %s\n' "${L_path:-}" ;;
+    no_prs) printf 'No PRs in the last %s.\n' "${L_since:-7d}" ;;
+    no_envs) printf 'No team environments.\n' ;;
+    nothing_to_debrief) printf 'Nothing to debrief.\n' ;;
+    *) warn "render_line: no entry '$e'"; return 1 ;;
+  esac
+}
+
+# team_issue <team>: the team's issue as a reply writes it (a link, or the bare key); empty when it has none.
+team_issue() {
+  local r; r="$("$FLEET_SCRIPTS/registry.sh" list --team "$1" | jq -r '[.[] | select((.issue // "") != "")] | first // {} | [(.issue // ""), (.issue_url // "")] | @tsv')"
+  issue_link "${r%%$'\t'*}" "${r#*$'\t'}"
+}
+
+# render_notice <tick event JSON>: the reply to one wake (its entry under "Wakes" in references/output.md).
+render_notice() {
+  local e="$1" type team name url d o opts=()
+  type="$(jq -r .type <<<"$e")"; team="$(jq -r '.team // ""' <<<"$e")"; name="$(jq -r '.name // ""' <<<"$e")"; url="$(jq -r '.url // ""' <<<"$e")"
+  case "$type" in
+    pr_ready) render_line pr_ready pr="$(pr_link "$url")" issue="$(team_issue "$team")" sha="$(jq -r '.sha // ""' <<<"$e" | cut -c1-7)" ci="$(jq -r '.ci // "green"' <<<"$e")" ;;
+    pr_merged) d="move $team to its next issue, or retire it"; [ -z "$(jq -r '.parks // ""' <<<"$e")" ] || d="$team parked"
+      render_line pr_merged pr="$(pr_link "$url")" next="$d" ;;
+    pr_opened) render_line pr_opened pr="$(pr_link "$url")" issue="$(team_issue "$team")" told="Lead not reached: tell it to start the tester" ;;
+    dead) render_line event event=Dead name="$name" what="its agent is gone" next="Tick respawns it once in $(const_int RESPAWN_WINDOW_HOURS 6)h, then escalates P1" ;;
+    failed) render_line event event=Failed name="$name" what="a restart or its brief did not arrive" next="Re-send its brief or re-boot the team" ;;
+    stalled) render_line event event=Stalled name="$name" what="idle without its done step, nudged once" next="Ask it for its done step" ;;
+    needs_input) d="$(jq -r '.detail // "API error"' <<<"$e")"
+      if [ "$d" = "login expired" ]; then render_line event event="Needs input" name="$name" what="$d" next="Run /login in its pane"
+      else render_line event event="Needs input" name="$name" what="$d" next="Look at its pane"; fi ;;
+    brief_failed) render_line event event="Brief failed" name="$name" what="its brief never arrived, re-sent once" next="Look at its pane, then re-send or re-boot" ;;
+    claim_takeover) render_line claim_takeover issue="$(team_issue "$team")" machine="$(jq -r '.holder // "another machine"' <<<"$e")" team="$team" ;;
+    weekly_summary) "$FLEET_SCRIPTS/metrics.sh" --since 7d 2>/dev/null ;;
+    escalation)
+      while IFS= read -r o; do [ -z "$o" ] || opts+=("$o"); done < <(jq -r '.options[]? // empty' <<<"$e")
+      render_decision "$(jq -r .severity <<<"$e")" "$name" "$(jq -r .message <<<"$e")" ${opts[@]+"${opts[@]}"} ;;
+    *) return 1 ;;
+  esac
+}
+
+# WAKE_TYPES: the tick events that wake the Orchestrator (loop-tick.sh) and get a notice (tick.sh); each has an entry
+# in references/output.md. An escalation wakes at any severity, pr_opened only when the lead could not be told.
+WAKE_TYPES="pr_ready pr_merged pr_opened dead failed stalled needs_input brief_failed claim_takeover weekly_summary escalation"
+# WAKE_JQ: the jq filter that keeps the events that wake, with $wake bound to WAKE_TYPES (--arg wake "$WAKE_TYPES").
+WAKE_JQ='select(type == "object") | select((.type as $t | $wake | split(" ") | index($t)) and (.type != "pr_opened" or .lead_told == false))'
+
+# Notices: the wake replies tick renders for the Orchestrator. notices.log in the state dir holds one JSON line
+# each, {at, text}; `status` prints the ones not shown yet, once, above its table (notices.shown counts them), so
+# the answer to any wake is one `fleet status`. A short mkdir lock keeps an append and a show from crossing.
+notices_file() { printf '%s\n' "$FLEET_STATE_DIR/notices.log"; }
+notices_lock() { local i=0; until mkdir "$(notices_file).lock" 2>/dev/null; do i=$((i + 1)); [ "$i" -lt 50 ] || return 1; sleep 0.1; done; }
+notices_unlock() { rmdir "$(notices_file).lock" 2>/dev/null || true; }
+notice_add() { # notice_add <text>: one notice (it may span lines)
+  local f; f="$(notices_file)"; mkdir -p "$(dirname "$f")"
+  notices_lock || { warn "notices are locked; dropped one: $(printf '%s' "$1" | head -n 1)"; return 0; }
+  jq -nc --arg at "${FLEET_NOW:-$(now)}" --arg t "$1" '{at: $at, text: $t}' >>"$f" 2>/dev/null || warn "cannot write $f"
+  notices_unlock
+}
+notices_show() { # print the notices not shown yet, each followed by a blank line, and mark them shown
+  local f n s; f="$(notices_file)"
+  [ -s "$f" ] || return 0
+  notices_lock || return 0
+  n="$(wc -l <"$f" | tr -d ' ')"; s="$(cat "$f.shown" 2>/dev/null || true)"
+  case "$s" in "" | *[!0-9]*) s=0 ;; esac; [ "$s" -le "$n" ] || s=0
+  [ "$s" -ge "$n" ] || tail -n +$((s + 1)) "$f" | jq -r '.text // empty | ., ""' 2>/dev/null
+  # Once everything is shown, a long log starts over (nothing unshown is lost).
+  if [ "$n" -gt 200 ]; then : >"$f"; n=0; fi
+  printf '%s\n' "$n" >"$f.shown"
+  notices_unlock
+}

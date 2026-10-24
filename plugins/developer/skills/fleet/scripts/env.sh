@@ -3,7 +3,7 @@
 #
 #   env.sh up [--branch B] <team>   allocate a port slot, run the repo's `up`, write the team kubeconfig
 #   env.sh down <team>              run the repo's `down`, remove the team's images and builder, the kubeconfig, free the slot
-#   env.sh status [<team>]          one env as JSON, or every env as a table
+#   env.sh status [<team>]          "Env <team>: <state>. Context fleet-<team>." for the team, or a line per env
 #
 # The repo opts in with <repo>/.claude/fleet-env.json:
 #   {"up": "...", "down": "...", "kubeconfig": "..."}   command templates; placeholders:
@@ -219,11 +219,11 @@ case "$sub" in
     echo "fleet: $cluster down; slot freed"
     ;;
   status)
-    if [ -n "${1:-}" ]; then "$registry" env-get "$1" || echo '{}'; exit 0; fi
-    "$registry" list --envs | jq -r '
-      (["TEAM", "CLUSTER", "STATE", "SLOT", "HTTP", "HTTPS"] | @tsv),
-      (to_entries[] | [.key, .value.cluster, .value.state, (.value.slot // "-"), (.value.http_port // "-"), (.value.https_port // "-")] | map(tostring) | @tsv)' |
-      column -t -s $'\t'
+    # One line per env (references/output.md); a team with none is Down.
+    envs="$("$registry" list --envs)"
+    if [ -n "${1:-}" ]; then render_line env team="$1" state="$(jq -r --arg t "$1" '.[$t].state // "Down"' <<<"$envs")"; exit 0; fi
+    [ "$(jq length <<<"$envs")" != 0 ] || { render_line no_envs; exit 0; }
+    while IFS=$'\t' read -r t s; do render_line env team="$t" state="$s"; done < <(jq -r 'to_entries[] | [.key, (.value.state // "Down")] | @tsv' <<<"$envs")
     ;;
   *) sed -n '2,34p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

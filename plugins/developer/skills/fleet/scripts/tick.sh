@@ -7,6 +7,8 @@
 #
 # A Parked team (park.sh) is skipped throughout: no nudge, no respawn, no Stalled or Zombie, no PR discovery or
 # PR events, and it still covers its repo for repo_without_team. Its claim is kept, so the heartbeat goes on.
+# Each event that wakes the Orchestrator (WAKE_TYPES in common.sh) also gets its reply rendered once into
+# $FLEET_STATE_DIR/notices.log (references/output.md); `fleet status` prints the ones not shown yet.
 # Events (each has type, team, name; url where a PR exists). Each is reported once; what has
 # been reported lives in $FLEET_STATE_DIR/tick.state.json.
 #   stalled         still Stalled a tick after the nudge (a newly Stalled agent gets one nudge, no event)
@@ -18,8 +20,8 @@
 #                   not arrive either. Once per (agent, brief file)
 #   stale_version   an agent runs an older plugin version than the one installed (its row's plugin_version);
 #                   it is restarted at the next `next.sh`, never mid-task. Once per (agent, installed version)
-#   weekly_summary  the ISO week changed (the Orchestrator writes reports/fleet-metrics-<date>.md from
-#                   metrics.sh and sends one line); the first tick ever only records the week
+#   weekly_summary  the ISO week changed (its notice runs metrics.sh, which writes reports/fleet-metrics-<date>.md);
+#                   the first tick ever only records the week
 #   escalation      an open escalation not yet reported (keyed by agent name and escalation id)
 #   pr_opened       a live builder on a fleet/ branch has an open PR the row doesn't know yet
 #                   (gh pr list --head, even when the builder skipped its done step): recorded as
@@ -150,7 +152,7 @@ claims_taken_over
 # respawned within a budget (respawn_max = 1 per respawn_window_hours = 6 per agent): every attempt, successful
 # or not, spends it; once it is spent, one P1 escalation and no more respawns. Done and Retired rows are never touched.
 now_iso="${FLEET_NOW:-$(now)}"; now_epoch="$(jq -rn --arg t "$now_iso" '$t | fromdateiso8601')"
-targs=(); [ -n "$team" ] && targs=(--team "$team")
+targs=(); [ -n "$team" ] && targs=("$team")
 # One `herdr agent list` first: when herdr itself is down, every row would read as Zombie, so a failed
 # call skips classification and respawn for this tick.
 if ! hd agent list >/dev/null 2>&1; then
@@ -268,7 +270,7 @@ fi
 esc="$("$registry" escalations --open ${team:+--team "$team"})"
 add_events "$(jq -cn --argjson e "$esc" --slurpfile stf "$STATE_FILE" '
   [$e[] | select(((.name + "|" + .id) as $k | ($stf[0].escalations_emitted // []) | index($k)) == null)
-    | {type: "escalation", team, name, id, severity, message, at}]')"
+    | {type: "escalation", team, name, id, severity, message, options: (.options // []), at}]')"
 st_upd --argjson e "$esc" '
   $st + {escalations_emitted: ((($st.escalations_emitted // []) + [$e[] | .name + "|" + .id]) | unique)}'
 
@@ -386,7 +388,7 @@ fi
 # --- weekly summary ---------------------------------------------------------------------------------
 sweek="$(date +%G-W%V)"; prev_week="$(jq -r '.summary_week // ""' "$STATE_FILE")"
 if [ -n "$prev_week" ] && [ "$prev_week" != "$sweek" ]; then
-  add_events "$(jq -cn --arg w "$sweek" '[{type: "weekly_summary", team: "", name: "", week: $w, detail: "run metrics.sh --since 7d and write reports/fleet-metrics-<date>.md"}]')"
+  add_events "$(jq -cn --arg w "$sweek" '[{type: "weekly_summary", team: "", name: "", week: $w, detail: "the weekly metrics and their report are in the notice"}]')"
 fi
 st_upd --arg w "$sweek" '$st + {summary_week: $w}'
 
@@ -396,6 +398,13 @@ while IFS=$'\t' read -r etype eteam ename eurl esha; do
   [ "$eurl" != - ] || eurl=""; [ "$esha" != - ] || esha=""; [ "$eteam" != - ] || eteam=""
   ev_log "$etype" team="$eteam" name="$ename" pr="$eurl" sha="$esha"
 done < <(jq -r '.[] | select(.type | IN("pr_opened", "pr_ready", "pr_merged", "stalled", "dead", "failed", "needs_input", "stale_version")) | [.type, (.team // "-" | if . == "" then "-" else . end), .name, (.url // "-"), (.sha // "-")] | @tsv' "$EVENTS_FILE")
+
+# --- notices: each wake's reply, rendered once for `fleet status` (references/output.md) --------------------------
+while IFS= read -r ev; do
+  [ -n "$ev" ] || continue
+  txt="$(render_notice "$ev" 2>/dev/null)" || txt=""
+  [ -z "$txt" ] || notice_add "$txt"
+done < <(jq -c --arg wake "$WAKE_TYPES" ".[] | $WAKE_JQ" "$EVENTS_FILE")
 
 # The state is rebuilt from what is live, so it cannot grow without bound: reported-once keys survive only while
 # the thing they describe (a PR on a row, an open escalation, a claimed issue, a recent respawn) still exists.

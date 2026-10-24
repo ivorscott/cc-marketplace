@@ -9,9 +9,12 @@
 #   registry.sh list [--team T] [--live] [--parked] [--problems]
 #   registry.sh count-live                                 live agents (Parked, Done and Retired rows are not live)
 #   registry.sh done <name> --outcome O --summary TEXT     the done contract (+ notification)
-#   registry.sh escalate <name> P0|P1|P2 TEXT              severity-routed escalation (+ notification + inbox line)
+#   registry.sh escalate <name> P0|P1|P2 TEXT [OPTION...]  severity-routed escalation (+ notification + inbox line); the
+#                                                          options are the answers to choose from, the recommended one
+#                                                          first. Prints the decision form (references/output.md)
 #   registry.sh escalations [--open] [--team T] [--not-retired]  every escalation, Done and Retired rows included unless --not-retired
-#   registry.sh resolve <name> <id|at> [--note TEXT]       close one escalation (the Orchestrator does this; <id> is unique, <at> is the legacy form)
+#   registry.sh resolve <name> <id|at> [--note TEXT]       close one escalation (the Orchestrator does this; <id> is unique, <at> is the legacy form);
+#                                                          prints "Resolved <id> for <name>: <note>."
 #   registry.sh note <name> discovered|decision|picked TEXT   discovered: work filed instead of done (the row's
 #                                                          `discovered`); decision: the option an agent took on its own
 #                                                          (overnight mode); picked: the search behind a boot (the
@@ -180,13 +183,15 @@ case "$cmd" in
     notify "fleet: $name done" "$outcome${summary:+ — $summary}"
     ;;
   escalate)
-    name="${1:?usage: escalate <name> P0|P1|P2 TEXT}"; sev="${2:?}"; msg="${3:?}"
+    name="${1:?usage: escalate <name> P0|P1|P2 TEXT [OPTION...]}"; sev="${2:?usage: escalate <name> P0|P1|P2 TEXT [OPTION...]}"
+    msg="${3:?usage: escalate <name> P0|P1|P2 TEXT [OPTION...]}"; shift 3
     case "$sev" in P0|P1|P2) ;; *) die "severity must be P0, P1 or P2" ;; esac
     exists "$name"
-    at="$(now)"
-    update --arg n "$name" --arg s "$sev" --arg m "$msg" --arg t "$at" \
+    at="$(now)"; opts="$(printf '%s\n' "$@" | jq -Rsc 'split("\n") | map(select(. != ""))')"; [ $# -gt 0 ] || opts='[]'
+    update --arg n "$name" --arg s "$sev" --arg m "$msg" --arg t "$at" --argjson o "$opts" \
       "$DERIVE"'.agents[$n] |= (norm | .status = "Needs input"
-        | .escalations += [{id: (($t | gsub("[-:]"; "")) + "-" + ((.escalations | length) + 1 | tostring)), severity: $s, message: $m, at: $t}]
+        | .escalations += [{id: (($t | gsub("[-:]"; "")) + "-" + ((.escalations | length) + 1 | tostring)), severity: $s, message: $m, at: $t}
+            + (if ($o | length) > 0 then {options: $o} else {} end)]
         | derive | .updated_at = $t)'
     # update() holds the lock until this process exits, so the new entry is still the last one.
     id="$(jq -r --arg n "$name" '.agents[$n].escalations | last | .id' "$FLEET_REGISTRY")"
@@ -196,6 +201,7 @@ case "$cmd" in
     { printf '%s\n' "$line" >>"$FLEET_INBOX"; } 2>/dev/null || warn "cannot write the escalation inbox $FLEET_INBOX"
     ev_log escalation_raised team="$(jq -r --arg n "$name" '.agents[$n].team // ""' "$FLEET_REGISTRY")" name="$name" detail="$sev $id"
     notify "fleet $sev: $name" "$msg" request
+    render_decision "$sev" "$name" "$msg" "$@"
     ;;
   escalations)
     team=""; open=false; live=false
@@ -210,7 +216,7 @@ case "$cmd" in
     jq --arg t "$team" --argjson open "$open" --argjson live "$live" "$ESC_DEFS"'
       [.agents[] | select(($t == "" or .team == $t) and (($live | not) or .status != "Retired")) | . as $a | escs[]
         | select(($open | not) or .resolved_at == null)
-        | {name: $a.name, team: $a.team, id, at, severity, message, resolved_at: (.resolved_at // null), resolution: (.resolution // null)}]
+        | {name: $a.name, team: $a.team, id, at, severity, message, options: (.options // []), resolved_at: (.resolved_at // null), resolution: (.resolution // null)}]
       | sort_by(.at)' "$FLEET_REGISTRY"
     ;;
   resolve)
@@ -236,6 +242,7 @@ case "$cmd" in
         | if .escalation == "" and .status == "Needs input" then .status = "Working" else . end
         | .updated_at = $t)'
     ev_log escalation_resolved team="$(jq -r --arg n "$name" '.agents[$n].team // ""' "$FLEET_REGISTRY")" name="$name" detail="$ref"
+    render_line resolved id="$ref" name="$name" decision="$note"
     ;;
   note)
     name="${1:?usage: note <name> discovered|decision|picked TEXT}"; kind="${2:?usage: note <name> discovered|decision|picked TEXT}"

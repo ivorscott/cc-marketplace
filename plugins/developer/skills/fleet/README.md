@@ -63,9 +63,9 @@ Each command works the same from Claude Code (`/fleet <command>`) and from a she
 |---|---|---|
 | `boot` | Boot a team on a task or an issue | `fleet boot build export ~/code/api "add CSV invoice export"` |
 | `claim` | Claim an issue on Linear for this machine | `fleet claim DEV-123` |
-| `debrief` | List the retired teams whose lessons are still to be written | `fleet debrief` |
+| `debrief` | List the retired teams and their lessons, the ones still due marked | `fleet debrief` |
 | `env` | Create, remove or list a team's test cluster | `fleet env status` |
-| `escalate` | Raise a question by severity; it stays open until resolved | `fleet escalate build-api/lead P1 "which database?"` |
+| `escalate` | Raise a question by severity; it stays open until resolved | `fleet escalate build-api/lead P1 "which database?" postgres sqlite` |
 | `escalations` | List escalations, the open ones or all | `fleet escalations --open` |
 | `focus` | Park every other team so one team gets the slots | `fleet focus build-api --now` |
 | `help` | List the commands, or show one command's usage | `fleet help status` |
@@ -120,15 +120,15 @@ The Orchestrator and agents call these directly (from `scripts/`). You can call 
 | `linear.sh` | claims and heartbeat on the Linear API: `claim <ISSUE> [--dry-run]` · `heartbeat` (one mutation) · `holder <ISSUE>` (with `lapsed`), `peers` and `blocks <ISSUE…>` (read-only) · `takeover <ISSUE> [--repo OWNER/NAME]` (refuses while a PR is open) · `release <ISSUE> [--lapsed]` (removes this machine's label, or with `--lapsed` a lapsed machine's, under takeover's guards) · `state <ISSUE> <Done\|Verify\|Todo>` · `migrate [--dry-run]` · `has-key`. Key in `~/.config/fleet/linear_api_key` (mode 600) or `LINEAR_API_KEY`; none: exit 3. Writes need `linear_writes` (below): off, the default, exits 3 too. Never posts claim or lease comments |
 | `chat.sh` | `channel` and `allow` print `chat_channel` and `chat_allow` · `format <event> …` prints the one-line message. It never posts or reads; the Orchestrator does with its own chat tools |
 | `machine-id.sh` | `id\|key\|label\|description\|hash\|show`: this machine's tracker identity, e.g. `fleet:3f9a2c1e`. The label description publishes `machine id sha256:<12 hex>`, never the full id; `linear.sh migrate` rewrites an older label that still holds the full id |
-| `status.sh` | `status.sh [--problems] [--team T] [--json] [--all [--claims FILE\|-]]` recomputes health, writes it to the registry and prints free disk first |
+| `status.sh` | `status.sh [<team>] [--problems] [--json] [--all [--claims FILE\|-]]` recomputes health, writes it to the registry and prints the waiting wake notices, then the team table (or, with a team, one row per agent) |
 | `registry.sh archive` | moves Retired rows with lessons and no open escalation to `fleet-archive.json` (`archive_after_days` in config.toml, default 0); `get --archived` and `list --with-archived` read both |
 | `tick.sh` | `tick.sh [--team T]` one JSON array of what changed since the last tick (stalled, dead, escalation, pr_ready, pr_merged, repo_without_team, disk), or nothing · reads PRs with read-only `gh pr view` through `FLEET_GH` |
-| `tell.sh` | `tell.sh <team/role> <text> [--no-confirm]` sends and checks delivery; exit 1 not delivered, 2 pane at the shell |
+| `tell.sh` | `tell.sh <team/role> <text> [--no-confirm]` sends and checks delivery, then prints `Told <team/role>: "…" (delivered)`; exit 1 not delivered, 2 pane at the shell |
 | `next.sh` | `next.sh <team> <issue> [--brief TEXT] [--assignment TEXT] [--issue-url URL]` after a merge, at a safe point (every agent idle, no background task): log `issue_done`, reassign, then restart every agent (`/exit`, a fresh session, its full brief as a file) |
 | `sandbox.sh` | `sandbox.sh [--keep] [--] [cmd...]` runs a reproduction with a temporary state and config root, shims for herdr, gh and curl, and no session, key or `FLEET_ROLE`; refuses the live roots |
 | `respawn.sh` | `respawn.sh <team/role>` starts a Zombie row again from the row (same role, worktree, branch, model; new session id) and sends a resume brief; `tick.sh` calls it within the budget `respawn_max` (1) per `respawn_window_hours` (6) |
-| `metrics.sh` | `metrics.sh [--since 7d] [--json]` per PR: minutes to ready, rework rounds, stalls, missed messages, tokens (from `events.jsonl` and the agents' transcripts) |
-| `retire.sh` | `retire.sh <team\|team/role> [--outcome O]` safe teardown; `--summary <target...>` read-only pre-retire summary |
+| `metrics.sh` | `metrics.sh [--since 7d] [--json]` the weekly table (issues shipped, PRs, rework, median cycle) and a report file with one row per PR: minutes to ready, rework rounds, stalls, missed messages, tokens (from `events.jsonl` and the agents' transcripts) |
+| `retire.sh` | `retire.sh <team\|team/role> [--outcome O]` safe teardown; `--summary <target...>` the read-only line the user answers before a retire |
 | `env.sh` | `up [--branch B] <team>` creates the team's cluster (exit 75 = queued at `max_envs`) · `down <team>` removes it, with its images and builder · `status` lists every env |
 | `registry.sh` | `add '<json>'` · `set <name> key=value…` · `get <name>` · `list [--team T] [--live] [--problems]` · `list --envs` · `done <name> --outcome O --summary TEXT` · `escalate <name> P0\|P1\|P2 TEXT` · `escalations [--open] [--team T] [--not-retired]` · `resolve <name> <id|at> [--note TEXT]` · `note <name> discovered\|decision\|picked TEXT` · `retire <name\|team> [--outcome O]` · `pref <key> [value]` · `unsynced` · `synced <name…>` · `path` |
 
@@ -182,9 +182,8 @@ Arrays may span lines. Anything that isn't an array of strings is ignored with a
 Without these keys agents still work, they just ask before each tracker or host call. For a
 repo-specific rule, use that repo's `.claude/settings.json` instead.
 
-`retire.sh --summary` finds PRs in agent summaries written as `PR #12` (GitHub style) or
-`MR !12` (GitLab style) and tags each one with the origin remote's `host` and `project`. The
-Orchestrator then checks it with the matching CLI.
+`retire.sh --summary` prints the one line the user answers before a retire: the outcomes the agents
+reported, the worktrees with commits on no remote, and every worktree a retire would keep, with why.
 
 ## Parking a team
 
@@ -364,6 +363,7 @@ in 4.1. Anything that newly exposes the key is a blocker; the items that touch t
 | `scripts/env.sh` | per-team disposable test cluster, declared by the repo's `.claude/fleet-env.json` |
 | `scripts/test/run.sh` | offline tests (stub `up`/`down`, docker, df and herdr; no kind, no live fleet) |
 | `scripts/registry.sh` | registry CLI used by every agent |
-| `references/` | herdr pitfalls, registry format, expertise files |
+| `references/` | herdr pitfalls, registry format, expertise files, and `output.md`: the one output shape of every command and wake |
+| `scripts/test/golden/` | the expected reply of each output.md entry, compared byte for byte by `run.sh` |
 | `../../agents/lead.md`, `orchestrator.md` | delegate-only agent definitions |
 | `../../hooks/` | context recovery (`prime`) and the worktree scope guard; inert outside fleet panes |

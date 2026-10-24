@@ -3,7 +3,8 @@
 #
 #   schedule.sh install      write the launcher and the LaunchAgent plist, load it, wait for its first tick
 #   schedule.sh uninstall    unload it and remove the plist
-#   schedule.sh status       loaded or not, the last good tick, the last exit, healthy or not
+#   schedule.sh status       one line: "Fleet loop: <loaded|not loaded|not installed>. Last good tick <time>
+#                            (<n> min ago). <healthy|problem: why>." (references/output.md)
 #
 # The plist (label `fleet.tick`, or schedule_label in config.toml) runs a 5-line launcher,
 # $FLEET_STATE_DIR/bin/fleet-tick. The launcher reads the plugin's installPath from
@@ -70,7 +71,7 @@ env_extra() {
 orch_hint() {
   [ -n "$(cfg_str orchestrator_ref "")" ] && return 0
   [ -n "$("$FLEET_SCRIPTS/registry.sh" get orchestrator 2>/dev/null | jq -r '.herdr_ref // ""' 2>/dev/null)" ] && return 0
-  echo "no Orchestrator registered: wakes go to notifications only; run $FLEET_SCRIPTS/registry.sh orchestrator here in the Orchestrator pane"
+  render_line loop_unregistered
 }
 
 LSF="$FLEET_STATE_DIR/loop.state.json"
@@ -145,16 +146,17 @@ case "${1:-}" in
     if [ -f "$plist" ]; then rm -f "$plist"; echo "uninstalled: $label"; else echo "not installed: $label"; fi
     ;;
   status)
-    if [ ! -f "$plist" ]; then echo "not installed"; exit 0; fi
-    if out="$("$lctl" print "$domain/$label" 2>/dev/null)"; then
-      echo "loaded: $label"
-      printf '%s\n' "$out" | sed -n 's/^[[:space:]]*last exit code = \(.*\)$/last exit: \1/p' | head -1
-    else echo "installed but not loaded: $label"; fi
-    lg="$(ls_get '.last_good // 0')"; nowe="$(date +%s)"
+    # One line (references/output.md), then the loop footer when no Orchestrator is registered.
+    if [ ! -f "$plist" ]; then loaded="not installed"
+    elif "$lctl" print "$domain/$label" >/dev/null 2>&1; then loaded=loaded
+    else loaded="not loaded"; fi
+    lg="$(ls_get '.last_good // 0')"; nowe="$(jq -rn --arg t "${FLEET_NOW:-$(now)}" '$t | fromdateiso8601')"; when=never; health="problem: no good tick yet"
     if [ "${lg:-0}" -gt 0 ] 2>/dev/null; then
-      echo "last good tick: $(date -u -r "$lg" +%Y-%m-%dT%H:%M:%SZ) ($(((nowe - lg) / 60)) min ago)"
-      if [ $((nowe - lg)) -le $((2 * secs)) ]; then echo "healthy"; else echo "UNHEALTHY: no good tick within $((2 * secs / 60)) min"; fi
-    else echo "UNHEALTHY: no good tick yet"; fi
+      when="$(date -u -r "$lg" +%Y-%m-%dT%H:%M:%SZ) ($(((nowe - lg) / 60)) min ago)"
+      if [ $((nowe - lg)) -le $((2 * secs)) ]; then health=healthy; else health="problem: no good tick within $((2 * secs / 60)) min"; fi
+    fi
+    [ "$loaded" = loaded ] || health="problem: the job is $loaded"
+    render_line loop loaded="$loaded" when="$when" health="$health"
     orch_hint
     ;;
   *) sed -n '2,6p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;

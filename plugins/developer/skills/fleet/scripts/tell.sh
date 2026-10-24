@@ -14,10 +14,10 @@
 # existing brief (tick does it once for a Failed row). The outcome is logged as brief_delivered /
 # brief_failed in the event log (the brief text never is). UNVERIFIED: the queued_command attachment shape.
 #
-# Prints {"delivered":true,...} and exits 0 once delivery is seen. Not delivered: prints
-# {"delivered":false,"reason":...} and exits 1; the pane is back at its shell or the agent
-# is gone: exits 2. --no-confirm only checks that herdr accepted the send (for slash
-# commands, which change neither the agent's state nor the transcript).
+# Prints `Told <team/role>: "<first 60 characters>" (delivered)` and exits 0 once delivery is seen. Not delivered:
+# the error form on stderr, "tell: not delivered to <target>: <why>. <next step>.", and exit 1; the pane is back at
+# its shell or the agent is gone: exit 2. --no-confirm only checks that herdr accepted the send (for slash commands,
+# which change neither the agent's state nor the transcript), and the line ends "(sent)".
 #
 # Delivery is seen when, within tell_confirm_secs (config.toml, default 15), the first of these
 # shows up (structured signals first, screen text last):
@@ -96,16 +96,19 @@ verdict() { # verdict <delivered true|false> <reason> <exit code>
       else "$FLEET_SCRIPTS/registry.sh" set "$target" brief_failed_at="$(now)" brief_failed_issue="$(printf '%s' "$brow" | jq -r '.issue // ""')" >/dev/null 2>&1 || true; fi ;;
     esac
   fi
-  jq -cn --argjson d "$1" --arg r "$2" --arg t "$target" '{delivered: $d, target: $t} + (if $r != "" then {reason: $r} else {} end)'
+  if [ "$1" = true ]; then
+    render_line told name="$target" text="$(jq -rn --arg t "$text" '$t | split("\n")[0] | .[0:60]')" how="$($confirm && echo delivered || echo sent)"
+  elif [ "$3" = 2 ]; then render_error tell "not delivered to $target: $2" "Respawn it (fleet respawn $target) or retire it" >&2
+  else render_error tell "not delivered to $target: $2" "Look at its pane, then send it again" >&2; fi
   exit "$3"
 }
 
 agent_state() { hd agent get "$ref" 2>/dev/null | jq -r '.result.agent.agent_status // "gone"' 2>/dev/null || echo gone; }
 agent_seq() { hd agent get "$ref" 2>/dev/null | jq -r '.result.agent.state_change_seq // ""' 2>/dev/null || true; }
-[ "$(agent_state)" != "gone" ] || { warn "not delivered to $target: agent not found in herdr"; verdict false "agent not found" 2; }
+[ "$(agent_state)" != "gone" ] || verdict false "agent not found in herdr" 2
 if [ -n "$pane" ] && ! hd pane process-info --pane "$pane" 2>/dev/null |
   jq -e '.result.process_info | .foreground_process_group_id != .shell_pid' >/dev/null 2>&1; then
-  warn "not delivered to $target: pane is a shell"; verdict false "pane is a shell" 2
+  verdict false "its pane is back at the shell" 2
 fi
 
 # transcript <screen>: the screen without its input box.
@@ -126,7 +129,7 @@ if $is_brief; then
   # Wait for idle: typing into a busy agent queues the line behind its turn, or loses it.
   idle_secs="$(cfg_int brief_idle_secs 60)"; poll="${FLEET_TELL_POLL:-1}"; w=0
   until case "$(agent_state)" in idle | done) true ;; *) false ;; esac; do
-    if [ "$w" -ge "$idle_secs" ]; then warn "not delivered to $target: not idle after ${idle_secs}s"; verdict false "not idle" 1; fi
+    if [ "$w" -ge "$idle_secs" ]; then verdict false "not idle after ${idle_secs}s" 1; fi
     sleep "$poll"; w=$((w + 1))
   done
 fi
@@ -150,7 +153,7 @@ lines0=0; [ -r "$transcript" ] && lines0="$(wc -l <"$transcript" | tr -d ' ')"
 before_screen="$(screen)"; n0="$(echo_count "$before_screen")"; tail0="$(echo_tail "$before_screen")"
 
 send() { hd agent prompt "$ref" "$text" >/dev/null 2>&1; }
-send || { warn "not delivered to $target: herdr agent prompt failed"; verdict false "herdr rejected the send" 1; }
+send || verdict false "herdr rejected the send" 1
 $confirm || verdict true "" 0
 
 secs="$(const_int TELL_CONFIRM_SECS 15)"; poll="${FLEET_TELL_POLL:-1}"
@@ -196,5 +199,4 @@ hd agent send-keys "$ref" enter >/dev/null 2>&1 || true
 if wait_for "$((secs / 3 + 1))"; then verdict true "" 0; fi
 if ! $is_brief && ! screen | grep -qF -- "$needle"; then send || true; fi
 if wait_for "$secs"; then verdict true "" 0; fi
-warn "not delivered to $target: no state change and no echo after ${secs}s plus one retry"
-verdict false "no confirmation after retry" 1
+verdict false "no state change and no echo after ${secs}s and one retry" 1

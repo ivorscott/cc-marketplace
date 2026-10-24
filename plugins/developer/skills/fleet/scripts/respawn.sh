@@ -20,6 +20,7 @@
 # new session id, so its `transcript` path changes (the old one is kept in the row's `transcripts` list). Logs `respawned` to the event log.
 #
 # If the row's pane is gone, a new pane is split from the lead's pane in the same workspace.
+# It prints "Respawned <team/role> (<model>): <state>." ("Restarted ..." with --restart; references/output.md).
 # UNVERIFIED against real herdr: that `herdr agent start <same name>` is accepted for an agent whose
 # pane died (DEV-368).
 # Command: Start a dead agent again from its row · e.g. fleet respawn build-api/builder
@@ -128,4 +129,5 @@ else ev_log respawned team="$team" name="$name" detail="new pane $pane"; fi
 if [ "$new_status" = Working ] || [ "$new_status" = Idle ]; then
   "$FLEET_SCRIPTS/tell.sh" "$name" "$brief" --brief >/dev/null || { "$registry" set "$name" status=Failed >/dev/null; die "the resume brief did not reach $name; row set to Failed"; }
 fi
-jq -cn --arg n "$name" --arg s "$new_status" --argjson r "$restart" 'if $r then {restarted: $n, status: $s} else {respawned: $n, status: $s} end'
+if $restart; then render_line restarted name="$name" model="$model" state="$new_status"
+else render_line respawned name="$name" model="$model" state="$new_status"; fi

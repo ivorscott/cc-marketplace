@@ -5,14 +5,13 @@
 #   retire.sh <team | team/role> [--outcome O]
 #   retire.sh --summary <team | team/role> [...]
 #
-# --summary changes nothing. It prints, as JSON, what the user needs to see before (and
-# after) a retire: every agent's outcome and summary, the PRs the summaries name, the
-# UNVERIFIED items, escalations (open = not yet resolved with `registry.sh resolve`; a retire
-# closes the open ones with resolution "closed at retire"), discovered
-# work, and the worktrees a retire would keep. PRs are found as "PR #n" (GitHub style) or
-# "MR !n" (GitLab style) in summaries; each carries its repo's {host, project}. The
-# Orchestrator adds live PR state with that host's CLI and the next issues from whatever
-# tracker is connected, then renders the summary (SKILL.md, route F).
+# --summary changes nothing. It prints, per target, the line the user answers before a retire:
+#   Retire <team>? Outcome <X>. Unpushed: <none|list>. Kept: <none|list>. Reply yes to retire.
+# (the outcomes the rows reported, Abandoned when none did; the worktrees with commits on no remote; every worktree
+# a retire would keep, with why). A retire prints
+#   Retired <team> (<outcome>): PRs <links|none>. Archived to <path>. Kept: <list>.
+# ("Nothing archived." when no report was copied; "Kept: ..." only when something was kept), then the team table
+# (references/output.md). The files and commits that kept a worktree are named on stderr.
 #
 # Never closes panes or workspaces the registry doesn't record as fleet-created. Worktrees
 # are big (node_modules, build output), so a retire removes them, but only after looking:
@@ -21,8 +20,7 @@
 #     <archive>/<team>-<role>/ (verified with cmp) and then the worktree is removed;
 #   - a worktree is KEPT, and the files or commits named, when it has unpushed commits,
 #     untracked source files or uncommitted edits to tracked files. A kept worktree is
-#     never force-removed. JSON: kept_untracked (source files), kept_unpushed, kept_modified,
-#     archived ({worktree: archive dir}); the last three appear only when non-empty.
+#     never force-removed. A retire also closes the rows' open escalations ("closed at retire").
 # The archive root is $FLEET_ARCHIVE_DIR, default $PWD/reports/fleet-archive (the
 # Orchestrator's own reports/). Retiring a
 # whole team also runs `env.sh down <team>` for its test cluster (only one the registry
@@ -76,8 +74,14 @@ classify() {
   C_MODIFIED="$(git -C "$1" status --porcelain --untracked-files=no 2>/dev/null || true)"
 }
 
-# lines_json <text>: a JSON array of the non-empty lines.
-lines_json() { printf '%s' "$1" | jq -Rsc 'split("\n") | map(select(. != ""))'; }
+# keep_why: what in the last classified worktree keeps it ("unpushed commits, untracked files"); empty when nothing.
+keep_why() {
+  local w=""
+  [ -z "$C_UNPUSHED" ] || w="unpushed commits"
+  [ -z "$C_MODIFIED" ] || w="$w${w:+, }uncommitted changes"
+  [ -z "$C_SOURCE" ] || w="$w${w:+, }untracked files"
+  printf '%s' "$w"
+}
 
 # archive_reports <worktree> <name>: copy C_REPORTS to <archive>/<team>-<role>/ and verify each copy.
 archive_reports() {
@@ -89,57 +93,25 @@ archive_reports() {
   done <<<"$C_REPORTS"
 }
 
-# remote_of <repo dir>: {host, project} from the origin remote, for any forge (GitHub,
-# GitLab, self-hosted, ...). Handles scp-style (git@host:a/b.git) and URL remotes
-# (https://host[:port]/a/b, ssh://git@host/a/b). No remote: host null, project = dir name.
-remote_of() {
-  local url host path
-  url="$(git -C "$1" remote get-url origin 2>/dev/null || true)"; url="${url%.git}"; url="${url%/}"
-  case "$url" in
-    *://*) url="${url#*://}"; url="${url#*@}"; host="${url%%/*}"; host="${host%%:*}"; path="${url#*/}" ;;
-    *@*:*) url="${url#*@}"; host="${url%%:*}"; path="${url#*:}" ;;
-    *) host=""; path="" ;;
-  esac
-  [ -n "$path" ] && [ "$path" != "$url" ] || { host=""; path="$(basename "$1")"; }
-  jq -cn --arg h "$host" --arg p "$path" '{host: (if $h == "" then null else $h end), project: $p}'
-}
-
+# summary <target...>: one "Retire <target>? ..." line per target: the outcome the rows reported (Abandoned when
+# none did), the worktrees with commits on no remote, and every worktree a retire would keep, with why.
 summary() {
   [ "$#" -gt 0 ] || die "usage: retire.sh --summary <team | team/role> [...]"
-  local rows="[]" t r wts="[]" repos="{}" wt repo keep
+  local t r wt role unp kept why nc
   for t in "$@"; do
-    r="$("$registry" list --with-archived | jq --arg x "$t" '[.[] | select(.name == $x or .team == $x)]')"
-    [ "$(printf '%s' "$r" | jq length)" != "0" ] || die "nothing matches '$t'"
-    rows="$(jq -cn --argjson a "$rows" --argjson b "$r" '$a + $b | unique_by(.name)')"
+    r="$("$registry" list | jq -c --arg x "$t" '[.[] | select((.name == $x or .team == $x) and .status != "Retired")]')"
+    [ "$(printf '%s' "$r" | jq length)" != "0" ] || die "nothing live matches '$t'" "Run fleet status for the teams"
+    unp=""; kept=""
+    while IFS=$'\t' read -r wt role; do
+      [ -d "$wt" ] || continue
+      classify "$wt"
+      if [ -n "$C_UNPUSHED" ]; then
+        nc="$(printf '%s\n' "$C_UNPUSHED" | grep -c .)"; unp="$unp${unp:+, }$role ($nc commit$([ "$nc" = 1 ] || echo s))"
+      fi
+      why="$(keep_why)"; [ -z "$why" ] || kept="$kept${kept:+, }$role ($why)"
+    done < <(printf '%s' "$r" | jq -r '.[] | select((.worktree // "") != "") | [.worktree, (.name | split("/")[1:] | join("/"))] | @tsv')
+    render_line retire_ask team="$t" outcome="$(printf '%s' "$r" | jq -r '[.[].outcome // empty | select(. != "")] | unique | join("/")')" unpushed="$unp" kept="$kept"
   done
-  while IFS= read -r repo; do
-    repos="$(printf '%s' "$repos" | jq -c --arg d "$repo" --argjson g "$(remote_of "$repo")" '. + {($d): $g}')"
-  done < <(printf '%s' "$rows" | jq -r '[.[].repo | select(. != null and . != "")] | unique[]')
-  while IFS=$'\t' read -r wt; do
-    [ -d "$wt" ] || continue
-    classify "$wt"
-    keep=false; [ -z "$C_SOURCE$C_UNPUSHED$C_MODIFIED" ] || keep=true
-    wts="$(printf '%s' "$wts" | jq -c --arg w "$wt" --arg b "$(git -C "$wt" branch --show-current 2>/dev/null)" \
-      --argjson k "$keep" --argjson u "$(lines_json "$C_SOURCE")" --argjson a "$(lines_json "$C_REPORTS")" \
-      --argjson p "$(lines_json "$C_UNPUSHED")" --argjson m "$(lines_json "$C_MODIFIED")" \
-      '. + [{path: $w, branch: $b, kept: $k, untracked: $u, archive: $a, unpushed: $p, modified: $m}]')"
-  done < <(printf '%s' "$rows" | jq -r '.[] | select((.worktree // "") != "") | .worktree')
-  printf '%s' "$rows" | jq --argjson repos "$repos" --argjson wts "$wts" "$ESC_DEFS"'
-    def text: (.summary // "");
-    {
-      teams: ([.[].team] | unique),
-      agents: [.[] | {name, tier, status, outcome: (.outcome // null), summary: (.summary // null)}],
-      prs: ([.[] | . as $a | text | [scan("\\b(?:PR ?#|MR ?!)([0-9]+)")[0]]
-              | map(($repos[$a.repo] // {host: null, project: null}) as $r
-                    | {host: $r.host, repo: $r.project, number: tonumber, from: $a.name})] | add // []
-            | unique_by([.host, .repo, .number])),
-      unverified: [.[] | select(text | test("unverified"; "i")) | {name, summary}],
-      escalations: [.[] | . as $a | escs[]
-                    | {name: $a.name, id, severity, message, at, open: (.resolved_at == null), resolution: (.resolution // null)}]
-                    | sort_by(.at) | reverse,
-      discovered: [.[] | . as $a | (.discovered // [])[] | {name: $a.name, message, at}],
-      worktrees: $wts
-    }'
 }
 
 if [ "${1:-}" = "--summary" ]; then shift; summary "$@"; exit 0; fi
@@ -151,14 +123,15 @@ outcome=""; [ "${1:-}" = "--outcome" ] && outcome="${2:-}"
 rows="$("$registry" list | jq --arg x "$target" '[.[] | select((.name == $x or .team == $x) and .status != "Retired")]')"
 [ "$(printf '%s' "$rows" | jq length)" != "0" ] || die "nothing live matches '$target'"
 
-kept="[]"; kept_envs="[]"; kept_untracked="{}"
+kept=""; archived=""
+keep() { kept="$kept${kept:+, }$1 ($2)"; } # keep <what> <why>: named on the Retired line
 whole_team=false; printf '%s' "$rows" | jq -e --arg x "$target" 'all(.team == $x)' >/dev/null && [ "${target%%/*}" = "$target" ] && whole_team=true
 
 if $whole_team; then
   env_state="$("$registry" env-get "$target" 2>/dev/null | jq -r '.state // "Down"' || true)"
   if [ -n "$env_state" ] && [ "$env_state" != "Down" ]; then
     "$FLEET_SCRIPTS/env.sh" down "$target" >&2 ||
-      { warn "kept environment of $target: env.sh down failed"; kept_envs="$(jq -cn --arg t "$target" '[$t]')"; }
+      { warn "kept environment of $target: env.sh down failed"; keep "test cluster" "env.sh down failed"; }
   fi
   ws="$(printf '%s' "$rows" | jq -r '[.[].workspace | select(. != null and . != "")] | first // ""')"
   [ -n "$ws" ] && { hd workspace close "$ws" >/dev/null 2>&1 || warn "could not close workspace $ws"; }
@@ -168,42 +141,29 @@ else
   done
 fi
 
-kept_unpushed="{}"; kept_modified="{}"; archived="{}"
-keep_wt() { kept="$(printf '%s' "$kept" | jq -c --arg w "$1" '. + [$w]')"; }
 while IFS=$'\t' read -r wt repo wname; do
   [ -d "$wt" ] || continue
-  classify "$wt"
+  classify "$wt"; role="${wname#*/}"
   if [ -n "$C_SOURCE$C_UNPUSHED$C_MODIFIED" ]; then
-    warn "kept $wt: it holds work that is not pushed or not tracked"; keep_wt "$wt"
-    if [ -n "$C_UNPUSHED" ]; then
-      warn "  unpushed commits in $wt: $(printf '%s' "$C_UNPUSHED" | tr '\n' ' ')"
-      kept_unpushed="$(printf '%s' "$kept_unpushed" | jq -c --arg w "$wt" --argjson u "$(lines_json "$C_UNPUSHED")" '. + {($w): $u}')"
-    fi
-    if [ -n "$C_MODIFIED" ]; then
-      while IFS= read -r f; do warn "  uncommitted in $wt: $f"; done <<<"$C_MODIFIED"
-      kept_modified="$(printf '%s' "$kept_modified" | jq -c --arg w "$wt" --argjson u "$(lines_json "$C_MODIFIED")" '. + {($w): $u}')"
-    fi
-    if [ -n "$C_SOURCE" ]; then
-      while IFS= read -r f; do warn "  untracked in $wt: ?? $f"; done <<<"$C_SOURCE"
-      kept_untracked="$(printf '%s' "$kept_untracked" | jq -c --arg w "$wt" --argjson u "$(lines_json "$C_SOURCE")" '. + {($w): $u}')"
-    fi
+    warn "kept $wt: it holds work that is not pushed or not tracked"; keep "$role" "$(keep_why)"
+    [ -z "$C_UNPUSHED" ] || warn "  unpushed commits in $wt: $(printf '%s' "$C_UNPUSHED" | tr '\n' ' ')"
+    if [ -n "$C_MODIFIED" ]; then while IFS= read -r f; do warn "  uncommitted in $wt: $f"; done <<<"$C_MODIFIED"; fi
+    if [ -n "$C_SOURCE" ]; then while IFS= read -r f; do warn "  untracked in $wt: ?? $f"; done <<<"$C_SOURCE"; fi
   elif ! archive_reports "$wt" "$wname"; then
-    warn "kept $wt: could not archive its reports to $ARCHIVE_DIR"; keep_wt "$wt"
+    warn "kept $wt: could not archive its reports to $ARCHIVE_DIR"; keep "$role" "its reports could not be archived"
   elif git -C "$repo" worktree remove --force "$wt" 2>/dev/null; then
     # --force only because build outputs are untracked; classify proved nothing else is there.
     if [ -n "$C_REPORTS" ]; then
       warn "archived $(printf '%s\n' "$C_REPORTS" | grep -c .) report(s) from $wt to $ARCHIVE_DIR"
-      archived="$(printf '%s' "$archived" | jq -c --arg w "$wt" --arg d "$ARCHIVE_DIR" '. + {($w): $d}')"
+      archived="$(dirname "$ARCHIVE_DIR")"
     fi
-  else warn "kept $wt: git worktree remove failed"; keep_wt "$wt"; fi
+  else warn "kept $wt: git worktree remove failed"; keep "$role" "git worktree remove failed"; fi
 done < <(printf '%s' "$rows" | jq -r '.[] | select((.worktree // "") != "") | [.worktree, .repo, .name] | @tsv')
 
 if [ -n "$outcome" ]; then "$registry" retire "$target" --outcome "$outcome"; else "$registry" retire "$target"; fi
 for n in $(printf '%s' "$rows" | jq -r '.[].name'); do ev_log retired team="$(printf '%s' "$rows" | jq -r --arg n "$n" '.[] | select(.name == $n) | .team')" name="$n"; done
+outcomes="$("$registry" list | jq -r --argjson names "$(printf '%s' "$rows" | jq -c '[.[].name]')" '[.[] | select(.name as $n | $names | index($n)) | .outcome // empty] | unique | join("/")')"
+prs="$(printf '%s' "$rows" | jq -r '[.[].pr // empty | select(. != "")] | unique[]' | while IFS= read -r u; do pr_link "$u"; done | paste -sd, - | sed 's/,/, /g')"
 "$registry" archive >/dev/null || warn "archive failed; retired rows stay in the live registry"
-printf '%s' "$rows" | jq --argjson kept "$kept" --argjson ke "$kept_envs" --argjson ku "$kept_untracked" \
-  --argjson kp "$kept_unpushed" --argjson km "$kept_modified" --argjson ar "$archived" "$ESC_DEFS"'{retired: [.[].name], kept_worktrees: $kept}
-  + (if ($ke | length) > 0 then {kept_envs: $ke} else {} end) + (if ($ku | length) > 0 then {kept_untracked: $ku} else {} end)
-  + (if ($kp | length) > 0 then {kept_unpushed: $kp} else {} end) + (if ($km | length) > 0 then {kept_modified: $km} else {} end)
-  + (if ($ar | length) > 0 then {archived: $ar} else {} end)
-  + ([.[] | . as $a | escs[] | select(.resolved_at == null) | {name: $a.name, id, severity}] | if length > 0 then {closed_escalations: .} else {} end)'
+render_line retired team="$target" outcome="$outcomes" prs="$prs" archived="$archived" kept="$kept"
+render_table

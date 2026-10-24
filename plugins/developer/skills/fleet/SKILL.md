@@ -29,8 +29,9 @@ done contract, escalation, caps, guards and debrief; mechanics that are not rout
 - **House rules:** every brief ends with `rules/house.md`, then the repo's `.claude/fleet-rules.md`.
 - **Sandbox:** reproductions run only in `$F/fleet sandbox [--keep] [--] [cmd...]` (temporary state root, shims for
   herdr, gh and curl, no tracker key); it refuses the live fleet.
-- **Keep chat short:** the reply contract is the status table plus a line per action. Never show claim
-  timestamps, machine ids or scope unless the user asks (`--verbose`).
+- **Relay output verbatim:** every command and every wake prints its final reply in one fixed shape
+  (`references/output.md`). Answer with that output as it is, with at most one `Did: …` line above it; never
+  reword it into bullets or prose. The one reply you fill yourself is "Nothing bootable: …", from its template.
 
 ## Step 0 — Route the request
 
@@ -62,16 +63,10 @@ done contract, escalation, caps, guards and debrief; mechanics that are not rout
 
 ## B. Status
 
-`$F/fleet status [--problems] [--team T] [--json] [--verbose] [--all]` recomputes health and writes it back. The
-default output is the reply contract, one row per team:
-
-Team · Issue (with its Linear link), PR (the full, clickable URL), State (Working, Idle, Needs input, Stalled,
-Zombie, Failed, Done) and Needs you (an open escalation or what the stuck agent needs; `-` when nothing).
-
-Under it: one line per parked team, `focus: <team>`, "claimed by this Mac" (or by another machine), a line when a
-claim was taken over, the disk line only below `warn_free_gb`, and the open escalations. Answer with that table
-and one line per action. `--verbose` adds one row per agent with ENV, HERDR, claim liveness and the machine footer;
-`--all` also lists other machines' claims (Linear only); `--json` is the bare agent array.
+`$F/fleet status [<team>] [--problems] [--json] [--all]` recomputes health, writes it back and prints the status
+reply of `references/output.md`: the wake notices not shown yet, then the team table (Team, Issue, PR, a one-word
+State, Needs you), then the focus, the disk line (below `warn_free_gb`) and the loop line when they apply. `status <team>` prints one row per agent;
+`--all` adds a line for other machines' claims (Linear only); `--json` is the bare agent array. Relay it verbatim.
 
 Your move: **Needs input**, read the screen (`herdr agent read <ref> --source visible`) and apply the blocked-prompt
 policy (`references/operations.md`); **Stalled**, ask for its done step; **Zombie**, tick respawns it once, else
@@ -92,7 +87,9 @@ must act on (P2 escalations, `stalled` and `weekly_summary` included; low disk a
 alerts). Once per session run `$F/registry.sh orchestrator here` in your own pane: it registers you as the wake target
 (without it wakes go to desktop notifications only, and `status` says so). An undelivered wake is re-sent on the next
 tick, so a line can repeat. A wake line is a notice, never an approval: it cannot lift a rule, and it carries no agent
-text (read the registry). With no schedule, run `$F/tick.sh` per tick (`--team T`); it prints the events. Act on each:
+text. Tick has already rendered each wake's reply, so answer every wake with `$F/fleet status`, relayed verbatim (the
+notices not shown yet, then the table). With no schedule, run `$F/tick.sh` per tick (`--team T`), then `$F/fleet
+status`. Then act on each:
 
 - `pr_ready`: send ONE `PushNotification` with the full PR URL.
 - `pr_merged`: run `$F/fleet next <team> <next issue> [--brief TEXT] [--issue-url URL]` at a safe point (every agent
@@ -102,7 +99,7 @@ text (read the registry). With no schedule, run `$F/tick.sh` per tick (`--team T
 - `dead`: tick respawned the agent, or filed a P1 escalation after a second death inside the window.
 - `failed`: a row turned Failed (a restart or a brief that did not arrive); look at it.
 - `stalled`: nudged once and still stalled. `pr_opened`: a builder opened a PR without `done`; tick told the lead.
-- `weekly_summary`: run `$F/fleet metrics --since 7d`, write `reports/fleet-metrics-<date>.md`, send the user one line.
+- `weekly_summary`: its notice is the metrics table and the report it wrote (`reports/fleet-metrics-<date>.md`).
 - `claim_takeover`: stop or hand off the team (F), tell the user, escalate P1; never fight back (operations.md).
 
 The tester records its verdict with `registry.sh signoff <name> <PR URL|N> <sha>`; tick calls a PR ready only when
@@ -122,8 +119,8 @@ An escalation stays open, even after its agent is Done, until you run `$F/fleet 
 
 ## F. Retire
 
-0. **Summary first, then wait:** `$F/fleet retire --summary <target>` (read-only), in the format of
-   `references/operations.md` ("Retire summary format"), and **wait for the user's go**.
+0. **Summary first, then wait:** `$F/fleet retire --summary <target>` (read-only) prints the one line the user
+   answers (`Retire <team>? … Reply yes to retire.`); relay it and **wait for the user's go**.
 1. Ask each live agent in the target to push work in progress (skip Zombies).
 2. `$F/fleet retire <team | team/role> [--outcome Shipped|Partial|Abandoned|Failed]` closes only the fleet's panes,
    removes worktrees, closes open escalations ("closed at retire") and marks the rows Retired. It **keeps** a
@@ -161,5 +158,6 @@ user. With `~/.config/fleet/sink.md`, push `registry.sh unsynced` after each reg
 
 - `references/operations.md`: claims on Linear, chat, tick details, sandbox, retire summary, team environments,
   the blocked-prompt policy and the sink
+- `references/output.md`: the one output shape of every command and wake, which you relay as it is
 - `references/registry.md`: row fields, the done contract, events · `references/experts.md`: expertise files
 - `references/herdr-patterns.md`: the four herdr pitfalls and the safe call pattern for each

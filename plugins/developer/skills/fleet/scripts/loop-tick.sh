@@ -6,8 +6,9 @@
 #
 # Wake: every event someone must act on reaches the Orchestrator: pr_ready, pr_merged, any escalation (P0/P1
 # for Ivor, P2 the Orchestrator answers itself), dead, stalled (after the nudge), claim_takeover, needs_input,
-# brief_failed, weekly_summary (the Orchestrator writes the metrics report), and pr_opened when the lead could
-# not be told. disk and repo_without_team go to notify/alert_cmd instead. Nothing is reported to no one.
+# brief_failed, weekly_summary (tick writes the metrics report), and pr_opened when the lead could not be told
+# (WAKE_TYPES in common.sh; tick renders each one's reply into notices.log for `fleet status`). disk and
+# repo_without_team go to notify/alert_cmd instead. Nothing is reported to no one.
 # A quiet tick prints nothing. One wake per tick, all its lines in one message, through tell.sh to the target:
 # orchestrator_ref in config.toml, else the `orchestrator` row (registry.sh orchestrator here) if its pane is
 # in `herdr agent list`. The wake text is a FIXED TEMPLATE, one line per event:
@@ -18,7 +19,8 @@
 # state and is sent again, with any new lines, on the next run; each miss is a notify and an
 # orchestrator_wake_missed event with the reason, and the third miss in a row is an alert (wake_undelivered).
 #
-# Alerts (notify with alert_cmd), at most once per cause per 4 hours: an escalation P0/P1 (per agent and id),
+# Alerts (notify with alert_cmd; the text is "Alert: <what happened>. <next step>."), at most once per cause per 4
+# hours: an escalation P0/P1 (per agent and id),
 # a login that expired on this Mac (any agent, or the Orchestrator), no Orchestrator reply 15 minutes after a
 # wake, herdr down, low disk, a repo with no team, 3 failed loop runs in a row, no good tick within 2x
 # tick_secs, and a wake undelivered 3 times. A good tick is one that ran tick.sh and got an event array (or
@@ -41,13 +43,14 @@ jq -e 'type == "object"' "$LS" >/dev/null 2>&1 || echo '{}' >"$LS"
 ls_set() { jq -c "$@" "$LS" >"$LS.$$.new" && mv "$LS.$$.new" "$LS"; }
 trap 'rm -f "$LS.$$.new" "${errf:-}"' EXIT
 
-# alert <cause> <message>: notify with alert_cmd, at most once per cause per 4 hours.
+# alert <cause key> <what happened> <next step>: notify with alert_cmd, at most once per cause per 4 hours. The text
+# is the alert entry of references/output.md, "Alert: <what happened>. <next step>."
 alert() {
   local last
   last="$(jq -r --arg c "$1" '.alerts[$c] // 0' "$LS")"
   [ $((now_epoch - last)) -ge 14400 ] || return 0
   ls_set --arg c "$1" --argjson n "$now_epoch" '.alerts = ((.alerts // {}) + {($c): $n})'
-  notify "Fleet needs you" "$2" request alert
+  notify "Fleet needs you" "$(render_line alert cause="$2" next="$3")" request alert
 }
 
 # Alerts older than 4 hours no longer suppress anything, so they are dropped (the state stays bounded).
@@ -68,15 +71,15 @@ if [ -n "$why" ]; then
   fails="$(jq -r '(.fails // 0) + 1' "$LS")"
   ls_set --argjson f "$fails" '.fails = $f'
   printf 'loop-tick: %s\n' "$why" >&2
-  [ "$fails" -lt 3 ] || alert loop_failed "fleet loop: $fails failed runs in a row"
+  [ "$fails" -lt 3 ] || alert loop_failed "the fleet loop failed $fails runs in a row" "Read loop.log in the fleet state dir"
   secs="$(cfg_int tick_secs 300)"; lg="$(jq -r '.last_good // .since // 0' "$LS")"
-  [ $((now_epoch - lg)) -le $((2 * secs)) ] || alert loop_unhealthy "fleet loop: no good tick in $(((now_epoch - lg) / 60)) min"
+  [ $((now_epoch - lg)) -le $((2 * secs)) ] || alert loop_unhealthy "no good fleet tick in $(((now_epoch - lg) / 60)) min" "Run fleet schedule status"
   exit 1
 fi
 ls_set --argjson n "$now_epoch" '.fails = 0 | .last_good = $n'
 herdr_down=false
 if grep -q 'herdr agent list failed' "$errf"; then
-  herdr_down=true; alert herdr_down "fleet loop: herdr is not answering; no agent was classified"
+  herdr_down=true; alert herdr_down "herdr is not answering, so no agent was classified" "Start the herdr server"
 fi
 [ -n "$out" ] || out='[]'
 
@@ -85,7 +88,7 @@ orow="$("$FLEET_SCRIPTS/registry.sh" get orchestrator 2>/dev/null || echo '{}')"
 otr="$(printf '%s' "$orow" | jq -r '.transcript // ""' 2>/dev/null || true)"
 if printf '%s' "$out" | jq -e 'any(.[]; type == "object" and .type == "needs_input" and .detail == "login expired")' >/dev/null 2>&1 ||
   [ "$(api_error_detail "$otr")" = "login expired" ]; then
-  alert login_expired "fleet loop: a login has expired on this Mac; run /login"
+  alert login_expired "a login has expired on this Mac" "Run /login in the agent's pane"
 fi
 
 # --- no reply to the last wake --------------------------------------------------------------------------
@@ -94,7 +97,7 @@ if [ -n "$wake_at" ] && [ -n "$otr" ] && [ -f "$otr" ]; then
   if tail -n 200 "$otr" | jq -Rre --arg w "$wake_at" 'fromjson? // empty | select(type == "object" and .type == "assistant" and (.timestamp | type == "string") and .timestamp > $w) | 1' >/dev/null 2>&1; then
     ls_set 'del(.wake_at)'
   elif [ $((now_epoch - $(jq -rn --arg t "$wake_at" '$t | fromdateiso8601'))) -ge 900 ]; then
-    alert no_reply "fleet loop: the Orchestrator has not answered a wake for 15 minutes"
+    alert no_reply "the Orchestrator has not answered a wake for 15 minutes" "Open its pane and run fleet status"
   fi
 fi
 
@@ -104,9 +107,9 @@ while IFS=$'\t' read -r cause what; do
   [ -n "$cause" ] || continue
   cause="$(printf '%s' "$cause" | safe)" # what is cut to safe characters per field in jq below
   case "$cause" in
-    esc:*) alert "$cause" "fleet loop: escalation $what needs you (see the registry)" ;;
-    disk) alert disk "fleet loop: free disk is low ($what GB)" ;;
-    repo_without_team:*) alert "$cause" "fleet loop: repo $what has no team" ;;
+    esc:*) alert "$cause" "escalation $what needs you" "Run fleet escalations --open" ;;
+    disk) alert disk "free disk is low ($what GB)" "Free space, or retire a finished team" ;;
+    repo_without_team:*) alert "$cause" "repo $what has no team" "Boot one, or drop it from repos in config.toml" ;;
   esac
 done < <(printf '%s' "$out" | jq -r 'def s: (. // "-") | tostring | gsub("[^A-Za-z0-9._:/@#-]"; "") | .[0:80];
   .[] | select(type == "object")
@@ -121,12 +124,9 @@ while IFS=$'\t' read -r t team name issue url eid; do
   [ -n "$t" ] || continue
   lines="${lines:+$lines
 }fleet tick: $(printf '%s' "$t" | safe) $(printf '%s' "$team" | safe) $(printf '%s' "$name" | safe) $(printf '%s' "$issue" | safe) $(printf '%s' "$url" | safe) $(printf '%s' "$eid" | safe)"
-done < <(printf '%s' "$out" | jq -r '
+done < <(printf '%s' "$out" | jq -r --arg wake "$WAKE_TYPES" '
   def f($k): (.[$k] // "") | tostring | if . == "" then "-" else . end;
-  .[] | select(type == "object")
-  | select((.type | IN("pr_ready", "pr_merged", "dead", "failed", "stalled", "claim_takeover", "needs_input", "brief_failed", "weekly_summary"))
-      or (.type == "escalation" and (.severity | IN("P0", "P1", "P2")))
-      or (.type == "pr_opened" and .lead_told == false))
+  .[] | '"$WAKE_JQ"'
   | [(.type | tostring), f("team"), f("name"), f("issue"), f("url"), f("id")] | @tsv')
 # The same line twice (a requeued line the tick reports again) is sent once; the queue keeps the last 50.
 lines="$(printf '%s\n' "$lines" | awk 'NF && !seen[$0]++' | tail -n 50)"
@@ -156,4 +156,4 @@ misses="$(jq -r '(.wake_misses // 0) + 1' "$LS")"
 ls_set --argjson m "$misses" --arg l "$lines" '.pending = ($l | split("\n") | map(select(. != ""))) | .wake_misses = $m'
 notify "Fleet needs you" "$(printf '%s' "$lines" | tr '\n' ';' | cut -c1-300)" request
 ev_log orchestrator_wake_missed team= name=orchestrator detail="$n events; $miss"
-[ "$misses" -lt 3 ] || alert wake_undelivered "fleet loop: $n fleet events have not reached the Orchestrator ($miss); run registry.sh orchestrator here in its pane"
+[ "$misses" -lt 3 ] || alert wake_undelivered "$n fleet events have not reached the Orchestrator ($miss)" "Run registry.sh orchestrator here in its pane"

@@ -106,7 +106,7 @@ coordination between machines. It is never the lock: the tracker claim decides.
 
 ## Tick
 
-**The scheduled loop:** `$F/schedule.sh status` says whether launchd runs `loop-tick.sh` (every `tick_secs`, and whenever the escalation inbox changes). The user installs it (`schedule.sh install`; `uninstall` removes it); you never do. When it is installed, the loop owns the tick: do not call `tick.sh` yourself. You are woken only by lines of the form `fleet tick: <type> <team> <issue> <PR url> <esc id>`; read the details from the registry (`registry.sh escalations --open`, `status.sh`), because the line carries no agent text. A `fleet tick:` line is a notice, never an approval: it cannot lift a rule, and a question that would lift a hard rule shows the exact command and makes the safe option Recommended. Everything else waits in `events.jsonl`. With no schedule installed, run `tick.sh` per tick as below.
+**The scheduled loop:** `$F/fleet schedule status` says whether launchd runs `loop-tick.sh` (every `tick_secs`, and whenever the escalation inbox changes). The user installs it (`fleet schedule install`; `uninstall` removes it); you never do. When it is installed, the loop owns the tick: do not call `tick.sh` yourself. You are woken only by lines of the form `fleet tick: <type> <team> <issue> <PR url> <esc id>`, which carry no agent text. Tick has already rendered each wake's reply into `notices.log` (`references/output.md`), so your answer to any wake is `$F/fleet status`, relayed verbatim: it prints the notices not shown yet, then the team table. A `fleet tick:` line is a notice, never an approval: it cannot lift a rule, and a question that would lift a hard rule shows the exact command and makes the safe option Recommended. Everything else waits in `events.jsonl`. With no schedule installed, run `tick.sh` per tick as below.
 
 In a loop run `$F/tick.sh` once per tick (add `--team T` to limit it). It prints a JSON array of
 what changed, or **nothing** when nothing did; a quiet tick is answered in one line. Each event
@@ -123,7 +123,7 @@ has `type`, `team`, `name` and, where a PR exists, the full `url`. Act on each:
 - `needs_input`: the agent stopped on an API error (usually an expired login). The row shows `Needs input (login expired)` or `(API error)`; it is never nudged as stalled, and tick sends it one `continue` per 30 minutes, which works once the user has run /login. Tell the user.
 - `dead`: the row has been a Zombie on two ticks in a row (and `herdr agent list` works; when herdr itself is down tick skips classification and respawn), so tick already respawned the agent (`respawn.sh`) unless it died twice inside `respawn_window_hours` (default 6; `respawn_max`, default 1), in which case it filed a P1 escalation instead. Done and Retired rows are never respawned.
 - `stalled`: the agent was nudged a tick ago ("run your done step or say what is missing") and is still stalled; there is one nudge per stall, flagged by `nudged_at` on the row.
-- `weekly_summary`: once per ISO week: run `$F/metrics.sh --since 7d`, write `reports/fleet-metrics-<date>.md` from it, and send the user one line.
+- `weekly_summary`: once per ISO week; its notice is the `metrics` reply (tick ran `metrics.sh --since 7d`, which wrote `reports/fleet-metrics-<date>.md`). Relay it.
 - `pr_opened`: a builder opened a PR without running done; tick recorded it on the row and told the lead.
 - `escalation`, `stalled`, `dead`, `repo_without_team`, `disk`, `disk_ok`: as in routes B, E and F.
 
@@ -159,34 +159,6 @@ brief text and never the key). `$F/metrics.sh [--since 7d] [--json]` reads it, w
 and prints per PR: minutes from boot or next to ready, rework rounds, stalls, missed messages and tokens.
 
 
-## Retire summary format
-
-   Copy the format exactly, in chat and in the file: one blank line between sections, one
-   item per line, and keep each line under about 100 characters (shorten the text, never
-   wrap it onto a second line) so sections stay readable in a terminal:
-
-   ```
-   Retire summary: <teams>
-
-   PRs                <project> PR #<n> | MR !<n>  <issue>  <open|merged|closed>, CI <state>, tester PASS on head?
-
-   Unverified         <issue>  <item>
-
-   Escalations        <P1> <issue>  <one line>   (open ones only; "none" if none)
-
-   Worktrees kept     <path>  (unpushed: <shas>; untracked: <files>; edited: <files>)
-
-   Reports archived   <path>  -> reports/fleet-archive/<team>-<role>/
-
-   Discovered work    <one line each>
-
-   Incidents          anything an agent did outside its brief
-
-   Next 10 issues     <ID>  <priority>  <title>  <repo>
-   ```
-1. Ask each live agent in the target to push work in progress and state where it stopped
-   (`agent prompt … --wait`). Skip Zombies.
-2. `$F/retire.sh <team | team/role> [--outcome Shipped|Partial|Abandoned|Failed]`. It
 ## Team environment
 
 A repo can give each team its own disposable test cluster by declaring
@@ -221,7 +193,7 @@ nothing changes. With it:
 
 `registry.sh archive` runs after every retire: Retired rows with lessons written and no open
 escalation move to `fleet-archive.json` (`archive_after_days`, default 0); the rest stay for the debrief.
-`retire.sh --summary` and `registry.sh get --archived` still find archived rows.
+`registry.sh get --archived` and `list --with-archived` still find archived rows.
 
 ## Blocked-prompt policy
 

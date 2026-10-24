@@ -515,7 +515,7 @@ case "$cmd" in
       printf 'fleet: lost the takeover of %s to %s\n' "$issue" "${who:-another machine}" >&2; exit 1
     fi
     m_comment_create "$iid" "fleet: taken over from $holder (heartbeat $hb, no open PR)"
-    say --arg i "$issue" --arg f "$holder" --arg m "$mine" '{taken_over: true, issue: $i, from: $f, by: $m}' ;;
+    say --arg i "$issue" --arg f "$holder" --arg m "$mine" --arg hb "$hb" '{taken_over: true, issue: $i, from: $f, by: $m, heartbeat: $hb}' ;;
 
   release)
     # One issue update that keeps every other label. Like claim it is not compare-and-swap: a label another machine

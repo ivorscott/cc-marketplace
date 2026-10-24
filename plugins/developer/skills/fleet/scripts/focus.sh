@@ -3,11 +3,12 @@
 #
 #   focus.sh <team> [--now]     park the other live teams after their PRs merge (--now: right away)
 #   focus.sh --clear            drop the focus and unpark only the teams focus parked (focus:<team>)
-#   focus.sh                    show the focus as JSON ({} when there is none)
+#   focus.sh                    show the focus: "Focus: <team>." or "Focus: none."
 #
-# The output lists "parked" (--now) or "marked" teams. A team that cannot be parked (uncommitted work, herdr down) or unparked (the caps are full) is named in the
-# output's "refused" list and stays as it was; the others go through, and focus.sh exits 1. The focus is one line
-# in the status.
+# It prints "Focused on <team>: parked <teams>." (--now), "Focused on <team>: <teams> park when their PRs merge."
+# or "Focus cleared: unparked <teams>.", then the team table (references/output.md). A team that cannot be parked
+# (uncommitted work, herdr down) or unparked (the caps are full) is named after "Refused:" and stays as it was; the
+# others go through, a warning names each refusal and its reason, and focus.sh exits 1. The focus is one line under the status table.
 # Command: Park every other team so one team gets the slots · e.g. fleet focus build-api --now
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
@@ -17,9 +18,17 @@ registry="$FLEET_SCRIPTS/registry.sh"
 ffile="$FLEET_STATE_DIR/focus"
 
 if [ $# -eq 0 ]; then
-  if [ -f "$ffile" ]; then jq -cn --arg t "$(cat "$ffile")" '{focus: $t}'; else echo '{}'; fi
+  if [ -f "$ffile" ]; then render_line focus team="$(cat "$ffile")"; else render_line focus; fi
   exit 0
 fi
+commas() { local IFS=,; printf '%s' "$*" | sed 's/,/, /g'; } # commas <word...>: "a, b, c"
+# move <park|unpark> <team> [args]: park or unpark one team; a refusal is warned with its reason and kept in refused.
+move() {
+  local verb="$1" t="$2" e; shift 2
+  if e="$("$FLEET_SCRIPTS/$verb.sh" "$t" "$@" 2>&1 >/dev/null)"; then done_list+=("$t"); return 0; fi
+  refused+=("$t"); e="$(printf '%s\n' "$e" | grep -v '^fleet: warning:' | head -n 1)"; e="${e#fleet: }"
+  warn "could not $verb $t (${e%:})"
+}
 arg="$1"; shift
 done_list=(); refused=()
 
@@ -29,14 +38,15 @@ if [ "$arg" = "--clear" ]; then
   rm -f "$ffile"
   while IFS= read -r t; do
     [ -n "$t" ] || continue
-    if "$FLEET_SCRIPTS/unpark.sh" "$t" >/dev/null 2>&1; then done_list+=("$t"); else refused+=("$t"); fi
+    move unpark "$t"
   done < <("$registry" list --parked | jq -r '[.[] | select((.parked_reason // "") | startswith("focus:")) | .team] | unique[]')
   while IFS= read -r t; do
     [ -n "$t" ] || continue
     "$registry" park-mark "$t" - >/dev/null
   done < <("$registry" list | jq -r '[.[] | select((.park_after_merge // "") | startswith("focus:")) | .team] | unique[]')
   ev_log focus_cleared team="$ft"
-  jq -cn --arg t "$ft" --arg d "${done_list[*]-}" --arg r "${refused[*]-}" '{focus_cleared: $t, unparked: ($d | split(" ") | map(select(. != ""))), refused: ($r | split(" ") | map(select(. != "")))}'
+  render_line focus_cleared unparked="$(commas ${done_list[@]+"${done_list[@]}"})" refused="$(commas ${refused[@]+"${refused[@]}"})"
+  render_table
   [ "${#refused[@]}" = 0 ] || exit 1
   exit 0
 fi
@@ -52,10 +62,10 @@ printf '%s\n' "$team" >"$ffile"
 while IFS= read -r t; do
   [ -n "$t" ] || continue
   if [ "$now_flag" = 1 ]; then pargs=(--reason "focus:$team"); else pargs=(--after-merge --reason "focus:$team"); fi
-  if "$FLEET_SCRIPTS/park.sh" "$t" "${pargs[@]}" >/dev/null 2>&1; then done_list+=("$t"); else refused+=("$t"); fi
+  move park "$t" "${pargs[@]}"
 done < <("$registry" list --live | jq -r --arg f "$team" '[.[] | select(.tier != "Orchestrator" and .team != $f) | .team] | unique[]')
 ev_log focus_set team="$team" detail="$([ "$now_flag" = 1 ] && echo now || echo after-merge)"
-key=marked; [ "$now_flag" = 1 ] && key=parked
-jq -cn --arg t "$team" --argjson now "$now_flag" --arg k "$key" --arg d "${done_list[*]-}" --arg r "${refused[*]-}" \
-  '{focus: $t, now: ($now == 1), ($k): ($d | split(" ") | map(select(. != ""))), refused: ($r | split(" ") | map(select(. != "")))}'
+if [ "$now_flag" = 1 ]; then render_line focused team="$team" parked="$(commas ${done_list[@]+"${done_list[@]}"})" refused="$(commas ${refused[@]+"${refused[@]}"})"
+else render_line focus_marked team="$team" marked="$(commas ${done_list[@]+"${done_list[@]}"})" refused="$(commas ${refused[@]+"${refused[@]}"})"; fi
+render_table
 [ "${#refused[@]}" = 0 ] || exit 1

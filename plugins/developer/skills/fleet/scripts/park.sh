@@ -13,6 +13,8 @@
 # --after-merge parks nothing now: the team's rows are marked, and tick parks the team when its PR merges
 # instead of the Orchestrator giving it the next issue. Bring a team back with unpark.sh.
 # Internal: --reason <focus:team> (focus.sh) sets the parked_reason / the mark.
+# It prints "Parked <team>: slot free, worktrees and claim kept." (with --after-merge: "Marked <team>: it parks when
+# its PR merges."), then the team table (references/output.md).
 # Command: Free a team's slot and keep its work · e.g. fleet park build-api
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
@@ -38,7 +40,7 @@ rows="$("$registry" list --team "$team" | jq -c '[.[] | select(.tier != "Orchest
 if [ "$after" = 1 ]; then
   "$registry" park-mark "$team" "$reason" >/dev/null
   ev_log park_marked team="$team" detail="$reason"
-  jq -cn --arg t "$team" --arg r "$reason" '{team: $t, parked: false, will_park_after_merge: true, reason: $r}'
+  render_line park_marked team="$team"; render_table
   exit 0
 fi
 
@@ -62,4 +64,4 @@ while IFS=$'\t' read -r name pane; do
   hd pane close "$pane" >/dev/null 2>&1 || warn "could not close pane $pane of $name; its row is Parked"
 done < <(printf '%s' "$rows" | jq -r '.[] | [.name, (.pane // "")] | @tsv')
 ev_log parked team="$team" detail="$reason"
-jq -cn --arg t "$team" --arg r "$reason" --argjson n "$(printf '%s' "$rows" | jq '[.[] | select(.status != "Done")] | length')" '{team: $t, parked: true, reason: $r, rows: $n}'
+render_line parked team="$team"; render_table

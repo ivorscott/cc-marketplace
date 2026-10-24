@@ -18,6 +18,7 @@
 #      lead (so the whole move takes about two restarts, not one per agent). The lead's brief
 #      also carries --brief TEXT (default "New issue: <issue>."). No /clear and no /compact: a fresh session
 #      also picks up an updated plugin.
+# It prints "Moved <team>: <old issue> → <new issue>", then the team table (references/output.md).
 # It can take a few minutes: run it in the background (Bash run_in_background) and wait for its completion.
 # An agent whose restart fails (it did not exit, did not start, or its brief did not arrive) is set Failed and
 # next exits 1 naming it; the others are restarted. UNVERIFIED against real herdr: `herdr agent start` after
@@ -58,6 +59,7 @@ trap 'rm -rf "$lock"' EXIT
 
 rows="$("$registry" list --team "$team" | jq -c '[.[] | select(.status != "Retired" and .tier != "Orchestrator")]')"
 [ "$(printf '%s' "$rows" | jq length)" != 0 ] || die "no live rows for team '$team'"
+from="$(printf '%s' "$rows" | jq -r '[.[] | select((.issue // "") != "")] | first // {} | [(.issue // ""), (.issue_url // "")] | @tsv')"
 [ "$(printf '%s' "$rows" | jq '[.[] | select(.status == "Parked")] | length')" = 0 ] || die "team '$team' is parked; unpark.sh $team first, or leave it parked"
 
 # 1. Safe point. herdr must answer (a failed call is not "idle"), every agent must be idle or done, and no
@@ -120,8 +122,9 @@ for n in $(printf '%s' "$rows" | jq -r '.[] | select(.tier == "Lead") | .name');
 while IFS= read -r n; do [ -z "$n" ] || failed+=("$n"); done <"$wfail"
 rm -f "$wfail"
 
+render_line moved team="$team" from="$(issue_link "${from%%$'\t'*}" "${from#*$'\t'}")" to="$(issue_link "$issue" "$issue_url")"
+render_table
 if [ "${#failed[@]}" -gt 0 ]; then
   warn "not restarted: ${failed[*]} (rows set to Failed)"
   exit 1
 fi
-jq -cn --arg t "$team" --arg i "$issue" '{team: $t, issue: $i, moved: true}'
