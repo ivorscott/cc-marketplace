@@ -131,10 +131,27 @@ State as in the team table, one agent's. The last action is the agent's newest e
 ### boot
 
 ```
+Booting [DEV-1](url): <the search and why>.
+
 Booted <team> on [DEV-1](url) in <repo>: lead ✓ planner ✓ builder ✗ (did not start) tester ✓
 ```
 
-Then the table. `✗ (brief not delivered)` for a brief that did not arrive; no ` on …` without an issue.
+Then the table. `✗ (brief not delivered)` for a brief that did not arrive; no ` on …` without an issue. The
+`Booting` line comes first only with `--picked` (the Orchestrator picked the issue itself).
+
+### nothing bootable
+
+The one reply the Orchestrator fills itself, from its search (SKILL.md route A, step 0), when it would boot and
+nothing can be booted. Never a bare "no ticket":
+
+```
+Nothing bootable. What each candidate needs from you:
+
+1. [DEV-1](url): <what it needs>
+2. [DEV-2](url): <what it needs>
+```
+
+Ranked as the Pick step ranks them (priority, then series order), at most five.
 
 ### tell
 
@@ -425,6 +442,15 @@ Reply A or B.
 The decision form, once per (team, installed version), naming the team's lead. Until the user says yes, `next` and
 `respawn --restart` refuse with exit 5 (`next: <team> runs plugin <old> and <new> is installed, so a restart would
 switch it to <new>. Ask the user, then run it again with FLEET_VERSION_OK=1.`).
+
+### wake slot_free
+
+```
+Slot free (<n> of <N> teams running). Pick the next issue and boot it.
+```
+
+`<N>` is `target_teams` on the orchestrator row; it comes once per (live count, target) while fewer teams run than
+the target and than `max_teams` (Parked teams do not count).
 
 ### wake weekly_summary
 

@@ -32,6 +32,7 @@
 #                   no_pr_ci in config.toml), the tester's signed-off SHA is the PR head, and the
 #                   body has no "DO NOT MERGE", "merge order", "before/after", "merge after/before" or "stacked on",
 #                   and the PR is not a draft (a stacked child must not go ready before its parent). Once per (PR, head SHA).
+#                   A team whose every agent is then Done or Idle is parked (park.sh --reason signed-off) to free its slot.
 #   pr_merged       the row's PR was merged; the Orchestrator answers with next.sh. Once per PR. A team marked
 #                   park --after-merge (or by focus) is parked by tick instead; the event says `parks`.
 #   pr_conflicting  after this tick's merge, a PR that was ready on the tick before is CONFLICTING: it leaves the merge
@@ -39,6 +40,8 @@
 #                   have the tester sign off again. Once per (PR, head); `unpark_refused` when a cap kept it parked.
 #   repo_without_team  a repo in config.toml `repos` with no live team, when it becomes so
 #   disk, disk_ok   free disk crossed below warn_free_gb, and recovered
+#   slot_free       fewer live teams than target_teams (orchestrator row) and max_teams: the Orchestrator picks and
+#                   boots. Once per (live count, target)
 #   claim_takeover  a team's issue now carries another machine's label (once per team, issue and holder)
 #   claim_released  another machine's lapsed claim with no open PR was released (linear.sh release --lapsed)
 #   claim_held_pr   another machine's lapsed claim has an open PR, so it was left alone
@@ -420,7 +423,18 @@ if [ "$(printf '%s' "$prs" | jq length)" != 0 ]; then
               warn "could not park $(printf '%s' "$ev" | jq -r .team) after its merge: $(head -n 1 "$FLEET_STATE_DIR/park.err" 2>/dev/null)"
             rm -f "$FLEET_STATE_DIR/park.err"
           fi ;;
-        pr_ready) st_upd --argjson e "$ev" '$st + {pr_ready_emitted: ((($st.pr_ready_emitted // []) + [$e.url + "@" + $e.sha]) | unique)}' ;;
+        pr_ready)
+          st_upd --argjson e "$ev" '$st + {pr_ready_emitted: ((($st.pr_ready_emitted // []) + [$e.url + "@" + $e.sha]) | unique)}'
+          # Signed off and every agent Done or Idle: the team parks, so its slot frees while the PR waits for its merge
+          # (a Parked team does not count). park.sh refuses work that is not pushed: one warning (pr_ready comes once
+          # per head), and the team keeps its slot. An agent still working means no park.
+          pt="$(printf '%s' "$ev" | jq -r .team)"
+          if [ "$(printf '%s' "$p" | jq -r .parked)" != true ] && [ "$(printf '%s' "$all_rows" | jq --arg t "$pt" '[.[] | select(type == "object"
+              and .team == $t and .status != "Retired" and .tier != "Orchestrator") | .status] | length > 0 and all(. == "Done" or . == "Idle")')" = true ]; then
+            "$FLEET_SCRIPTS/park.sh" "$pt" --reason signed-off >/dev/null 2>"$FLEET_STATE_DIR/park.err" ||
+              warn "$pt is signed off but could not park, so it keeps its slot: $(grep -v '^fleet: warning:' "$FLEET_STATE_DIR/park.err" | head -n 1 | sed 's/^fleet: //')"
+            rm -f "$FLEET_STATE_DIR/park.err"
+          fi ;;
       esac
     done < <(printf '%s' "$prs" | jq -c '.[]')
     rm -f "$ghtmp"; ghtmp=""
@@ -453,6 +467,27 @@ fi
 st_upd --argjson read "$(printf '%s\n' ${read_now[@]+"${read_now[@]}"} | jq -Rsc 'split("\n") | map(select(. != ""))')" \
   --argjson ready "$(printf '%s\n' ${ready_now[@]+"${ready_now[@]}"} | jq -Rsc 'split("\n") | map(select(. != ""))')" \
   '$st + {ready_prev: ((($st.ready_prev // []) - $read) + $ready | unique)}'
+
+# --- keep N teams running ------------------------------------------------------------------------------
+# target_teams on the orchestrator row (registry.sh set orchestrator target_teams=N). With fewer live teams than the
+# target and than max_teams (counted as boot counts them: Parked teams do not), one slot_free wake, once per (live
+# count, target), forgotten when the count recovers. The Orchestrator answers it by picking and booting (SKILL.md).
+# A fleet-wide count, so tick --team skips it.
+if [ -z "$team" ]; then
+  tgt="$("$registry" get orchestrator 2>/dev/null | jq -r '.target_teams // empty' 2>/dev/null || true)"
+  case "$tgt" in "" | *[!0-9]*) tgt="" ;; esac
+  if [ -n "$tgt" ]; then
+    nlive="$(live_team_count)"; cap="$(max_teams)"
+    if [ "$nlive" -lt "$tgt" ] && [ "$nlive" -lt "$cap" ]; then
+      if [ "$(jq -r '.slot_free_emitted // ""' "$STATE_FILE")" != "$nlive|$tgt" ]; then
+        add_events "$(jq -cn --argjson n "$nlive" --argjson t "$tgt" '[{type: "slot_free", team: "", name: "", live: $n, target: $t, detail: "\($n) live < target \($t)"}]')"
+        st_upd --arg k "$nlive|$tgt" '$st + {slot_free_emitted: $k}'
+      fi
+    else
+      st_upd '$st | del(.slot_free_emitted)'
+    fi
+  fi
+fi
 
 # --- repos without a team ---------------------------------------------------------------------
 # A parked team still covers its repo.
@@ -495,7 +530,7 @@ while IFS=$'\t' read -r etype eteam ename eurl esha eissue edetail; do
   [ "$eissue" != - ] || eissue=""; [ "$edetail" != - ] || edetail=""
   ev_log "$etype" team="$eteam" name="$ename" pr="$eurl" sha="$esha" issue="$eissue" detail="$edetail"
 done < <(jq -r 'def d: if . == null or . == "" then "-" else tostring end;
-  .[] | select(.type | IN("pr_opened", "pr_ready", "pr_merged", "pr_conflicting", "stalled", "dead", "failed", "needs_input", "stale_version",
+  .[] | select(.type | IN("pr_opened", "pr_ready", "pr_merged", "pr_conflicting", "stalled", "dead", "failed", "needs_input", "stale_version", "slot_free",
     "claim_released", "claim_held_pr", "claim_lapsed"))
   | [.type, (.team | d), (.name | d), (.url | d), (.sha | d), (if (.type | startswith("claim_")) then (.issue | d) else "-" end),
      (if (.type | startswith("claim_")) then ("holder " + (.holder // "?") + (if .detail then ": " + .detail else "" end)) else "-" end)] | @tsv' "$EVENTS_FILE")

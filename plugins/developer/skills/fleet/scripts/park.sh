@@ -12,7 +12,7 @@
 # that are not committed, or when it has commits that are on no remote. It never waits.
 # --after-merge parks nothing now: the team's rows are marked, and tick parks the team when its PR merges
 # instead of the Orchestrator giving it the next issue. Bring a team back with unpark.sh.
-# Internal: --reason <focus:team> (focus.sh) sets the parked_reason / the mark.
+# Internal: --reason <focus:team> (focus.sh) or signed-off (tick, after a sign-off) sets the parked_reason / the mark.
 # It prints "Parked <team>: slot free, worktrees and claim kept." (with --after-merge: "Marked <team>: it parks when
 # its PR merges."), then the team table (references/output.md).
 # Command: Free a team's slot and keep its work · e.g. fleet park build-api

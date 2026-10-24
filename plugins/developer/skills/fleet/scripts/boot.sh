@@ -28,6 +28,9 @@
 #   --labels a,b,c       the issue's labels, as just re-read; any <label_prefix>* label that
 #                        is not this machine's is another machine's claim
 #   --scope 'repo: p1, p2'  declared file scope (repo defaults to the repo-dir name; no paths = whole repo)
+#   --picked TEXT        the Orchestrator picked the issue itself (SKILL.md route A, step 0): TEXT is the search and why;
+#                        boot records it on the lead's row (registry.sh note picked, for the morning report) and the
+#                        reply starts "Booting <issue>: <TEXT>."
 # Boot refuses an issue claimed by another machine (FLEET_FORCE=1 does not bypass it), and warns
 # when the declared scope overlaps a live team on this machine in the same repo. (Scope of other
 # machines' claims is no longer known: the label plus the heartbeat is the lock.) A takeover is
@@ -51,10 +54,11 @@ have_key=0; "$FLEET_SCRIPTS/linear.sh" has-key >/dev/null 2>&1 && have_key=1
 claims_why="no Linear key"; if [ "$have_key" = 1 ] && [ "$(linear_writes)" = off ]; then have_key=0; claims_why="linear_writes = off"; fi
 unset LINEAR_API_KEY
 
-issue=""; claimed_by=""; labels=""; scope_arg=""; issue_url=""
+issue=""; claimed_by=""; labels=""; scope_arg=""; issue_url=""; picked=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --issue) issue="${2:?--issue needs a value}"; shift 2 ;;
+    --picked) picked="${2:?--picked needs the search and why}"; shift 2 ;;
     --issue-url) issue_url="${2:?--issue-url needs a value}"; shift 2 ;;
     --claimed-by) claimed_by="${2:?--claimed-by needs a value}"; shift 2 ;;
     --labels) labels="${2:?--labels needs a value}"; shift 2 ;;
@@ -272,7 +276,13 @@ if [ "$status" = "Working" ]; then
 fi
 
 ev_log boot team="$team" issue="$issue" detail="template $template"
-reply "$(render_line booted team="$team" issue="$(issue_link "$issue" "$issue_url")" repo="$(basename "$repo")" agents="$(roles_line "$team")")" "$(render_table)"
+# A pick of the Orchestrator's own (--picked): kept on the lead's row for the morning report, and said first.
+pline=""
+if [ -n "$picked" ]; then
+  "$registry" note "$lead_name" picked "$picked" >/dev/null 2>&1 || warn "could not note why $team was picked"
+  pline="$(render_line booting issue="$(issue_link "${issue:-$team}" "$issue_url")" why="$picked")"
+fi
+reply "$pline" "$(render_line booted team="$team" issue="$(issue_link "$issue" "$issue_url")" repo="$(basename "$repo")" agents="$(roles_line "$team")")" "$(render_table)"
 if [ "${#failed_agents[@]}" -gt 0 ]; then
   warn "brief not delivered to: ${failed_agents[*]} (rows set to Failed)"
   exit 1

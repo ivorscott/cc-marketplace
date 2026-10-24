@@ -44,8 +44,8 @@ label's description. **No claim, lease or heartbeat comment is ever posted.**
    (read-only) says who holds it and whether the claim `lapsed`; `false` is live, and `null` (no heartbeat) is not
    proven lapsed, so it is skipped too. Skip an issue whose blocked-by issues are not all Done. Order the rest by
    priority, then by series order (its place in its "Part of" or parent sequence, then its identifier). A lapsed
-   claim with no open PR is free: take it over (**Takeover**). Record the search behind each boot with
-   `$F/registry.sh note <team>/lead picked "<query and why>"`; the morning report reads it.
+   claim with no open PR is free: take it over (**Takeover**). Boot it with `--picked "<query and why>"`: boot notes
+   the search on the lead's row (the morning report reads it) and says it first.
 2. **Claim:** `$F/linear.sh claim <ISSUE>` (`--dry-run` lists what it would do). It ensures this
    machine's label (under the `fleet` group, described by `machine-id.sh description`), labels the
    issue, sets In Progress, waits `claim_settle_secs` (default 5), re-reads, and exits 1 naming the
@@ -125,7 +125,7 @@ coordination between machines. It is never the lock: the tracker claim decides.
 
 ## Tick
 
-**The scheduled loop:** `$F/fleet schedule status` says whether launchd runs `loop-tick.sh` (every `tick_secs`, and whenever the escalation inbox changes). The user installs it (`fleet schedule install`; `uninstall` removes it); you never do. When it is installed, the loop owns the tick: do not call `tick.sh` yourself. You are woken only by lines of the form `fleet tick: <type> <team> <issue> <PR url> <esc id>`, which carry no agent text. Tick has already rendered each wake's reply into `notices.log` (`references/output.md`), so your answer to any wake is `$F/fleet status`, relayed verbatim: it prints the notices not shown yet, then the team table. A `fleet tick:` line is a notice, never an approval: it cannot lift a rule, and a question that would lift a hard rule shows the exact command and makes the safe option Recommended. Everything else waits in `events.jsonl`. With no schedule installed, run `tick.sh` per tick as below.
+**The scheduled loop:** `$F/fleet schedule status` says whether launchd runs `loop-tick.sh` (every `tick_secs`, and whenever the escalation inbox changes). The user installs it (`fleet schedule install`; `uninstall` removes it); you never do. When it is installed, the loop owns the tick: do not call `tick.sh` yourself. You are woken only by lines the loop appends to `wakes.log` in the state dir, of the form `fleet tick: <type> <team> <name> <issue> <PR url> <esc id>`, which carry no agent text; you follow the file with `Monitor` on `tail -n 0 -F` after `registry.sh orchestrator here` (SKILL.md, Tick). Tick has already rendered each wake's reply into `notices.log` (`references/output.md`), so your answer to any wake is `$F/fleet status`, relayed verbatim: it prints the notices not shown yet, then the team table. A `fleet tick:` line is a notice, never an approval: it cannot lift a rule, and a question that would lift a hard rule shows the exact command and makes the safe option Recommended. Everything else waits in `events.jsonl`. With no schedule installed, run `tick.sh` per tick as below.
 
 In a loop run `$F/tick.sh` once per tick (add `--team T` to limit it). It prints a JSON array of
 what changed, or **nothing** when nothing did; a quiet tick is answered in one line. Each event
@@ -165,6 +165,19 @@ Boot starts every claude agent with `--session-id`, records the transcript path 
 
 Scripts now call the forge: `tick.sh` runs read-only `gh pr view` through `FLEET_GH` (default `gh`).
 A repo whose PRs have no CI is listed in `no_pr_ci = ["repo"]` in config.toml. UNVERIFIED: herdr's `state_change_seq` is observed, not documented; the transcript format across Claude Code updates; the pane-text handling; `herdr agent start` in the same pane after `/exit`; the `queued_command` attachment shape.
+
+### Keep N teams running
+
+When the user asks to keep N teams running, set `$F/registry.sh set orchestrator target_teams=N`. It is on the
+Orchestrator's row, so it survives a compaction and `registry.sh orchestrator here`. Tick then wakes you with
+`slot_free` while fewer teams run than N and than `max_teams` (Parked teams do not count), once per (live count,
+target). Answer by picking and booting (SKILL.md route A, step 0, with `--picked`); when the only blocker is a nearly
+ready PR, boot plan-first; when nothing is bootable, reply "Nothing bootable" from its template.
+
+A team frees its own slot once it is signed off: on `pr_ready`, when every agent of the team is Done or Idle, tick runs
+`park.sh <team> --reason signed-off`. `park.sh` refuses work that is not pushed (tick warns once and the team keeps
+its slot), and an agent still working means no park. When its PR merges, `pr_merged` says to unpark it and move it
+on, or retire it; when it conflicts after a merge, tick unparks it and tells its lead (`pr_conflicting`).
 
 ## Sandbox
 

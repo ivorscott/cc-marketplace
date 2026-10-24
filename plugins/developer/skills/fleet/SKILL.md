@@ -55,8 +55,9 @@ done contract, escalation, caps, guards and debrief; mechanics that are not rout
    claim (`$F/fleet holder <ISSUE>` not lapsed, or with no heartbeat) and any issue whose blocked-by issues are not
    all Done; order the rest by priority, then by series order (its place in its "Part of" or parent sequence, then its
    identifier). A lapsed claim with no open PR is free: take it with `$F/fleet takeover <ISSUE>`. Ask the user only
-   to override a cap, or for a P0/P1. After the boot, record the search: `$F/registry.sh note <team>/lead picked
-   "<query and why>"`.
+   to override a cap, or for a P0/P1. Boot it with `--picked "<query and why>"`: boot notes it on the lead's row (the
+   morning report reads it) and its reply starts `Booting <issue>: <why>.` With nothing bootable, reply "Nothing
+   bootable" from its template (`references/output.md`): each candidate, ranked, with what it needs from the user.
 1. Pick the template: `build` (plan, build, test one piece of work), `review` (independent read-only reviewers)
    or `research` (problem-first study guide); a path to a custom template JSON also works. Unsure → ask.
 2. With several machines on Linear, claim the issue first (`references/operations.md`, "Claims"); a single machine
@@ -103,7 +104,12 @@ reply, so answer every wake with `$F/fleet status`, relayed verbatim (the notice
 no schedule, run `$F/tick.sh` per tick (`--team T`), then `$F/fleet status`. While the loop runs, never open a
 question box (AskUserQuestion): the wakes queue behind it. Ask in plain text and end the turn. Then act on each:
 
-- `pr_ready`: send ONE `PushNotification` with the full PR URL.
+- `pr_ready`: send ONE `PushNotification` with the full PR URL. A team whose agents were all Done or Idle was parked
+  (signed off), so its slot is free while the PR waits for its merge.
+- `slot_free`: fewer teams run than the user's target (`$F/registry.sh set orchestrator target_teams=N` when the user
+  asks to keep N teams running). Pick and boot (A, step 0) over Todo, Backlog and unclaimed or lapsed In Progress
+  across the repos in `repos`. When the only blocker is an open PR that is nearly ready (signed off, or CI green),
+  boot plan-first: the lead's `--brief` says the planner runs and the builder waits for that merge.
 - `pr_merged`: run `$F/fleet next <team> <next issue> [--brief TEXT] [--issue-url URL]` at a safe point (every agent
   idle); it logs `issue_done`, reassigns the rows and restarts every agent with a fresh brief. A team marked
   `--after-merge` was parked by tick instead (`parks` on the event).

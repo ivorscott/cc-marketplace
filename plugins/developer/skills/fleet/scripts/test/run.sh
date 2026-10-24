@@ -3514,6 +3514,7 @@ for w in $WAKES; do
     escalation) ev='{"type":"escalation","team":"build-api","name":"build-api/lead","id":"20261024T080000Z-1","severity":"P1","message":"which database?","options":["postgres","sqlite"]}' ;;
     pr_conflicting) ev='{"type":"pr_conflicting","team":"build-api","name":"build-api/lead","url":"https://github.com/acme/app-api/pull/214","merged":"https://github.com/acme/app-web/pull/121","lead_told":true}' ;;
     stale_version) ev='{"type":"stale_version","team":"build-api","name":"build-api/lead","from":"4.0.0","to":"4.1.0","detail":"runs 4.0.0, installed 4.1.0; waits for the go"}' ;;
+    slot_free) ev='{"type":"slot_free","team":"","name":"","live":2,"target":3,"detail":"2 live < target 3"}' ;;
     claim_released) ev='{"type":"claim_released","team":"","name":"","issue":"DEV-2","holder":"fleet:other"}' ;;
     claim_held_pr) ev='{"type":"claim_held_pr","team":"","name":"","issue":"DEV-6","holder":"fleet:other","url":"https://github.com/acme/app-api/pull/9"}' ;;
     claim_lapsed) ev='{"type":"claim_lapsed","team":"","name":"","issue":"DEV-4","holder":"fleet:other","detail":"no heartbeat, so it is not proven lapsed"}' ;;
@@ -3723,7 +3724,7 @@ check "dev408-4 loop: orchestrator_ref, the wake queue and the typed wake are go
 
 # -- dev408-1: the Pick step decides without the user (route A, operations.md A0b)
 check "dev408-1 pick: route A has the Pick step: a live claim and unfinished blockers are skipped, priority then series order" bash -c \
-  "grep -q '^0\. \*\*Pick\*\*' '$SCRIPTS/../SKILL.md' && grep -q 'skip a live' '$SCRIPTS/../SKILL.md' && grep -q 'blocked-by issues are not' '$SCRIPTS/../SKILL.md' && grep -q 'series order' '$SCRIPTS/../SKILL.md' && grep -q 'note <team>/lead picked' '$SCRIPTS/../SKILL.md'"
+  "grep -q '^0\. \*\*Pick\*\*' '$SCRIPTS/../SKILL.md' && grep -q 'skip a live' '$SCRIPTS/../SKILL.md' && grep -q 'blocked-by issues are not' '$SCRIPTS/../SKILL.md' && grep -q 'series order' '$SCRIPTS/../SKILL.md' && grep -q -- '--picked' '$SCRIPTS/../SKILL.md'"
 check "dev408-1 pick: operations.md skips a live claim, no longer any issue with another machine's label" bash -c \
   "grep -q 'Skip a live claim' '$SCRIPTS/../references/operations.md' && ! grep -q 'Skip any issue carrying another machine' '$SCRIPTS/../references/operations.md'"
 
@@ -3751,6 +3752,40 @@ eq "dev408-3 sweep: with no repo to look for a PR in, nothing is released" "$(sw
 qfresh sweepteam; cp "$D4/db3" "$LINEAR_DB"; d4cfg 'linear_writes = "on"' "repos = [\"$D4/r3\"]"
 eq "dev408-3 sweep: tick --team leaves it to the fleet-wide tick" "$(swev "$(FLEET_GH="$G4" D4GH_LIST="$D4/gh-pr6.json" FLEET_NOW=2026-10-18T09:00:00Z "$SCRIPTS/tick.sh" --team nobody 2>/dev/null)")" ""
 d4cfg
+
+# -- dev408-2: keep N teams running: slot_free under target_teams, a signed-off team parks, boot --picked
+qfresh slots
+"$REG" add '{"name":"orchestrator","team":"orchestrator","tier":"Orchestrator","status":"Working","herdr_ref":"o2","pane":"po2"}' >/dev/null
+slot() { "$REG" add "$(jq -cn --arg t "$1" '{name: ($t + "/lead"), team: $t, tier: "Lead", status: "Working", herdr_ref: ($t + "-lead"), pane: ("p" + $t)}')" >/dev/null; }
+stk() { "$SCRIPTS/tick.sh" 2>/dev/null; }
+slot sa
+eq "dev408-2 slots: with no target there is no slot_free" "$(evc "$(stk)" slot_free)" 0
+"$REG" set orchestrator target_teams=3 >/dev/null
+k1="$(stk)"; k2="$(stk)"
+eq "dev408-2 slots: under the target, one slot_free, once" "$(evc "$k1" slot_free):$(evc "$k2" slot_free)" "1:0"
+eq "dev408-2 slots: it says how many run of the target" "$(printf '%s' "$k1" | jq -r '.[] | select(.type == "slot_free") | [.detail, .live, .target] | map(tostring) | join("|")')" "1 live < target 3|1|3"
+slot sb; eq "dev408-2 slots: a new count still under the target fires again" "$(evc "$(stk)" slot_free)" 1
+slot sc; eq "dev408-2 slots: at the target, none" "$(evc "$(stk)" slot_free)" 0
+"$REG" retire sc/lead >/dev/null; eq "dev408-2 slots: after the count recovered, a drop fires again" "$(evc "$(stk)" slot_free)" 1
+"$REG" set orchestrator target_teams=5 >/dev/null; slot sd; eq "dev408-2 slots: never at max_teams, whatever the target" "$(evc "$(stk)" slot_free)" 0
+"$REG" park sb park >/dev/null; eq "dev408-2 slots: a Parked team does not count" "$(evc "$(stk)" slot_free)" 1
+qfresh signed
+qpr app-api 60 fleet/dev-60 main 2026-10-18T10:00:00Z '["a.go"]' x; qteam s60 app-api 60 DEV-60 aaaaaaa60
+qpr app-api 61 fleet/dev-61 main 2026-10-18T10:00:00Z '["b.go"]' x; qteam s61 app-api 61 DEV-61 aaaaaaa61
+qpr app-api 62 fleet/dev-62 main 2026-10-18T10:00:00Z '["c.go"]' x; qteam s62 app-api 62 DEV-62 aaaaaaa62
+git init -q "$QD/wt62"; echo wip >"$QD/wt62/f"; "$REG" set s62/builder worktree="$QD/wt62" >/dev/null
+for t in s60 s61 s62; do "$REG" add "$(jq -cn --arg t "$t" --arg s "$([ "$t" = s61 ] && echo Working || echo Idle)" '{name: ($t + "/lead"), team: $t, tier: "Lead", status: $s, herdr_ref: ($t + "-lead"), pane: ("p" + $t)}')" >/dev/null; done
+pk="$(FLEET_GH="$QD/gh-shim" "$SCRIPTS/tick.sh" 2>"$T/pk.err")"; rc=$?
+tstat() { "$REG" list --team "$1" | jq -r '[.[].status] | unique | join(",")'; }
+eq "dev408-2 park: signed off with every agent Done or Idle, the team parks (Done rows stay Done), and pr_ready still wakes" "$(evc "$pk" pr_ready):$(tstat s60):$("$REG" get s60/lead | jq -r .parked_reason)" "3:Done,Parked:signed-off"
+eq "dev408-2 park: an agent still working means no park" "$(tstat s61 | grep -c Parked)" 0
+eq "dev408-2 park: work that is not pushed refuses the park: one warning, the team keeps its slot, the tick goes on" "$rc:$(tstat s62):$(grep -c 's62 is signed off but could not park, so it keeps its slot: not parking s62' "$T/pk.err")" "0:Done,Idle:1"
+qfresh picked; mkdir -p "$QD/p2"
+FLEET_FORCE=1 bt --picked "Todo by priority; DEV-70 is the oldest P1" --issue DEV-70 --issue-url https://linear.app/acme/issue/DEV-70/x build pk "$QD/p2" task
+eq "dev408-2 boot --picked: the reply starts with the pick and why, a blank line, then the boot line" "$BTRC:$(head -n 1 "$T/bt.out"):$(sed -n 2p "$T/bt.out"):$(sed -n 3p "$T/bt.out" | cut -c1-15)" \
+  "0:Booting [DEV-70](https://linear.app/acme/issue/DEV-70/x): Todo by priority; DEV-70 is the oldest P1.::Booted build-pk"
+eq "dev408-2 boot --picked: the search is noted on the lead's row, for the morning report" "$("$REG" get build-pk/lead | jq -r '[.notes[]? | select(.kind == "picked") | .message] | first')" "Todo by priority; DEV-70 is the oldest P1"
+check "dev408-2 boot: without --picked there is no Booting line" bash -c "! grep -q '^Booting' '$T/bt.out.nopick' 2>/dev/null"
 # ---- end DEV-408 ----
 
 printf '\n%d passed, %d failed\n' "$pass" "$failn"
