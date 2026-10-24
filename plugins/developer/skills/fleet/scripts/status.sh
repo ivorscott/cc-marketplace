@@ -162,7 +162,7 @@ if $all; then
   fi
 fi
 # The launchd loop is installed (its launcher exists) but has no Orchestrator to wake: say so in one line.
-if [ -x "$FLEET_STATE_DIR/bin/fleet-tick" ] && [ -z "$(cfg_str orchestrator_ref "")" ] &&
+if [ -x "$FLEET_STATE_DIR/bin/fleet-tick" ] &&
   [ -z "$("$registry" get orchestrator 2>/dev/null | jq -r '.herdr_ref // ""' 2>/dev/null)" ]; then
   blocks+=("$(render_line loop_unregistered)")
 fi

@@ -69,7 +69,6 @@ env_extra() {
 
 # One line when the loop has no Orchestrator to wake (registry.sh orchestrator here registers one).
 orch_hint() {
-  [ -n "$(cfg_str orchestrator_ref "")" ] && return 0
   [ -n "$("$FLEET_SCRIPTS/registry.sh" get orchestrator 2>/dev/null | jq -r '.herdr_ref // ""' 2>/dev/null)" ] && return 0
   render_line loop_unregistered
 }
@@ -139,7 +138,7 @@ case "${1:-}" in
       exit 1
     fi
     echo "installed: $label every ${secs}s"
-    echo "The Orchestrator registers its pane as the wake target once per session: $FLEET_SCRIPTS/registry.sh orchestrator here"
+    echo "The Orchestrator registers once per session, then follows the wakes.log it names: $FLEET_SCRIPTS/registry.sh orchestrator here"
     ;;
   uninstall)
     "$lctl" bootout "$domain/$label" >/dev/null 2>&1 || true

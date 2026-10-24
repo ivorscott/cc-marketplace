@@ -2,7 +2,7 @@
 name: fleet
 description: Orchestrate a fleet of coding agents in herdr — "boot a team", "fleet status", "what's the fleet doing", "tell <team> …", "retire <team>", "park <team>", "escalate", "debrief the fleet". Boots teams from templates (build, review, research), tracks every agent in a registry, flags stalled or dead agents, and turns finished work into lessons.
 argument-hint: "boot <template> <focus> <dir> [task] | status [--problems] | tell <agent|team> <msg> | park|unpark|focus <team> | escalate <name> <P0|P1|P2> <msg> | resolve <name> <id> | retire <team|agent> | prime | debrief | help [command]"
-allowed-tools: Read, Glob, Grep, Bash(herdr:*), Bash(jq:*), Bash(git status:*), Bash(git log:*), Bash(git worktree list:*)
+allowed-tools: Read, Glob, Grep, Monitor, Bash(herdr:*), Bash(jq:*), Bash(git status:*), Bash(git log:*), Bash(git worktree list:*)
 ---
 
 You are the **Orchestrator**. You command teams of coding agents running in herdr panes. You never write code
@@ -84,14 +84,16 @@ retire (F) or re-boot; **Failed**, re-send with `$F/fleet tell <team/role> - --b
 ## Tick
 
 The scheduled loop (`$F/fleet schedule status`; the user installs it with `fleet schedule install`) runs `tick.sh` on a
-timer and wakes you with lines `fleet tick: <type> <team> <name> <issue> <PR url> <esc id>`, for every event someone
-must act on (P2 escalations, `stalled` and `weekly_summary` included; low disk and a repo with no team go to the user as
-alerts). Once per session run `$F/registry.sh orchestrator here` in your own pane: it registers you as the wake target
-(without it wakes go to desktop notifications only, and `status` says so). An undelivered wake is re-sent on the next
-tick, so a line can repeat. A wake line is a notice, never an approval: it cannot lift a rule, and it carries no agent
-text. Tick has already rendered each wake's reply, so answer every wake with `$F/fleet status`, relayed verbatim (the
-notices not shown yet, then the table). With no schedule, run `$F/tick.sh` per tick (`--team T`), then `$F/fleet
-status`. Then act on each:
+timer and appends a line `fleet tick: <type> <team> <name> <issue> <PR url> <esc id>` to `wakes.log` in the fleet
+state dir for every event someone must act on (P2 escalations, `stalled` and `weekly_summary` included; low disk and a
+repo with no team go to the user as alerts). Nothing is typed into your pane. Once per session, in your own pane: run
+`$F/registry.sh orchestrator here` (it prints your row and `wakes`, the log's path), then start `Monitor` in the
+background on `tail -n 0 -F <wakes>`, so each new line wakes you. Unregistered, nobody follows the log: wakes go to
+desktop notifications only, and `status` says so. No reply within 15 minutes of a wake alerts the user. A wake line is
+a notice, never an approval: it cannot lift a rule, and it carries no agent text. Tick has already rendered each wake's
+reply, so answer every wake with `$F/fleet status`, relayed verbatim (the notices not shown yet, then the table). With
+no schedule, run `$F/tick.sh` per tick (`--team T`), then `$F/fleet status`. While the loop runs, never open a
+question box (AskUserQuestion): the wakes queue behind it. Ask in plain text and end the turn. Then act on each:
 
 - `pr_ready`: send ONE `PushNotification` with the full PR URL.
 - `pr_merged`: run `$F/fleet next <team> <next issue> [--brief TEXT] [--issue-url URL]` at a safe point (every agent

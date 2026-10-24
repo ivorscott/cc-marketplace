@@ -10,21 +10,21 @@
 # pr_opened when the lead could not be told
 # (WAKE_TYPES in common.sh; tick renders each one's reply into notices.log for `fleet status`). disk and
 # repo_without_team go to notify/alert_cmd instead. Nothing is reported to no one.
-# A quiet tick prints nothing. One wake per tick, all its lines in one message, through tell.sh to the target:
-# orchestrator_ref in config.toml, else the `orchestrator` row (registry.sh orchestrator here) if its pane is
-# in `herdr agent list`. The wake text is a FIXED TEMPLATE, one line per event:
+# A quiet tick prints nothing. A wake is lines appended to $FLEET_STATE_DIR/wakes.log, never typed into a pane: the
+# Orchestrator follows that file (Monitor on `tail -n 0 -F`, SKILL.md "Tick"), so a wake needs no delivery and
+# nothing is queued or retried. The lines are a FIXED TEMPLATE, one per event:
 #   fleet tick: <type> <team> <name> <issue> <PR url> <esc id>
 # built from enumerated fields only, each cut to safe characters. An agent's free text (an escalation's
-# message, a PR title) is never typed into the Orchestrator's pane; the Orchestrator reads it from the registry.
-# A wake that is not delivered (no target, pane gone, herdr down, tell.sh failed) stays queued in the loop
-# state and is sent again, with any new lines, on the next run; each miss is a notify and an
-# orchestrator_wake_missed event with the reason, and the third miss in a row is an alert (wake_undelivered).
+# message, a PR title) never reaches the file; the Orchestrator reads it from the registry. The same line twice in
+# one tick is written once. wakes.log is mode 600 and holds at most 500 lines: past that it moves to wakes.log.1
+# and a new one starts, so a follower sees only new lines. With no Orchestrator registered (registry.sh
+# orchestrator here) nobody follows it, so the lines also go to a desktop notification.
 #
 # Alerts (notify with alert_cmd; the text is "Alert: <what happened>. <next step>."), at most once per cause per 4
 # hours: an escalation P0/P1 (per agent and id),
 # a login that expired on this Mac (any agent, or the Orchestrator), no Orchestrator reply 15 minutes after a
-# wake, herdr down, low disk, a repo with no team, 3 failed loop runs in a row, no good tick within 2x
-# tick_secs, and a wake undelivered 3 times. A good tick is one that ran tick.sh and got an event array (or
+# wake (the Orchestrator is not watching), herdr down, low disk, a repo with no team, 3 failed loop runs in a row,
+# and no good tick within 2x tick_secs. A good tick is one that ran tick.sh and got an event array (or
 # nothing) back; a failure, tick_skipped (the lock is held) or junk output is a failed run: printed (launchd
 # writes it to loop.log), counted, and the exit status says so. No acks and no automatic Orchestrator respawn.
 # State: $FLEET_STATE_DIR/loop.state.json (its own file, so a tick rewriting tick.state.json cannot race it).
@@ -54,8 +54,11 @@ alert() {
   notify "Fleet needs you" "$(render_line alert cause="$2" next="$3")" request alert
 }
 
-# Alerts older than 4 hours no longer suppress anything, so they are dropped (the state stays bounded).
-ls_set --argjson n "$now_epoch" '.alerts = ((.alerts // {}) | with_entries(select(.value > $n - 14400))) | .since = (.since // $n)'
+# Alerts older than 4 hours no longer suppress anything, so they are dropped (the state stays bounded). An older
+# version's wake queue (pending, wake_misses) is dropped too: wakes.log needs none.
+ls_set --argjson n "$now_epoch" '.alerts = ((.alerts // {}) | with_entries(select(.value > $n - 14400))) | .since = (.since // $n)
+  | del(.pending, .wake_misses)'
+WL="$FLEET_STATE_DIR/wakes.log"; (umask 077; touch "$WL")
 
 # --- the tick ---------------------------------------------------------------------------------------
 errf="$(mktemp "${TMPDIR:-/tmp}/fleet-loop-err.XXXXXX")"
@@ -78,9 +81,8 @@ if [ -n "$why" ]; then
   exit 1
 fi
 ls_set --argjson n "$now_epoch" '.fails = 0 | .last_good = $n'
-herdr_down=false
 if grep -q 'herdr agent list failed' "$errf"; then
-  herdr_down=true; alert herdr_down "herdr is not answering, so no agent was classified" "Start the herdr server"
+  alert herdr_down "herdr is not answering, so no agent was classified" "Start the herdr server"
 fi
 [ -n "$out" ] || out='[]'
 
@@ -119,8 +121,8 @@ done < <(printf '%s' "$out" | jq -r 'def s: (. // "-") | tostring | gsub("[^A-Za
     elif .type == "repo_without_team" then ["repo_without_team:\(.name | s)", (.name | s)]
     else empty end | @tsv')
 
-# --- the wake lines: queued ones first, then this tick's --------------------------------------------------
-lines="$(jq -r '(.pending // [])[] | strings' "$LS")"
+# --- the wake lines: one per event, appended to wakes.log -------------------------------------------------------
+lines=""
 while IFS=$'\t' read -r t team name issue url eid; do
   [ -n "$t" ] || continue
   lines="${lines:+$lines
@@ -129,32 +131,18 @@ done < <(printf '%s' "$out" | jq -r --arg wake "$WAKE_TYPES" '
   def f($k): (.[$k] // "") | tostring | if . == "" then "-" else . end;
   .[] | '"$WAKE_JQ"'
   | [(.type | tostring), f("team"), f("name"), f("issue"), f("url"), f("id")] | @tsv')
-# The same line twice (a requeued line the tick reports again) is sent once; the queue keeps the last 50.
-lines="$(printf '%s\n' "$lines" | awk 'NF && !seen[$0]++' | tail -n 50)"
+# The same line twice in one tick is written once.
+lines="$(printf '%s\n' "$lines" | awk 'NF && !seen[$0]++' | tail -n 500)"
 [ -n "$lines" ] || exit 0
 n="$(printf '%s\n' "$lines" | wc -l | tr -d ' ')"
 
-# --- one wake -------------------------------------------------------------------------------------------------
-target="$(cfg_str orchestrator_ref "")"; miss=""
-if [ -z "$target" ]; then
-  oref="$(printf '%s' "$orow" | jq -r '.herdr_ref // ""' 2>/dev/null || true)"
-  opane="$(printf '%s' "$orow" | jq -r '.pane // ""' 2>/dev/null || true)"
-  if [ -z "$oref" ]; then miss="no orchestrator registered"
-  elif $herdr_down; then miss="herdr is down"
-  elif hd agent list 2>/dev/null | jq -e --arg p "$opane" --arg r "$oref" 'any(.result.agents[]?; .pane_id == $p or .name == $r)' >/dev/null 2>&1; then target="$oref"
-  else miss="orchestrator pane gone"; fi
-elif $herdr_down; then miss="herdr is down"
+# --- one wake: the lines go to wakes.log, which keeps at most 500 ----------------------------------------------
+[ $(($(wc -l <"$WL" | tr -d ' ') + n)) -le 500 ] || mv -f "$WL" "$WL.1"
+(umask 077; printf '%s\n' "$lines" >>"$WL"); chmod 600 "$WL" 2>/dev/null || true
+# A registered Orchestrator follows the file, and no reply within 15 minutes alerts (above). With none registered
+# nobody does, so the desktop hears instead.
+if [ -n "$(printf '%s' "$orow" | jq -r '.herdr_ref // ""' 2>/dev/null || true)" ]; then
+  ls_set --arg w "$now_iso" '.wake_at = (.wake_at // $w)'
+else
+  notify "Fleet needs you" "$(printf '%s' "$lines" | tr '\n' ';' | cut -c1-300)" request
 fi
-if [ -z "$miss" ]; then
-  if "$FLEET_SCRIPTS/tell.sh" "$target" "$lines" >/dev/null 2>"$errf"; then
-    ls_set --arg w "$now_iso" '.wake_at = (.wake_at // $w) | del(.pending, .wake_misses)'
-    exit 0
-  fi
-  miss="wake not delivered"
-fi
-# Not delivered: keep the lines for the next run, tell Ivor's desktop, and record the miss with its reason.
-misses="$(jq -r '(.wake_misses // 0) + 1' "$LS")"
-ls_set --argjson m "$misses" --arg l "$lines" '.pending = ($l | split("\n") | map(select(. != ""))) | .wake_misses = $m'
-notify "Fleet needs you" "$(printf '%s' "$lines" | tr '\n' ';' | cut -c1-300)" request
-ev_log orchestrator_wake_missed team= name=orchestrator detail="$n events; $miss"
-[ "$misses" -lt 3 ] || alert wake_undelivered "$n fleet events have not reached the Orchestrator ($miss)" "Run registry.sh orchestrator here in its pane"

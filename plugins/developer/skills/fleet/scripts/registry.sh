@@ -34,7 +34,7 @@
 #   registry.sh env-get <team>
 #   registry.sh env-release <team>                         mark the environment Down, freeing its slot
 #   registry.sh archive                                    move Retired rows to fleet-archive.json (lessons written, no open escalation, ended archive_after_days ago)
-#   registry.sh orchestrator here [--transcript PATH]   the Orchestrator registers its pane as the loop's wake target
+#   registry.sh orchestrator here [--transcript PATH]   the Orchestrator registers its pane; prints the row and `wakes` (the log to follow)
 #   registry.sh pref <key> [value]                         a fleet-wide choice (the top-level `prefs`): print it (nothing
 #                                                          when unset), or set it
 #   registry.sh path
@@ -431,10 +431,11 @@ case "$cmd" in
       'if .envs[$t] then .envs[$t] |= (.state = "Down" | .slot = null | .http_port = null | .https_port = null | .updated_at = $now) else . end'
     ;;
   orchestrator)
-    # The Orchestrator registers its own pane as the loop's wake target, once per session. The row is
-    # replaced whole, so an older session's pane and transcript never linger; only the standing goal
-    # `target_teams` ("keep N teams running") carries over, so a new session or a compaction keeps it. `cwd` is
-    # where the session runs: the morning report goes to its reports/.
+    # The Orchestrator registers its own pane, once per session: the loop then knows someone follows wakes.log, and
+    # reads its transcript for the no-reply alert. The row is replaced whole, so an older session's pane and
+    # transcript never linger; only the standing goal `target_teams` ("keep N teams running") carries over, so a
+    # new session or a compaction keeps it. `cwd` is where the session runs: the morning report goes to its
+    # reports/. It prints the row plus `wakes`, the wakes.log to follow (created mode 600 when missing).
     [ "${1:-}" = here ] || die "usage: orchestrator here [--transcript PATH]"; shift
     otr=""
     while [ $# -gt 0 ]; do
@@ -454,7 +455,8 @@ case "$cmd" in
        | .agents.orchestrator = {name: "orchestrator", team: "orchestrator", tier: "Orchestrator", status: "Working", herdr_ref: $r, pane: $p,
          machine: $m, cwd: $cwd, at: $t, started: $t, updated_at: $t, discovered: [], escalations: []} + (if $tr != "" then {transcript: $tr} else {} end)
          + (if $goal != null then {target_teams: $goal} else {} end)'
-    "$0" get orchestrator
+    (umask 077; touch "$FLEET_STATE_DIR/wakes.log")
+    "$0" get orchestrator | jq --arg w "$FLEET_STATE_DIR/wakes.log" '. + {wakes: $w}'
     ;;
   pref)
     k="${1:?usage: pref <key> [value]}"
