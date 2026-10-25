@@ -6,14 +6,17 @@
 #   respawn.sh <team/role>
 #   respawn.sh <team/role> --restart [--brief-text TEXT]
 #
-# --restart (used by next.sh, between issues) restarts a live agent at a safe point: `/exit`, wait for its pane
-# to come back to the shell, then a fresh start in the same pane with a new --session-id and its FULL brief
+# --restart (used by next.sh, between issues) restarts a live agent at a safe point: it waits for the agent to be
+# idle (brief_idle_secs, as tell does; still busy: exit 1, nothing typed, it keeps its session), types `/exit`, and
+# waits for its pane to come back to the shell; Claude's exit dialog ("Background work is running ... Exit and stop
+# tasks") gets one enter, since at a safe point those are the agent's own leftover shells. Then a fresh start in
+# the same pane with a new --session-id and its FULL brief
 # (the role brief for the row's current assignment, plus --brief-text for the lead), sent as a file through
 # tell.sh --brief. The lead comes back Working, a worker Idle (the lead hands it work). The row's
 # plugin_version becomes the version of these scripts. It is not a death: nothing charges the respawn budget,
 # and the event is `restarted`. A plugin installed since the row started would switch versions, which waits for
-# the user's go: --restart exits 5 naming both versions unless FLEET_VERSION_OK=1 (a plain respawn of a dead agent
-# does not ask). UNVERIFIED against real herdr: `herdr agent start` after /exit in the same pane.
+# the user's go: --restart exits 5 naming both versions until it is recorded (registry.sh pref version_ok <version>;
+# a plain respawn of a dead agent does not ask). UNVERIFIED against real herdr: `herdr agent start` after /exit in the same pane.
 #
 # The resume brief is `build_brief --resume`: the role brief, the assignment, the last report file,
 # `git status` and `git log` of its branch and its open escalations (no pane text). A lead also gets
@@ -73,10 +76,26 @@ if $restart; then
 
 $extra"
   brief="$(build_brief "$name" "$ex" "$role_brief")"
-  # /exit, then wait for the pane to show its shell again.
+  # Idle first: /exit typed into a busy agent lands in its input line. next checks its safe point long before the
+  # lead's turn comes, so this waits for idle (or done) up to brief_idle_secs, as tell does, and types nothing
+  # otherwise.
+  idle_secs="$(cfg_int brief_idle_secs 60)"; poll="${FLEET_TELL_POLL:-1}"; w=0
+  while :; do
+    st="$(hd agent get "$agent" 2>/dev/null | jq -r '.result.agent.agent_status // "gone"' 2>/dev/null || echo gone)"
+    case "$st" in idle | done) break ;; esac
+    [ "$w" -lt "$idle_secs" ] || die "$name is busy ($st); not restarted, it keeps its old session"
+    sleep "$poll"; w=$((w + 1))
+  done
+  # /exit, then wait for the pane to show its shell again. Claude asks first when background work is running ("1.
+  # Exit and stop tasks · Enter to confirm"): one enter confirms it.
   "$FLEET_SCRIPTS/tell.sh" "$name" /exit --no-confirm >/dev/null 2>&1 || die "could not send /exit to $name"
-  waited=0; exit_secs="${FLEET_EXIT_WAIT_SECS:-30}"; poll="${FLEET_TELL_POLL:-1}"
+  waited=0; exit_secs="${FLEET_EXIT_WAIT_SECS:-30}"; confirmed=false
   while hd pane process-info --pane "$pane" 2>/dev/null | jq -e '.result.process_info | .foreground_process_group_id != .shell_pid' >/dev/null 2>&1; do
+    if ! $confirmed; then
+      case "$(hd agent read "$agent" --source visible 2>/dev/null || true)" in
+        *"Exit and stop tasks"*) hd agent send-keys "$agent" enter >/dev/null 2>&1 || true; confirmed=true ;;
+      esac
+    fi
     if awk -v w="$waited" -v m="$exit_secs" 'BEGIN { exit !(w >= m) }'; then die "$name did not exit within ${exit_secs}s; it keeps running its old session"; fi
     sleep "$poll"; waited="$(awk -v w="$waited" -v p="$poll" 'BEGIN { print w + p }')"
   done

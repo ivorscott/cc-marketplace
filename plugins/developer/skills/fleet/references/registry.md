@@ -31,8 +31,8 @@ restarted, compacted or replaced agent picks up from the row, not from memory.
 | `parked_at`, `parked_reason` | set for the whole team by `park.sh` (`registry.sh park`, one write): when, and why (`park`, `after-merge` or `focus:<team>`). Done rows keep their status. The panes are closed; rows, worktrees, branches and the claim stay. `unpark.sh` empties both |
 | `park_after_merge` | the reason the team parks with once its PR merges (`park.sh --after-merge`, `focus.sh` without `--now`); `tick.sh` parks the team then. `unpark.sh` and `focus.sh --clear` clear it |
 | `nudged_at` | set by `tick.sh` when it nudged a Stalled agent; cleared when the agent stops being Stalled |
-| `plugin_version`, `issue_url` | the plugin version that booted (or last restarted) the agent, for tick's `stale_version`; the issue's full URL, for the brief's `Fixes` line |
-| `last_brief`, `brief_failed_at`, `brief_resent` | the agent's latest brief file (`briefs/<team>/<role>/<id>.md` in the state dir, mode 600); set when a brief did not arrive (the row stays Failed, never Stalled); set when tick re-sent the pointer, once |
+| `plugin_version`, `issue_url`, `issue_title` | the plugin version that booted (or last restarted) the agent, for tick's `stale_version`; the issue's full URL, for the brief's `Fixes` line; the issue's title (`boot.sh --issue-title`, `next.sh --issue-title`, `registry.sh reassign --issue-title`), which the team table's Issue cell shortens, so status never calls the tracker for it |
+| `last_brief`, `brief_failed_at`, `brief_failed_line`, `brief_resent` | the agent's latest brief file (`briefs/<team>/<role>/<id>.md` in the state dir, mode 600); set when a brief did not arrive, with the transcript's length then (the row stays Failed, never Stalled, until the brief's id shows in its transcript after that line: `status.sh` then clears these and the row comes back, logging `brief_delivered` with detail `late`); set when tick re-sent the pointer, once |
 | `pr`, `signoff` | `registry.sh signoff <name> <PR URL or N> <sha>` (the tester) sets `pr` and `signoff = {pr, sha, at}`; `tick.sh` reads them. `registry.sh reassign <team> <issue>` (run by `next.sh`) clears `outcome`, `summary`, `done_at`, `pr`, `signoff` and `lessons`, closes open escalations with `resolution: "closed at next"`, sets `issue`, rewrites `assignment`, and sets the lead Working and the workers Idle; it logs `issue_done` (the old issue, PR and outcome) to the event log first |
 | `escalation`, `escalations[]` | `escalation` is derived: the highest severity among open entries, `""` when none. Each entry is `{severity, message, at}` plus `resolved_at` and `resolution` once `registry.sh resolve` closes it; `(name, at)` identifies one. Open entries survive `done` and `retire` |
 | `discovered[]` | unrelated work the agent filed instead of doing |
@@ -43,8 +43,10 @@ restarted, compacted or replaced agent picks up from the row, not from memory.
 | `outcome`, `summary`, `lessons` | how it ended, its one-line summary, and debrief lessons |
 | `updated_at`, `synced_at` | change tracking for the sink |
 
-Beside the rows, the top-level `prefs` object keeps the user's fleet-wide choices (such as `slim`), written and read with
-`registry.sh pref <key> [value]` (the Orchestrator's only).
+Beside the rows, the top-level `prefs` object keeps the user's fleet-wide choices, written and read with
+`registry.sh pref <key> [value]` (the Orchestrator's only): `slim` (`on` or `off`, the answer to the slim offer) and
+`version_ok` (the installed plugin version the user said yes to switching to: tick asks no `stale_version` and `next`
+and `respawn --restart` switch teams while it equals the version installed; a newer install asks again).
 
 ## Escalation inbox
 
@@ -62,7 +64,12 @@ with a warning, so it cannot block other writes; `escalate`, `resolve` and `reti
 
 `registry.sh archive` (run after every `retire.sh`) moves Retired rows to `fleet-archive.json` in the
 state dir once `lessons` is written, no escalation is open, and `archive_after_days` (config.toml,
-default 0) have passed since `ended`. Rows without lessons stay: they are the debrief queue.
+default 0) have passed since `ended`. Rows without lessons stay: they are the debrief queue, until `fleet.json` passes
+the size cap (512 KB, the `REGISTRY_CAP_KB` constant): then the Retired rows with no lessons go too, each with the lesson
+`Archived <date> without a debrief (fleet.json over 512 KB)`. Tick checks the size on every tick and archives when it
+is over, besides its weekly run, and one status line says how many rows went
+(`Registry: moved <n> Retired rows without lessons …`). No script passes the registry's JSON in argv
+(`--slurpfile` or stdin), so a large file is slow, never `Argument list too long`.
 `list` and `status` read the live file only; `get --archived <name>` and `list --with-archived` read both.
 ## Who may write what
 
@@ -91,7 +98,10 @@ still finds them. `metrics.sh` reads the log.
 
 `tick.state.json` in the state dir remembers what `tick.sh` already reported (statuses, escalation
 keys (`name|id`), opened PRs, the archive week, `PR@sha` ready, merged PRs, disk state, repos without a team) so each event is emitted once.
-Deleting it replays the current events.
+Deleting it replays the current events. Beside it: `queue.json`, the merge queue tick built last (`{at, sig, queue}`,
+reused by `status` for a minute while the rows' PRs and sign-offs are unchanged), `notices.log` (each wake's reply
+and what it is about, dropped once handled), `config.warned` (the config.toml checksum tick last warned about) and
+`herdr_meta.refused` (the herdr version that refused the panel metadata).
 
 ## Team environments
 
@@ -173,7 +183,7 @@ there; no claim, lease or heartbeat comment exists). A heartbeat older than `lea
 can be taken over with `linear.sh takeover` (`claim.sh expired` checks the lease, takeover looks the PR up). Writes need `linear_writes` (default off).
 
 `status.sh --all --json` is a bare array. Registry rows keep their fields and add `source: "registry"`;
-claims from other machines (`linear.sh peers`) are rows with `source: "tracker"`, `status` `Claimed`
+claims from other machines (`linear.sh peers`, which `--all` runs itself) are rows with `source: "tracker"`, `status` `Claimed`
 (`Claimed (heartbeat lapsed)`, `Claimed (no heartbeat)`), `machine`, `issue`, `heartbeat` and
 `heartbeat_age`.
 

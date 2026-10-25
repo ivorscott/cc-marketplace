@@ -6,7 +6,8 @@
 #   LINEAR_API_KEY) is denied, and so is one that reaches the key's directory in any form:
 #   ~/.config/fleet, $HOME/.config/fleet, ${XDG_CONFIG_HOME}/fleet, $FLEET_CONFIG_DIR, the absolute path
 #   (as written or resolved), a glob whose fixed part is that directory or above it (~/.config/*,
-#   ~/.config/fl*), `cd` into it or into its parent, and a recursive tool (grep -r, rg, find, ...) pointed
+#   ~/.config/fl*, quoted or not; not one in the body of a heredoc that a plain cat or tee writes to a file), `cd`
+#   into it or into its parent, and a recursive tool (grep -r, rg, find, ...) pointed
 #   at a directory above it (~, $HOME, ~/.config).
 #   `herdr pane run|send-text|send-keys` to any pane is denied (it types into someone else's shell).
 #   `herdr agent prompt|send-keys|read` is allowed only to an agent of the agent's own team: the target must
@@ -118,29 +119,50 @@ flat3="$(printf '%s' "$cmd" | tr -d "\"'\\\\\`\$()")"
 scan_recursive "$blanked" 1
 $recursive || scan_recursive "$cmd" 1
 $recursive || scan_recursive "$flat3" 0
+# word_path <word>: sets WP to the absolute path the word names (~, $HOME and $XDG_CONFIG_HOME spelled out, also after a
+# VAR=), or to nothing for a relative one. No subshell: it runs once per word.
+word_path() {
+  WP="$1"
+  case "$WP" in
+    "~") WP="$home" ;; "~/"*) WP="$home/${WP#"~/"}" ;;
+    '$HOME' | '${HOME}') WP="$home" ;; '$HOME/'*) WP="$home/${WP#'$HOME/'}" ;; '${HOME}/'*) WP="$home/${WP#'${HOME}/'}" ;;
+    '$XDG_CONFIG_HOME' | '${XDG_CONFIG_HOME}') WP="$xdg" ;; '$XDG_CONFIG_HOME/'*) WP="$xdg/${WP#'$XDG_CONFIG_HOME/'}" ;; '${XDG_CONFIG_HOME}/'*) WP="$xdg/${WP#'${XDG_CONFIG_HOME}/'}" ;;
+    *=/* | *=~*) WP="${WP#*=}"; case "$WP" in "~") WP="$home" ;; "~/"*) WP="$home/${WP#"~/"}" ;; esac ;;
+  esac
+  case "$WP" in /*) ;; *) WP="" ;; esac
+}
 prev=""
 set -f # the words are looked at, never expanded: ~/.config/* stays a pattern
 for w in $(printf '%s' "$flat" | tr ';&|()<>' '       '); do
-  t="$w"
-  case "$t" in
-    "~") t="$home" ;; "~/"*) t="$home/${t#"~/"}" ;;
-    '$HOME' | '${HOME}') t="$home" ;; '$HOME/'*) t="$home/${t#'$HOME/'}" ;; '${HOME}/'*) t="$home/${t#'${HOME}/'}" ;;
-    '$XDG_CONFIG_HOME' | '${XDG_CONFIG_HOME}') t="$xdg" ;; '$XDG_CONFIG_HOME/'*) t="$xdg/${t#'$XDG_CONFIG_HOME/'}" ;; '${XDG_CONFIG_HOME}/'*) t="$xdg/${t#'${XDG_CONFIG_HOME}/'}" ;;
-    *=/* | *=~*) t="${t#*=}"; case "$t" in "~") t="$home" ;; "~/"*) t="$home/${t#"~/"}" ;; esac ;;
-  esac
-  case "$t" in /*) ;; *) prev="$w"; continue ;; esac
-  fixed="$t"; globbed=false
-  case "$t" in *[*?[{]*) globbed=true; fixed="${t%%[*?[{]*}"; fixed="${fixed%/*}"; [ -n "$fixed" ] || fixed=/ ;; esac
+  word_path "$w"; t="$WP"
+  [ -n "$t" ] || { prev="$w"; continue; }
   n="$(lexnorm "$t")"
   # The key's directory itself, or anything inside it.
   case "$n/" in "$(lexnorm "$kdir")/"* | "$kreal/"*) deny "fleet bash guard: $w is the Linear key's directory; only the Orchestrator reads it." ;; esac
-  # A glob that can reach it.
-  if $globbed && at_or_above "$fixed"; then deny "fleet bash guard: $w can reach the Linear key's directory; name a narrower path."; fi
   # cd into the parent of the key's directory (then a relative path reaches it).
   case "$prev" in cd | pushd) [ "$n" != "$(lexnorm "$(dirname "$kdir")")" ] && [ "$n" != "$(dirname "$kreal")" ] || deny "fleet bash guard: cd $w puts the Linear key's directory one step away; only the Orchestrator reads it." ;; esac
   # A recursive tool over a directory above it.
   if $recursive && at_or_above "$n"; then deny "fleet bash guard: a recursive command over $w would read the Linear key's directory; name a narrower path."; fi
   prev="$w"
+done
+# A glob that can reach it, read on the command flattened as for the other rules (quotes and backslashes deleted):
+# quoted text counts, since bash -c, sh -c, eval, an interpreter or a shell reading stdin expands it. One body is left
+# out: that of a heredoc on a line whose command is cat or tee and that neither pipes on nor sits in $(...), `...` or a
+# process substitution, the write-a-file shape (cat > ident.ts <<'EOF' with a JS regex such as /[A-Za-z]{3,}/ in it).
+# The lines after <<WORD, <<'WORD' or <<-WORD up to WORD go. A body fed to anything else is still read.
+globtext="$(printf '%s\n' "$cmd" | awk '
+  inb { t = $0; if (strip) sub(/^\t+/, "", t); if (t == word) inb = 0; next }
+  { print
+    if ($0 ~ /^[[:space:]]*([^[:space:]]*\/)?(cat|tee)[[:space:]]/ && $0 !~ /[|`]|\$\(|[<>]\(/ &&
+      match($0, /(^|[^<])<<-?[[:space:]]*["\047]?[A-Za-z_][A-Za-z0-9_]*["\047]?/)) {
+      m = substr($0, RSTART, RLENGTH); sub(/^[^<]*<</, "", m); strip = (m ~ /^-/); sub(/^-?[[:space:]]*/, "", m); gsub(/["\047]/, "", m)
+      word = m; inb = 1 } }' | tr -d "\"'\\\\")"
+for w in $(printf '%s' "$globtext" | tr ';&|()<>' '       '); do
+  case "$w" in *[*?[{]*) ;; *) continue ;; esac
+  word_path "$w"; t="$WP"
+  [ -n "$t" ] || continue
+  fixed="${t%%[*?[{]*}"; fixed="${fixed%/*}"; [ -n "$fixed" ] || fixed=/
+  if at_or_above "$fixed"; then deny "fleet bash guard: $w can reach the Linear key's directory; name a narrower path."; fi
 done
 set +f
 

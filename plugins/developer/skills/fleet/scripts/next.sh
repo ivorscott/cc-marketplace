@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
 # Move a team to its next issue after a PR merged (the Orchestrator's answer to a pr_merged tick event).
 #
-#   next.sh <team> <issue> [--brief TEXT] [--assignment TEXT] [--issue-url URL]
+#   next.sh <team> <issue> [--brief TEXT] [--assignment TEXT] [--issue-url URL] [--issue-title TEXT]
 #
 #   0. one next per team at a time: a second call while one runs exits 4 and changes nothing (the lock holds
 #      the pid; a lock whose process is gone, e.g. after SIGKILL, is taken over). A plugin installed since a row
 #      started would switch versions on restart, which waits for the user's go: exit 5 naming both versions,
-#      nothing changed, unless FLEET_VERSION_OK=1 (tick's stale_version asks)
+#      nothing changed, until the go is recorded (registry.sh pref version_ok <version>; tick's stale_version asks)
 #   1. safe point: every agent of the team must be idle (not mid-turn) with no background task running;
 #      otherwise nothing changes, it says who is busy and exits 1 (run it again later)
 #   2. claim the issue through linear.sh; a claim that fails aborts before any row changes. When claims are
@@ -31,14 +31,15 @@ set -euo pipefail
 require_herdr
 registry="$FLEET_SCRIPTS/registry.sh"
 
-usage="usage: next.sh <team> <issue> [--brief TEXT] [--assignment TEXT] [--issue-url URL]"
+usage="usage: next.sh <team> <issue> [--brief TEXT] [--assignment TEXT] [--issue-url URL] [--issue-title TEXT]"
 team="${1:?$usage}"; issue="${2:?$usage}"; shift 2
-brief_text=""; assignment=""; issue_url=""
+brief_text=""; assignment=""; issue_url=""; issue_title=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --brief) brief_text="${2:?--brief needs text}"; shift 2 ;;
     --assignment) assignment="${2:?--assignment needs text}"; shift 2 ;;
     --issue-url) issue_url="${2:?--issue-url needs a URL}"; shift 2 ;;
+    --issue-title) issue_title="${2:?--issue-title needs text}"; shift 2 ;;
     *) die "unknown option: $1" ;;
   esac
 done
@@ -61,7 +62,8 @@ trap 'rm -rf "$lock"' EXIT
 
 rows="$("$registry" list --team "$team" | jq -c '[.[] | select(.status != "Retired" and .tier != "Orchestrator")]')"
 [ "$(printf '%s' "$rows" | jq length)" != 0 ] || die "no live rows for team '$team'"
-from="$(printf '%s' "$rows" | jq -r '[.[] | select((.issue // "") != "")] | first // {} | [(.issue // ""), (.issue_url // "")] | @tsv')"
+from="$(printf '%s' "$rows" | jq -r '[.[] | select((.issue // "") != "")] | first // {} | [(.issue // ""), (.issue_url // ""), (.issue_title // "")]
+  | map(gsub("[\u001f\n]"; " ")) | join("\u001f")')"
 [ "$(printf '%s' "$rows" | jq '[.[] | select(.status == "Parked")] | length')" = 0 ] || die "team '$team' is parked; unpark.sh $team first, or leave it parked"
 version_switch_check "$rows" "$team"
 
@@ -98,7 +100,7 @@ if true; then
 fi
 
 # 3. Reassign.
-ra=(reassign "$team" "$issue"); [ -z "$assignment" ] || ra+=(--assignment "$assignment"); [ -z "$issue_url" ] || ra+=(--issue-url "$issue_url")
+ra=(reassign "$team" "$issue"); [ -z "$assignment" ] || ra+=(--assignment "$assignment"); [ -z "$issue_url" ] || ra+=(--issue-url "$issue_url"); [ -z "$issue_title" ] || ra+=(--issue-title "$issue_title")
 [ "$rc" != 0 ] || ra+=(--claimed-by "$(machine_key)") # the rows record the claim, as boot's --claimed-by does
 "$registry" "${ra[@]}" >/dev/null
 ev_log next team="$team" issue="$issue"
@@ -122,7 +124,8 @@ for n in $(printf '%s' "$rows" | jq -r '.[] | select(.tier == "Lead") | .name');
 while IFS= read -r n; do [ -z "$n" ] || failed+=("$n"); done <"$wfail"
 rm -f "$wfail"
 
-reply "$(render_line moved team="$team" from="$(issue_link "${from%%$'\t'*}" "${from#*$'\t'}")" to="$(issue_link "$issue" "$issue_url")")" "$(render_table)"
+IFS=$'\x1f' read -r fk fu ft <<<"$from"
+reply "$(render_line moved team="$team" from="$(issue_link "$fk" "$fu" "$ft")" to="$(issue_link "$issue" "$issue_url" "$issue_title")")" "$(render_table)"
 if [ "${#failed[@]}" -gt 0 ]; then
   warn "not restarted: ${failed[*]} (rows set to Failed)"
   exit 1

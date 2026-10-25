@@ -84,13 +84,14 @@ start_agent_once() { # start_agent_once <agent> <kind> <pane> <model> <tier> <wo
     while IFS= read -r -d '' a; do args+=("$a"); done < <(claude_args "$4" "$5" "$6" "${7:-[]}")
   fi
   # A fresh pane isn't "an available shell" until its shell has finished starting up
-  # (rc files, prompt hooks), which can take several seconds in a git worktree. Retry
-  # agent_pane_busy for up to 30s instead of failing the agent as a Zombie.
+  # (rc files, prompt hooks), which can take several seconds in a git worktree; and a restart into the same pane can
+  # find the agent's name still held until herdr sees the old process gone. Retry agent_pane_busy and
+  # agent_name_taken up to 30 times, START_RETRY_SECS (1) apart, instead of failing the agent as a Zombie.
   while :; do
     out="$(hd agent start "$agent" --kind "$kind" --pane "$pane" --timeout 60000 -- ${args[@]+"${args[@]}"} 2>&1 || true)"
     code="$(printf '%s' "$out" | jq -r '.error.code // empty' 2>/dev/null || true)"
-    [ "$code" = "agent_pane_busy" ] && [ $((tries += 1)) -le 30 ] || break
-    sleep 1
+    case "$code" in agent_pane_busy | agent_name_taken) [ $((tries += 1)) -le 30 ] || break ;; *) break ;; esac
+    sleep "$(const_int START_RETRY_SECS 1)"
   done
   if [ "$code" = "agent_not_ready" ]; then
     answer_trust "$agent" || true

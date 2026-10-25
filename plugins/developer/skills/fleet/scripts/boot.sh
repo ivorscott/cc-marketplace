@@ -29,6 +29,7 @@
 # first (linear.sh claim) and passes the result in.
 #   --issue ID           the tracker issue this team works on
 #   --issue-url URL      the issue's full URL: briefs carry the exact "Fixes <URL>" line for the PR body
+#   --issue-title TEXT   the issue's title, from the search that picked it: the team table's Issue cell shows it
 #   --claimed-by KEY     the machine key (or label) that holds the claim
 #   --labels a,b,c       the issue's labels, as just re-read; any <label_prefix>* label that
 #                        is not this machine's is another machine's claim
@@ -56,11 +57,12 @@ have_key=0; "$FLEET_SCRIPTS/linear.sh" has-key >/dev/null 2>&1 && have_key=1
 claims_why="no Linear key"; if [ "$have_key" = 1 ] && [ "$(linear_writes)" = off ]; then have_key=0; claims_why="linear_writes = off"; fi
 unset LINEAR_API_KEY
 
-issue=""; claimed_by=""; labels=""; scope_arg=""; issue_url=""
+issue=""; claimed_by=""; labels=""; scope_arg=""; issue_url=""; issue_title=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --issue) issue="${2:?--issue needs a value}"; shift 2 ;;
     --issue-url) issue_url="${2:?--issue-url needs a value}"; shift 2 ;;
+    --issue-title) issue_title="${2:?--issue-title needs a value}"; shift 2 ;;
     --claimed-by) claimed_by="${2:?--claimed-by needs a value}"; shift 2 ;;
     --labels) labels="${2:?--labels needs a value}"; shift 2 ;;
     --scope) scope_arg="${2:?--scope needs a value}"; shift 2 ;;
@@ -257,13 +259,14 @@ row() { # row <name> <tier> <agent> <pane> <kind> <model> <status> <cwd> <worktr
     --arg status "$7" --arg cwd "$8" --arg wt "$9" --arg br "${10}" --arg ex "${11}" \
     --arg team "$team" --arg tpl "$template" --arg repo "$repo" --arg task "$task" --arg m "$machine" --arg ws "$workspace" \
     --arg tr "${row_transcript:-}" --arg issue "$issue" --arg cb "$claimed_by" --argjson scope "$scope_json" \
-    --arg pv "$plugin_ver" --arg iu "$issue_url" \
+    --arg pv "$plugin_ver" --arg iu "$issue_url" --arg it "$issue_title" \
     '{name: $name, team: $team, tier: $tier, template: $tpl, harness: $harness, model: $model, repo: $repo,
       machine: $m, status: $status, assignment: $task, herdr_ref: $ref, pane: $pane, workspace: $ws,
       cwd: $cwd, worktree: $wt, branch: $br, expertise_file: $ex}
     + (if $tr != "" then {transcript: $tr} else {} end)
     + (if $pv != "" then {plugin_version: $pv} else {} end)
     + (if $iu != "" then {issue_url: $iu} else {} end)
+    + (if $it != "" then {issue_title: $it} else {} end)
     + (if $issue != "" then {issue: $issue, claimed_by: $cb} else {} end)
     + (if $scope != null then {scope: $scope} else {} end)'
 }
@@ -325,7 +328,7 @@ fi
 
 ev_log boot team="$team" issue="$issue" detail="template $template"
 herdr_meta "$team" # the team on herdr's panel (best effort)
-reply "$(render_line booted team="$team" issue="$(issue_link "$issue" "$issue_url")" repo="$(basename "$repo")" agents="$(roles_line "$team")")" "$(render_table)"
+reply "$(render_line booted team="$team" issue="$(issue_link "$issue" "$issue_url" "$issue_title")" repo="$(basename "$repo")" agents="$(roles_line "$team")")" "$(render_table)"
 armed=0 # booted: from here on a failed brief marks its row Failed, and nothing is rolled back
 if [ "${#failed_agents[@]}" -gt 0 ]; then
   warn "brief not delivered to: ${failed_agents[*]} (rows set to Failed)"

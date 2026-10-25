@@ -5,9 +5,11 @@
 #
 #   queue.sh      JSON {ready: [{n, url, pr, issue, why, after}], not_ready: [{url, pr, missing: [...]}], notes: [...]}
 #
-# Inputs: every registry row not Retired that has a PR (Parked and Done rows included), one read-only
-# `gh pr view` per PR (FLEET_GH), the other open fleet/* PRs in the same repos (`gh pr list`), and Linear's `blocks`
-# relations of the queued issues (linear.sh blocks; without a key the queue says the Linear order is unknown).
+# Inputs: the registry rows not Retired (Parked and Done rows included), one read-only `gh pr list --state open` per
+# repo (FLEET_GH; the repos of the rows' PR URLs and of their own origin remotes), and Linear's `blocks` relations of
+# the queued issues (linear.sh blocks; without a key the queue says the Linear order is unknown). Ours is an open PR a
+# row names, or one whose head branch a local team pushed (common.sh head_team: the row's branch, fleet/<team>/...,
+# or fleet/<issue key>-...), whatever local branch it came from; theirs is any other open fleet/* PR.
 # Ready is common.sh PR_DEFS, the rule tick's pr_ready uses: the tester's signed SHA is the head, CI green (or none
 # in a no_pr_ci repo), mergeable (UNKNOWN is "mergeable unknown", never conflicting), not a draft, not held. Another
 # machine's PR is never ready here (its sign-off is not ours to see): it is an order input, listed as missing
@@ -16,7 +18,8 @@
 # Order, the first rule that decides:
 #   1. dependencies: a PR another needs goes first. Linear `blocks` ("blocks DEV-x"), the same "Part of <issue>"
 #      series by slice, else PR number ("Part of DEV-x, slice n"), a base branch that is another PR's head ("base of
-#      #N"), a "Depends on <PR url>" line in the dependent's body ("<repo> #N uses its contract"). The dependent
+#      #N"), a "Depends on <PR url>" line in the dependent's body ("<repo> #N uses its contract"), a "Merge after #N"
+#      (or <PR url>, or "Stacked on") line ("<repo> #N merges after it"). The dependent
 #      says "needs <repo> #N". A PR whose dependency is not ready waits ("waits for <repo> #N"); a cycle is named.
 #   2. fewest rebases: PRs that share changed files or a migration number (the numeric prefix of a file under a
 #      migrations/ directory) go in ascending order of how many others they overlap; the later one gets "rebase
@@ -26,42 +29,51 @@ set -euo pipefail
 . "$(dirname "$0")/common.sh"
 [ $# = 0 ] || die "usage: queue.sh"
 
-prs="$("$FLEET_SCRIPTS/registry.sh" list | jq -c '
-  [.[] | select(type == "object" and .status != "Retired" and ((.pr // "") | type) == "string" and ((.pr // "") | startswith("https://")))]
-  | group_by(.pr) | map(. as $g | {url: .[0].pr, team: .[0].team, repo_dir: (.[0].repo // ""),
-      issue: ([$g[].issue // empty | select(. != "")] | first // ""), issue_url: ([$g[].issue_url // empty | select(. != "")] | first // ""),
-      signoff: ([$g[] | select((.name // "" | endswith("/tester")) and ((.signoff | objects | .sha) != null)) | .signoff.sha] | first // "")})')"
-if [ "$(jq length <<<"$prs")" = 0 ]; then echo '{"ready":[],"not_ready":[],"notes":[]}'; exit 0; fi
+rows="$("$FLEET_SCRIPTS/registry.sh" list | jq -c '[.[] | select(type == "object" and .status != "Retired" and .tier != "Orchestrator")]')"
+rowurls="$(jq -c '[.[] | .pr // "" | strings | select(startswith("https://"))] | unique' <<<"$rows")"
+# The repos to read: those of the rows' PR URLs, and of the rows' own repos (their origin remotes), so a PR that no
+# row knows yet is found too.
+slugs="$({ jq -r '.[] | capture("^https?://[^/]+/(?<s>[^/]+/[^/]+)/").s // empty' <<<"$rowurls"
+  jq -r '[.[] | .repo // "" | strings | select(. != "")] | unique[]' <<<"$rows" | while IFS= read -r d; do [ ! -d "$d" ] || repo_slug "$d"; done; } | sort -u)"
+if [ -z "$slugs" ] && [ "$rowurls" = "[]" ]; then echo '{"ready":[],"not_ready":[],"notes":[]}'; exit 0; fi
 if ! command -v "$FLEET_GH" >/dev/null 2>&1; then
-  jq -c "$RENDER_DEFS"'{ready: [], not_ready: map({url, pr: pr_cell(.url), missing: ["GitHub unreadable"]}), notes: ["Merge queue unknown: gh not found"]}' <<<"$prs"
+  [ "$rowurls" != "[]" ] || { echo '{"ready":[],"not_ready":[],"notes":[]}'; exit 0; }
+  jq -c "$RENDER_DEFS"'{ready: [], not_ready: map({url: ., pr: pr_cell(.), missing: ["GitHub unreadable"]}), notes: ["Merge queue unknown: gh not found"]}' <<<"$rowurls"
   exit 0
 fi
 
-noci="$(config_list no_pr_ci)"; fields=number,url,state,title,headRefOid,headRefName,baseRefName,mergeable,isDraft,statusCheckRollup,body,createdAt,files
-# Ours: one view each. A PR GitHub cannot show is not ready ("GitHub unreadable"); a merged or closed one is gone.
-all='[]'
-while IFS= read -r p; do
-  url="$(jq -r .url <<<"$p")"
-  if j="$("$FLEET_GH" pr view "$url" --json "$fields" 2>/dev/null)" && jq -e 'type == "object"' >/dev/null 2>&1 <<<"$j"; then
-    all="$(jq -c --argjson p "$p" --argjson g "$j" --argjson noci "$noci" "$PR_DEFS"'
-      if ($g.state // "OPEN") != "OPEN" then . else
-        . + [$p + {number: $g.number, title: ($g.title // ""), head: ($g.headRefName // ""), base: ($g.baseRefName // ""),
-          body: ($g.body // ""), created: ($g.createdAt // ""), files: [($g.files // [])[] | .path // empty],
-          other: false, missing: ($g | pr_missing($p.signoff; pr_noci_ok($noci; $p.repo_dir; $p.url)))}] end' <<<"$all")"
-  else
-    all="$(jq -c --argjson p "$p" '. + [$p + {number: (($p.url | capture("/(?<n>[0-9]+)$").n | tonumber) // 0), title: "", head: "", base: "",
-      body: "", created: "", files: [], other: false, missing: ["GitHub unreadable"]}]' <<<"$all")"
-  fi
-done < <(jq -c '.[]' <<<"$prs")
-# Theirs: the other open fleet/* PRs in the same repos, as order inputs only.
+noci="$(config_list no_pr_ci)"; fields=number,url,state,title,headRefOid,headRefName,baseRefName,mergeable,isDraft,statusCheckRollup,body,createdAt,files,isCrossRepository
+# One read-only list of the open PRs per repo. A repo GitHub cannot list leaves its rows' PRs "GitHub unreadable".
+open='[]'
 while IFS= read -r slug; do
   [ -n "$slug" ] || continue
-  theirs="$("$FLEET_GH" pr list --repo "$slug" --state open --limit 100 --json number,url,title,headRefName,baseRefName,body,createdAt,files 2>/dev/null)" || continue
-  all="$(jq -c --argjson t "$theirs" '. as $a | ($a | map(.url)) as $ours
-    | $a + [$t[]? | select((.headRefName // "" | startswith("fleet/")) and ((.url as $u | $ours | index($u)) == null))
-        | {url, team: "", issue: "", issue_url: "", number, title: (.title // ""), head: (.headRefName // ""), base: (.baseRefName // ""),
-           body: (.body // ""), created: (.createdAt // ""), files: [(.files // [])[] | .path // empty], other: true, missing: ["other machine"]}]' <<<"$all" 2>/dev/null)" || true
-done < <(jq -r '.[] | select(.other | not) | .url | capture("^https?://[^/]+/(?<s>[^/]+/[^/]+)/").s // empty' <<<"$all" | sort -u)
+  if l="$("$FLEET_GH" pr list --repo "$slug" --state open --limit 200 --json "$fields" 2>/dev/null)" && jq -e 'type == "array"' >/dev/null 2>&1 <<<"$l"; then
+    open="$(jq -c --arg s "$slug" --slurpfile l <(printf '%s' "$l") '. + [{slug: $s, ok: true, prs: $l[0]}]' <<<"$open")"
+  else open="$(jq -c --arg s "$slug" '. + [{slug: $s, ok: false, prs: []}]' <<<"$open")"; fi
+done <<<"$slugs"
+# Ours: an open PR a row names, or whose head branch a local team pushed (common.sh head_team), with that team's issue
+# and its tester's sign-off. Theirs: the other open fleet/* PRs, as order inputs only ("other machine"). A row's PR
+# missing from its repo's open list was merged or closed: it is gone. Fork PRs are never either.
+all="$(jq -cn --slurpfile rows <(printf '%s' "$rows") --slurpfile open <(printf '%s' "$open") --argjson urls "$rowurls" --argjson noci "$noci" "$PR_DEFS$HEAD_TEAM_JQ"'
+  $rows[0] as $rows | $open[0] as $open
+  | def entry($t; $url): [$rows[] | select(.team == $t)] as $g | {url: $url, team: $t,
+      repo_dir: ([$g[] | .repo // empty | select(. != "")] | first // ""),
+      issue: ([$g[] | .issue // empty | select(. != "")] | first // ""), issue_url: ([$g[] | .issue_url // empty | select(. != "")] | first // ""),
+      issue_title: ([$g[] | .issue_title // empty | select(. != "")] | first // ""),
+      signoff: ([$g[] | select((.name | endswith("/tester")) and ((.signoff | objects | .sha) != null) and ((.signoff.pr // .pr // "") == $url))
+        | .signoff.sha] | first // "")};
+  def gh_fields: {number, title: (.title // ""), head: (.headRefName // ""), base: (.baseRefName // ""), body: (.body // ""),
+      created: (.createdAt // ""), files: [(.files // [])[] | .path // empty]};
+  ([$open[] | select(.ok) | .slug]) as $readable
+  | [$open[] | select(.ok) | .prs[]? | select(type == "object" and (.isCrossRepository // false) != true) | . as $g
+      | (if ($urls | index($g.url)) != null then ([$rows[] | select(.pr == $g.url) | .team] | first) else ($g.headRefName // "" | head_team($rows)) end) as $t
+      | if $t != null then entry($t; $g.url) as $p
+          | $p + ($g | gh_fields) + {other: false, missing: ($g | pr_missing($p.signoff; pr_noci_ok($noci; $p.repo_dir; $p.url)))}
+        elif ($g.headRefName // "" | startswith("fleet/")) then {url: $g.url, team: "", issue: "", issue_url: "", issue_title: ""} + ($g | gh_fields) + {other: true, missing: ["other machine"]}
+        else empty end]
+  + [$urls[] | select((capture("^https?://[^/]+/(?<s>[^/]+/[^/]+)/").s // "") as $s | ($readable | index($s)) == null) | . as $u
+      | entry([$rows[] | select(.pr == $u) | .team] | first; $u)
+        + {number: (($u | capture("/(?<n>[0-9]+)$").n | tonumber) // 0), title: "", head: "", base: "", body: "", created: "", files: [], other: false, missing: ["GitHub unreadable"]}]')"
 
 # Linear: which queued issue blocks which (one read for all of them).
 blocks='{}'; notes='[]'
@@ -72,7 +84,7 @@ if [ "$(jq length <<<"$all")" -ge 2 ] && [ -n "$issues" ]; then
   else notes='["Linear order unknown (no key)"]'; fi
 fi
 
-jq -c --argjson notes "$notes" --argjson blocks "$blocks" "$RENDER_DEFS$PART_OF_JQ"'
+jq -c --argjson notes "$notes" --slurpfile blocks <(printf '%s' "$blocks") "$RENDER_DEFS$PART_OF_JQ$PR_DEFS"'$blocks[0] as $blocks |
   def repo: .url | capture("^https?://[^/]+/[^/]+/(?<r>[^/]+)/").r // "?";
   def ref: "\(repo) #\(.number)";
   def series: (.body | part_of); # "Part of DEV-7", its tracker URL, or a markdown link to it (common.sh)
@@ -86,6 +98,7 @@ jq -c --argjson notes "$notes" --argjson blocks "$blocks" "$RENDER_DEFS$PART_OF_
            then "Part of \($a | series), slice \($a | slice // $a.number)"
          elif $a.head != "" and $b.base == $a.head then "base of #\($b.number)"
          elif ($b.body | test("(?im)^\\s*depends on\\s+" + ($a.url | gsub("[.]"; "\\.")) + "(?![0-9])")) then "\($b | ref) uses its contract"
+         elif (($b | pr_after($b.url)) | index($a.url)) != null then "\($b | ref) merges after it"
          else empty end) as $why | {from: $i, to: $j, why: $why}]) as $edges
   | def has($set; $v): ($set | index($v)) != null;
   # Kahn over every PR, to find a cycle; the PRs left over are in one
@@ -115,7 +128,7 @@ jq -c --argjson notes "$notes" --argjson blocks "$blocks" "$RENDER_DEFS$PART_OF_
       | ([$before[] | . as $b | select((($x | migs) - (($x | migs) - ($nodes[$b] | migs))) | length > 0) | "#\($nodes[$b].number)"]) as $renum
       | ([$before[] | . as $b | select(($ov[$x.i | tostring] | index($b)) != null or ([$edges[] | select(.from == $b and .to == $x.i and (.why | startswith("base of")))] | length) > 0)
           | "#\($nodes[$b].number)"] - $renum) as $rebase
-      | {n: ($k + 1), url: $x.url, pr: pr_cell($x.url), issue: issue_cell($x.issue; $x.issue_url),
+      | {n: ($k + 1), url: $x.url, pr: pr_cell($x.url), issue: issue_cell($x.issue; $x.issue_url; $x.issue_title),
          why: ($dependents // $needs // (if ($ov[$x.i | tostring] | length) > 0 then "fewest rebases" else "oldest first" end)),
          after: (if ($renum | length) > 0 then "renumber migration after \($renum | join(", "))"
                  elif ($rebase | length) > 0 then "rebase after \($rebase | join(", "))" else "—" end)}],

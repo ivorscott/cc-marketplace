@@ -4,7 +4,9 @@
 #   schedule.sh install      write the launcher and the LaunchAgent plist, load it, wait for its first tick
 #   schedule.sh uninstall    unload it and remove the plist
 #   schedule.sh status       one line: "Fleet loop: <loaded|not loaded|not installed>. Last good tick <time>
-#                            (<n> min ago). <healthy|problem: why>." (references/output.md)
+#                            (<n> min ago). <healthy|problem: why|the Mac slept HH:MM–HH:MM, not a broken loop>."
+#                            (references/output.md). A gap with no good tick that a sleep of the Mac explains (pmset's
+#                            log: a Sleep after the last good tick and a Wake within 2x tick_secs of now) says so.
 #
 # The plist (label `fleet.tick`, or schedule_label in config.toml) runs a 5-line launcher,
 # $FLEET_STATE_DIR/bin/fleet-tick. The launcher reads the plugin's installPath from
@@ -17,7 +19,7 @@
 # tick fails or never happens it unloads the job and prints the last log line. The loop is healthy when it had a
 # good tick within 2x tick_secs. The user runs install; boot and next never do.
 # Overrides for tests: FLEET_LAUNCH_AGENTS (default ~/Library/LaunchAgents), FLEET_LAUNCHCTL,
-# FLEET_INSTALLED_PLUGINS (default ~/.claude/plugins/installed_plugins.json), FLEET_UID.
+# FLEET_INSTALLED_PLUGINS (default ~/.claude/plugins/installed_plugins.json), FLEET_UID, FLEET_PMSET (pmset).
 # Linux: no code here; see the README (systemd user timer).
 # UNVERIFIED until the user runs install: real launchd behaviour (DEV-368).
 # Command: Install, remove or check the launchd loop · e.g. fleet schedule status
@@ -112,6 +114,23 @@ render() {
 PLIST
 }
 
+# mac_slept <last good epoch> <now epoch>: "HH:MM–HH:MM" (local times, as pmset writes them) when pmset's log has a
+# Sleep after the last good tick and a Wake or DarkWake after it, within 2x tick_secs of now; else nothing. Only lines
+# whose type is exactly Sleep, Wake or DarkWake count ("Wake Requests" does not). A line is "YYYY-MM-DD HH:MM:SS
+# +HHMM <type> <tab> ...", and the offset is applied by hand (jq ignores %z). UNVERIFIED beyond the observed format.
+mac_slept() {
+  "${FLEET_PMSET:-pmset}" -g log 2>/dev/null | awk -F'\t' '{ n = split($1, f, " "); t = f[4]; for (i = 5; i <= n; i++) t = t " " f[i]
+      if (n >= 4 && (t == "Sleep" || t == "Wake" || t == "DarkWake")) print f[1] "T" f[2] "\t" f[3] "\t" t }' |
+    jq -Rrn --argjson lg "$1" --argjson now "$2" --argjson w $((2 * secs)) '
+      [inputs | split("\t") | select(length == 3 and (.[1] | test("^[+-][0-9]{4}$")))
+        | {t: .[2], hm: .[0][11:16], e: ((.[0] + "Z" | fromdateiso8601? // null) as $u | if $u == null then null
+            else $u - ((.[1][1:3] | tonumber) * 3600 + (.[1][3:5] | tonumber) * 60) * (if .[1][0:1] == "-" then -1 else 1 end) end)}
+        | select(.e != null)] as $ev
+      | ([$ev[] | select(.t == "Sleep" and .e >= $lg)] | first) as $s
+      | if $s == null then empty else ([$ev[] | select(.t != "Sleep" and .e >= $s.e and .e <= $now)] | last) as $k
+        | if $k != null and $k.e >= ($now - $w) then "\($s.hm)–\($k.hm)" else empty end end' 2>/dev/null || true
+}
+
 case "${1:-}" in
   render) render ;;
   launcher) write_launcher; echo "$launcher" ;;
@@ -151,8 +170,10 @@ case "${1:-}" in
     else loaded="not loaded"; fi
     lg="$(ls_get '.last_good // 0')"; nowe="$(jq -rn --arg t "${FLEET_NOW:-$(now)}" '$t | fromdateiso8601')"; when=never; health="problem: no good tick yet"
     if [ "${lg:-0}" -gt 0 ] 2>/dev/null; then
-      when="$(date -u -r "$lg" +%Y-%m-%dT%H:%M:%SZ) ($(((nowe - lg) / 60)) min ago)"
-      if [ $((nowe - lg)) -le $((2 * secs)) ]; then health=healthy; else health="problem: no good tick within $((2 * secs / 60)) min"; fi
+      when="$(jq -rn --argjson e "$lg" '$e | todate') ($(((nowe - lg) / 60)) min ago)"
+      if [ $((nowe - lg)) -le $((2 * secs)) ]; then health=healthy
+      elif slept="$(mac_slept "$lg" "$nowe")" && [ -n "$slept" ]; then health="the Mac slept $slept, not a broken loop"
+      else health="problem: no good tick within $((2 * secs / 60)) min"; fi
     fi
     [ "$loaded" = loaded ] || health="problem: the job is $loaded"
     reply "$(render_line loop loaded="$loaded" when="$when" health="$health")" "$(orch_hint)"

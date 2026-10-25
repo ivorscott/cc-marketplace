@@ -25,13 +25,13 @@
 #   weekly_summary  the ISO week changed (its notice runs metrics.sh, which writes reports/fleet-metrics-<date>.md);
 #                   the first tick ever only records the week
 #   escalation      an open escalation not yet reported (keyed by agent name and escalation id)
-#   pr_opened       a live builder on a fleet/ branch has an open PR the row doesn't know yet
-#                   (gh pr list --head, even when the builder skipped its done step): recorded as
-#                   the row's pr, the lead is told to start the tester. Once per PR.
+#   pr_opened       a team with no PR on any row has an open PR whose head branch it pushed (one gh pr list --state
+#                   open per repo, common.sh head_team; even when the builder skipped its done step): recorded on the
+#                   builder's row, the lead is told to start the tester. Once per PR.
 #   pr_ready        the row's PR is open, mergeable, checks green (or none exist and the repo is in
-#                   no_pr_ci in config.toml), the tester's signed-off SHA is the PR head, and the
-#                   body has no "DO NOT MERGE", "merge order", "before/after", "merge after/before" or "stacked on",
-#                   and the PR is not a draft (a stacked child must not go ready before its parent). Once per (PR, head SHA).
+#                   no_pr_ci in config.toml), the tester's signed-off SHA is the PR head, no body line starts with
+#                   "Do not merge" or "Hold:", the PR is not a draft, and every PR its body says it merges after
+#                   ("Merge after #N", "Depends on <url>", "Stacked on #N") is no longer open. Once per (PR, head SHA).
 #                   While a team's PR is ready and every agent of the team is Done or Idle, on that tick or a later one,
 #                   it is parked (park.sh --reason signed-off) to free its slot.
 #   pr_merged       the row's PR was merged; the Orchestrator answers with next.sh. Once per PR. A team marked
@@ -64,7 +64,6 @@ set -euo pipefail
 . "$(dirname "$0")/common.sh"
 require_herdr
 registry="$FLEET_SCRIPTS/registry.sh"
-config_warn_unknown
 
 team=""
 while [ $# -gt 0 ]; do
@@ -99,6 +98,12 @@ if ! mkdir "$lockdir" 2>/dev/null; then
   fi
 fi
 printf '%s\n' "$$" >"$lockdir/pid"; date +%s >"$lockdir/started"
+# Keys config.toml has and config.example.toml does not: warned about once per change of config.toml (its cksum in
+# config.warned), not on every tick (loop.log). boot warns on every run.
+cfg_ck="$({ cksum <"$FLEET_CONFIG_DIR/config.toml"; } 2>/dev/null | awk '{ print $1 }' || true)"
+if [ "$cfg_ck" != "$(cat "$FLEET_STATE_DIR/config.warned" 2>/dev/null || true)" ]; then
+  config_warn_unknown; printf '%s\n' "$cfg_ck" >"$FLEET_STATE_DIR/config.warned" 2>/dev/null || true
+fi
 ghtmp=""
 FLEET_TICK_ID="$(now)-$$"; export FLEET_TICK_ID # one tick, one Linear viewer read (linear.sh caches by it)
 
@@ -119,7 +124,7 @@ st_upd() {
   local n=$# prog; prog="${!n}"; set -- "${@:1:$((n - 1))}"
   jq -c "$@" ". as \$st | $prog" "$STATE_FILE" >"$STATE_FILE.new" && mv "$STATE_FILE.new" "$STATE_FILE"
 }
-add_events() { jq -c --argjson b "$1" '. + $b' "$EVENTS_FILE" >"$EVENTS_FILE.new" && mv "$EVENTS_FILE.new" "$EVENTS_FILE"; }
+add_events() { jq -c --slurpfile b <(printf '%s' "$1") '. + $b[0]' "$EVENTS_FILE" >"$EVENTS_FILE.new" && mv "$EVENTS_FILE.new" "$EVENTS_FILE"; }
 
 # --- claims: heartbeat, takeover -------------------------------------------------------
 # One heartbeat mutation per tick, however many issues are claimed (linear.sh heartbeat), and only when
@@ -183,8 +188,7 @@ claims_lapsed() {
   local peers repos i m hb k ev url why proven lease err now_t
   peers="$("$FLEET_SCRIPTS/linear.sh" peers 2>/dev/null)" || { warn "could not read other machines' claims"; return 0; }
   repos="$({ "$registry" list | jq -r '.[] | .repo // empty'; config_list repos | jq -r '.[]'; } | sort -u | while IFS= read -r d; do
-      [ -d "$d" ] && git -C "$d" remote get-url origin 2>/dev/null | sed -E 's#^(git@[^:]+:|[a-z]+://([^@/]+@)?[^/]+/)##; s#\.git$##'
-    done | grep -E '^[^/[:space:]]+/[^/[:space:]]+$' | sort -u | paste -sd' ' -)" || repos=""
+      [ ! -d "$d" ] || repo_slug "$d"; done | sort -u | paste -sd' ' -)" || repos=""
   now_t="${FLEET_NOW:-$(now)}"; err="$(mktemp "${TMPDIR:-/tmp}/fleet-tick-release.XXXXXX")"
   while IFS=$'\t' read -r i m hb; do
     [ -n "$i" ] || continue
@@ -233,8 +237,8 @@ targs=(); [ -n "$team" ] && targs=("$team")
 if ! hd agent list >/dev/null 2>&1; then
   warn "herdr agent list failed; no classification or respawn this tick"
 elif rows="$("$FLEET_SCRIPTS/status.sh" ${targs[@]+"${targs[@]}"} --json 2>/dev/null)" && printf '%s' "$rows" | jq -e 'type == "array"' >/dev/null 2>&1; then
-  add_events "$(jq -cn --argjson rows "$rows" --slurpfile stf "$STATE_FILE" '
-    [$rows[] | select(.tier != "Orchestrator" and .status == "Failed" and (($stf[0].status // {})[.name] != .status))
+  add_events "$(jq -cn --slurpfile rows <(printf '%s' "$rows") --slurpfile stf "$STATE_FILE" '$rows[0] as $rows
+    | [$rows[] | select(.tier != "Orchestrator" and .status == "Failed" and (($stf[0].status // {})[.name] != .status))
       | {type: "failed", team, name, status}]')"
   while IFS= read -r r; do
     [ -n "$r" ] || continue
@@ -264,13 +268,13 @@ elif rows="$("$FLEET_SCRIPTS/status.sh" ${targs[@]+"${targs[@]}"} --json 2>/dev/
     "$registry" set "$sname" continued_at="$now_iso" >/dev/null || true
   done < <(printf '%s' "$rows" | jq -r '.[] | select(.tier != "Orchestrator" and .status == "Needs input" and (.status_detail // "") != "") | [.name, (.continued_at // "")] | @tsv')
   # needs_input: an agent stopped by an API error, once per (agent, reason); forgotten when it recovers.
-  add_events "$(jq -cn --argjson rows "$rows" --slurpfile stf "$STATE_FILE" '
-    [$rows[] | (.name + "|" + (.status_detail // "")) as $k
+  add_events "$(jq -cn --slurpfile rows <(printf '%s' "$rows") --slurpfile stf "$STATE_FILE" '$rows[0] as $rows
+    | [$rows[] | (.name + "|" + (.status_detail // "")) as $k
       | select(.tier != "Orchestrator" and .status == "Needs input" and (.status_detail // "") != ""
         and ((($stf[0].needs_input_emitted // []) | index($k)) == null))
       | {type: "needs_input", team, name, detail: .status_detail}]')"
   # Only the rows this tick read are re-derived: a --team tick keeps the other teams' keys.
-  st_upd --argjson rows "$rows" '[$rows[].name] as $seen
+  st_upd --slurpfile rows <(printf '%s' "$rows") '$rows[0] as $rows | [$rows[].name] as $seen
     | $st + {needs_input_emitted: ([($st.needs_input_emitted // [])[] | select(split("|")[0] as $n | $seen | index($n) | not)]
         + [$rows[] | select(.status == "Needs input" and (.status_detail // "") != "") | .name + "|" + .status_detail])}'
   # A brief that did not arrive: the row stays Failed (status.sh). Re-send the pointer to the same brief file
@@ -320,7 +324,7 @@ elif rows="$("$FLEET_SCRIPTS/status.sh" ${targs[@]+"${targs[@]}"} --json 2>/dev/
       fi
     fi
   done < <(printf '%s' "$rows" | jq -r '.[] | select(.tier != "Orchestrator" and .status == "Zombie") | .name')
-  st_upd --argjson rows "$rows" '$st + {status: (($st.status // {}) + ([$rows[] | {(.name): .status}] | add // {})),
+  st_upd --slurpfile rows <(printf '%s' "$rows") '$rows[0] as $rows | $st + {status: (($st.status // {}) + ([$rows[] | {(.name): .status}] | add // {})),
     dead_emitted: (($st.dead_emitted // []) - [$rows[] | select(.status != "Zombie") | .name])}'
 else
   warn "status.sh failed; no stalled/dead events this tick"
@@ -329,10 +333,10 @@ fi
 # --- stale plugin version ------------------------------------------------------------------------------
 # A team with a row booted (or restarted) by an older plugin than the one installed now. Its restart at the next
 # `next.sh` (never mid-task) would switch it, and that waits for the user's go (next.sh and respawn.sh --restart
-# refuse with exit 5 until FLEET_VERSION_OK=1), so this asks, once per (team, installed version), naming the
-# team's first stale row, the lead first.
+# refuse with exit 5 until it is recorded: registry.sh pref version_ok <installed>), so this asks, once per (team,
+# installed version), naming the team's first stale row, the lead first, and asks nothing once the go is recorded.
 iv="$(installed_version)"
-if [ -n "$iv" ]; then
+if [ -n "$iv" ] && [ "$(version_ok)" != "$iv" ]; then
   vseen=" "
   while IFS=$'\t' read -r vname vteam pv; do
     [ -n "$vname" ] && [ -n "$pv" ] || continue
@@ -363,39 +367,53 @@ fi
 
 # --- escalations ------------------------------------------------------------------------------
 esc="$("$registry" escalations --open ${team:+--team "$team"})"
-add_events "$(jq -cn --argjson e "$esc" --slurpfile stf "$STATE_FILE" '
-  [$e[] | select(((.name + "|" + .id) as $k | ($stf[0].escalations_emitted // []) | index($k)) == null)
+add_events "$(jq -cn --slurpfile e <(printf '%s' "$esc") --slurpfile stf "$STATE_FILE" '$e[0] as $e
+  | [$e[] | select(((.name + "|" + .id) as $k | ($stf[0].escalations_emitted // []) | index($k)) == null)
     | {type: "escalation", team, name, id, severity, message, options: (.options // []), at}]')"
-st_upd --argjson e "$esc" '
-  $st + {escalations_emitted: ((($st.escalations_emitted // []) + [$e[] | .name + "|" + .id]) | unique)}'
+st_upd --slurpfile e <(printf '%s' "$esc") '$e[0] as $e
+  | $st + {escalations_emitted: ((($st.escalations_emitted // []) + [$e[] | .name + "|" + .id]) | unique)}'
 
-# --- PR discovery: a builder's PR found by the branch its worktree is on ---------------------------------
-# Boot records fleet/<team>/<role>, but a builder pushes fleet/<slug>: the branch is read from the worktree
-# (git branch --show-current), falling back to the row, and written back to the row. Only same-repository
-# PRs count (gh pr list --head also returns fork PRs, and the repo is public).
+# --- PR discovery: a team's PR found by its head branch -----------------------------------------------------
+# A builder pushes fleet/<slug>, whatever its worktree's branch is called (boot records fleet/<team>/<role>). Each
+# worker's branch is read from its worktree (git branch --show-current, falling back to the row) and written back to
+# the row. Then one read-only `gh pr list --state open` per repo of the teams with no PR on any row: an open PR whose
+# head one of those teams pushed (common.sh head_team: a row's branch, fleet/<team>/..., fleet/<issue key>-...) is
+# recorded on that team's worker whose branch it is, else its builder, the lead is told to start the tester, and
+# pr_opened fires once per PR. Only same-repository PRs count (the list also returns fork PRs, and the repo is public).
 if command -v "$FLEET_GH" >/dev/null 2>&1; then
-  while IFS= read -r b; do
-    [ -n "$b" ] || continue
-    bname="$(printf '%s' "$b" | jq -r .name)"; rowbranch="$(printf '%s' "$b" | jq -r '.branch // ""')"; brepo="$(printf '%s' "$b" | jq -r '.repo // ""')"
-    bwt="$(printf '%s' "$b" | jq -r '.worktree // ""')"; bbranch=""
-    if [ -n "$bwt" ] && [ -d "$bwt" ]; then bbranch="$(git -C "$bwt" branch --show-current 2>/dev/null || true)"; fi
-    [ -n "$bbranch" ] || bbranch="$rowbranch"
-    case "$bbranch" in fleet/*) ;; *) continue ;; esac
-    if [ "$bbranch" != "$rowbranch" ]; then "$registry" set "$bname" branch="$bbranch" >/dev/null || warn "could not write $bname's branch back"; fi
-    if [ ! -d "$brepo" ]; then warn "cannot look for $bname's PR: repo '$brepo' is not a directory"; continue; fi
-    if ! found="$(cd "$brepo" && "$FLEET_GH" pr list --head "$bbranch" --json number,url,headRefOid,state,isCrossRepository 2>/dev/null)"; then
-      warn "gh could not list PRs for $bbranch"; continue
+  while IFS=$'\t' read -r bname rowbranch bwt; do
+    [ -n "$bname" ] || continue
+    bbranch=""; if [ -n "$bwt" ] && [ -d "$bwt" ]; then bbranch="$(git -C "$bwt" branch --show-current 2>/dev/null || true)"; fi
+    case "$bbranch" in fleet/*) [ "$bbranch" = "$rowbranch" ] || "$registry" set "$bname" branch="$bbranch" >/dev/null || warn "could not write $bname's branch back" ;; esac
+  done < <("$registry" list ${team:+--team "$team"} | jq -r '.[] | select(.tier == "Worker" and .status != "Retired" and .status != "Parked" and (.pr // "") == "")
+    | [.name, (.branch // ""), (.worktree // "")] | @tsv')
+  drows="$("$registry" list | jq -c '[.[] | select(type == "object" and .status != "Retired" and .tier != "Orchestrator")]')"
+  # the teams to look for: not parked, no PR on any row, and a worker on a fleet/ branch (what boot gives a builder)
+  dteams="$(jq -c --arg only "$team" '[group_by(.team)[] | select(($only == "" or .[0].team == $only) and all(.[]; .status != "Parked")
+    and any(.[]; .tier == "Worker" and ((.branch // "") | startswith("fleet/"))) and all(.[]; (.pr // "") == "")) | .[0].team]' <<<"$drows")"
+  while IFS= read -r brepo; do
+    [ -n "$brepo" ] || continue
+    if [ ! -d "$brepo" ]; then warn "cannot look for PRs in '$brepo': not a directory"; continue; fi
+    if ! found="$(cd "$brepo" && "$FLEET_GH" pr list --state open --limit 200 --json number,url,headRefName,state,isCrossRepository 2>/dev/null)"; then
+      warn "gh could not list the open PRs in $brepo"; continue
     fi
-    purl="$(printf '%s' "$found" | jq -r '[.[]? | select(.state == "OPEN" and ((.isCrossRepository // false) | not))] | first | .url // ""' 2>/dev/null)" || purl=""
-    [ -n "$purl" ] || continue
-    "$registry" set "$bname" pr="$purl" >/dev/null || continue
-    bteam="$(printf '%s' "$b" | jq -r .team)"; told=true
-    "$FLEET_SCRIPTS/tell.sh" "$bteam/lead" "PR $purl is open; start the tester" >/dev/null 2>&1 || { told=false; warn "could not tell $bteam/lead about $purl"; }
-    if [ "$(jq --arg u "$purl" '(.pr_opened_emitted // []) | index($u) == null' "$STATE_FILE")" = true ]; then
-      add_events "$(jq -cn --arg t "$bteam" --arg n "$bname" --arg u "$purl" --argjson told "$told" '[{type: "pr_opened", team: $t, name: $n, url: $u, lead_told: $told}]')"
-      st_upd --arg u "$purl" '$st + {pr_opened_emitted: ((($st.pr_opened_emitted // []) + [$u]) | unique)}'
-    fi
-  done < <("$registry" list ${team:+--team "$team"} | jq -c '.[] | select(.tier == "Worker" and .status != "Retired" and .status != "Parked" and (.pr // "") == "")')
+    while IFS=$'\t' read -r bteam bname purl; do
+      [ -n "$purl" ] || continue
+      "$registry" set "$bname" pr="$purl" >/dev/null || continue
+      told=true
+      "$FLEET_SCRIPTS/tell.sh" "$bteam/lead" "PR $purl is open; start the tester" >/dev/null 2>&1 || { told=false; warn "could not tell $bteam/lead about $purl"; }
+      if [ "$(jq --arg u "$purl" '(.pr_opened_emitted // []) | index($u) == null' "$STATE_FILE")" = true ]; then
+        add_events "$(jq -cn --arg t "$bteam" --arg n "$bname" --arg u "$purl" --argjson told "$told" '[{type: "pr_opened", team: $t, name: $n, url: $u, lead_told: $told}]')"
+        st_upd --arg u "$purl" '$st + {pr_opened_emitted: ((($st.pr_opened_emitted // []) + [$u]) | unique)}'
+      fi
+    done < <(jq -r --slurpfile rows <(printf '%s' "$drows") --argjson teams "$dteams" --arg repo "$brepo" "$HEAD_TEAM_JQ"'$rows[0] as $rows
+      | [.[]? | select(type == "object" and (.state // "OPEN") == "OPEN" and (.isCrossRepository // false) == false)
+          | (.headRefName // "") as $h | ($h | head_team($rows)) as $t
+          | select($t != null and ($teams | index($t)) != null and any($rows[]; .team == $t and (.repo // "") == $repo))
+          | [$rows[] | select(.team == $t and .tier == "Worker")] as $w
+          | [$t, (([$w[] | select((.branch // "") == $h)] + [$w[] | select(.name | endswith("/builder"))] + $w) | first | .name), .url]]
+      | unique_by(.[0])[] | @tsv' <<<"$found" 2>/dev/null)
+  done < <(jq -r --argjson teams "$dteams" '[.[] | select(.team as $t | $teams | index($t)) | .repo // empty | select(. != "")] | unique[]' <<<"$drows")
 fi
 
 # --- pull requests ----------------------------------------------------------------------------
@@ -429,16 +447,24 @@ if [ "$(printf '%s' "$prs" | jq length)" != 0 ]; then
         warn "gh returned no PR state for $url"; continue
       fi
       # Ready is one rule (common.sh PR_DEFS), shared with the merge queue.
-      ev="$(jq -cn --argjson p "$p" --argjson g "$j" --slurpfile stf "$STATE_FILE" --argjson noci "$no_ci" "$PR_DEFS"'
-        $g | pr_noci_ok($noci; $p.repo; $p.pr) as $nociok | ((.headRefOid // "") | ascii_downcase) as $head
+      ev="$(jq -cn --argjson p "$p" --slurpfile g <(printf '%s' "$j") --slurpfile stf "$STATE_FILE" --argjson noci "$no_ci" "$PR_DEFS"'
+        $g[0] | pr_noci_ok($noci; $p.repo; $p.pr) as $nociok | ((.headRefOid // "") | ascii_downcase) as $head
         | if .state == "MERGED" then
             (if (($stf[0].pr_merged_emitted // []) | index($p.pr)) == null then {type: "pr_merged", team: $p.team, name: $p.name, url: $p.pr} + (if $p.park_after_merge != null then {parks: $p.park_after_merge} else {} end) + (if $p.parked then {parked: true} else {} end) else null end)
           elif (pr_missing($p.signoff; $nociok) | length) == 0 and (($stf[0].pr_ready_emitted // []) | index($p.pr + "@" + $head)) == null
           then {type: "pr_ready", team: $p.team, name: $p.name, url: $p.pr, sha: $head, ci: pr_ci($nociok)}
           else null end')"
+      # A PR that must merge after another (common.sh pr_after: "Merge after #N", "Depends on <url>", "Stacked on")
+      # is not ready while that one is open: one read-only view per such PR, only for a PR about to be ready.
+      if [ "$(printf '%s' "$ev" | jq -r '.type? // ""' 2>/dev/null)" = pr_ready ]; then
+        while IFS= read -r tu; do
+          [ -n "$tu" ] && [ "$tu" != "$url" ] || continue
+          if [ "$(forge_pr_json "$tu" 2>/dev/null | jq -r '.state // ""' 2>/dev/null)" = OPEN ]; then ev=null; break; fi
+        done < <(jq -r --arg u "$url" "$PR_DEFS"'pr_after($u)[]' <<<"$j" 2>/dev/null)
+      fi
       # \x1f, not a tab: a tab read collapses an empty field (a null mergeable), shifting the ones after it.
-      IFS=$'\x1f' read -r pst pready pmerge phead < <(jq -rn --argjson p "$p" --argjson g "$j" --argjson noci "$no_ci" "$PR_DEFS"'
-        $g | [.state, ((pr_missing($p.signoff; pr_noci_ok($noci; $p.repo; $p.pr)) | length) == 0), (.mergeable // ""), ((.headRefOid // "") | ascii_downcase)]
+      IFS=$'\x1f' read -r pst pready pmerge phead < <(jq -rn --argjson p "$p" --slurpfile g <(printf '%s' "$j") --argjson noci "$no_ci" "$PR_DEFS"'
+        $g[0] | [.state, ((pr_missing($p.signoff; pr_noci_ok($noci; $p.repo; $p.pr)) | length) == 0), (.mergeable // ""), ((.headRefOid // "") | ascii_downcase)]
         | map(tostring) | join("\u001f")')
       read_now+=("$url")
       [ "$pready" != true ] || ready_now+=("$url")
@@ -603,10 +629,17 @@ if [ -z "$team" ] && [ $((now_epoch - $(jq -r '.prune_at // 0' "$STATE_FILE"))) 
   st_upd --argjson at "$now_epoch" --argjson h "$held_after" --argjson r "$rec" '$st + {prune_at: $at, held_gb: $h, reclaimed_gb: $r}'
 fi
 
-# --- weekly archive ------------------------------------------------------------------------------
-week="$(date +%G-W%V)"
-if [ "$(jq -r '.archive_week // ""' "$STATE_FILE")" != "$week" ]; then
-  "$registry" archive >/dev/null 2>&1 || warn "weekly archive failed"
+# --- archive: weekly, and on every tick that finds fleet.json over the size cap ----------------------------------
+# Past the cap (REGISTRY_CAP_KB, 512) `registry.sh archive` also moves the Retired rows with no lessons; when it did,
+# one notice says how many (a reply line, not a wake).
+week="$(date +%G-W%V)"; cap_kb="$(const_int REGISTRY_CAP_KB 512)"; reg_kb=$((($(wc -c <"$FLEET_REGISTRY" | tr -d ' ') + 1023) / 1024))
+if [ "$(jq -r '.archive_week // ""' "$STATE_FILE")" != "$week" ] || [ "$reg_kb" -gt "$cap_kb" ]; then
+  if moved="$("$registry" archive 2>/dev/null)"; then
+    if [ "$reg_kb" -gt "$cap_kb" ]; then
+      n="$(jq --slurpfile m <(printf '%s' "$moved") '. as $a | [$m[0][] | $a.agents[.].lessons // "" | select(test("^Archived .* without a debrief \\(fleet.json over"))] | length' "$FLEET_ARCHIVE" 2>/dev/null || echo 0)"
+      [ "${n:-0}" = 0 ] || notice_add "$(render_line archived n="$n" kb="$reg_kb" cap="$cap_kb")" '{"type": "archived"}'
+    fi
+  else warn "archive failed"; fi
   st_upd --arg w "$week" '$st + {archive_week: $w}'
 fi
 
@@ -662,7 +695,7 @@ done < <(jq -r 'def d: if . == null or . == "" then "-" else tostring end;
 while IFS= read -r ev; do
   [ -n "$ev" ] || continue
   txt="$(render_notice "$ev" 2>/dev/null)" || txt=""
-  [ -z "$txt" ] || notice_add "$txt"
+  [ -z "$txt" ] || notice_add "$txt" "$ev"
 done < <(jq -c --arg wake "$WAKE_TYPES" ".[] | $WAKE_JQ" "$EVENTS_FILE")
 
 # The state is rebuilt from what is live, so it cannot grow without bound: reported-once keys survive only while
@@ -689,4 +722,6 @@ st_upd --argjson prs "$live_prs" --argjson esc "$live_esc" --argjson cl "$live_c
   + (if .brief_failed_emitted then {brief_failed_emitted: [.brief_failed_emitted[] | select(split("|")[0] as $n | $live_names | index($n))]} else {} end)
   + (if .respawns then {respawns: (.respawns | with_entries(.value |= inrecent) | with_entries(select(.value | length > 0)))} else {} end)'
 tick_state_write "$(cat "$STATE_FILE")"
+# The merge queue, built once here for every status until the next tick (common.sh fleet_queue).
+if [ -z "$team" ] && q="$("$FLEET_SCRIPTS/queue.sh" 2>/dev/null)"; then queue_write "$q"; fi
 [ "$(jq length "$EVENTS_FILE")" = 0 ] || cat "$EVENTS_FILE"
