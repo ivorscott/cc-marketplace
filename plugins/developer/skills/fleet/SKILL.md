@@ -61,10 +61,13 @@ It replaces your own [ui] lines in herdr's config and keeps a backup. (yes/no)".
    claim (`$F/fleet holder <ISSUE>` not lapsed, or with no heartbeat) and any issue whose blocked-by issues are not
    all Done; order the rest by priority, then by series order (its place in its "Part of" or parent sequence, then its
    identifier). A lapsed claim with no open PR is free: take it with `$F/fleet takeover <ISSUE>`. Ask the user only
-   to override a cap, or for a P0/P1. Right after the boot, record the search: `$F/registry.sh note <team>/lead
+   to override a cap, or for a P0/P1. Never hand the user a menu: an issue with a "Decide first" section takes its
+   acceptance default, stated in the PR body; follow-ups it names are filed (Linear, with blocked-by relations as
+   needed); a split it asks for is done. Right after the boot, record the search: `$F/registry.sh note <team>/lead
    picked "<search and why>"` (the morning report reads it), and start your reply with the `Booting` line from its
    template (`references/output.md`) above boot's output. With nothing bootable, reply "Nothing bootable" from its
-   template: each candidate, ranked, with what it needs from the user.
+   template: each candidate, ranked, with what it truly cannot run on (a blocker, a live claim, a missing key), never
+   a choice you can make yourself.
 1. Pick the template: `build` (plan, build, test one piece of work), `review` (independent read-only reviewers)
    or `research` (problem-first study guide); a path to a custom template JSON also works. Unsure → ask.
 2. With several machines on Linear, claim the issue first (`references/operations.md`, "Claims"); a single machine
@@ -128,9 +131,9 @@ question box (AskUserQuestion): the wakes queue behind it. Ask in plain text and
   asks to keep N teams running). Pick and boot (A, step 0) over Todo, Backlog and unclaimed or lapsed In Progress
   across the repos in `repos`. When the only blocker is an open PR that is nearly ready (signed off, or CI green),
   boot plan-first: the lead's `--brief` says the planner runs and the builder waits for that merge.
-- `pr_merged`: run `$F/fleet next <team> <next issue> [--brief TEXT] [--issue-url URL] [--issue-title TEXT]` at a safe point (every agent
-  idle); it logs `issue_done`, reassigns the rows and restarts every agent with a fresh brief. A team marked
-  `--after-merge` was parked by tick instead (`parks` on the event).
+- `pr_merged` (every PR the team opened has merged): retire the team at once (F, step 0), without asking, then pick the
+  next issue (A, step 0) and boot it as a fresh team. A team marked `--after-merge` was parked by tick instead
+  (`parks` on the event). `$F/fleet next` stays for a team the user asked to reuse.
 - `needs_input`, `brief_failed`: look at the pane; tick already re-sent them.
 - `stale_version`: a decision for the user (a newer plugin is installed). Relay it and wait. On yes, record it once
   for that version, `$F/registry.sh pref version_ok <installed version>`: every team then switches at its next
@@ -173,8 +176,10 @@ An escalation stays open, even after its agent is Done, until you run `$F/fleet 
 
 ## F. Retire
 
-0. **Summary first, then wait:** `$F/fleet retire --summary <target>` (read-only) prints the one line the user
-   answers (`Retire <team>? … Reply yes to retire.`); relay it and **wait for the user's go**.
+0. **Retire at once, without asking:** when a team's PR merges (`pr_merged`), and when the user runs `/fleet retire`,
+   run step 2 with `--outcome Shipped` (add `--verify` when an item waits on the user), with no `--summary` and no
+   "Reply yes". Ask only when the retire reports a kept worktree (tracked changes or unpushed commits): name it and
+   wait.
 1. Ask each live agent in the target to push work in progress (skip Zombies).
 2. `$F/fleet retire <team | team/role> [--outcome Shipped|Partial|Abandoned|Failed] [--verify]` closes only the fleet's panes,
    removes worktrees, closes open escalations ("closed at retire") and marks the rows Retired. A whole team's issue

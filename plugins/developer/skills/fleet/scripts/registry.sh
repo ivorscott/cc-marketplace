@@ -7,6 +7,7 @@
 #   registry.sh append <name> key value                    add value to the row's list at key (no duplicates; an agent: own row, transcripts only)
 #   registry.sh get [--archived] <name>                    --archived also looks in fleet-archive.json
 #   registry.sh list [--team T] [--live] [--parked] [--problems]
+#   registry.sh add-pr <name> <pr-url>                     record one more PR of the team's issue on a row (idempotent; .pr stays the first)
 #   registry.sh count-live                                 live agents (Parked, Done and Retired rows are not live)
 #   registry.sh done <name> --outcome O --summary TEXT     the done contract (+ notification)
 #   registry.sh escalate <name> P0|P1|P2 TEXT [OPTION...]  severity-routed escalation (+ notification + inbox line); the
@@ -132,6 +133,15 @@ case "$cmd" in
       args+=(--arg "k$i" "$k" --arg "v$i" "$v"); prog="$prog | .[\$k$i] = \$v$i"; i=$((i + 1))
     done
     update "${args[@]}" --arg t "$(now)" ".agents[\$n] = ($prog | .updated_at = \$t)"
+    ;;
+  add-pr)
+    # Record one more PR of the issue on a row, once: `.pr` stays the first, `.prs` lists every PR in the order found.
+    name="${1:?usage: add-pr <name> <pr-url>}"; url="${2:?usage: add-pr <name> <pr-url>}"
+    exists "$name"
+    case "$url" in https://*/*) ;; *) die "pr must be a full PR URL: $url" ;; esac
+    update --arg n "$name" --arg u "$url" --arg t "$(now)" '
+      .agents[$n] |= ((.prs // [.pr // empty | select(. != "")]) as $l
+        | if ($l | index($u)) != null then . else (.prs = $l + [$u] | (if (.pr // "") == "" then .pr = $u else . end) | .updated_at = $t) end)'
     ;;
   append)
     name="${1:?usage: append <name> key value}"; k="${2:?usage: append <name> key value}"; v="${3:?usage: append <name> key value}"
@@ -369,7 +379,7 @@ case "$cmd" in
       .agents |= with_entries(
         if .value.team == $t and .value.status != "Retired" and .value.tier != "Orchestrator" then
           .value |= (
-            del(.outcome, .summary, .done_at, .signoff, .pr, .lessons, .nudged_at)
+            del(.outcome, .summary, .done_at, .signoff, .pr, .prs, .lessons, .nudged_at)
             | norm | esc_close("closed at next"; $now)
             | derive | .issue = $i | .assignment = $a
             | (if $u != "" then .issue_url = $u else del(.issue_url) end)
@@ -386,7 +396,7 @@ case "$cmd" in
     update --arg t "$team" --arg r "$reason" --arg now "$(now)" '
       if ([.agents[] | select(.team == $t and .status == "Parked")] | length) > 0 then error("team is already parked") else . end
       | .agents |= with_entries(
-        if .value.team == $t and .value.tier != "Orchestrator" and (.value.status | IN("Done", "Retired") | not) then
+        if .value.team == $t and .value.tier != "Orchestrator" and .value.status != "Retired" then
           .value |= (.status = "Parked" | .parked_at = $now | .parked_reason = $r | del(.park_after_merge) | .updated_at = $now)
         else . end)'
     ;;

@@ -405,6 +405,22 @@ ensure_label() {
   OWN_LID="$lid"; printf '%s\n' "$lid"
 }
 
+# write_heartbeat: rewrite the heartbeat= line of this machine's label to now (one mutation, none when the line already
+# says now). Sets HB_AT and returns 0; returns 2 when the machine has no label yet. Claim, takeover and heartbeat share it.
+write_heartbeat() {
+  local mine found lid cur
+  mine="$(machine_label)"
+  found="$(q_labels_named "$mine")" || return 1
+  lid="$(printf '%s' "$found" | jq -r '.[0].id // empty')"
+  [ -n "$lid" ] || return 2
+  HB_AT="${FLEET_NOW:-$(now)}"; OWN_LID="$lid"
+  # A description an older version wrote still holds the full machine id: hashed here too, or nothing is written.
+  cur="$(legacy_ids_hashed "$(printf '%s' "$found" | jq -r '.[0].description // ""')")" || return 1
+  if [ "$(printf '%s\n' "$cur" | sed -n 's/^heartbeat=//p' | head -n 1)" != "$HB_AT" ]; then
+    m_label_describe "$lid" "$(describe_with_hb "$(describe_with_owner "$cur" "$(owner_name)")" "$HB_AT")" || return 1
+  fi
+}
+
 # ---- subcommands ---------------------------------------------------------------------------------
 cmd="${1:-}"; [ $# -gt 0 ] && shift
 # Every API subcommand needs the key; check it here, at the top level, so a missing key is exit 3
@@ -462,6 +478,8 @@ case "$cmd" in
     if [ -n "$holder" ]; then die "$issue is claimed by $holder; this machine is $mine. Not claiming"; fi
     [ "$dry" = 1 ] || guard_issue "$issue"
     lid="$(ensure_label "$dry")"
+    # The label's heartbeat is refreshed before the label reaches the issue, or another machine's tick reads the old line.
+    [ "$dry" = 1 ] || (write_heartbeat) || [ $? = 2 ] || warn "could not refresh the heartbeat of $mine"
     sid="$(q_state_id "$team" "In Progress")"
     keep="$(printf '%s' "$iss" | jq -c --arg p "$(label_prefix)" '[.labels.nodes[] | select(.name | startswith($p) | not) | .id]')"
     ids="$(jq -cn --argjson k "$keep" --arg l "$lid" '$k + [$l] | unique')"
@@ -481,15 +499,10 @@ case "$cmd" in
 
   heartbeat)
     [ "$WMODE" != off ] || writes_off
-    mine="$(machine_label)"
-    found="$(q_labels_named "$mine")"
-    lid="$(printf '%s' "$found" | jq -r '.[0].id // empty')"
-    if [ -z "$lid" ]; then say '{heartbeat: false, reason: "no machine label yet; nothing claimed"}'; exit 0; fi
-    ts="${FLEET_NOW:-$(now)}"; OWN_LID="$lid"
-    # A description an older version wrote still holds the full machine id: hashed here too, or nothing is written.
-    cur="$(legacy_ids_hashed "$(printf '%s' "$found" | jq -r '.[0].description // ""')")" || exit 1
-    m_label_describe "$lid" "$(describe_with_hb "$(describe_with_owner "$cur" "$(owner_name)")" "$ts")"
-    say --arg t "$ts" '{heartbeat: true, at: $t}' ;;
+    rc=0; write_heartbeat || rc=$?
+    if [ "$rc" = 2 ]; then say '{heartbeat: false, reason: "no machine label yet; nothing claimed"}'; exit 0; fi
+    [ "$rc" = 0 ] || exit "$rc"
+    say --arg t "$HB_AT" '{heartbeat: true, at: $t}' ;;
 
   takeover)
     issue=""; repo=""
@@ -510,6 +523,7 @@ case "$cmd" in
     holder="${hold%%$'\t'*}"; hb="${hold#*$'\t'}"
     iid="$(printf '%s' "$iss" | jq -r .id)"; team="$(printf '%s' "$iss" | jq -r .team.id)"
     lid="$(ensure_label 0)"
+    (write_heartbeat) || [ $? = 2 ] || warn "could not refresh the heartbeat of $mine"
     sid="$(q_state_id "$team" "In Progress")"
     keep="$(printf '%s' "$iss" | jq -c --arg p "$(label_prefix)" '[.labels.nodes[] | select(.name | startswith($p) | not) | .id]')"
     m_issue_update "$iid" "$(jq -cn --argjson k "$keep" --arg l "$lid" '$k + [$l] | unique')" "$sid"

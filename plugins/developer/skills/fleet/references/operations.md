@@ -104,7 +104,7 @@ keep their claim (a team waiting on a merge is still heartbeated). **Nothing wri
 `machines > 1` it refuses `--issue`). `test:FT` writes only on issues of Linear team FT (and this
 machine's own label). The user sets `on`. On that event
 you **must not renew** or fight back (no re-claim, no label swap): stop or hand off the team
-(`retire.sh`, after the summary in **F**), tell the user, and run
+(`retire.sh`, **F**), tell the user, and run
 `$F/registry.sh escalate <team>/lead P1 "claim taken over by <label>"`. An Orchestrator that is not
 running does not heartbeat, and that is exactly when a takeover is allowed. Say so when a user
 closes it with teams still running. Tick never migrates: `linear.sh migrate` (deletes this
@@ -205,14 +205,16 @@ The fleet cleans up as it goes:
 When the user asks to keep N teams running, set `$F/registry.sh set orchestrator target_teams=N`. It is on the
 Orchestrator's row, so it survives a compaction and `registry.sh orchestrator here`. Tick then wakes you with
 `slot_free` while fewer teams run than N and than `max_teams` (Parked teams do not count), once per (live count,
-target). Answer by picking and booting (SKILL.md route A, step 0, noting the pick); when the only blocker is a nearly
-ready PR, boot plan-first; when nothing is bootable, reply "Nothing bootable" from its template.
+target). Answer by picking and booting (SKILL.md route A, step 0, noting the pick); never hand the user a menu: an
+issue with a "Decide first" section takes its acceptance default (stated in the PR body), named follow-ups are filed,
+and a requested split is done. When the only blocker is a nearly ready PR, boot plan-first; when nothing is bootable,
+reply "Nothing bootable" from its template, listing only what truly cannot run (a blocker, a live claim, a missing key).
 
 A team frees its own slot once it is signed off: on any tick where its PR is ready and every agent of the team is Done
 or Idle (on `pr_ready`'s tick or a later one), tick runs `park.sh <team> --reason signed-off`. `park.sh` refuses work
 that is not pushed (tick warns once per PR head, tries again on later ticks, and the team keeps its slot until one
-succeeds); an untracked file under `reports/` does not count. An agent still working means no park yet. When its PR merges, `pr_merged` says to unpark it and move it
-on, or retire it; when it conflicts after a merge, tick unparks it and tells its lead (`pr_conflicting`).
+succeeds); an untracked file under `reports/` does not count. An agent still working means no park yet. When its PR merges, `pr_merged` (every PR of the team merged) says to retire it
+at once, without asking, and pick the next issue for a fresh team; when it conflicts after a merge, tick unparks it and tells its lead (`pr_conflicting`).
 
 ## Sandbox
 

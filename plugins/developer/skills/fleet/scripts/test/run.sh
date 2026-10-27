@@ -634,8 +634,104 @@ Merge this one first." "Do not merge until the API ships" "  hold: waiting on de
   dfresh 23; head -c 100000 /dev/zero | tr '\0' x >"$SM/long23"; : >"$HERDR_LOG"
   for i in $(seq 1 12); do herdr --session test agent start "a23-$i" --settings "$SM/long23" >/dev/null & done; wait
   eq "smoke: dev512-23 twelve parallel calls with 100 KB arguments log twelve whole lines" "$(grep -c '^agent start a23-[0-9]* --settings x' "$HERDR_LOG"):$(awk 'length($0) > 100000' "$HERDR_LOG" | grep -vc '^agent start a23-[0-9]* --settings x*$')" "12:0"
-  # dev512-24: the version is 4.1.1 and the README says what changed in it
-  eq "smoke: dev512-24 plugin.json reads 4.1.1, and the README has its What changed section" "$(jq -r .version "$SCRIPTS/../../../.claude-plugin/plugin.json"):$(grep -c '^## What changed in 4.1.1' "$SCRIPTS/../README.md")" "4.1.1:1"
+  # dev512-24: the README still has its 4.1.1 What changed section
+  eq "smoke: dev512-24 the README has its 4.1.1 What changed section" "$(grep -c '^## What changed in 4.1.1' "$SCRIPTS/../README.md")" 1
+  # ---- DEV-530 (4.1.2): one case or two per item, each in its own state root (dfresh), acme names only ----
+  # dev530-1: no links between checkouts. The rule is in the house rules and both briefs that run anything; the Bash guard
+  # denies an ln whose operand ends in node_modules, .venv or vendor, and lets every other ln through; a worktree whose
+  # node_modules is a link to a directory outside it still retires, and the link's target survives.
+  BT="$SCRIPTS/../templates/build.json"
+  eq "smoke: dev530-1 the house rules and the builder and tester briefs say never to link node_modules, .venv or vendor/" \
+    "$(grep -c 'Never symlink `node_modules`, `.venv` or `vendor/` to another checkout' "$SCRIPTS/../rules/house.md"):$(jq -r '.workers[] | select(.role == "builder" or .role == "tester") | .brief' "$BT" | grep -c 'never symlink `node_modules`, `.venv` or `vendor/` to another checkout')" "1:2"
+  eq "smoke: dev530-1 guard: ln of node_modules, .venv or vendor (symlink, hard link, in a cd chain, with a trailing slash) is denied" \
+    "$(sbg 'ln -s /main/node_modules node_modules'):$(sbg 'ln -sfn ../repo/.venv .venv'):$(sbg 'ln -s /x/vendor vendor'):$(sbg 'cd w && ln -s ../m/node_modules ./node_modules'):$(sbg 'echo hi; ln -s /x/node_modules/ nm'):$(sbg 'ln /a/vendor v')" "deny:deny:deny:deny:deny:deny"
+  eq "smoke: dev530-1 guard: an ordinary ln, a name that only contains node_modules, and npm ci are allowed" \
+    "$(sbg 'ln -s a b'):$(sbg 'ln -s README.md docs/README.md'):$(sbg 'ln -s node_modules_old old'):$(sbg 'npm ci')" "allow:allow:allow:allow"
+  dfresh 530a; "$SCRIPTS/boot.sh" build w530 "$SM/repo" "t" >/dev/null 2>&1; wt530="$("$REG" get build-w530/builder | jq -r .worktree)"
+  mkdir -p "$SM/main530/node_modules" && echo kept >"$SM/main530/node_modules/f"; ln -s "$SM/main530/node_modules" "$wt530/node_modules"
+  "$SCRIPTS/retire.sh" build-w530 --outcome Abandoned >/dev/null 2>"$SM/r530.err"; rc=$?
+  eq "smoke: dev530-1 a worktree whose node_modules links outside retires: removed, nothing kept, the link's target survives" \
+    "$rc:$([ -e "$wt530" ] && echo present || echo gone):$(grep -c 'kept' "$SM/r530.err"):$(cat "$SM/main530/node_modules/f")" "0:gone:0:kept"
+  # dev530-2: park parks every row, Done ones too; status shows Parked, unpark takes the team back
+  dfresh 530b; for r in lead:Lead:Done builder:Worker:Idle tester:Worker:Done; do
+    "$REG" add "$(jq -cn --arg n "build-p530/${r%%:*}" --arg t "$(echo "$r" | cut -d: -f2)" --arg s "${r##*:}" --arg r "$SM/repo" \
+      '{name: $n, team: "build-p530", tier: $t, status: $s, herdr_ref: ($n | sub("/"; "-")), pane: "p", repo: $r, issue: "DEV-1", workspace: "w0", cwd: $r, harness: "claude", template: "build", assignment: "task", machine: "test"}')" >/dev/null
+  done
+  "$SCRIPTS/park.sh" build-p530 --reason signed-off >/dev/null 2>"$SM/p530.err"; rc=$?
+  eq "smoke: dev530-2 park --reason signed-off: lead Done, builder Idle, tester Done all end Parked with the reason" \
+    "$rc:$("$REG" list --team build-p530 | jq -r '[.[] | .status + "/" + .parked_reason] | unique | join(",")'):$("$SCRIPTS/status.sh" 2>&1 | grep -c '1 parked')" "0:Parked/signed-off:1"
+  "$SCRIPTS/unpark.sh" build-p530 >/dev/null 2>"$SM/u530.err"
+  eq "smoke: dev530-2 unpark takes the team that park left Parked" "$?:$("$REG" list --team build-p530 | jq -r '[.[].status] | map(select(. == "Parked")) | length')" "0:0"
+  "$REG" add '{"name": "build-p530b/builder", "team": "build-p530b", "tier": "Worker", "status": "Done", "herdr_ref": "p530b", "pane": "p"}' >/dev/null
+  "$REG" park build-p530b signed-off >/dev/null; eq "smoke: dev530-2 registry park turns a Done row Parked" "$("$REG" get build-p530b/builder | jq -r '.status + "/" + .parked_reason')" "Parked/signed-off"
+  # dev530-3: a team's second PR is recorded once, pr_merged and the Shipped to Done move wait for every PR of the team
+  dfresh 530c; D3="$SM/d512-530c"; git init -q -b main "$D3/repo"; git -C "$D3/repo" remote add origin https://github.com/acme/app-api.git
+  g3() { # g3 <n> <state> <head>: the PR's view json; the open list is rebuilt from the OPEN ones
+    jq -cn --argjson n "$1" --arg s "$2" --arg h "$3" '{number: $n, url: "https://github.com/acme/app-api/pull/\($n)", state: $s, title: "t", headRefOid: "c0ffee\($n)", headRefName: $h, baseRefName: "main",
+      mergeable: "MERGEABLE", isDraft: false, isCrossRepository: false, body: "Fixes it", createdAt: "2026-10-24T08:00:00Z", statusCheckRollup: [], files: []}' >"$D3/$1.json"
+    jq -s '[.[] | select(.state == "OPEN")]' "$D3"/[0-9]*.json >"$D3/list.json"
+  }
+  printf '#!/usr/bin/env bash\necho "$*" >>"$D3/gh.log"\ncase "$1 $2" in "pr list") cat "$D3/list.json" ;; "pr view") cat "$D3/${3##*/}.json" ;; esac\n' >"$D3/gh"; chmod +x "$D3/gh"; export D3
+  g3 10 OPEN fleet/dev-9-part-1; g3 11 OPEN fleet/dev-9-part-2
+  for r in lead:Lead:Working builder:Worker:Idle; do
+    "$REG" add "$(jq -cn --arg r "$D3/repo" --arg n "build-d3/${r%%:*}" --arg t "$(echo "$r" | cut -d: -f2)" --arg s "${r##*:}" \
+      '{name: $n, team: "build-d3", tier: $t, status: $s, herdr_ref: ($n | sub("/"; "-")), pane: "p", repo: $r, issue: "DEV-9", issue_url: "https://linear.app/acme/issue/DEV-9/x", branch: ("fleet/" + $n)}')" >/dev/null
+  done
+  "$REG" set build-d3/builder pr=https://github.com/acme/app-api/pull/10 >/dev/null
+  o3="$(FLEET_GH="$D3/gh" FLEET_NOW=2026-10-24T09:00:00Z "$SCRIPTS/tick.sh" 2>/dev/null)"; o3b="$(FLEET_GH="$D3/gh" FLEET_NOW=2026-10-24T09:05:00Z "$SCRIPTS/tick.sh" 2>/dev/null)"
+  eq "smoke: dev530-3 a second open PR on a team that has one is recorded once: .pr stays first, one pr_opened over two ticks" \
+    "$("$REG" get build-d3/builder | jq -r '.pr + " " + (.prs | join(" "))'):$(evc "$o3$o3b" pr_opened)" "https://github.com/acme/app-api/pull/10 https://github.com/acme/app-api/pull/10 https://github.com/acme/app-api/pull/11:1"
+  "$REG" add-pr build-d3/builder https://github.com/acme/app-api/pull/11 >/dev/null; eq "smoke: dev530-3 add-pr is idempotent" "$("$REG" get build-d3/builder | jq '.prs | length')" 2
+  g3 10 MERGED fleet/dev-9-part-1; o3="$(FLEET_GH="$D3/gh" FLEET_NOW=2026-10-24T10:00:00Z "$SCRIPTS/tick.sh" 2>/dev/null)"
+  eq "smoke: dev530-3 #10 merged while #11 is open: no pr_merged" "$(evc "$o3" pr_merged)" 0
+  printf '%s\n' "$LINEAR_STUB_KEY" >"$FLEET_CONFIG_DIR/$kf"; chmod 600 "$FLEET_CONFIG_DIR/$kf"; gcfg 'linear_writes = "on"'
+  export LINEAR_DB="$SM/linear530c.json" LINEAR_LOG="$SM/linear530c.log"; : >"$LINEAR_LOG"
+  echo '{"team": "T1", "states": {"In Progress": "S1", "Done": "S2"}, "next": 100, "labels": [], "issues": [{"id": "I9", "identifier": "DEV-9", "team": {"id": "T1"}, "state": {"id": "S1", "name": "In Progress"}, "labelIds": [], "comments": []}]}' >"$LINEAR_DB"
+  FLEET_GH="$D3/gh" "$SCRIPTS/retire.sh" build-d3 --outcome Shipped >/dev/null 2>"$SM/r3.err"
+  eq "smoke: dev530-3 retire Shipped with #11 open leaves the issue In Progress and names #11" \
+    "$(jq -r '.issues[0].state.name' "$LINEAR_DB"):$(grep -c 'DEV-9 stays as it is: .*pull/11 is not merged' "$SM/r3.err")" "In Progress:1"
+  "$REG" add '{"name": "build-d3b/builder", "team": "build-d3b", "tier": "Worker", "status": "Idle", "herdr_ref": "d3b", "pane": "p", "issue": "DEV-9", "pr": "https://github.com/acme/app-api/pull/10"}' >/dev/null
+  "$REG" add-pr build-d3b/builder https://github.com/acme/app-api/pull/11 >/dev/null; g3 11 MERGED fleet/dev-9-part-2
+  FLEET_GH="$D3/gh" "$SCRIPTS/retire.sh" build-d3b --outcome Shipped >/dev/null 2>&1
+  eq "smoke: dev530-3 with both PRs merged retire Shipped moves the issue to Done" "$(jq -r '.issues[0].state.name' "$LINEAR_DB")" Done
+  # dev530-4: retire and pick without asking
+  SK="$SCRIPTS/../SKILL.md"; OP="$SCRIPTS/../references/operations.md"
+  rf="$(awk '/^## F\. Retire/ { on = 1; next } on && /^## / { exit } on' "$SK")"
+  eq "smoke: dev530-4 route F retires at once: no summary step, no Reply yes, no wait for the user's go" \
+    "$(printf '%s\n' "$rf" | grep -ci 'reply yes to retire\|wait for the user.s go\|summary first'):$(printf '%s\n' "$rf" | grep -c 'Retire at once, without asking')" "0:1"
+  eq "smoke: dev530-4 A step 0 and operations.md: no menu, Decide first takes its default, follow-ups filed, a split done" \
+    "$(grep -c 'Never hand the user a menu: an issue with a "Decide first" section takes its' "$SK"):$(grep -c 'never hand the user a menu: an$' "$OP")" "1:1"
+  eq "smoke: dev530-4 pr_merged retires and picks: no 'next or retire' choice" "$(grep -A3 '^- `pr_merged`' "$SK" | grep -c 'retire the team at once')" 1
+  # dev530-5: claim and takeover refresh the machine label's heartbeat in the same call; tick refreshes it before anything else
+  dfresh 530e; printf '%s\n' "$LINEAR_STUB_KEY" >"$FLEET_CONFIG_DIR/$kf"; chmod 600 "$FLEET_CONFIG_DIR/$kf"; gcfg 'linear_writes = "on"'
+  export LINEAR_DB="$SM/linear530e.json" LINEAR_LOG="$SM/linear530e.log"; : >"$LINEAR_LOG"
+  jq -n '{team: "T1", states: {"In Progress": "S1"}, next: 100, labels: [{id: "L1", name: "fleet", description: "", parent: null},
+      {id: "L2", name: "fleet:other", description: "other host\nheartbeat=2026-10-18T06:00:00Z", parent: {id: "L1", name: "fleet"}}],
+    issues: [range(1; 4) | {id: "I\(.)", identifier: "DEV-\(.)", team: {id: "T1"}, state: {id: "S0", name: "Todo"}, labelIds: (if . == 3 then ["L2"] else [] end), comments: []}]}' >"$LINEAR_DB"
+  hb5() { jq -r '[.labels[] | select(.parent != null and .name != "fleet:other") | .description | capture("heartbeat=(?<h>[^\n ]+)").h] | first // "none"' "$LINEAR_DB"; }
+  old5() { jq '(.labels[] | select(.parent != null and .name != "fleet:other") | .description) |= sub("heartbeat=[^\n ]+"; "heartbeat=2026-10-26T06:00:00Z")' "$LINEAR_DB" >"$LINEAR_DB.t" && mv "$LINEAR_DB.t" "$LINEAR_DB"; }
+  hw5() { grep -c 'IssueLabelUpdate' "$LINEAR_LOG"; }
+  N5=2026-10-27T09:00:00Z
+  FLEET_NOW=2026-10-26T06:00:00Z "$LIN" claim DEV-1 >/dev/null 2>&1; old5
+  FLEET_NOW=$N5 "$LIN" claim DEV-2 >/dev/null 2>"$SM/c5.err"
+  eq "smoke: dev530-5 claim leaves the machine label's heartbeat at now, not the old line" "$?:$(hb5)" "0:$N5"
+  old5; printf '#!/usr/bin/env bash\necho "[]"\n' >"$SM/gh5"; chmod +x "$SM/gh5"
+  FLEET_GH="$SM/gh5" FLEET_NOW=$N5 "$LIN" takeover DEV-3 >/dev/null 2>"$SM/t5.err"
+  eq "smoke: dev530-5 takeover leaves the heartbeat at now too" "$?:$(hb5)" "0:$N5"
+  old5; m1=$(grep -c '^mutation' "$LINEAR_LOG"); FLEET_NOW=$N5 "$LIN" claim DEV-1 --dry-run >/dev/null 2>&1
+  eq "smoke: dev530-5 a dry-run claim writes nothing, the heartbeat stays old" "$(grep -c '^mutation' "$LINEAR_LOG"):$(hb5)" "$m1:2026-10-26T06:00:00Z"
+  old5; "$REG" add '{"name": "build-h5/lead", "team": "build-h5", "tier": "Lead", "status": "Working", "herdr_ref": "h5-lead", "pane": "p", "issue": "DEV-2"}' >/dev/null
+  m2=$(hw5); env -u FLEET_SESSION -u HERDR_ENV FLEET_NOW=$N5 "$SCRIPTS/tick.sh" >/dev/null 2>"$SM/h5.err"
+  eq "smoke: dev530-5 a tick that dies on herdr being down has already refreshed the heartbeat, with one write" "$(grep -c 'run the Orchestrator inside a herdr pane' "$SM/h5.err"):$(hb5):$(($(hw5) - m2))" "1:$N5:1"
+  old5; "$REG" retire build-h5 >/dev/null; rm -f "$FLEET_STATE_DIR/tick.state.json"; m2=$(hw5)
+  FLEET_NOW=$N5 "$SCRIPTS/tick.sh" >/dev/null 2>&1
+  eq "smoke: dev530-5 a tick with no row that holds an issue still refreshes it" "$(hb5):$(($(hw5) - m2))" "$N5:1"
+  old5; "$REG" add '{"name": "build-h6/lead", "team": "build-h6", "tier": "Lead", "status": "Working", "herdr_ref": "h6-lead", "pane": "p", "issue": "DEV-2"}' >/dev/null
+  rm -f "$FLEET_STATE_DIR/tick.state.json"; m2=$(hw5); FLEET_NOW=$N5 "$SCRIPTS/tick.sh" >/dev/null 2>&1
+  eq "smoke: dev530-5 a tick with a claimed row writes the heartbeat once, not twice" "$(hb5):$(($(hw5) - m2))" "$N5:1"
+  export LINEAR_DB="$SM/linear.json" LINEAR_LOG="$SM/linear.log"; rm -f "$FLEET_CONFIG_DIR/$kf"
+  # dev530-6: the version is 4.1.2 and the README says what changed in it
+  eq "smoke: dev530-6 plugin.json reads 4.1.2, and the README has its What changed section" "$(jq -r .version "$SCRIPTS/../../../.claude-plugin/plugin.json"):$(grep -c '^## What changed in 4.1.2' "$SCRIPTS/../README.md")" "4.1.2:1"
   printf '\n%d passed, %d failed\n' "$pass" "$failn"
   [ "$failn" = 0 ]; exit
 fi
@@ -1990,7 +2086,7 @@ dbreset; jq --arg n "$ml" '.labels += [{id: "L9", name: $n, description: "", par
 eq "claim: an empty description is filled in" "$(jq -r --arg n "$ml" '.labels[] | select(.name == $n) | .description | test("heartbeat=")' "$LINEAR_DB")" true
 dbreset; jq --arg n "$ml" '.labels += [{id: "L9", name: $n, description: "mine already", parent: {id: "L1", name: "fleet"}}]' "$LINEAR_DB" >"$T/db.tmp" && mv "$T/db.tmp" "$LINEAR_DB"
 "$LIN" claim DEV-1 >/dev/null 2>&1
-eq "claim: a non-empty description is never overwritten (the owner line is added after it)" "$(jq -r --arg n "$ml" '.labels[] | select(.name == $n) | .description' "$LINEAR_DB" | paste -sd'|' -)" "mine already|owner=Fixture Owner"
+eq "claim: a non-empty description is never overwritten (the owner line is added after it)" "$(jq -r --arg n "$ml" '.labels[] | select(.name == $n) | .description' "$LINEAR_DB" | grep -v '^heartbeat=' | paste -sd'|' -)" "mine already|owner=Fixture Owner"
 # the race: another machine writes after us; the last writer wins and we exit 1
 dbreset; LINEAR_STUB_RACE=fleet:other "$LIN" claim DEV-3 >"$T/race.out" 2>"$T/race.err"; rc=$?
 eq "claim race: the loser exits 1" "$rc" 1
@@ -2393,7 +2489,7 @@ eq "N3: as one label update, a write" "$(grep -c '^mutation IssueLabelUpdate' "$
 eq "N3: the rewritten description keeps every other line and the heartbeat" "$(jq -r '.labels[] | select(.id == "L9") | .description' "$LINEAR_DB" | paste -sd'|' -)" "my box · macOS · machine id sha256:$want · first claim 2026-01-02|owner=Fixture Owner|heartbeat=2026-10-18T07:00:00Z|extra note"
 : >"$LINEAR_LOG"; eq "N3: a second migrate rewrites nothing" "$("$LIN" migrate | jq -r .rewrote_label):$(nmut)" "false:0"
 legacy_db; "$LIN" claim DEV-3 >/dev/null 2>&1
-eq "N3: claim (ensure_label) rewrites it too, keeping the heartbeat and other text" "$(jq -r '.labels[] | select(.id == "L9") | .description' "$LINEAR_DB" | paste -sd'|' -)" "my box · macOS · machine id sha256:$want · first claim 2026-01-02|owner=Fixture Owner|heartbeat=2026-10-18T07:00:00Z|extra note"
+eq "N3: claim (ensure_label) rewrites it too, keeping the other text (the heartbeat line is now)" "$(jq -r '.labels[] | select(.id == "L9") | .description' "$LINEAR_DB" | grep -v '^heartbeat=' | paste -sd'|' -)" "my box · macOS · machine id sha256:$want · first claim 2026-01-02|owner=Fixture Owner|extra note"
 eq "N3: and the full id is in no request" "$(grep -c "$FIXID" "$LINEAR_ARGV_LOG" || true)" 0
 eq "N3: and no description in the database holds one" "$(jq -r '.labels[].description' "$LINEAR_DB" | grep -Ec "$IDRE" || true)" 0
 # heartbeat hashes a full machine id an older version left in the description, or writes nothing
@@ -2527,7 +2623,7 @@ dbreset; "$LIN" claim DEV-1 >/dev/null 2>&1; brow bt9/builder DEV-1; "$REG" set 
 "$SCRIPTS/tick.sh" >/dev/null 2>&1
 eq "tick: a Done row's claim is still heartbeated (one mutation)" "$(nmut)" 1
 "$REG" retire bt9/builder >/dev/null 2>&1; : >"$LINEAR_LOG"; "$SCRIPTS/tick.sh" >/dev/null 2>&1
-eq "tick: a Retired row's claim is not" "$(nmut)" 0
+eq "tick: a Retired row's claim does not matter: the pre-flight heartbeat writes once" "$(nmut)" 1
 brow bt8/builder DEV-3
 
 # -- no key: exit 3, nothing sent, tick still works and says so once
@@ -4088,7 +4184,7 @@ sw() { FLEET_GH="$G4" D4GH_LIST="$D4/gh-pr6.json" FLEET_NOW=2026-10-18T09:00:00Z
 swev() { printf '%s' "$1" | jq -r '[.[] | select(.type | startswith("claim_")) | .type + ":" + .issue] | sort | join(" ")'; }
 d4cfg 'linear_writes = "on"' "repos = [\"$D4/r3\"]"; : >"$LINEAR_LOG"; : >"$D4GH_LOG"; s1="$(sw)"
 eq "dev408-3 sweep: lapsed with no PR released, lapsed with a PR held, no heartbeat lapsed, a live claim untouched" "$(swev "$s1")" "claim_held_pr:DEV-6 claim_lapsed:DEV-4 claim_released:DEV-2"
-eq "dev408-3 sweep: exactly one release, of the lapsed claim with no PR" "$(d4mut):$(d4labels DEV-2):$(d4labels DEV-6):$(d4labels DEV-7)" "1:bug:fleet:pr:fleet:live"
+eq "dev408-3 sweep: exactly one release, of the lapsed claim with no PR" "$(d4mut):$(d4labels DEV-2):$(d4labels DEV-6):$(d4labels DEV-7)" "2:bug:fleet:pr:fleet:live"
 eq "dev408-3 sweep: every PR lookup was in the fleet's repo (by its origin remote), and held names the PR" "$(grep -c '^pr list' "$D4GH_LOG"):$(grep -c '^pr list.*--repo acme/app-api' "$D4GH_LOG"):$(printf '%s' "$s1" | jq -r '.[] | select(.type == "claim_held_pr") | .url')" "3:3:https://github.com/acme/app-api/pull/9"
 eq "dev408-3 sweep: each once, then quiet" "$(swev "$(sw)")" ""
 eq "dev408-3 sweep: the claims are in the event log with their holder" "$(jq -r 'select(.type | startswith("claim_")) | .type + ":" + .issue + ":" + .detail' "$FLEET_STATE_DIR/events.jsonl" | sort | head -n 1)" "claim_held_pr:DEV-6:holder fleet:pr"
@@ -4096,7 +4192,7 @@ eq "dev408-3 sweep: they wake the Orchestrator" "$(jq -r '.[] | .type' <<<"$s1" 
 qfresh sweepro; cp "$D4/db3" "$LINEAR_DB"; d4cfg "repos = [\"$D4/r3\"]"; : >"$LINEAR_LOG"; s2="$(sw)"
 eq "dev408-3 sweep: with writes off nothing is written, and each lapsed claim is claim_lapsed" "$(swev "$s2"):$(d4mut)" "claim_lapsed:DEV-2 claim_lapsed:DEV-4 claim_lapsed:DEV-6:0"
 qfresh sweepnr; cp "$D4/db3" "$LINEAR_DB"; d4cfg 'linear_writes = "on"'; : >"$LINEAR_LOG"; s3="$(sw)"
-eq "dev408-3 sweep: with no repo to look for a PR in, nothing is released" "$(swev "$s3"):$(d4mut)" "claim_lapsed:DEV-2 claim_lapsed:DEV-4 claim_lapsed:DEV-6:0"
+eq "dev408-3 sweep: with no repo to look for a PR in, nothing is released" "$(swev "$s3"):$(d4mut)" "claim_lapsed:DEV-2 claim_lapsed:DEV-4 claim_lapsed:DEV-6:1"
 qfresh sweepteam; cp "$D4/db3" "$LINEAR_DB"; d4cfg 'linear_writes = "on"' "repos = [\"$D4/r3\"]"
 eq "dev408-3 sweep: tick --team leaves it to the fleet-wide tick" "$(swev "$(FLEET_GH="$G4" D4GH_LIST="$D4/gh-pr6.json" FLEET_NOW=2026-10-18T09:00:00Z "$SCRIPTS/tick.sh" --team nobody 2>/dev/null)")" ""
 # R2: another machine's sweep released our lapsed claim, so the issue carries no machine label (DEV-1 here) and our
@@ -4141,7 +4237,7 @@ git init -q "$QD/wt62"; echo wip >"$QD/wt62/f"; "$REG" set s62/builder worktree=
 for t in s60 s61 s62; do "$REG" add "$(jq -cn --arg t "$t" --arg s "$([ "$t" = s61 ] && echo Working || echo Idle)" '{name: ($t + "/lead"), team: $t, tier: "Lead", status: $s, herdr_ref: ($t + "-lead"), pane: ("p" + $t)}')" >/dev/null; done
 pk="$(FLEET_GH="$QD/gh-shim" "$SCRIPTS/tick.sh" 2>"$T/pk.err")"; rc=$?
 tstat() { "$REG" list --team "$1" | jq -r '[.[].status] | unique | join(",")'; }
-eq "dev408-2 park: signed off with every agent Done or Idle, the team parks (Done rows stay Done), and pr_ready still wakes" "$(evc "$pk" pr_ready):$(tstat s60):$("$REG" get s60/lead | jq -r .parked_reason)" "3:Done,Parked:signed-off"
+eq "dev408-2 park: signed off with every agent Done or Idle, the team parks (Done rows park too), and pr_ready still wakes" "$(evc "$pk" pr_ready):$(tstat s60):$("$REG" get s60/lead | jq -r .parked_reason)" "3:Parked:signed-off"
 eq "dev408-2 park: an agent still working means no park" "$(tstat s61 | grep -c Parked)" 0
 eq "dev408-2 park: work that is not pushed refuses the park: one warning, the team keeps its slot, the tick goes on" "$rc:$(tstat s62):$(grep -c 's62 is signed off but could not park, so it keeps its slot: not parking s62' "$T/pk.err")" "0:Done,Idle:1"
 # The tester keeps its report uncommitted under reports/: park ignores only untracked files there.
@@ -4161,7 +4257,7 @@ pkwt "$QD/rp3"; mkdir -p "$QD/rp3/reports"; echo r >"$QD/rp3/reports/DEV-3-teste
 pkwt "$QD/rp4" tracked; echo changed >"$QD/rp4/reports/old.md"; pkteam rp4 "$QD/rp4"
 for t in rp1 rp2 rp3 rp4; do "$SCRIPTS/park.sh" "$t" >/dev/null 2>"$T/$t.err"; echo "$?" >"$T/$t.rc"; done
 eq "dev408-2 park: an untracked report under reports/ does not refuse it, whether reports/ is tracked or new, quoted names too" \
-  "$(cat "$T/rp1.rc"):$(tstat rp1):$(cat "$T/rp2.rc"):$(tstat rp2)" "0:Done,Parked:0:Done,Parked"
+  "$(cat "$T/rp1.rc"):$(tstat rp1):$(cat "$T/rp2.rc"):$(tstat rp2)" "0:Parked:0:Parked"
 eq "dev408-2 park: an untracked file outside reports/ still refuses, naming the worktree" \
   "$(cat "$T/rp3.rc"):$(tstat rp3):$(grep -c "rp3/tester: uncommitted changes in $QD/rp3" "$T/rp3.err")" "1:Done,Idle:1"
 eq "dev408-2 park: a changed tracked file under reports/ still refuses" "$(cat "$T/rp4.rc"):$(tstat rp4):$(grep -c 'rp4/tester: uncommitted changes' "$T/rp4.err")" "1:Done,Idle:1"
@@ -4173,7 +4269,7 @@ pkteam s63 "$QD/wt63"; "$REG" add '{"name":"s63/builder","team":"s63","tier":"Wo
 pk3="$(FLEET_GH="$QD/gh-shim" "$SCRIPTS/tick.sh" 2>"$T/pk3.err")"
 eq "dev408-2 park: on pr_ready, tick parks a signed-off team whose tester's report is untracked under reports/, and the slot frees" \
   "$(tstat s63):$("$REG" get s63/lead | jq -r .parked_reason):$(grep -c 'could not park' "$T/pk3.err"):$(printf '%s' "$pk3" | jq -r '[.[] | select(.type == "slot_free") | .detail] | join(",")')" \
-  "Done,Parked:signed-off:0:0 live < target 1"
+  "Parked:signed-off:0:0 live < target 1"
 # R5: the park is tried on every tick while the team is signed off and idle, not only on pr_ready's tick.
 qfresh r5park
 "$REG" add '{"name":"orchestrator","team":"orchestrator","tier":"Orchestrator","status":"Working","herdr_ref":"o5","pane":"po5"}' >/dev/null; "$REG" set orchestrator target_teams=1 >/dev/null
@@ -4183,13 +4279,13 @@ echo working >"$AS/s64-lead"; r5a="$(FLEET_GH="$QD/gh-shim" "$SCRIPTS/tick.sh" 2
 echo idle >"$AS/s64-lead"; "$REG" set s64/lead status=Idle >/dev/null; r5b="$(FLEET_GH="$QD/gh-shim" "$SCRIPTS/tick.sh" 2>/dev/null)"
 eq "dev408-R5 park: a lead still Working on pr_ready's tick does not keep the slot: a later tick parks the signed-off team and the slot frees" \
   "$(evc "$r5a" pr_ready):$r5st:$(evc "$r5a" slot_free):$(evc "$r5b" pr_ready):$(tstat s64):$("$REG" get s64/lead | jq -r .parked_reason):$(printf '%s' "$r5b" | jq -r '[.[] | select(.type == "slot_free") | .detail] | join(",")')" \
-  "1:0:0:0:Done,Parked:signed-off:0 live < target 1"
+  "1:0:0:0:Parked:signed-off:0 live < target 1"
 qpr app-api 65 fleet/dev-65 main 2026-10-18T10:00:00Z '["f.go"]' x; qteam s65 app-api 65 DEV-65 aaaaaaa65; pkwt "$QD/wt65"; echo wip >"$QD/wt65/wip.go"
 "$REG" add '{"name":"s65/lead","team":"s65","tier":"Lead","status":"Idle","herdr_ref":"s65-lead","pane":"ps65"}' >/dev/null; "$REG" set s65/builder worktree="$QD/wt65" >/dev/null
 for i in 1 2; do FLEET_GH="$QD/gh-shim" "$SCRIPTS/tick.sh" >/dev/null 2>>"$T/r5.err"; done; r5c="$(tstat s65)"
 rm -f "$QD/wt65/wip.go"; FLEET_GH="$QD/gh-shim" "$SCRIPTS/tick.sh" >/dev/null 2>>"$T/r5.err"
 eq "dev408-R5 park: a refused park warns once per head over two ticks, and parks on the tick after the work is clean" \
-  "$(grep -c 's65 is signed off but could not park' "$T/r5.err"):$r5c:$(tstat s65)" "1:Done,Idle:Done,Parked"
+  "$(grep -c 's65 is signed off but could not park' "$T/r5.err"):$r5c:$(tstat s65)" "1:Done,Idle:Parked"
 qfresh picked; mkdir -p "$QD/p2"
 FLEET_FORCE=1 bt --issue DEV-70 --issue-url https://linear.app/acme/issue/DEV-70/x build pk "$QD/p2" task
 "$REG" note build-pk/lead picked "Todo by priority; DEV-70 is the oldest P1" >/dev/null

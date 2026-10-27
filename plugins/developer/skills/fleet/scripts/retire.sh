@@ -11,7 +11,7 @@
 # and this machine's claim is released. A PR whose body says it is "Part of" another issue (any case, before an issue
 # reference) leaves the issue In Progress with its label. The Retired line then ends "Issue → <state>.".
 #
-# --summary changes nothing. It prints, per target, the line the user answers before a retire:
+# --summary changes nothing, and a retire never waits on it: it is how to read what a retire would keep. It prints, per target:
 #   Retire <team>? Outcome <X>. Unpushed: <none|list>. Kept: <none|list>. Reply yes to retire.
 # (the outcomes the rows reported, Abandoned when none did; the worktrees with commits on no remote; every worktree
 # a retire would keep, with why). A retire prints
@@ -235,7 +235,7 @@ fi
 if [ -n "$outcome" ]; then "$registry" retire "$target" --outcome "$outcome"; else "$registry" retire "$target"; fi
 for n in $(printf '%s' "$rows" | jq -r '.[].name'); do ev_log retired team="$(printf '%s' "$rows" | jq -r --arg n "$n" '.[] | select(.name == $n) | .team')" name="$n"; done
 outcomes="$("$registry" list | jq -r --argjson names "$(printf '%s' "$rows" | jq -c '[.[].name]')" '[.[] | select(.name as $n | $names | index($n)) | .outcome // empty] | unique | join("/")')"
-prs="$(printf '%s' "$rows" | jq -r '[.[].pr // empty | select(. != "")] | unique[]' | while IFS= read -r u; do pr_link "$u"; done | paste -sd, - | sed 's/,/, /g')"
+prs="$(printf '%s' "$rows" | jq -r '[.[] | (.pr // empty), (.prs // [])[] | select(. != "")] | unique[]' | while IFS= read -r u; do pr_link "$u"; done | paste -sd, - | sed 's/,/, /g')"
 
 # Linear: a whole team's issue follows its outcome, once per issue and only while linear_writes allows writes; a
 # failure warns and never fails the retire. Shipped → Done (Verify with --verify), only once every PR of the issue
@@ -249,7 +249,7 @@ if $whole_team && [ -n "$want" ] && [ "$(linear_writes)" != off ] && "$FLEET_SCR
   while IFS= read -r iss; do
     [ -n "$iss" ] || continue
     partof=false; unmerged=""
-    for u in $(printf '%s' "$rows" | jq -r --arg i "$iss" '[.[] | select(.issue == $i) | .pr // empty | select(. != "")] | unique[]'); do
+    for u in $(printf '%s' "$rows" | jq -r --arg i "$iss" '[.[] | select(.issue == $i) | (.pr // empty), (.prs // [])[] | select(. != "")] | unique[]'); do
       j="$(forge_pr_json "$u" 2>/dev/null)" || j='{}'
       if jq -e "$PART_OF_JQ"'(.body // "") | part_of != null' >/dev/null 2>&1 <<<"$j"; then partof=true; fi
       [ "$want" = Todo ] || [ "$(jq -r '.state // ""' <<<"$j" 2>/dev/null)" = MERGED ] || unmerged="$unmerged${unmerged:+, }$u"
