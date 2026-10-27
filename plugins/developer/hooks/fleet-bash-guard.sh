@@ -228,6 +228,18 @@ check_git_push() { # check_git_push <words after "git push">
   : "$lease"
 }
 
+# ln: no link or hard link whose operand ends in node_modules, .venv or vendor (an install is run in the worktree itself).
+check_ln() {
+  local a b
+  for a in "$@"; do
+    case "$a" in -*) continue ;; esac
+    b="${a%"${a##*[!/]}"}"; b="${b##*/}"
+    case "$b" in
+      node_modules | .venv | vendor) deny "fleet bash guard: link nothing to another checkout's node_modules/.venv/vendor; run npm ci (or the lockfile install) in your own worktree." ;;
+    esac
+  done
+}
+
 while IFS= read -r seg; do
   read -r -a w <<<"$seg" # quotes were turned into spaces once, below (${seg//...} is quadratic on bash 3.2)
   i=0
@@ -237,7 +249,7 @@ while IFS= read -r seg; do
   [ "$i" -lt "${#w[@]}" ] || continue
   # Only git, gh and the installers are checked here: any other command word is skipped before its words are copied,
   # so a long echo or a long quoted body costs one pass (the key's directory was already checked above).
-  case "${w[$i]##*/}" in git | gh | brew | go | gem | cargo | apt | apt-get | yarn | pnpm | npm | pip | pip3 | python | python3 | python3.*) ;; *) continue ;; esac
+  case "${w[$i]##*/}" in ln | git | gh | brew | go | gem | cargo | apt | apt-get | yarn | pnpm | npm | pip | pip3 | python | python3 | python3.*) ;; *) continue ;; esac
   # Redirections are not arguments: drop 2>, >/dev/null, 2>&1's leftover and the word after a bare > or <.
   # One awk pass (no rest+=, which is quadratic on bash 3.2).
   read -r -a rest <<<"$(printf '%s\n' "${w[@]:$i}" | awk 'skip { skip = 0; next } /^[0-9]*[<>]/ { if ($0 ~ /[<>]$/) skip = 1; next } { printf "%s ", $0 }')"
@@ -252,6 +264,7 @@ while IFS= read -r seg; do
       if [ "${rest[1]:-}" = pr ] && [ "${rest[2]:-}" = merge ]; then
         deny "fleet bash guard: agents never merge a PR; the merger (config merger, default a human) does."
       fi ;;
+    ln) check_ln "${rest[@]:1}" ;;
     *) check_install "${rest[@]}" ;;
   esac
 done < <(printf '%s\n' "$cmd" | awk -v sq="'" '

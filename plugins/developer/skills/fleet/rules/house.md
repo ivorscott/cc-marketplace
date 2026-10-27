@@ -5,6 +5,7 @@ House rules (fleet). They apply to every agent on every team. A rule here is a f
 - A PR body starts with the exact line `Fixes <the issue's full URL>` (the lead's brief gives it). Every other issue you mention is a full URL too.
 - `unset AWS_PROFILE` and use local endpoints (localstack, kind, local databases). Checks against a real cloud account are reported UNVERIFIED, never run.
 - Installing is allowed only when the work needs it, and every install is listed in your report (what, why, how). The guard denies installers unless the owner allowed them; an approved install is run by the owner or the Orchestrator, not by you.
+- Each writer runs `npm ci` (or the lockfile's equivalent) in its own worktree; installing from the lockfile is allowed. Never symlink `node_modules`, `.venv` or `vendor/` to another checkout: it can be older than the lockfile and sits outside your worktree.
 - Run the verification command named in your brief exactly, and show its result before and after your change. Do not trust a report: re-run the proof yourself.
 - Reports are 15 lines or fewer: the verdict first, then one PASS, FAIL or UNVERIFIED line per item, each tied to the head commit SHA. Evidence goes in `reports/<ticket>-<role>.md`; if messaging the lead fails, say where the file is.
 - Write only inside your own repository. Work in another repository becomes a new issue. Never push to the default branch and never merge a PR; the merger (`merger` in the fleet config, default "a human") merges.

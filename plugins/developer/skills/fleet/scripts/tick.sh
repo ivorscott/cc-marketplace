@@ -53,7 +53,8 @@
 #                   The three claim_ events: once per (issue, holder, heartbeat); not with --team
 #   claims_unavailable  teams hold issues but no Linear key is configured (once)
 #   claims_readonly     teams hold issues and a key exists, but linear_writes = off (once)
-# With a key and linear_writes allowing it, every tick makes ONE heartbeat mutation (linear.sh heartbeat);
+# With a key and linear_writes allowing it, every tick makes ONE heartbeat mutation (linear.sh heartbeat), first of
+# all, before herdr is checked and with or without claimed rows;
 # with a key, one read per claimed issue (holder), Done rows included. Tick never runs linear.sh migrate.
 # Once a week (ISO week, in the state file) tick also runs `registry.sh archive`.
 # One tick at a time: tick.lock (mkdir; pid and start time inside). A tick that finds a held lock exits 0
@@ -62,6 +63,14 @@
 # stderr and skips that PR for this tick; no gh on PATH is one warning and no PR events.
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
+# Before anything that can end the tick (herdr down, a held lock, a registry read): the machine label's heartbeat is
+# refreshed, so a claim made while the loop was off never reads as lapsed to another machine. Rows are not needed,
+# and a failure only warns.
+HB_DONE=0
+if "$FLEET_SCRIPTS/linear.sh" has-key >/dev/null 2>&1 && [ "$(linear_writes)" != off ]; then
+  HB_DONE=1
+  "$FLEET_SCRIPTS/linear.sh" heartbeat >/dev/null 2>&1 || warn "linear.sh heartbeat failed"
+fi
 require_herdr
 registry="$FLEET_SCRIPTS/registry.sh"
 
@@ -141,7 +150,7 @@ heartbeat() {
         st_upd '$st + {claims_readonly_emitted: true}'
       fi
     else
-      [ "$rows_n" = 0 ] ||
+      [ "$rows_n" = 0 ] || [ "$HB_DONE" = 1 ] ||
         "$FLEET_SCRIPTS/linear.sh" heartbeat >/dev/null 2>&1 || warn "linear.sh heartbeat failed"
     fi
   elif [ "$rows_n" != 0 ] && [ "$(jq -r '.claims_unavailable_emitted // false' "$STATE_FILE")" != true ]; then
@@ -388,9 +397,10 @@ if command -v "$FLEET_GH" >/dev/null 2>&1; then
   done < <("$registry" list ${team:+--team "$team"} | jq -r '.[] | select(.tier == "Worker" and .status != "Retired" and .status != "Parked" and (.pr // "") == "")
     | [.name, (.branch // ""), (.worktree // "")] | @tsv')
   drows="$("$registry" list | jq -c '[.[] | select(type == "object" and .status != "Retired" and .tier != "Orchestrator")]')"
-  # the teams to look for: not parked, no PR on any row, and a worker on a fleet/ branch (what boot gives a builder)
+  # the teams to look for: not parked and a worker on a fleet/ branch (what boot gives a builder). A team that has a PR
+  # is looked at too: a second PR for its issue is recorded next to the first (registry.sh add-pr).
   dteams="$(jq -c --arg only "$team" '[group_by(.team)[] | select(($only == "" or .[0].team == $only) and all(.[]; .status != "Parked")
-    and any(.[]; .tier == "Worker" and ((.branch // "") | startswith("fleet/"))) and all(.[]; (.pr // "") == "")) | .[0].team]' <<<"$drows")"
+    and any(.[]; .tier == "Worker" and ((.branch // "") | startswith("fleet/")))) | .[0].team]' <<<"$drows")"
   while IFS= read -r brepo; do
     [ -n "$brepo" ] || continue
     if [ ! -d "$brepo" ]; then warn "cannot look for PRs in '$brepo': not a directory"; continue; fi
@@ -399,7 +409,13 @@ if command -v "$FLEET_GH" >/dev/null 2>&1; then
     fi
     while IFS=$'\t' read -r bteam bname purl; do
       [ -n "$purl" ] || continue
-      "$registry" set "$bname" pr="$purl" >/dev/null || continue
+      # already on a row of the team: nothing to record or announce
+      [ "$("$registry" list --team "$bteam" | jq --arg u "$purl" 'any(.[]; (.pr // "") == $u or ((.prs // []) | index($u)) != null)')" = false ] || continue
+      if [ "$("$registry" list --team "$bteam" | jq 'any(.[]; (.pr // "") != "")')" = true ]; then
+        "$registry" add-pr "$bname" "$purl" >/dev/null || continue
+      else
+        "$registry" set "$bname" pr="$purl" >/dev/null || continue
+      fi
       told=true
       "$FLEET_SCRIPTS/tell.sh" "$bteam/lead" "PR $purl is open; start the tester" >/dev/null 2>&1 || { told=false; warn "could not tell $bteam/lead about $purl"; }
       if [ "$(jq --arg u "$purl" '(.pr_opened_emitted // []) | index($u) == null' "$STATE_FILE")" = true ]; then
@@ -412,7 +428,7 @@ if command -v "$FLEET_GH" >/dev/null 2>&1; then
           | select($t != null and ($teams | index($t)) != null and any($rows[]; .team == $t and (.repo // "") == $repo))
           | [$rows[] | select(.team == $t and .tier == "Worker")] as $w
           | [$t, (([$w[] | select((.branch // "") == $h)] + [$w[] | select(.name | endswith("/builder"))] + $w) | first | .name), .url]]
-      | unique_by(.[0])[] | @tsv' <<<"$found" 2>/dev/null)
+      | unique_by(.[2])[] | @tsv' <<<"$found" 2>/dev/null)
   done < <(jq -r --argjson teams "$dteams" '[.[] | select(.team as $t | $teams | index($t)) | .repo // empty | select(. != "")] | unique[]' <<<"$drows")
 fi
 
@@ -427,7 +443,8 @@ prs="$(printf '%s' "$all_rows" | jq -c '
   [.[] | select(type == "object" and .status == "Parked") | .team] as $parked
   | [.[] | select(type == "object") | select(((.pr // "") | type) == "string" and ((.repo // "") | type) == "string"
       and (.signoff == null or ((.signoff | type) == "object" and ((.signoff.sha // "") | type) == "string")))
-    | select(.status != "Retired" and (.pr // "") != "")]
+    | select(.status != "Retired")
+    | . as $r | ([$r.pr // empty] + (if ($r.prs | type) == "array" then [$r.prs[] | strings] else [] end) | map(select(. != "")) | unique)[] as $u | $r + {pr: $u}]
   | group_by(.pr) | map(. as $g | {pr: .[0].pr, team: .[0].team, name: .[0].name, repo: (.[0].repo // ""),
       signoff: ([$g[] | select((.signoff | objects | .sha) != null and ((.name // "") | endswith("/tester")) and .team == $g[0].team) | .signoff.sha] | first // null),
       park_after_merge: ([$g[] | .park_after_merge // empty] | first // null), parked: (($parked | index($g[0].team)) != null)})')"
@@ -461,6 +478,13 @@ if [ "$(printf '%s' "$prs" | jq length)" != 0 ]; then
           [ -n "$tu" ] && [ "$tu" != "$url" ] || continue
           if [ "$(forge_pr_json "$tu" 2>/dev/null | jq -r '.state // ""' 2>/dev/null)" = OPEN ]; then ev=null; break; fi
         done < <(jq -r --arg u "$url" "$PR_DEFS"'pr_after($u)[]' <<<"$j" 2>/dev/null)
+      fi
+      # A team with another recorded PR still open is not merged: no pr_merged until every PR of the team has merged.
+      if [ "$(printf '%s' "$ev" | jq -r '.type? // ""' 2>/dev/null)" = pr_merged ]; then
+        while IFS= read -r tu; do
+          [ -n "$tu" ] || continue
+          if [ "$(forge_pr_json "$tu" 2>/dev/null | jq -r '.state // ""' 2>/dev/null)" = OPEN ]; then ev=null; break; fi
+        done < <(printf '%s' "$prs" | jq -r --arg u "$url" --arg t "$(printf '%s' "$p" | jq -r .team)" '.[] | select(.team == $t and .pr != $u) | .pr')
       fi
       # \x1f, not a tab: a tab read collapses an empty field (a null mergeable), shifting the ones after it.
       IFS=$'\x1f' read -r pst pready pmerge phead < <(jq -rn --argjson p "$p" --slurpfile g <(printf '%s' "$j") --argjson noci "$no_ci" "$PR_DEFS"'
@@ -502,7 +526,8 @@ if [ "$(printf '%s' "$prs" | jq length)" != 0 ]; then
       add_events "[$ev]"
       case "$(printf '%s' "$ev" | jq -r .type)" in
         pr_merged)
-          st_upd --arg u "$url" '$st + {pr_merged_emitted: ((($st.pr_merged_emitted // []) + [$u]) | unique)}'
+          st_upd --arg u "$url" --argjson all "$(printf '%s' "$prs" | jq -c --arg t "$(printf '%s' "$ev" | jq -r .team)" '[.[] | select(.team == $t) | .pr]')" \
+            '$st + {pr_merged_emitted: ((($st.pr_merged_emitted // []) + [$u] + $all) | unique)}'
           # A team marked to park after its merge parks now, instead of taking the next issue.
           pn="$(printf '%s' "$ev" | jq -r '.parks // ""')"
           if [ -n "$pn" ]; then
@@ -700,7 +725,7 @@ done < <(jq -c --arg wake "$WAKE_TYPES" ".[] | $WAKE_JQ" "$EVENTS_FILE")
 
 # The state is rebuilt from what is live, so it cannot grow without bound: reported-once keys survive only while
 # the thing they describe (a PR on a row, an open escalation, a claimed issue, a recent respawn) still exists.
-live_prs="$("$registry" list | jq -c '[.[] | select(.status != "Retired") | .pr // empty]')"
+live_prs="$("$registry" list | jq -c '[.[] | select(.status != "Retired") | (.pr // empty), (.prs // [])[]]')"
 live_esc="$("$registry" escalations --open | jq -c '[.[] | .name + "|" + .id]')"
 live_claims="$("$registry" list --live | jq -c '[.[] | select((.issue // "") != "") | .team + "|" + .issue]')"
 live_names="$("$registry" list --live | jq -c '[.[] | .name]')"

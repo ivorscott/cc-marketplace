@@ -133,9 +133,9 @@ The Orchestrator and agents call these directly (from `scripts/`). You can call 
 | `sandbox.sh` | `sandbox.sh [--keep] [--] [cmd...]` runs a reproduction with a temporary state and config root, shims for herdr, gh and curl, and no session, key or `FLEET_ROLE`; refuses the live roots |
 | `respawn.sh` | `respawn.sh <team/role>` starts a Zombie row again from the row (same role, worktree, branch, model; new session id) and sends a resume brief; `tick.sh` calls it within the budget `respawn_max` (1) per `respawn_window_hours` (6). `--restart` (next's) waits for the agent to be idle, never types into a busy one, and confirms Claude's exit dialog |
 | `metrics.sh` | `metrics.sh [--since 7d] [--json]` the weekly table (issues shipped, PRs, rework, median cycle) and a report file with one row per PR: minutes to ready, rework rounds, stalls, missed messages, tokens (from `events.jsonl` and the agents' transcripts) |
-| `retire.sh` | `retire.sh <team\|team/role> [--outcome O] [--verify]` safe teardown; `--summary <target...>` the read-only line the user answers before a retire. A whole team's issue follows the outcome on Linear when writes are on (Shipped → Done, or Verify with `--verify`, once its PR merged; Abandoned, Failed or no outcome → Todo, claim released; a PR that says "Part of <issue>", in any case, leaves it); reports are archived to the team repo's `reports/fleet-archive/`, and build output (`node_modules`, `.terraform`, `bin`, `test-results`, ...) never keeps a worktree. A team name with no live rows but leftovers of an earlier boot (`fleet/<team>/*` branches, worktrees) is tidied: what would lose nothing is removed, the rest kept and named |
+| `retire.sh` | `retire.sh <team\|team/role> [--outcome O] [--verify]` safe teardown; `--summary <target...>` a read-only view of what a retire would keep (a retire never waits on it). A whole team's issue follows the outcome on Linear when writes are on (Shipped → Done, or Verify with `--verify`, once its PR merged; Abandoned, Failed or no outcome → Todo, claim released; a PR that says "Part of <issue>", in any case, leaves it); reports are archived to the team repo's `reports/fleet-archive/`, and build output (`node_modules`, `.terraform`, `bin`, `test-results`, ...) never keeps a worktree. A team name with no live rows but leftovers of an earlier boot (`fleet/<team>/*` branches, worktrees) is tidied: what would lose nothing is removed, the rest kept and named |
 | `env.sh` | `up [--branch B] <team>` creates the team's cluster (exit 75 = queued at `max_envs`) · `down <team>` removes it, with its images and builder · `status` lists every env |
-| `registry.sh` | `add '<json>'` · `set <name> key=value…` · `get <name>` · `list [--team T] [--live] [--problems]` · `list --envs` · `done <name> --outcome O --summary TEXT` · `escalate <name> P0\|P1\|P2 TEXT` · `escalations [--open] [--team T] [--not-retired]` · `resolve <name> <id|at> [--note TEXT]` · `note <name> discovered\|decision\|picked TEXT` · `retire <name\|team> [--outcome O]` · `pref <key> [value]` · `unsynced` · `synced <name…>` · `path` |
+| `registry.sh` | `add '<json>'` · `set <name> key=value…` · `add-pr <name> <url>` · `get <name>` · `list [--team T] [--live] [--problems]` · `list --envs` · `done <name> --outcome O --summary TEXT` · `escalate <name> P0\|P1\|P2 TEXT` · `escalations [--open] [--team T] [--not-retired]` · `resolve <name> <id|at> [--note TEXT]` · `note <name> discovered\|decision\|picked TEXT` · `retire <name\|team> [--outcome O]` · `pref <key> [value]` · `unsynced` · `synced <name…>` · `path` |
 
 ## Requirements
 
@@ -517,3 +517,21 @@ Fixes from the first day of 4.1 (DEV-512), one per item:
 | `../../agents/lead.md`, `orchestrator.md` | delegate-only agent definitions |
 | `../../hooks/` | context recovery (`prime`) and the worktree and planner scope guard; inert outside fleet panes |
 | `<repo>/.fleet/plan/<team>.md` | the planner's plan, in the team's repo and out of git (`.git/info/exclude`); retire deletes it |
+
+## What changed in 4.1.2
+
+Fixes found after 4.1.1 (DEV-530), one per item:
+
+1. **No links between checkouts.** The house rules and the build template say each writer runs `npm ci` (or the
+   lockfile's equivalent) in its own worktree and never links `node_modules`, `.venv` or `vendor/` to another checkout;
+   the Bash guard also denies an `ln` whose operand ends in one of those names. It sees only `ln`, not
+   `python -c os.symlink` or `mklink`.
+2. **Auto-park parks every row.** A signed-off team's Done rows become `Parked` like the rest, so `status`, `tell` and
+   `unpark` find them.
+3. **A team's second PR is recorded.** Tick adds every open PR a team pushes (`registry.sh add-pr`, `.prs`), fires
+   `pr_opened` once per PR, and sends `pr_merged` and the Shipped to Done move only once all of them merged.
+4. **Retire and pick without asking.** A merged PR retires its team at once (a kept worktree is still asked about) and
+   the next issue is picked without a menu: a "Decide first" issue takes its acceptance default, named follow-ups are
+   filed and a requested split is done. `retire --summary` stays as a read-only view.
+5. **A fresh claim is fresh.** `claim` and `takeover` refresh the machine label's heartbeat in the same call, and tick
+   refreshes it first of all, before herdr is checked and with or without claimed rows.
