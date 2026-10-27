@@ -699,6 +699,8 @@ Merge this one first." "Do not merge until the API ships" "  hold: waiting on de
   rf="$(awk '/^## F\. Retire/ { on = 1; next } on && /^## / { exit } on' "$SK")"
   eq "smoke: dev530-4 route F retires at once: no summary step, no Reply yes, no wait for the user's go" \
     "$(printf '%s\n' "$rf" | grep -ci 'reply yes to retire\|wait for the user.s go\|summary first'):$(printf '%s\n' "$rf" | grep -c 'Retire at once, without asking')" "0:1"
+  eq "smoke: dev530-4 only pr_merged forces --outcome Shipped: the user's /fleet retire takes the outcome they named, else none" \
+    "$(printf '%s\n' "$rf" | tr -s ' \n' '  ' | grep -c 'on `pr_merged`, run step 2 with `--outcome Shipped`.*never force Shipped on it'):$(printf '%s\n' "$rf" | tr -s ' \n' '  ' | grep -c 'and when the user runs')" "1:0"
   eq "smoke: dev530-4 A step 0 and operations.md: no menu, Decide first takes its default, follow-ups filed, a split done" \
     "$(grep -c 'Never hand the user a menu: an issue with a "Decide first" section takes its' "$SK"):$(grep -c 'never hand the user a menu: an$' "$OP")" "1:1"
   eq "smoke: dev530-4 pr_merged retires and picks: no 'next or retire' choice" "$(grep -A3 '^- `pr_merged`' "$SK" | grep -c 'retire the team at once')" 1

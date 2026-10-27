@@ -176,10 +176,11 @@ An escalation stays open, even after its agent is Done, until you run `$F/fleet 
 
 ## F. Retire
 
-0. **Retire at once, without asking:** when a team's PR merges (`pr_merged`), and when the user runs `/fleet retire`,
-   run step 2 with `--outcome Shipped` (add `--verify` when an item waits on the user), with no `--summary` and no
-   "Reply yes". Ask only when the retire reports a kept worktree (tracked changes or unpushed commits): name it and
-   wait.
+0. **Retire at once, without asking, with no `--summary` and no "Reply yes":** on `pr_merged`, run step 2 with
+   `--outcome Shipped` (add `--verify` when an item waits on the user). The user's own `/fleet retire` runs at once
+   with the outcome they named, else with no `--outcome` (the rows' reported outcomes, Abandoned when none): never
+   force Shipped on it. Ask only when the retire reports a kept worktree (tracked changes or unpushed commits): name it
+   and wait.
 1. Ask each live agent in the target to push work in progress (skip Zombies).
 2. `$F/fleet retire <team | team/role> [--outcome Shipped|Partial|Abandoned|Failed] [--verify]` closes only the fleet's panes,
    removes worktrees, closes open escalations ("closed at retire") and marks the rows Retired. A whole team's issue
