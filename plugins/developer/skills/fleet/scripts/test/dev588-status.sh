@@ -139,3 +139,23 @@ d588_conflict_catchup() {
     "$(grep -ciE -- '--force|push -f|rebase' "$SCRIPTS/catchup.sh")" 0
   unset -f tk evn
 }
+
+d588_same_repo() {
+  qfresh d588sr; export FLEET_STATE_DIR="$QD/state.d588sr" FLEET_REGISTRY="$QD/state.d588sr/fleet.json" FLEET_INBOX="$QD/state.d588sr/escalations.jsonl"
+  rm -rf "$FLEET_STATE_DIR"; mkdir -p "$FLEET_STATE_DIR"; export FLEET_GH="$QD/gh-shim"
+  local ci='.github/workflows/ci.yml'
+  # two repos, one workflow path and one migration number each: neither is a conflict with the other
+  qpr app-api 30 fleet/dev-30-a main 2026-10-29T08:00:00Z "[\"$ci\",\"db/migrations/0040_a.sql\"]" x
+  qpr app-web 31 fleet/dev-31-b main 2026-10-29T09:00:00Z "[\"$ci\",\"db/migrations/0040_b.sql\"]" y
+  qteam sr1 app-api 30 DEV-30 aaaaaaa30; qteam sr2 app-web 31 DEV-31 aaaaaaa31
+  eq "dev588-7 queue: the same path in two repos is not an overlap: no rebase, no note, no migration clash" \
+    "$(q | jq -r '[.ready[] | .after + "|" + .why] | join(";")')" "—|oldest first;—|oldest first"
+  # the same two files in one repo: the later one is marked
+  qfresh d588sr2; export FLEET_STATE_DIR="$QD/state.d588sr2" FLEET_REGISTRY="$QD/state.d588sr2/fleet.json"; mkdir -p "$FLEET_STATE_DIR"
+  qpr app-api 30 fleet/dev-30-a main 2026-10-29T08:00:00Z "[\"$ci\"]" x
+  qpr app-api 32 fleet/dev-32-c main 2026-10-29T09:00:00Z "[\"$ci\"]" y
+  qteam sr1 app-api 30 DEV-30 aaaaaaa30; qteam sr3 app-api 32 DEV-32 aaaaaaa32
+  eq "dev588-7 queue: in one repo the later PR is marked rebase after the first" \
+    "$(q | jq -r '[.ready[] | (.url | sub(".*/pull/"; "#")) + " " + .after] | join(";")')" "#30 —;#32 rebase after #30"
+  unset FLEET_GH
+}

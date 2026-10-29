@@ -24,7 +24,7 @@
 #      #N"), a "Depends on <PR url>" line in the dependent's body ("<repo> #N uses its contract"), a "Merge after #N"
 #      (or <PR url>, or "Stacked on") line ("<repo> #N merges after it"). The dependent
 #      says "needs <repo> #N". A PR whose dependency is not ready waits ("waits for <repo> #N"); a cycle is named.
-#   2. fewest rebases: PRs that share changed files or a migration number (the numeric prefix of a file under a
+#   2. fewest rebases: PRs of the same repo that share changed files or a migration number (the numeric prefix of a file under a
 #      migrations/ directory) go in ascending order of how many others they overlap; the later one gets "rebase
 #      after #N", or "renumber migration after #N" for a migration clash.
 #   3. oldest first.
@@ -137,13 +137,13 @@ jq -c --argjson notes "$notes" --slurpfile blocks <(printf '%s' "$blocks") "$REN
   # greedy: among the PRs whose ready dependencies are placed, the one with the fewest overlaps, then the oldest
   | (def place($left; $out): if ($left | length) == 0 then $out else
         ([$left[] | . as $n | select(([$edges[] | select(.to == $n and has($left; .from))] | length) == 0)]
-          | map($nodes[.]) | sort_by(($ov[.i | tostring] | length), .created, .number) | first) as $pick
+          | map($nodes[.]) | sort_by(($ov[.i | tostring] | length), .created, repo, .number) | first) as $pick
         | place($left - [$pick.i]; $out + [$pick.i]) end;
      place($rids; [])) as $order
   | {ready: [range(0; $order | length) as $k | $nodes[$order[$k]] as $x | ($order[0:$k]) as $before
       | ([$edges[] | select(.from == $x.i and has($rids; .to)) | .why] | first) as $dependents
       | ([$edges[] | select(.to == $x.i) | $all[.from] | "needs \(ref)"] | first) as $needs
-      | ([$before[] | . as $b | select((($x | migs) - (($x | migs) - ($nodes[$b] | migs))) | length > 0) | "#\($nodes[$b].number)"]) as $renum
+      | ([$before[] | . as $b | select(($nodes[$b] | repo) == ($x | repo) and ((($x | migs) - (($x | migs) - ($nodes[$b] | migs))) | length > 0)) | "#\($nodes[$b].number)"]) as $renum
       | ([$before[] | . as $b | select(($ov[$x.i | tostring] | index($b)) != null or ([$edges[] | select(.from == $b and .to == $x.i and (.why | startswith("base of")))] | length) > 0)
           | "#\($nodes[$b].number)"] - $renum) as $rebase
       | ([$nodes[] | select((.i | IN($rids[]) | not) and repo == ($x | repo) and ((([.files[]] - ([.files[]] - $x.files)) | length) > 0)) | ref]) as $notyet
