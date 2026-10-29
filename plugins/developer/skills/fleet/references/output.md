@@ -255,6 +255,16 @@ Respawned <team/role> (<model>): <state>.
 
 `Restarted …` for `respawn --restart` (used by `next`).
 
+### catchup
+
+```
+Caught up <team>: <roles> back; lead told to merge main into <PR url>.
+```
+
+The finished or parked team of a PR that conflicts now (tick runs it, and says so in the `Conflicting` wake): the agents that
+had exited are started again in their worktrees (`respawn --revive`), listed by role; `nothing needed` when all were running.
+Refused, with the team as it was, when a cap is full or herdr does not answer.
+
 ### escalate
 
 The decision form.

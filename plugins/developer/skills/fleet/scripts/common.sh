@@ -360,7 +360,7 @@ build_brief() {
   house_rules "$1"
 }
 
-# house_rules <agent row name>: the fleet's house rules, then the agent's repository's .claude/fleet-rules.md
+# house_rules <agent row name>: the fleet's house rules (the install rule reads `installs` in config.toml, as the guard does), then the agent's repository's .claude/fleet-rules.md
 # when it has one, then the overnight block while `overnight = true` in config.toml. The repository is the row's
 # `repo`; without a row only the fleet's rules are printed. The block is part of the brief, so the agent's own session
 # holds the grant, and a respawn or next restart (their briefs come through here too) carries it.
@@ -368,13 +368,20 @@ house_rules() {
   local repo f
   repo="$("$FLEET_SCRIPTS/registry.sh" get "$1" 2>/dev/null | jq -r '.repo // ""' 2>/dev/null)" || repo=""
   printf '\n\n'
-  cat "$FLEET_SKILL_DIR/rules/house.md" 2>/dev/null || warn "house rules missing: $FLEET_SKILL_DIR/rules/house.md"
+  # The install rule follows the guard's setting (hooks/fleet-bash-guard.sh): `installs = "allow"` in config.toml.
+  if [ "$(cfg_str installs "")" = allow ]; then
+    sed 's/^- Installing is allowed only when.*$/- Install what the work needs yourself. List each install in your report (what, where, why). A new project dependency goes in its own commit together with its lockfile change./' \
+      "$FLEET_SKILL_DIR/rules/house.md" 2>/dev/null || warn "house rules missing: $FLEET_SKILL_DIR/rules/house.md"
+  else
+    cat "$FLEET_SKILL_DIR/rules/house.md" 2>/dev/null || warn "house rules missing: $FLEET_SKILL_DIR/rules/house.md"
+  fi
   f="$repo/.claude/fleet-rules.md"
   if [ -n "$repo" ] && [ -f "$f" ]; then printf '\nRepository rules (%s):\n' "$f"; cat "$f"; fi
   [ "$(cfg_bool overnight false)" = true ] || return 0
   printf '\nOvernight mode (on until the user turns it off; it adds to the house rules and lifts none of them):\n'
   printf -- '- A lead applies its own recommended option for a decision inside the issue'"'"'s scope, notes it in the PR body and runs `%s note %s decision "<the choice>"`.\n' "$FLEET_SCRIPTS/registry.sh" "$1"
-  printf -- '- Installs, IAM, AWS or production, branch protection, `gh pr ready` and closing a PR or an issue stay with the user: escalate them P1.\n'
+  if [ "$(cfg_str installs "")" = allow ]; then printf -- '- IAM, AWS or production, branch protection, `gh pr ready` and closing a PR or an issue stay with the user: escalate them P1.\n'
+  else printf -- '- Installs, IAM, AWS or production, branch protection, `gh pr ready` and closing a PR or an issue stay with the user: escalate them P1.\n'; fi
   printf -- '- A P0 still stops the team.\n'
   printf -- '- Catch a branch up with the default branch with a merge commit, never a force-push.\n'
 }

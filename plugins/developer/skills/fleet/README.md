@@ -62,6 +62,7 @@ Each command works the same from Claude Code (`/fleet <command>`) and from a she
 | Command | What it does | Example |
 |---|---|---|
 | `boot` | Boot a team on a task or an issue | `fleet boot build export ~/code/api "add CSV invoice export"` |
+| `catchup` | Bring a finished team back to merge main into its conflicting PR | `fleet catchup build-api https://github.com/acme/app-api/pull/12` |
 | `claim` | Claim an issue on Linear for this machine | `fleet claim DEV-123` |
 | `debrief` | List the retired teams and their lessons, the ones still due marked | `fleet debrief` |
 | `env` | Create, remove or list a team's test cluster | `fleet env status` |
@@ -81,7 +82,7 @@ Each command works the same from Claude Code (`/fleet <command>`) and from a she
 | `sandbox` | Run a reproduction away from the live fleet | `fleet sandbox --keep` |
 | `schedule` | Install, remove or check the launchd loop | `fleet schedule status` |
 | `slim` | Turn the fleet's panel style for herdr on or off, or say if it is on | `fleet slim status` |
-| `status` | Show each team's health and what needs you | `fleet status --problems` |
+| `status` | Show every machine's teams and what needs you | `fleet status` |
 | `takeover` | Take an issue over from a machine whose claim lapsed | `fleet takeover DEV-123` |
 | `tell` | Send a team's lead (or one agent) a message and check it arrived | `fleet tell build-api/lead "focus on token expiry"` |
 | `unpark` | Bring a parked team back | `fleet unpark build-api` |
@@ -309,7 +310,7 @@ Example using kind:
 
 ## Several machines
 
-Claims, leases, takeover and the other machines in `status` need Linear (label groups and comments). Any other
+Claims, leases, takeover and the other machines in `status` (`FLEET_STATUS_LOCAL=1` keeps it local) need Linear (label groups and comments). Any other
 tracker runs the fleet on one machine, and those parts are skipped.
 
 - A claim is the machine's label on the issue; liveness is a `heartbeat=` line in that label's
@@ -510,7 +511,7 @@ Fixes from the first day of 4.1 (DEV-512), one per item:
 | `scripts/sandbox.sh` | reproductions away from the live fleet |
 | `scripts/redact-check.sh` | the redact check the house rules require: private terms counted, never printed |
 | `scripts/slim.sh`, `styles/slim.toml` | the slim panel style for herdr, between markers in herdr's config |
-| `rules/house.md` | the house rules every brief ends with (a repo's `.claude/fleet-rules.md` follows them) |
+| `rules/house.md` | the house rules every brief ends with (a repo's `.claude/fleet-rules.md` follows them); with `installs = "allow"` in config.toml, the install rule says agents install what the work needs themselves and list each install |
 | `scripts/retire.sh` | safe teardown: archives reports to `reports/fleet-archive/`, removes worktrees, removes the team's test cluster |
 | `scripts/env.sh` | per-team disposable test cluster, declared by the repo's `.claude/fleet-env.json` |
 | `scripts/test/run.sh` | offline tests (stub `up`/`down`, docker, df and herdr; no kind, no live fleet) |

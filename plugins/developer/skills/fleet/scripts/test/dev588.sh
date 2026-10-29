@@ -112,6 +112,20 @@ d588_parked_needs() {
 
 . "$HERE/dev588-status.sh"
 
+d588_installs() {
+  d588_state inst; d588_agent n1/lead Lead Working
+  hr() { bash -c '. "$1/common.sh"; house_rules n1/lead' _ "$SCRIPTS"; }
+  gcfg
+  eq "dev588 installs: unset, today's install text stays word for word" \
+    "$(hr | grep -cF -- "$(grep '^- Installing is allowed' "$SCRIPTS/../rules/house.md")"):$(hr | grep -c 'Install what the work needs yourself')" "1:0"
+  gcfg 'installs = "allow"'
+  eq "dev588 installs: allow, the rule says to install, list each install and commit a dependency with its lockfile" \
+    "$(hr | grep -c 'Install what the work needs yourself. List each install in your report (what, where, why). A new project dependency goes in its own commit together with its lockfile change'):$(hr | grep -c 'an approved install is run by the owner')" "1:0"
+  gcfg 'installs = "deny"'
+  eq "dev588 installs: any other value is the default" "$(hr | grep -c 'an approved install is run by the owner')" 1
+  gcfg
+}
+
 d588_version() {
   eq "dev588 version: plugin.json reads 4.1.3, and the README has its What changed section" \
     "$(jq -r .version "$SCRIPTS/../../../.claude-plugin/plugin.json"):$(grep -c '^## What changed in 4.1.3' "$SCRIPTS/../README.md")" "4.1.3:1"
@@ -119,6 +133,7 @@ d588_version() {
 
 d588_smoke() { # the critical cases, CI
   d588_version
+  d588_installs
   d588_escalation_ids
   d588_bare_team
   d588_notices

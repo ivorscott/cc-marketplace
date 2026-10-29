@@ -1219,7 +1219,7 @@ eq "status: no machine footer" "$(DF_GB=100 "$SCRIPTS/status.sh" 2>/dev/null | g
 echo 'machine_name = "laptop-a"' >>"$FLEET_CONFIG_DIR/config.toml"
 eq "prime: names the machine by machine_name" "$(DF_GB=100 "$SCRIPTS/prime.sh" 2>/dev/null | head -n 1 | cut -d: -f1)" "Fleet on laptop-a"
 eq "status --json has no machine footer" "$(DF_GB=100 "$SCRIPTS/status.sh" build-nope --json 2>/dev/null | grep -c machine:)" 0
-eq "status: a team without an issue shows - in its Issue cell" "$(DF_GB=100 "$SCRIPTS/status.sh" 2>/dev/null | grep -c '^| build-plain | - |')" 1
+eq "status: a team without an issue shows - in its Issue cell" "$(DF_GB=100 "$SCRIPTS/status.sh" 2>/dev/null | grep -c '^| build-plain | test | - |')" 1
 cp "$T/config.bak2" "$FLEET_CONFIG_DIR/config.toml"
 
 # boot: refusal of an issue another machine holds
@@ -1268,7 +1268,7 @@ bt build ovj "$T/plain" t; eq "boot: no --scope never warns" "$(grep -c overlaps
 bt --scope ': src' build ovk "$T/plain" t
 eq "boot: the scope repo defaults to the repo-dir name" "$("$REG" get build-ovk/builder | jq -r .scope.repo)" plain
 bt --issue DEV-12 build iss1 "$T/plain" t
-eq "status: a team's issue is in its row" "$(DF_GB=100 "$SCRIPTS/status.sh" 2>/dev/null | grep -c '^| build-iss1 | DEV-12 |')" 1
+eq "status: a team's issue is in its row" "$(DF_GB=100 "$SCRIPTS/status.sh" 2>/dev/null | grep -c '^| build-iss1 | test | DEV-12 |')" 1
 
 # claim.sh: lease arithmetic, the heartbeat parse, expiry
 CL="$SCRIPTS/claim.sh"
@@ -1346,9 +1346,9 @@ for k in label_prefix machine_name machine_legacy_label claimed-by; do
 done
 for k in linear_writes; do check "fleet README mentions $k" grep -q "$k" "$SKD/README.md"; check "SKILL.md mentions $k" grep -q "$k" "$SKD/SKILL.md" "$SKD/references/operations.md"; done
 for k in label_prefix machine_name machine_legacy_label; do check "fleet README mentions $k" grep -q "$k" "$SKD/README.md"; done
-for k in lease_hours chat_channel chat_allow 'status --all' linear.sh claim.sh chat.sh; do check "SKILL.md documents $k" grep -q -- "$k" "$SKD/SKILL.md" "$SKD/references/operations.md"; done
+for k in lease_hours chat_channel chat_allow FLEET_STATUS_LOCAL linear.sh claim.sh chat.sh; do check "SKILL.md documents $k" grep -q -- "$k" "$SKD/SKILL.md" "$SKD/references/operations.md"; done
 check "SKILL.md no longer lists the follow-ups as not yet done" test -z "$(grep 'Not yet' "$SKD/SKILL.md")"
-for k in lease_hours chat_channel chat_allow claim.sh chat.sh 'status --all'; do check "README documents $k" grep -q -- "$k" "$SKD/README.md"; done
+for k in lease_hours chat_channel chat_allow claim.sh chat.sh FLEET_STATUS_LOCAL; do check "README documents $k" grep -q -- "$k" "$SKD/README.md"; done
 check "README tracker_allow example omits save_issue_label" test -z "$(grep -E 'tracker_allow.*save_issue_label' "$SKD/README.md")"
 check "README documents the cloned machine id risk" grep -qi 'cloned' "$SKD/README.md"
 check "machine-id.sh documents the cloned machine id risk" grep -qi 'cloned' "$SCRIPTS/machine-id.sh"
@@ -1426,7 +1426,7 @@ rm -f "$INBOX"
 "$REG" escalate esc3/builder P2 "second" >/dev/null 2>&1
 ID1="$("$REG" escalations --team esc3 | jq -r '[.[] | select(.message == "first")][0].id')"
 ID2="$("$REG" escalations --team esc3 | jq -r '[.[] | select(.message == "second")][0].id')"
-eq "escalate stores an id <at compact>-<seq>" "$("$REG" get esc3/builder | jq -r '.escalations[0] | .id == ((.at | gsub("[-:]"; "")) + "-1")')" true
+eq "escalate stores an id <at compact>-<n>" "$("$REG" get esc3/builder | jq -r '.escalations[0] | . as $e | ($e.id | startswith(($e.at | gsub("[-:]"; "")) + "-"))')" true
 eq "the inbox line carries the stored id" "$(jq -r 'select(.message == "second") | .id' "$INBOX")" "$ID2"
 check "two escalations get different ids" test "$ID1" != "$ID2"
 saved="$(cat "$FLEET_REGISTRY")"
@@ -2061,7 +2061,7 @@ eq "read-only: holder, peers and both --dry-runs make no mutation" "$(nmut)" 0
 eq "read-only: they did call the API" "$([ "$(grep -c '^query' "$LINEAR_LOG")" -gt 0 ] && echo yes)" yes
 eq "holder: names the other machine and its heartbeat" "$(jq -c '[.holder, .ours, .heartbeat]' "$T/h.out")" '["fleet:other",false,"2026-10-18T06:00:00Z"]'
 eq "holder: an unclaimed issue has none" "$("$LIN" holder DEV-1 | jq -c '[.holder, .ours]')" '[null,false]'
-eq "peers: the other machine's claim with its heartbeat" "$(jq -c '.' "$T/p.out")" '[{"machine":"other","label":"fleet:other","issue":"DEV-2","heartbeat":"2026-10-18T06:00:00Z"}]'
+eq "peers: the other machine's claim with its heartbeat" "$(jq -c '.' "$T/p.out")" '[{"machine":"other","label":"fleet:other","issue":"DEV-2","heartbeat":"2026-10-18T06:00:00Z","summary":null}]'
 eq "claim --dry-run plans the update and changes nothing" "$(jq -c '.would' "$T/dry.out" | head -1)" '"update the issue"'
 eq "claim --dry-run: the issue's labels are untouched" "$(labels_of DEV-1)" bug
 eq "migrate --dry-run lists nothing when there is nothing" "$(jq -c .would_delete "$T/mdry.out")" '[]'
@@ -2094,7 +2094,7 @@ dbreset; jq --arg n "$ml" '.labels += [{id: "L9", name: $n, description: "", par
 eq "claim: an empty description is filled in" "$(jq -r --arg n "$ml" '.labels[] | select(.name == $n) | .description | test("heartbeat=")' "$LINEAR_DB")" true
 dbreset; jq --arg n "$ml" '.labels += [{id: "L9", name: $n, description: "mine already", parent: {id: "L1", name: "fleet"}}]' "$LINEAR_DB" >"$T/db.tmp" && mv "$T/db.tmp" "$LINEAR_DB"
 "$LIN" claim DEV-1 >/dev/null 2>&1
-eq "claim: a non-empty description is never overwritten (the owner line is added after it)" "$(jq -r --arg n "$ml" '.labels[] | select(.name == $n) | .description' "$LINEAR_DB" | grep -v '^heartbeat=' | paste -sd'|' -)" "mine already|owner=Fixture Owner"
+eq "claim: a non-empty description is never overwritten (the owner line is added after it)" "$(jq -r --arg n "$ml" '.labels[] | select(.name == $n) | .description' "$LINEAR_DB" | grep -v '^heartbeat=\|^summary=' | paste -sd'|' -)" "mine already|owner=Fixture Owner"
 # the race: another machine writes after us; the last writer wins and we exit 1
 dbreset; LINEAR_STUB_RACE=fleet:other "$LIN" claim DEV-3 >"$T/race.out" 2>"$T/race.err"; rc=$?
 eq "claim race: the loser exits 1" "$rc" 1
@@ -2109,7 +2109,7 @@ jq --arg n "$ml" '.labels |= map(if .name == $n then .description = "my box · m
 FLEET_NOW=2026-10-18T09:30:00Z "$LIN" heartbeat >/dev/null
 eq "heartbeat: exactly one mutation" "$(nmut)" 1
 eq "heartbeat: it is a label update, not a comment" "$(grep -c '^mutation IssueLabelUpdate' "$LINEAR_LOG")" 1
-eq "heartbeat: only the heartbeat line changed, other text kept" "$(jq -r --arg n "$ml" '.labels[] | select(.name == $n) | .description' "$LINEAR_DB" | paste -sd'|' -)" "my box · macOS|owner=Fixture Owner|heartbeat=2026-10-18T09:30:00Z|extra note"
+eq "heartbeat: only the heartbeat line changed, other text kept" "$(jq -r --arg n "$ml" '.labels[] | select(.name == $n) | .description' "$LINEAR_DB" | grep -v '^summary=' | paste -sd'|' -)" "my box · macOS|owner=Fixture Owner|heartbeat=2026-10-18T09:30:00Z|extra note"
 dbreset; : >"$LINEAR_LOG"; "$LIN" heartbeat >"$T/hb.out"; eq "heartbeat: with no label yet it makes no mutation" "$(nmut)" 0
 # several labels of one name (an older team label beside the workspace one): the workspace label is used
 dbreset; jq --arg n "$ml" '.labels = [{id: "LT", name: "fleet", description: "", parent: null, teamId: "T1"},
@@ -2497,7 +2497,7 @@ eq "N3: as one label update, a write" "$(grep -c '^mutation IssueLabelUpdate' "$
 eq "N3: the rewritten description keeps every other line and the heartbeat" "$(jq -r '.labels[] | select(.id == "L9") | .description' "$LINEAR_DB" | paste -sd'|' -)" "my box · macOS · machine id sha256:$want · first claim 2026-01-02|owner=Fixture Owner|heartbeat=2026-10-18T07:00:00Z|extra note"
 : >"$LINEAR_LOG"; eq "N3: a second migrate rewrites nothing" "$("$LIN" migrate | jq -r .rewrote_label):$(nmut)" "false:0"
 legacy_db; "$LIN" claim DEV-3 >/dev/null 2>&1
-eq "N3: claim (ensure_label) rewrites it too, keeping the other text (the heartbeat line is now)" "$(jq -r '.labels[] | select(.id == "L9") | .description' "$LINEAR_DB" | grep -v '^heartbeat=' | paste -sd'|' -)" "my box · macOS · machine id sha256:$want · first claim 2026-01-02|owner=Fixture Owner|extra note"
+eq "N3: claim (ensure_label) rewrites it too, keeping the other text (the heartbeat line is now)" "$(jq -r '.labels[] | select(.id == "L9") | .description' "$LINEAR_DB" | grep -v '^heartbeat=\|^summary=' | paste -sd'|' -)" "my box · macOS · machine id sha256:$want · first claim 2026-01-02|owner=Fixture Owner|extra note"
 eq "N3: and the full id is in no request" "$(grep -c "$FIXID" "$LINEAR_ARGV_LOG" || true)" 0
 eq "N3: and no description in the database holds one" "$(jq -r '.labels[].description' "$LINEAR_DB" | grep -Ec "$IDRE" || true)" 0
 # heartbeat hashes a full machine id an older version left in the description, or writes nothing
@@ -2517,10 +2517,10 @@ eq "whoami: prints the Linear user behind the key" "$("$LIN" whoami | jq -c '[.i
 eq "whoami: is a read (no mutation)" "$(nmut)" 0
 "$LIN" claim DEV-1 >/dev/null 2>&1
 odesc() { jq -r --arg n "$ml" '.labels[] | select(.name == $n) | .description' "$LINEAR_DB"; }
-eq "owner: the new label's description has the hashed id, the owner and the heartbeat, in that order" "$(odesc | sed 's/ · first claim.*//; s/^[^·]* · [^·]* · //; s/^heartbeat=.*/heartbeat=…/' | paste -sd'|' -)" "machine id sha256:$want|owner=Fixture Owner|heartbeat=…"
+eq "owner: the new label's description has the hashed id, the owner and the heartbeat, in that order" "$(odesc | grep -v '^summary=' | sed 's/ · first claim.*//; s/^[^·]* · [^·]* · //; s/^heartbeat=.*/heartbeat=…/' | paste -sd'|' -)" "machine id sha256:$want|owner=Fixture Owner|heartbeat=…"
 jq '.viewer = {name: "New Owner"}' "$LINEAR_DB" >"$T/db.tmp" && mv "$T/db.tmp" "$LINEAR_DB"
 FLEET_NOW=2026-10-19T10:00:00Z "$LIN" heartbeat >/dev/null
-eq "owner: heartbeat refreshes the owner line, keeps the hashed id and updates the heartbeat" "$(odesc | grep -c "machine id sha256:$want")$(odesc | grep -c '^owner=New Owner$')$(odesc | grep -c '^heartbeat=2026-10-19T10:00:00Z$')$(odesc | wc -l | tr -d ' ')" 1113
+eq "owner: heartbeat refreshes the owner line, keeps the hashed id and updates the heartbeat" "$(odesc | grep -c "machine id sha256:$want")$(odesc | grep -c '^owner=New Owner$')$(odesc | grep -c '^heartbeat=2026-10-19T10:00:00Z$')$(odesc | grep -vc '^summary=')" 1113
 jq '.labels |= map(if .name == "'"$ml"'" then .description = "my box · macOS\nheartbeat=2026-10-18T07:00:00Z\nextra note" else . end) | .viewer = {name: "Fixture Owner"}' "$LINEAR_DB" >"$T/db.tmp" && mv "$T/db.tmp" "$LINEAR_DB"
 "$LIN" migrate >/dev/null
 eq "owner: migrate adds a missing owner line and keeps the rest" "$(odesc | paste -sd'|' -)" "my box · macOS|owner=Fixture Owner|heartbeat=2026-10-18T07:00:00Z|extra note"
@@ -3830,7 +3830,7 @@ bad=""; while IFS= read -r row; do
 done < <(sed -n '3,$p' "$D4/help.out")
 eq "dev408-16 commands: every row has an example that runs that command" "$bad" ""
 eq "dev408-16 commands: no internal script is listed" "$(printf '%s\n' "$cmds" | grep -cxE 'common|agent-lib|loop-tick|registry|tick|linear|machine-id|chat|fleet')" 0
-eq "dev408-16 commands: the commands (scripts with a Command line, the aliases, help)" "$(printf '%s\n' "$cmds" | paste -sd' ' -)" "boot claim debrief env escalate escalations focus help holder metrics next park prime redact-check resolve respawn retire sandbox schedule slim status takeover tell unpark"
+eq "dev408-16 commands: the commands (scripts with a Command line, the aliases, help)" "$(printf '%s\n' "$cmds" | paste -sd' ' -)" "boot catchup claim debrief env escalate escalations focus help holder metrics next park prime redact-check resolve respawn retire sandbox schedule slim status takeover tell unpark"
 bad=""; for f in "$SCRIPTS"/*.sh; do
   grep -q '^# Command: ' "$f" || continue; n="$(basename "$f" .sh)"
   awk 'NR == 1 { next } !/^#/ { exit } { print }' "$f" | grep -qE "^#   $n\.sh( |$)" || bad="$bad $n:usage"
@@ -4082,7 +4082,7 @@ qset() { jq --arg m "$2" '.mergeable = $m' "$QGHD/app-api-$1.json" >"$QD/m.json"
 jq '.state = "MERGED"' "$QGHD/app-api-53.json" >"$QD/m.json" && mv "$QD/m.json" "$QGHD/app-api-53.json"; qt >/dev/null # 53's merge is reported now
 qset 54 CONFLICTING; qset 55 UNKNOWN; : >"$HERDR_LOG"; c1="$(qt)"
 eq "dev408-R7 queue: a conflict on a later tick never names a PR merged long ago; it says main" \
-  "$(printf '%s' "$c1" | jq -r '[.[] | select(.type == "pr_conflicting") | .url + " " + .detail] | join(",")'):$(grep -c '^agent prompt te-lead Read your brief' "$HERDR_LOG"):$(grep -c 'conflicts with its base now' "$("$REG" get te/lead | jq -r .last_brief)")" \
+  "$(printf '%s' "$c1" | jq -r '[.[] | select(.type == "pr_conflicting") | .url + " " + .detail] | join(",")'):$(grep -c '^agent prompt te-lead ' "$HERDR_LOG" | sed 's/^[1-9][0-9]*$/1/'):$(grep -c 'conflicts with its base now' "$("$REG" get te/lead | jq -r .last_brief)")" \
   "https://github.com/acme/app-api/pull/54 with main:1:1"
 qset 55 CONFLICTING; c2="$(qt)"
 eq "dev408-R6 queue: a ready PR that read mergeable unknown for a tick, then conflicts, is still told" \
@@ -4147,7 +4147,7 @@ for x in "sa:Stalled" "sb:Zombie" "sc:Failed" "sd:Needs input" "se:Idle" "sf:Wor
   s20 "$REG" add "$(jq -cn --arg t "${x%%:*}" --arg s "${x#*:}" '{name: ($t + "/lead"), team: $t, tier: "Lead", status: $s, herdr_ref: $t, pane: "p"}')" >/dev/null
 done
 eq "dev408-20 words: the summary line counts the teams by state group" "$(s20 bash -c '. "$1/common.sh"; render_table | head -n 1' _ "$SCRIPTS")" "6 teams · 1 working · 1 idle · 1 waiting · 3 blocked"
-eq "dev408-20 words: each State is one word" "$(s20 bash -c '. "$1/common.sh"; render_table' _ "$SCRIPTS" | awk -F' [|] ' '/^[|] s/ {print $4}' | paste -sd, -)" "Stalled,Zombie,Failed,Waiting,Idle,Working"
+eq "dev408-20 words: each State is one word" "$(s20 bash -c '. "$1/common.sh"; render_table' _ "$SCRIPTS" | awk -F' [|] ' '/^[|] s/ {print $5}' | paste -sd, -)" "Stalled,Zombie,Failed,Waiting,Idle,Working"
 eq "dev408-20 words: one team is singular" "$(s20 bash -c '. "$1/common.sh"; render_table sf | head -n 1' _ "$SCRIPTS")" "1 team · 1 working"
 
 # -- dev408-13: agent state comes from herdr's Claude integration and the transcript; nothing reads the screen
@@ -4466,7 +4466,7 @@ gcfg; eq "dev408-11 overnight: off, a brief has no overnight block" "$(hrules | 
 gcfg 'overnight = true'
 eq "dev408-11 overnight: on, the block follows the house rules, with the lead's decision note" "$(hrules | grep -c '^Overnight mode'):$(hrules | grep -c 'registry.sh note n1/lead decision')" "1:1"
 check "dev408-11 overnight: the house rules and the block agree: a merge commit, never a force-push" bash -c \
-  "grep -q 'while overnight mode is on: then catch up with a merge commit instead, and never force-push' '$SCRIPTS/../rules/house.md' && printf '%s' \"\$1\" | grep -q 'with a merge commit, never a force-push'" _ "$(hrules)"
+  "grep -q 'when your lead tells you another PR merged ahead of yours' '$SCRIPTS/../rules/house.md' && printf '%s' \"\$1\" | grep -q 'with a merge commit, never a force-push'" _ "$(hrules)"
 # R15: the builder's brief and the fleet rules say the same thing as the overnight block, never the opposite.
 qfresh night15; mkdir -p "$QD/p15"; FLEET_FORCE=1 bt build n15 "$QD/p15" task
 b15() { cat "$("$REG" get "build-n15/$1" | jq -r '.last_brief // "/nonexistent"')" 2>/dev/null; }

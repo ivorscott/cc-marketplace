@@ -91,7 +91,7 @@ the disk line (below `warn_free_gb`), the loop line and the skill line when they
 default: one table with a Machine column and one queue, the other machines' teams read from the summaries they publish
 on Linear (a machine with no summary is one `Other machines:` line; with no Linear key the line says they are unknown).
 To narrow it ("just this machine", "only <machine>", "only DEV-1"), pick those rows out of the table you relay: there is
-no flag for it. When the user asks what is ready to merge, the queue is the answer. `status <team>` prints one row per
+no flag for it (`FLEET_STATUS_LOCAL=1` is only for scripts). When the user asks what is ready to merge, the queue is the answer. `status <team>` prints one row per
 agent; `--json` is the bare array of this machine's agents. Relay it verbatim.
 
 One `$F/fleet status` call per request and per wake, relayed as it is: no extra reads (wakes.log, panes, PR bodies)

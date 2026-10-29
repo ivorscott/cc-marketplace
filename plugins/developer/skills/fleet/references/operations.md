@@ -6,7 +6,7 @@ mechanics: claims on Linear, chat, the tick events, the sandbox, the retire summ
 ## Claims: identity
 
 Several machines can run a fleet against one Linear workspace. Claims rely on Linear label
-groups and label descriptions, so claims, heartbeat, takeover and the other machines in `status` need Linear.
+groups and label descriptions, so claims, heartbeat, takeover and the other machines in `status` need Linear (`FLEET_STATUS_LOCAL=1` keeps status to this machine).
 Other trackers (Jira, ...) run the fleet on one machine only. On one machine, with any tracker,
 skip **A0**, **A0b** and the heartbeat, and boot without the claim options. The chat channel
 (**A0c**) works with any tracker but is coordination, never a lock.
