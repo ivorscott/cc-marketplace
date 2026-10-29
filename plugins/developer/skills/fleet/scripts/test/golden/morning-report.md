@@ -28,3 +28,7 @@ Not ready: https://github.com/acme/app-api/pull/85 ✗ conflicting
 
 - https://github.com/acme/app-api/pull/86: conflicts after https://github.com/acme/app-api/pull/50
 - https://github.com/acme/app-api/pull/85: conflicting now
+
+## What is next
+
+- next to pick: DEV-1, DEV-2, DEV-3, DEV-4, DEV-5

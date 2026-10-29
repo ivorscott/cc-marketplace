@@ -4,6 +4,8 @@
 | `catchup` | Bring a finished team back to merge main into its conflicting PR | `fleet catchup build-api https://github.com/acme/app-api/pull/12` |
 | `claim` | Claim an issue on Linear for this machine | `fleet claim DEV-123` |
 | `debrief` | List the retired teams and their lessons, the ones still due marked | `fleet debrief` |
+| `decide` | Decide a lead's escalation with the recommended option, or park what is the human's | `fleet decide build-api 20261029T100000Z-1` |
+| `defer` | File what a PR defers to the owner as linked issues | `fleet defer build-api` |
 | `env` | Create, remove or list a team's test cluster | `fleet env status` |
 | `escalate` | Raise a question by severity; it stays open until resolved | `fleet escalate build-api/lead P1 "which database?" postgres sqlite` |
 | `escalations` | List escalations, the open ones or all | `fleet escalations --open` |
@@ -12,6 +14,7 @@
 | `holder` | Say which machine holds an issue, and whether its claim lapsed | `fleet holder DEV-123` |
 | `metrics` | Show per-PR metrics from the event log | `fleet metrics --since 7d` |
 | `next` | Move a team to its next issue after its PR merged | `fleet next build-api DEV-124` |
+| `overlap` | Check a plan's files against open PRs and live teams in the same repo | `fleet overlap build-api` |
 | `park` | Free a team's slot and keep its work | `fleet park build-api` |
 | `prime` | Pick the fleet up again after a compaction or in a new session | `fleet prime` |
 | `redact-check` | Count the private terms in what a branch adds (counts only) | `fleet redact-check --range origin/main..HEAD` |
@@ -19,6 +22,7 @@
 | `respawn` | Start a dead agent again from its row | `fleet respawn build-api/builder` |
 | `retire` | Shut a team (or one agent) down safely | `fleet retire build-api --outcome Shipped` |
 | `revive` | Bring a finished or parked team back with something to do | `fleet revive build-api --text "the PR needs a review reply"` |
+| `run` | Set up the self-driving loop once, then run it with no questions | `fleet run init` |
 | `sandbox` | Run a reproduction away from the live fleet | `fleet sandbox --keep` |
 | `schedule` | Install, remove or check the launchd loop | `fleet schedule status` |
 | `slim` | Turn the fleet's panel style for herdr on or off, or say if it is on | `fleet slim status` |

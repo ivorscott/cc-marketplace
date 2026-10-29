@@ -58,7 +58,7 @@ retire`, `brief not delivered`, `merge the PR` or the queue's `rebase after #N`,
 parked team with an open PR the queue lists says what a Done team says; with no PR in the queue it is `-`. `Waiting on
 you` appears only while a P0 or P1 is open (this machine's escalations). With no team: `No teams.`
 
-One table for every machine: Machine is this machine's key on its own rows and the other machine's key on the rows read
+One table for every machine: Machine is this machine's name (`machine_name`, else its host name) on its own rows and the other machine's own name, from its label description (its key when it has none), on the rows read
 from its published summary (a summary older than `lease_hours` stays in the table, and its PR is never counted ready). The rows whose PR is in the merge queue come first, in the queue's order, then the rest by team; there
 is no heading per machine.
 
@@ -222,7 +222,7 @@ Retire <team>? Outcome <outcome>. Unpushed: <none|role (n commits), …>. Kept: 
 After:
 
 ```
-Retired <team> (<outcome>): PRs <PR url, …|none>. Archived to <path>. Kept: <role (why), …>. Issue → <Done|Verify|Todo>.
+Retired <team> (<outcome>): PRs <PR url, …|none>. Archived to <path>. Kept: <role (why), …>. Issue → <Done|Verify|Todo>.[ No UNVERIFIED step, so Done, not Verify.]
 ```
 
 An explicit `--outcome` is the outcome of every retired row, whatever the rows reported. An issue (or claim) another machine
@@ -380,11 +380,82 @@ DEV-1: held by <machine|this machine (<machine>)>[, heartbeat lapsed|, no heartb
 
 `DEV-1: held by nobody.` for an unclaimed issue.
 
+### defer
+
+```
+Deferred <ISSUE>: <item>
+Deferred (not filed: <why>): <item>
+```
+
+One line per item a team's PR leaves for the owner (the list under `Deferred:`, `Left for the owner:`, `For the owner:` or `Needs the
+owner:` in the PR body), each filed once as an issue linked to the PR and noted on the lead (`registry.sh note ... deferred`). With
+no Linear key, or writes off, the item is only noted (`not filed`) so the morning report lists it. tick runs it when a PR becomes ready.
+
+### run
+
+`fleet run init` asks one question at a time, each as `<question> [<recommended or saved answer>]:`, then ends with
+
+```
+Run profile saved: <n> teams (<k> can run), installs <allow|ask>. Written to <config.toml path>.
+```
+
+`<k>` is how many can really run: one team per repo per machine, so at most `teams_per_repo` per repo in `repos`. `fleet run show`
+prints the saved profile, one `key: value` line per answer (the defaults for what is not saved), then `human-only: <list>`.
+
+`fleet run start` prints, and then the rules to follow, made from the profile:
+
+```
+Run started: keeping <n> teams on <work> work, <order> order. Loop: <installed|not installed ...|healthy line>.
+Follow this until fleet run stop. After a context compaction, or in a fresh session, run fleet run show and follow it again.
+- Keep <n> teams running. ...
+```
+
+`fleet run stop` prints `Run stopped: no new teams start; running teams carry on.` and `fleet run status` prints
+`Run: <running|not running>. Target <n> teams, <k> live. Profile: <saved|none>.`
+
+### decide
+
+```
+Decided <team/lead>: <question> → <option>.
+Parked <team/lead>: <question>. Left for the owner.
+```
+
+`fleet decide <team> <id>` is how the Orchestrator answers an escalation under `fleet run`: the first (recommended) option is taken,
+the lead is told, the escalation resolved with it, the decision noted (the morning report lists it under Decisions taken) and
+commented on the issue as `[fleet] Decision taken on the owner's behalf: ... Reply on this issue to overrule it.` A P0, and a
+question about merging, production, infrastructure applies, secrets or branch protection, is parked instead: the lead is told to
+set it aside and carry on, one push goes out, and the morning report lists it under Needs your eyes. Nothing human-only is approved.
+
+### overlap
+
+```
+none | wait #<N> | wait team <name> | merge-after #<N>
+Overlap: <ref> touches <files>.
+```
+
+One of three answers, then the reason (`Overlap: no open PR or live team in the repo touches the plan's files.` for `none`). Only
+the plan's own repo counts. tick tells the team's lead the answer once, as `Overlap check: <answer>. <reason> <what to do>`, when
+the planner is Done; it is not a wake.
+
+### claim, stood down
+
+```
+fleet: stood down on DEV-1: fleet:<machine> claimed it first (<its time> before <ours>). No agent was started.
+```
+
+Two machines claimed one issue at once and both labels reached it: the earlier claim wins, then the lowest machine key. The
+loser takes its own label off and exits 4; boot and next do not start. `next` ends `<issue> was claimed first by another
+machine; this machine stood down and <team> keeps its current issue.`
+
 ### redact-check
 
 ```
 Redact check <base>..<head>: <n> matches.
+Redact check <base>..<head>: skipped (private repo).
 ```
+
+The second line is for a private or internal repo (from `private_repos` in `config.toml`, else `gh repo view`), exit 0; a
+repo that is public, or whose visibility cannot be read, gets the count.
 
 Counts only, never a term, a line or a file name. A match also ends with the error form on stderr (`redact-check: <n>
 lines in <range> hold a private term. Remove them before you push.`) and exit 1; a check that cannot run (no terms
@@ -560,6 +631,57 @@ Slot free (<n> of <N> teams running). Pick the next issue and boot it.
 issue is unclaimed and not blocked (`linear.sh candidates`; with no Linear key that last check is skipped and the wake says
 so). UNVERIFIED: the Linear query behind `candidates`.
 
+### fixes
+
+A team brought back to fix its open PR (a conflict after another merge, red checks, a head the tester has not signed, or
+`revive --fix` for review rework) goes over `max_teams` and `teams_per_repo` without `FLEET_FORCE`: its rows carry `fixing`, the
+caps leave it out, and the team table's summary line counts it apart (`3 teams · 2 Working · 1 Idle · 1 fixing`; `Slot free (2 of 3
+teams running, 1 fixing)`). The mark goes when the PR is ready again or merged, or the team is parked. A new issue and a parked
+feature team still respect the limits.
+
+### wake usage_limit
+
+```
+Usage limit fleet: agents hit the plan's usage limit. No team boots until <time>; running teams continue.
+```
+
+Once per episode: agents stopped on a rate or usage limit (their transcript's last line is an API error that says so) start a
+backoff, 15 minutes at first and doubling with each hit after one ran out, 4 hours at most. During it there is no `slot_free` and
+`boot` refuses (`FLEET_FORCE=1` boots anyway); running teams carry on. The wake is reported once; the episode ends when no agent
+is limited and the backoff has run out. These agents are not `needs_input` wakes. The profile's `usage_margin` counts too: when
+`usage.json` in the state dir (`{"remaining_pct": 12, "at": "<ISO>"}`, a reading under 2 hours old) says less than the margin is left,
+the backoff starts the same way (`detail`: "within the usage margin"). UNVERIFIED: nothing in the fleet reads the remaining usage
+offline, so without that file only the limit errors start it. UNVERIFIED: the wording of the real limit screen.
+
+### wake status_changed
+
+```
+Ready to merge: 2 ready: merge #214, then #121.
+```
+
+The status table or the set of PRs ready to merge changed (a team starts, finishes or fails, a PR turns ready, conflicts or
+merges, the merge order moves, something needs the owner). At most once every `status_mins` (the `[run]` profile, 10); changes
+in between wait for the next window; nothing changed, nothing sent. The notice is there only when the ready set changed to a
+non-empty one, at most once every `merge_push_mins` (15): it is the text of the one batched push, in merge order. Answer the wake
+with `fleet status`, relayed as it is; with a ready notice, push it as well.
+
+### wake main_red
+
+```
+Main red <owner/name>: CI on <branch> failed at <sha>. Look at the run; the teams keep working.
+```
+
+Under `fleet run`: the newest CI run of a repo's default branch (a repo with a live team, `gh run list`, read at most every 10
+minutes) failed. Once per run; it clears when a later run passes. loop-tick sends the one push; no team stops.
+
+### wake signoff_failed
+
+```
+Sign-off failed <team/tester>: the tester finished without signing the PR head off. Its lead has the report; the other teams are not affected.
+```
+
+Under `fleet run`: a team's tester finished with outcome Failed. Once per tester finish; one push; no team stops.
+
 ### wake morning_report
 
 ```
@@ -580,10 +702,15 @@ The decision form of the escalation, with its options.
 
 ### morning report
 
-`metrics.sh --morning [--since 12h]`, written by tick in overnight mode to `reports/fleet-morning-<date>.md`:
+`metrics.sh --morning [--since 12h]`, written by tick once a day at the `report_at` time of the `[run]` profile (overnight mode's 07:00
+without one) to `reports/fleet-morning-<date>.md`, covering the time since the last report:
 
 ```
 # Morning report <YYYY-MM-DD>
+
+## Merged
+
+- <PR url> (<team>)
 
 ## Ready to merge
 
@@ -596,6 +723,20 @@ The decision form of the escalation, with its options.
 ## UNVERIFIED
 
 - <team/role>: <the done summary's UNVERIFIED line>
+
+## Needs your eyes
+
+- deferred (<team/lead>): <item> → <ISSUE> <url>
+- parked for you (<team/lead>): <the human-only step that was set aside>
+- Verify <ISSUE> (<n> days old): check <what>. Still worth checking? With no answer by the next report it moves to Done
+
+## Failures
+
+- <team/role>: failed
+
+## Proposed lessons
+
+- <team> (<outcome>): <role>: <lesson, or "lesson due (fleet debrief)">
 
 ## Takeovers
 
@@ -610,10 +751,17 @@ The decision form of the escalation, with its options.
 
 - <PR url>: conflicts after <PR url>
 - <PR url>: conflicting now
+
+## What is next
+
+- next to pick: DEV-1, DEV-2
 ```
 
-The sections always come in this order, one line per entry, `none` for an empty one. Ready to merge is the merge
-queue as it is when the report is written.
+The sections always come in this order, one line per entry. The older ones say `none` when empty; Merged, Needs your eyes,
+Failures, Proposed lessons and What is next appear only when they have lines, so the report stays short. Ready to merge is the merge
+queue as it is when the report is written. Needs your eyes is where nothing waits in a PR body: each deferred item is an issue
+(`fleet defer`), each Verify item says what to check, and an item in Verify over 7 days is asked about once (`Still worth
+checking?`) and moved to Done with a comment at the next report.
 
 ## Disk and alerts
 

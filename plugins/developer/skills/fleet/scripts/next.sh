@@ -95,6 +95,7 @@ if true; then
     0) ;;
     3) if [ "$(cfg_int machines 1)" -gt 1 ]; then die "claims are unavailable (no Linear key, or linear_writes off) and machines > 1 in config.toml, so $issue cannot be claimed. $team keeps its current issue"; fi
        warn "claims unavailable; moving $team to $issue unclaimed" ;;
+    4) die "$issue was claimed first by another machine; this machine stood down and $team keeps its current issue" ;;
     *) die "could not claim $issue; $team keeps its current issue" ;;
   esac
 fi

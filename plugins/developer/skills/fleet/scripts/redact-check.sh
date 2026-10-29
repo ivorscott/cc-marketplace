@@ -11,6 +11,10 @@
 # default branch deleted later is not counted as added) and the commit messages in the range (`git log <base>..<head>`),
 # and matches each term as a fixed string, case-insensitive. A three-dot range works the same. A line that holds a term counts once. The reply is counts only, "Redact
 # check <range>: <n> matches." (references/output.md): never a term, a line or a file name.
+# The check gates pushes to public repos only. The repo is the cwd's origin (repo_slug): `private_repos` / `public_repos`
+# in config.toml (lists of owner/name) decide first, else `gh repo view --json visibility`. A private or internal repo
+# prints "Redact check <range>: skipped (private repo)." and exits 0; public, or a visibility that cannot be read,
+# runs the check as above (unreadable counts as public, so it never passes as clean by accident).
 # Exit codes: 0 clean, 1 at least one match (stderr says how many lines, never which), 2 when the check cannot run
 # (no terms file, no terms in it, or a range git cannot read). "Not configured" never passes as clean. Every agent
 # may run it (agent-lib.sh puts it in the base allow list).
@@ -28,6 +32,15 @@ while [ $# -gt 0 ]; do
 done
 case "$range" in ?*..?*) ;; *) cannot "no range given" "Run redact-check.sh --range <base>..<head>" ;; esac
 base="${range%%..*}"; head="${range##*..}"
+# repo_private: the repo's visibility, from config first and gh second; true only when it is known to be not public.
+repo_private() {
+  local slug vis; slug="$(repo_slug .)"; [ -n "$slug" ] || return 1
+  [ "$(config_list public_repos | jq -r --arg s "$slug" 'index($s) != null')" != true ] || return 1
+  [ "$(config_list private_repos | jq -r --arg s "$slug" 'index($s) != null')" != true ] || return 0
+  vis="$("$FLEET_GH" repo view "$slug" --json visibility -q .visibility 2>/dev/null)" || return 1
+  case "$vis" in PRIVATE | INTERNAL | private | internal) return 0 ;; *) return 1 ;; esac
+}
+if repo_private; then render_line redact range="$range" skipped=1; exit 0; fi
 src="$FLEET_STATE_DIR/private/redact_terms.txt"
 [ -f "$src" ] || cannot "no terms file at $src, so the check cannot run" "Write the private terms there, one per line, mode 600"
 [ -z "$(find "$src" -prune \( -perm -040 -o -perm -004 \) 2>/dev/null)" ] || warn "$src is readable by others; chmod 600 it"

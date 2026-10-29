@@ -4,6 +4,7 @@
 #   bash scripts/test/run.sh            the full suite (local)
 #   bash scripts/test/run.sh --smoke    the critical cases only (CI, under 2 min)
 #   bash scripts/test/run.sh --v413     only the 4.1.3 cases, test/v413.sh
+#   bash scripts/test/run.sh --v420     only the 4.2.0 cases, test/v420.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SCRIPTS="$(dirname "$HERE")"
@@ -321,6 +322,8 @@ gold() { # gold <entry> <reply>
 }
 . "$HERE/v413.sh" # 4.1.3: v413_smoke and v413_full
 if [ "${1:-}" = --v413 ]; then v413_full; printf '\n%d passed, %d failed\n' "$pass" "$failn"; [ "$failn" = 0 ]; exit; fi # only the 4.1.3 cases
+. "$HERE/v420.sh" # 4.2.0: v420_smoke and v420_full
+if [ "${1:-}" = --v420 ]; then v420_full; printf '\n%d passed, %d failed\n' "$pass" "$failn"; [ "$failn" = 0 ]; exit; fi # only the 4.2.0 cases
 # ---- run.sh --smoke: the critical cases only (CI). The full suite (no flag) stays for local runs. --------------
 if [ "${1:-}" = --smoke ]; then
   SM="$T/smoke"; mkdir -p "$SM"; export FLEET_FORCE=
@@ -741,6 +744,7 @@ Merge this one first." "Do not merge until the API ships" "  hold: waiting on de
   # dev530-6: the README says what changed in 4.1.2 (the version itself is pinned in the 4.1.3 cases)
   eq "smoke: dev530-6 the README has its What changed in 4.1.2 section" "$(grep -c '^## What changed in 4.1.2' "$SCRIPTS/../README.md")" "1"
   v413_smoke
+  v420_smoke
   printf '\n%d passed, %d failed\n' "$pass" "$failn"
   [ "$failn" = 0 ]; exit
 fi
@@ -1221,7 +1225,7 @@ eq "status: no machine footer" "$(DF_GB=100 "$SCRIPTS/status.sh" 2>/dev/null | g
 echo 'machine_name = "laptop-a"' >>"$FLEET_CONFIG_DIR/config.toml"
 eq "prime: names the machine by machine_name" "$(DF_GB=100 "$SCRIPTS/prime.sh" 2>/dev/null | head -n 1 | cut -d: -f1)" "Fleet on laptop-a"
 eq "status --json has no machine footer" "$(DF_GB=100 "$SCRIPTS/status.sh" build-nope --json 2>/dev/null | grep -c machine:)" 0
-eq "status: a team without an issue shows - in its Issue cell" "$(DF_GB=100 "$SCRIPTS/status.sh" 2>/dev/null | grep -c '^| build-plain | test | - |')" 1
+eq "status: a team without an issue shows - in its Issue cell" "$(DF_GB=100 "$SCRIPTS/status.sh" 2>/dev/null | grep -c '^| build-plain | laptop-a | - |')" 1
 cp "$T/config.bak2" "$FLEET_CONFIG_DIR/config.toml"
 
 # boot: refusal of an issue another machine holds
@@ -2098,7 +2102,7 @@ dbreset; jq --arg n "$ml" '.labels += [{id: "L9", name: $n, description: "", par
 eq "claim: an empty description is filled in" "$(jq -r --arg n "$ml" '.labels[] | select(.name == $n) | .description | test("heartbeat=")' "$LINEAR_DB")" true
 dbreset; jq --arg n "$ml" '.labels += [{id: "L9", name: $n, description: "mine already", parent: {id: "L1", name: "fleet"}}]' "$LINEAR_DB" >"$T/db.tmp" && mv "$T/db.tmp" "$LINEAR_DB"
 "$LIN" claim DEV-1 >/dev/null 2>&1
-eq "claim: a non-empty description is never overwritten (the owner line is added after it)" "$(jq -r --arg n "$ml" '.labels[] | select(.name == $n) | .description' "$LINEAR_DB" | grep -v '^heartbeat=\|^summary=' | paste -sd'|' -)" "mine already|owner=Fixture Owner"
+eq "claim: a non-empty description is never overwritten (the owner line is added after it)" "$(jq -r --arg n "$ml" '.labels[] | select(.name == $n) | .description' "$LINEAR_DB" | grep -v '^heartbeat=\|^summary=\|^claimed=' | paste -sd'|' -)" "mine already|owner=Fixture Owner"
 # the race: another machine writes after us; the last writer wins and we exit 1
 dbreset; LINEAR_STUB_RACE=fleet:other "$LIN" claim DEV-3 >"$T/race.out" 2>"$T/race.err"; rc=$?
 eq "claim race: the loser exits 1" "$rc" 1
@@ -2501,7 +2505,7 @@ eq "N3: as one label update, a write" "$(grep -c '^mutation IssueLabelUpdate' "$
 eq "N3: the rewritten description keeps every other line and the heartbeat" "$(jq -r '.labels[] | select(.id == "L9") | .description' "$LINEAR_DB" | paste -sd'|' -)" "my box · macOS · machine id sha256:$want · first claim 2026-01-02|owner=Fixture Owner|heartbeat=2026-10-18T07:00:00Z|extra note"
 : >"$LINEAR_LOG"; eq "N3: a second migrate rewrites nothing" "$("$LIN" migrate | jq -r .rewrote_label):$(nmut)" "false:0"
 legacy_db; "$LIN" claim DEV-3 >/dev/null 2>&1
-eq "N3: claim (ensure_label) rewrites it too, keeping the other text (the heartbeat line is now)" "$(jq -r '.labels[] | select(.id == "L9") | .description' "$LINEAR_DB" | grep -v '^heartbeat=\|^summary=' | paste -sd'|' -)" "my box · macOS · machine id sha256:$want · first claim 2026-01-02|owner=Fixture Owner|extra note"
+eq "N3: claim (ensure_label) rewrites it too, keeping the other text (the heartbeat line is now)" "$(jq -r '.labels[] | select(.id == "L9") | .description' "$LINEAR_DB" | grep -v '^heartbeat=\|^summary=\|^claimed=' | paste -sd'|' -)" "my box · macOS · machine id sha256:$want · first claim 2026-01-02|owner=Fixture Owner|extra note"
 eq "N3: and the full id is in no request" "$(grep -c "$FIXID" "$LINEAR_ARGV_LOG" || true)" 0
 eq "N3: and no description in the database holds one" "$(jq -r '.labels[].description' "$LINEAR_DB" | grep -Ec "$IDRE" || true)" 0
 # heartbeat hashes a full machine id an older version left in the description, or writes nothing
@@ -2521,10 +2525,10 @@ eq "whoami: prints the Linear user behind the key" "$("$LIN" whoami | jq -c '[.i
 eq "whoami: is a read (no mutation)" "$(nmut)" 0
 "$LIN" claim DEV-1 >/dev/null 2>&1
 odesc() { jq -r --arg n "$ml" '.labels[] | select(.name == $n) | .description' "$LINEAR_DB"; }
-eq "owner: the new label's description has the hashed id, the owner and the heartbeat, in that order" "$(odesc | grep -v '^summary=' | sed 's/ · first claim.*//; s/^[^·]* · [^·]* · //; s/^heartbeat=.*/heartbeat=…/' | paste -sd'|' -)" "machine id sha256:$want|owner=Fixture Owner|heartbeat=…"
+eq "owner: the new label's description has the hashed id, the owner and the heartbeat, in that order" "$(odesc | grep -v '^summary=\|^claimed=' | sed 's/ · first claim.*//; s/^[^·]* · [^·]* · //; s/^heartbeat=.*/heartbeat=…/' | paste -sd'|' -)" "machine id sha256:$want|owner=Fixture Owner|heartbeat=…"
 jq '.viewer = {name: "New Owner"}' "$LINEAR_DB" >"$T/db.tmp" && mv "$T/db.tmp" "$LINEAR_DB"
 FLEET_NOW=2026-10-19T10:00:00Z "$LIN" heartbeat >/dev/null
-eq "owner: heartbeat refreshes the owner line, keeps the hashed id and updates the heartbeat" "$(odesc | grep -c "machine id sha256:$want")$(odesc | grep -c '^owner=New Owner$')$(odesc | grep -c '^heartbeat=2026-10-19T10:00:00Z$')$(odesc | grep -vc '^summary=')" 1113
+eq "owner: heartbeat refreshes the owner line, keeps the hashed id and updates the heartbeat" "$(odesc | grep -c "machine id sha256:$want")$(odesc | grep -c '^owner=New Owner$')$(odesc | grep -c '^heartbeat=2026-10-19T10:00:00Z$')$(odesc | grep -vc '^summary=\|^claimed=')" 1113
 jq '.labels |= map(if .name == "'"$ml"'" then .description = "my box · macOS\nheartbeat=2026-10-18T07:00:00Z\nextra note" else . end) | .viewer = {name: "Fixture Owner"}' "$LINEAR_DB" >"$T/db.tmp" && mv "$T/db.tmp" "$LINEAR_DB"
 "$LIN" migrate >/dev/null
 eq "owner: migrate adds a missing owner line and keeps the rest" "$(odesc | paste -sd'|' -)" "my box · macOS|owner=Fixture Owner|heartbeat=2026-10-18T07:00:00Z|extra note"
@@ -3834,7 +3838,7 @@ bad=""; while IFS= read -r row; do
 done < <(sed -n '3,$p' "$D4/help.out")
 eq "dev408-16 commands: every row has an example that runs that command" "$bad" ""
 eq "dev408-16 commands: no internal script is listed" "$(printf '%s\n' "$cmds" | grep -cxE 'common|agent-lib|loop-tick|registry|tick|linear|machine-id|chat|fleet')" 0
-eq "dev408-16 commands: the commands (scripts with a Command line, the aliases, help)" "$(printf '%s\n' "$cmds" | paste -sd' ' -)" "boot catchup claim debrief env escalate escalations focus help holder metrics next park prime redact-check resolve respawn retire revive sandbox schedule slim status takeover tell unpark"
+eq "dev408-16 commands: the commands (scripts with a Command line, the aliases, help)" "$(printf '%s\n' "$cmds" | paste -sd' ' -)" "boot catchup claim debrief decide defer env escalate escalations focus help holder metrics next overlap park prime redact-check resolve respawn retire revive run sandbox schedule slim status takeover tell unpark"
 bad=""; for f in "$SCRIPTS"/*.sh; do
   grep -q '^# Command: ' "$f" || continue; n="$(basename "$f" .sh)"
   awk 'NR == 1 { next } !/^#/ { exit } { print }' "$f" | grep -qE "^#   $n\.sh( |$)" || bad="$bad $n:usage"
@@ -3847,7 +3851,7 @@ eq "dev408-16 commands: an alias's help keeps the usage line's continuation line
 routes="$(awk '/^## Step 0/ { on = 1; next } on && /^## / { exit } on' "$SCRIPTS/../SKILL.md" | grep -o '`/fleet [a-z][a-z-]*' | sed 's#`/fleet ##' | sort -u)"
 missing=""; for r in $routes; do printf '%s\n' "$cmds" | grep -qx "$r" || missing="$missing $r"; done
 eq "dev408-16 commands: every SKILL.md Step 0 route is a command" "$missing" ""
-eq "dev408-16 commands: the Step 0 routes" "$(printf '%s\n' "$routes" | paste -sd' ' -)" "boot debrief escalate escalations focus help park prime resolve retire status tell unpark"
+eq "dev408-16 commands: the Step 0 routes" "$(printf '%s\n' "$routes" | paste -sd' ' -)" "boot debrief escalate escalations focus help park prime resolve retire run status tell unpark"
 check "dev408-16 commands: the README's Commands table is fleet help's output" diff <("$FL" help) <(awk '/^\| Command \| What it does \| Example \|$/ { on = 1 } on && !/^\|/ { exit } on' "$SCRIPTS/../README.md")
 "$FL" bogus >"$D4/u.out" 2>"$D4/u.err"; rc=$?
 eq "dev408-16 commands: an unknown command exits 2, nothing on stdout, the list on stderr" "$rc:$(wc -c <"$D4/u.out" | tr -d ' '):$(grep -c '^| `status` |' "$D4/u.err")" "2:0:1"
@@ -3927,6 +3931,10 @@ for w in $WAKES; do
     pr_conflicting) ev='{"type":"pr_conflicting","team":"build-api","name":"build-api/lead","url":"https://github.com/acme/app-api/pull/214","merged":"https://github.com/acme/app-web/pull/121","lead_told":true}' ;;
     stale_version) ev='{"type":"stale_version","team":"build-api","name":"build-api/lead","from":"4.0.0","to":"4.1.0","detail":"runs 4.0.0, installed 4.1.0; waits for the go"}' ;;
     input_pending) ev='{"type":"input_pending","team":"build-api","name":"build-api/lead","detail":"yes go ahead and merge"}' ;;
+    usage_limit) ev='{"type":"usage_limit","team":"","name":"","until":"2026-10-24T14:30:00Z","detail":"agents hit the plan usage limit"}' ;;
+    status_changed) ev='{"type":"status_changed","team":"","name":"","ready":"2 ready: merge #214, then #121"}' ;;
+    main_red) ev='{"type":"main_red","team":"","name":"acme/app","detail":"CI on main failed at abcdef1"}' ;;
+    signoff_failed) ev='{"type":"signoff_failed","team":"build-api","name":"build-api/tester"}' ;;
     slot_free) ev='{"type":"slot_free","team":"","name":"","live":2,"target":3,"detail":"2 live < target 3"}' ;;
     morning_report) ev='{"type":"morning_report","team":"","name":"","date":"2026-10-24","path":"<T>/reports/fleet-morning-2026-10-24.md"}' ;;
     claim_released) ev='{"type":"claim_released","team":"","name":"","issue":"DEV-2","holder":"fleet:other"}' ;;
@@ -4123,7 +4131,7 @@ rterms "$RS"
 gold redact-check "$(cd "$RR" && FLEET_STATE_DIR="$RS" "$FL" redact-check --range main..feat 2>/dev/null)"
 check "dev408-5 redact check: every agent may run it (the base allow list)" bash -c "grep -l '\"Bash($SCRIPTS/redact-check.sh:\*)\"' '$T/gold/state/settings/'*.json >/dev/null"
 check "dev408-5 redact check: the house rule names the script, and exit 2 is UNVERIFIED" bash -c "grep -q 'redact-check.sh --range <base>..HEAD' '$SCRIPTS/../rules/house.md' && grep -q 'Exit 2 means the check could not run: report it UNVERIFIED' '$SCRIPTS/../rules/house.md'"
-check "dev408-5 redact check: config.toml has no redact key" bash -c "! grep -q redact '$SCRIPTS/../config.example.toml'"
+check "dev408-5 redact check: config.toml has no key for the terms (they live outside every repo)" bash -c "! grep -q redact_terms '$SCRIPTS/../config.example.toml'"
 
 # -- dev408-6: a background task stopped with KillShell or TaskStop is not running (next.sh's safe point)
 bgk "$T/k1.jsonl" KillShell shell_id; bgk "$T/k2.jsonl" TaskStop task_id; bgk "$T/k3.jsonl"; bgk "$T/k4.jsonl" "" "" notified
@@ -4399,8 +4407,8 @@ d9db() { d4db; jq '.states.Verify = "S4"' "$LINEAR_DB" >"$D4/db9" && cp "$D4/db9
 qfresh retire9; d4cfg 'linear_writes = "on"'
 d9db; r9team r9a DEV-3 91; o9="$(rt9 r9a --outcome Shipped)"
 eq "dev408-9 retire: Shipped moves the issue to Done, and the Retired line says so" "$(d4state DEV-3):$(printf '%s\n' "$o9" | head -n 1 | grep -c ' Issue → Done\.$')" "Done:1"
-d9db; r9team r9b DEV-3 91; rt9 r9b --outcome Shipped --verify >/dev/null
-eq "dev408-9 retire: Shipped with --verify moves it to Verify" "$(d4state DEV-3)" Verify
+d9db; r9team r9b DEV-3 91; "$REG" set r9b/builder "summary=done; UNVERIFIED: a live run" >/dev/null; rt9 r9b --outcome Shipped --verify >/dev/null
+eq "dev408-9 retire: Shipped with --verify and an UNVERIFIED step moves it to Verify" "$(d4state DEV-3)" Verify
 d9db; r9team r9c DEV-3 91; rt9 r9c --outcome Abandoned >/dev/null
 eq "dev408-9 retire: Abandoned moves it to Todo and releases this machine's label" "$(d4state DEV-3):$(d4labels DEV-3)" "Todo:bug"
 d9db; : >"$LINEAR_LOG"; r9team r9d DEV-3 92; rt9 r9d --outcome Shipped >/dev/null
@@ -4587,6 +4595,9 @@ eq "dev408-19 plan: retire removes the team's plan file, and only its own" "$([ 
 # ---- 4.1.3 ----
 v413_full
 # ---- end 4.1.3 ----
+# ---- 4.2.0 ----
+v420_full
+# ---- end 4.2.0 ----
 
 printf '\n%d passed, %d failed\n' "$pass" "$failn"
 [ "$failn" = 0 ]

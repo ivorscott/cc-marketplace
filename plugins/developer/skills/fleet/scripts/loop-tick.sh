@@ -23,7 +23,8 @@
 # both cases the lines also go to a desktop notification.
 #
 # Alerts (notify with alert_cmd; the text is "Alert: <what happened>. <next step>."), at most once per cause per 4
-# hours: an escalation P0/P1 (per agent and id),
+# hours: an escalation P0/P1 (per agent and id), an agent that went Failed (per agent; a dead one is respawned, and a second
+# death is a P1 escalation),
 # a login that expired on this Mac (any agent, or the Orchestrator), no Orchestrator reply 15 minutes after a
 # wake (the Orchestrator is not watching), herdr down, low disk, a repo with no team, 3 failed loop runs in a row,
 # and no good tick within 2x tick_secs. A good tick is one that ran tick.sh and got an event array (or
@@ -115,12 +116,17 @@ while IFS=$'\t' read -r cause what; do
     esc:*) alert "$cause" "escalation $what needs you" "Run fleet escalations --open" ;;
     disk) alert disk "free disk is low ($what GB)" "Free space, or retire a finished team" ;;
     repo_without_team:*) alert "$cause" "repo $what has no team" "Boot one, or drop it from repos in config.toml" ;;
+    main_red:*) alert "$cause" "CI on the default branch of $what is red" "Run fleet status; the teams keep working" ;;
+    signoff_failed:*) alert "$cause" "the tester $what finished without signing off" "Run fleet status; the other teams are not affected" ;;
+    failed:*) alert "$cause" "agent $what failed" "Run fleet status" ;;
   esac
 done < <(printf '%s' "$out" | jq -r 'def s: (. // "-") | tostring | gsub("[^A-Za-z0-9._:/@#-]"; "") | .[0:80];
   .[] | select(type == "object")
   | if .type == "escalation" and (.severity | IN("P0", "P1")) and (.id | type == "string") then ["esc:\(.name | s):\(.id | s)", "\(.id | s) from \(.name | s)"]
     elif .type == "disk" then ["disk", (.free_gb | s)]
     elif .type == "repo_without_team" then ["repo_without_team:\(.name | s)", (.name | s)]
+    elif .type == "main_red" or .type == "signoff_failed" then ["\(.type):\(.name | s)", (.name | s)]
+    elif .type == "failed" then ["failed:\(.name | s)", (.name | s)]
     else empty end | @tsv')
 
 # --- the wake lines: one per event, appended to wakes.log -------------------------------------------------------

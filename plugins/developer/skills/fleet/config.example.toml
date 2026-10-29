@@ -29,6 +29,10 @@ permission_mode = "auto"   # the Claude Code permission mode every agent starts 
 # no_pr_ci = ["repo-without-ci"]   # repos whose PRs have no CI: no checks counts as green
 # installs = "allow"   # agents install what the work needs themselves: the guard stops denying installers, and the house rules say to list each install and commit a new dependency with its lockfile; unset, an install waits for the owner
 
+# The redact check (redact-check.sh) gates pushes to public repos only. Visibility comes from these lists first, else from `gh repo view`; unreadable counts as public.
+# public_repos = ["owner/name"]    # always checked
+# private_repos = ["owner/name"]   # never checked: it prints "skipped (private repo)"
+
 # Overnight mode: leads decide inside the issue's scope (installs, cloud, prod, branch protection, `gh pr ready` and
 # closing stay P1), branches catch up with merge commits, and the first tick after 07:00 writes the morning report
 overnight = false
@@ -52,3 +56,17 @@ tick_secs = 300
 # Context window per model, in tokens (default 200000).
 [context_window]
 # "claude-opus-5-5" = 200000
+
+# The self-driving loop's profile, written by `fleet run init` (it changes only this table, max_teams and installs).
+# Both machines read the same file. Keys here are read by `fleet run` and tick, never by the top-level readers.
+[run]
+teams = 3                 # teams to keep running; init also sets max_teams to match
+work = "anything"         # anything | "parent:<issue>" | "label:<name>"
+order = "critical-path"   # critical-path (Blocked-by, then priority, then oldest) | priority | oldest
+fill = "whole-first"      # whole-first (whole issues, then the unblocked part of one) | whole-only
+install_policy = "allow"  # allow | ask; allow also writes installs = "allow" at the top level, which the bash guard reads
+usage_margin = 10         # percent of the plan's limit left unused before the loop stops booting
+merge_push_mins = 15      # at most one batched "ready to merge" push every N minutes
+status_mins = 10          # at most one status table every N minutes, and only when something changed
+report_at = "08:00"       # morning report time, local HH:MM
+stop = "never"            # never | HH:MM | no-work

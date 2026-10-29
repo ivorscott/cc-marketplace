@@ -522,6 +522,8 @@ Each command works the same from Claude Code (`/fleet <command>`) and from a she
 | `catchup` | Bring a finished team back to merge main into its conflicting PR | `fleet catchup build-api https://github.com/acme/app-api/pull/12` |
 | `claim` | Claim an issue on Linear for this machine | `fleet claim DEV-123` |
 | `debrief` | List the retired teams and their lessons, the ones still due marked | `fleet debrief` |
+| `decide` | Decide a lead's escalation with the recommended option, or park what is the human's | `fleet decide build-api 20261029T100000Z-1` |
+| `defer` | File what a PR defers to the owner as linked issues | `fleet defer build-api` |
 | `env` | Create, remove or list a team's test cluster | `fleet env status` |
 | `escalate` | Raise a question by severity; it stays open until resolved | `fleet escalate build-api/lead P1 "which database?" postgres sqlite` |
 | `escalations` | List escalations, the open ones or all | `fleet escalations --open` |
@@ -530,6 +532,7 @@ Each command works the same from Claude Code (`/fleet <command>`) and from a she
 | `holder` | Say which machine holds an issue, and whether its claim lapsed | `fleet holder DEV-123` |
 | `metrics` | Show per-PR metrics from the event log | `fleet metrics --since 7d` |
 | `next` | Move a team to its next issue after its PR merged | `fleet next build-api DEV-124` |
+| `overlap` | Check a plan's files against open PRs and live teams in the same repo | `fleet overlap build-api` |
 | `park` | Free a team's slot and keep its work | `fleet park build-api` |
 | `prime` | Pick the fleet up again after a compaction or in a new session | `fleet prime` |
 | `redact-check` | Count the private terms in what a branch adds (counts only) | `fleet redact-check --range origin/main..HEAD` |
@@ -537,6 +540,7 @@ Each command works the same from Claude Code (`/fleet <command>`) and from a she
 | `respawn` | Start a dead agent again from its row | `fleet respawn build-api/builder` |
 | `retire` | Shut a team (or one agent) down safely | `fleet retire build-api --outcome Shipped` |
 | `revive` | Bring a finished or parked team back with something to do | `fleet revive build-api --text "the PR needs a review reply"` |
+| `run` | Set up the self-driving loop once, then run it with no questions | `fleet run init` |
 | `sandbox` | Run a reproduction away from the live fleet | `fleet sandbox --keep` |
 | `schedule` | Install, remove or check the launchd loop | `fleet schedule status` |
 | `slim` | Turn the fleet's panel style for herdr on or off, or say if it is on | `fleet slim status` |
@@ -578,7 +582,7 @@ The Orchestrator and agents call these directly (from `scripts/`). You can call 
 |---|---|
 | `boot.sh` | `boot.sh [--issue ID --issue-url URL --issue-title TEXT --claimed-by KEY --labels a,b --scope 'repo: paths'] <template> <focus> <dir> [task…]` boots a team (`FLEET_FORCE=1` goes over the team caps (`max_teams`, `teams_per_repo`) and the `min_free_gb` disk floor, never over another machine's claim). A takeover is done with `linear.sh takeover` before boot. It writes every row (Idle) before any agent starts; a boot that fails or is interrupted closes its workspace, removes the worktrees and branches it made and retires its rows (Abandoned), and a name with leftovers of an earlier boot is refused until `retire.sh <team>` tidies them |
 | `claim.sh` | `lease` prints now + `lease_hours` · `hb` reads the `heartbeat=` line of a label description (stdin) · `expired --lease ISO` says whether a lease has lapsed (the open-PR check is `linear.sh takeover`'s). Pure: it never calls a tracker |
-| `redact-check.sh` | `redact-check.sh --range <base>..<head>` counts the private terms in the lines a branch adds and its commit messages; prints counts only, never a term; exit 0 clean, 1 a match, 2 cannot run (no terms file, no terms, bad range). The terms live in `$FLEET_STATE_DIR/private/redact_terms.txt` (default `~/.local/state/fleet/private/redact_terms.txt`), outside every repo: one per line, blank lines and `#` lines ignored, mode 600 (it warns when the file is group- or world-readable). Every agent may run it: the house rules require it before sign-off and every push |
+| `redact-check.sh` | `redact-check.sh --range <base>..<head>` counts the private terms in the lines a branch adds and its commit messages; prints counts only, never a term; exit 0 clean, 1 a match, 2 cannot run (no terms file, no terms, bad range). The terms live in `$FLEET_STATE_DIR/private/redact_terms.txt` (default `~/.local/state/fleet/private/redact_terms.txt`), outside every repo: one per line, blank lines and `#` lines ignored, mode 600 (it warns when the file is group- or world-readable). It gates public repos only: a repo in `private_repos` (config.toml) or one `gh repo view` reports as private or internal prints `skipped (private repo)` and exits 0; a visibility it cannot read counts as public. Every agent may run it: the house rules require it before sign-off and every push |
 | `slim.sh` | `slim.sh on\|off\|status` the slim panel style for herdr (`styles/slim.toml`), written between markers in herdr's config (replacing a hand-written `[ui]` style there), with a backup, the Claude integration and a reload; the choice is a registry pref, so the offer is made once. The Orchestrator's only |
 | `linear.sh` | claims and heartbeat on the Linear API: `claim <ISSUE> [--dry-run]` · `heartbeat` (one mutation) · `holder <ISSUE>` (with `lapsed`), `peers` and `blocks <ISSUE…>` (read-only) · `takeover <ISSUE> [--repo OWNER/NAME]` (refuses while a PR is open) · `release <ISSUE> [--lapsed]` (removes this machine's label, or with `--lapsed` a lapsed machine's, under takeover's guards) · `state <ISSUE> <Done\|Verify\|Todo>` · `migrate [--dry-run]` · `has-key`. Key in `~/.config/fleet/linear_api_key` (mode 600) or `LINEAR_API_KEY`; none: exit 3. Writes need `linear_writes` (below): off, the default, exits 3 too. Never posts claim or lease comments |
 | `chat.sh` | `channel` and `allow` print `chat_channel` and `chat_allow` · `format <event> …` prints the one-line message. It never posts or reads; the Orchestrator does with its own chat tools |
@@ -614,6 +618,8 @@ The Orchestrator and agents call these directly (from `scripts/`). You can call 
 ## Configuration
 
 `~/.config/fleet/config.toml` holds machine-wide settings. Every key is optional, and [`config.example.toml`](config.example.toml) is the only list of them: it has every key with its default and a line of what it does (a test keeps the scripts and that file in step). A key that is not in it, or whose value is the wrong kind, is ignored with one warning per key. The caps are `max_teams` (live teams, default 3; Parked teams do not count), `teams_per_repo` (default 1) and `repos` (repos that should always have a team; with it set, only teams on a listed repo take a slot); `min_free_gb` and `warn_free_gb` guard the disk, and `prune_cap_gb` (default 20) is the size of the Go cache or docker's reclaimable at which tick prunes them (at most hourly, and also whenever the disk is below `warn_free_gb`; a named docker volume is never removed); `overnight` (default false) turns on overnight mode: leads decide inside the issue's scope and note each decision, the rest stays P1 for you, branches catch up with merge commits, and the first tick after 07:00 local time writes `reports/fleet-morning-<date>.md` (`metrics.sh --morning`) and wakes the Orchestrator with it; `lease_hours`, `label_prefix`, `machines` and `linear_writes` (off | `test:<TEAM>` | on, default off), `machine_name` and `machine_legacy_label` (only while migrating an older label) are the claim settings; `tracker_allow`, `forge_allow`, `chat_channel`, `chat_allow` and `permission_mode` are the agents' permissions. Internal timings (the tell confirm wait, the claim settle wait, the respawn budget, the background-task age, the compact threshold) are constants; the tests change them with `FLEET_TELL_CONFIRM_SECS`, `FLEET_CLAIM_SETTLE_SECS`, `FLEET_RESPAWN_MAX`, `FLEET_RESPAWN_WINDOW_HOURS`, `FLEET_BG_TASK_MAX_HOURS` and `FLEET_COMPACT_ABOVE_PCT`. Hard rules are not settings: the credential scrub always runs.
+
+`fleet run init` writes the self-driving loop's profile as a `[run]` table in the same file, so both machines read the same rules: `teams` (also written to `max_teams`), `work` (`anything`, `parent:<issue>` or `label:<name>`), `order`, `fill`, `install_policy` (`allow` also writes the top-level `installs = "allow"` that the bash guard reads), `usage_margin`, `merge_push_mins`, `status_mins`, `report_at` and `stop`. It changes only that table and those two keys. The top-level readers never read inside a table, so a key of the same name in `[run]` cannot be mistaken for a top-level one; `public_repos` and `private_repos` (lists of `owner/name`) tell the redact check which repos it gates.
 
 Claims need Linear. With another tracker, run the fleet on one machine and leave the claim keys unset. Permissions in `tracker_allow` and `forge_allow` are added to every Claude agent at boot (Claude Code permission rules); templates name no tracker or code host.
 
@@ -967,7 +973,9 @@ Fixes from the first day of 4.1 (DEV-512), one per item:
 | `scripts/tick.sh`, `tell.sh`, `next.sh` | loop tick, checked delivery (briefs as files), moving a team to its next issue |
 | `scripts/queue.sh` | the merge queue: which ready PRs to merge, in which order, and why |
 | `scripts/sandbox.sh` | reproductions away from the live fleet |
-| `scripts/redact-check.sh` | the redact check the house rules require: private terms counted, never printed |
+| `scripts/redact-check.sh` | the redact check the house rules require: private terms counted, never printed; it gates public repos only |
+| `scripts/run.sh` | `fleet run`: `init` saves the `[run]` profile, `start` begins the self-driving loop with no questions, `stop`, `status`, `show` |
+| `scripts/decide.sh`, `defer.sh`, `overlap.sh` | an escalation decided on the owner's behalf (what is the human's parked), a PR's deferred items filed as linked issues, the plan-time overlap check |
 | `scripts/slim.sh`, `styles/slim.toml` | the slim panel style for herdr, between markers in herdr's config |
 | `rules/house.md` | the house rules every brief ends with (a repo's `.claude/fleet-rules.md` follows them); with `installs = "allow"` in config.toml, the install rule says agents install what the work needs themselves and list each install |
 | `scripts/retire.sh` | safe teardown: archives reports to `reports/fleet-archive/`, removes worktrees, removes the team's test cluster |
@@ -997,6 +1005,52 @@ Fixes found after 4.1.1 (DEV-530), one per item:
    filed and a requested split is done. `retire --summary` stays as a read-only view.
 5. **A fresh claim is fresh.** `claim` and `takeover` refresh the machine label's heartbeat in the same call, and tick
    refreshes it first of all, before herdr is checked and with or without claimed rows.
+
+## What changed in 4.2.0
+
+`fleet run`: set the loop up once, then it runs itself. One PR, the items of DEV-622 and its comments:
+
+1. **`fleet run init`** asks once, one question at a time, each with a recommended answer, and saves a `[run]` profile in
+   `config.toml` (teams, which work, order, slot filling, installs, usage margin, the merge-push and status intervals, the
+   morning report time, when to stop). It also sets `max_teams` to match, says how many teams can really run (one per repo per
+   machine), and writes `installs = "allow"` when installs are standing. A re-run shows the saved answers as the defaults;
+   without a terminal it refuses and lists the questions. The top-level config readers never read inside a table, so a key in
+   `[run]` cannot be taken for a top-level one.
+2. **`fleet run start`** reads the profile and asks nothing: it registers the Orchestrator, sets `target_teams`, installs the
+   launchd loop if it is missing, and prints the rules to follow. After a context compaction or in a fresh session
+   `fleet run show` gives them back: they come from the profile, not from memory. `stop` and `status` are small.
+3. **Escalations are decided** (`fleet decide`): the recommended option is taken, the lead told, the escalation resolved, the
+   decision noted for the morning report and commented on the issue. A P0 and what is the human's (merging, production,
+   infrastructure applies, secrets, branch protection) are parked instead: one push, listed in the morning report, never approved.
+4. **Notify on failure, and when what is ready to merge changes.** A failed agent, a red default branch and a tester that finished Failed each push at once, once. The set of PRs ready to merge
+   changing sends one batched push in merge order (`2 ready: merge #A, then #B`), at most every `merge_push_mins`, from the same
+   wake as the status table (`status_changed`, at most every `status_mins`, nothing when nothing changed). A quiet hour prints nothing.
+5. **The only wait is a PR waiting to merge.** Every other wait is removed or decided.
+6. **The morning report** at the profile's `report_at` is written by tick once a day: Merged, Ready to merge, Decisions taken,
+   Needs your eyes (deferred items as linked issues, every Verify item with what to check, what was parked for you), Failures,
+   Proposed lessons, What is next.
+7. **Efficient ticks**: under `fleet run` a tick that finds the registry as it was probes no pane (every 10 minutes at most between probes); it prints nothing unless something changed, and the Orchestrator's output rules say what it never reports.
+8. **Usage guard**: agents stopped by the plan's usage limit start a backoff (15 minutes, doubling to 4 hours): no boot, no
+   `slot_free`, running teams carry on, reported once (`usage_limit`). The `usage_margin` answer is enforced when `usage.json` gives the
+   remaining usage (UNVERIFIED: nothing reads it offline today). UNVERIFIED: the wording of a real limit screen.
+9. **Overlap check at plan time** (`fleet overlap`): the planner lists the files of the change under `Files:`; when the
+   planner is done, tick compares them with the open PRs and live teams of the same repo, on every machine, and tells the lead:
+   `none` (build now), `wait #N`, or `merge-after #N` (build now, `Merge after #N` in the PR body). Paths count only inside one repo.
+10. **Claims don't race**: the claim time rides on the machine label; with two labels on one issue the earlier claim wins, then
+    the lowest machine key, and the loser stands down (exit 4) before any agent starts. Linear has no compare-and-set; UNVERIFIED
+    against the real API.
+11. **New comments reach the lead**: tick forwards a new comment on a live team's issue to its lead once, as quoted data, and the
+    lead re-reads the issue before sign-off.
+12. **Deferred items become issues** (`fleet defer`): what a PR leaves for the owner is filed as a linked issue, noted, and listed.
+13. **No internal chatter**: SKILL.md's output rules list what the Orchestrator never reports.
+
+From the comments: **the redact check gates only public repos** (`private_repos`/`public_repos` in config, else `gh repo view`;
+unreadable counts as public); **Verify only for a real hands-on check** (`retire --verify` counts only with an UNVERIFIED step;
+every other issue goes to Done; a Verify item over 7 days is asked about once and then closed with a comment); **fixes override the
+slot limits** (a fix on an open PR goes over `max_teams` and `teams_per_repo`, is counted apart, and a new issue still respects them);
+**the Machine column shows the machine's name** (the heartbeat fix is 4.1.4's).
+
+`overnight` is the older switch: `fleet run` supersedes it, and it keeps working.
 
 ## What changed in 4.1.4
 

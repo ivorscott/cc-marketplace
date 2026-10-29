@@ -147,6 +147,10 @@ if [ "${FLEET_FORCE:-}" != "1" ]; then
   if [ "$live" -ge "$cap" ]; then
     die "booting $team would be live team number $((live + 1)); max_teams=$cap (park or retire one, set FLEET_FORCE=1, or raise max_teams in $FLEET_CONFIG_DIR/config.toml)"
   fi
+  ub="$(usage_backoff_until)"
+  if [ "$ub" -gt "$(jq -rn --arg t "${FLEET_NOW:-$(now)}" '$t | fromdateiso8601')" ]; then
+    die "booting $team: agents hit the plan's usage limit, so no team starts until $(jq -rn --argjson u "$ub" '$u | todate') (running teams continue; set FLEET_FORCE=1 to boot anyway)"
+  fi
   others="$(teams_on_repo "$repo" "$team")"
   if [ -n "$others" ] && [ "$(printf '%s\n' "$others" | grep -c .)" -ge "$(teams_per_repo)" ]; then
     die "booting $team: $(printf '%s' "$others" | paste -sd, -) already live on $repo, teams_per_repo=$(teams_per_repo) (park one, or set FLEET_FORCE=1)"
