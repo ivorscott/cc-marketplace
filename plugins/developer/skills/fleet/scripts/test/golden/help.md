@@ -4,6 +4,7 @@
 | `catchup` | Bring a finished team back to merge main into its conflicting PR | `fleet catchup build-api https://github.com/acme/app-api/pull/12` |
 | `claim` | Claim an issue on Linear for this machine | `fleet claim DEV-123` |
 | `debrief` | List the retired teams and their lessons, the ones still due marked | `fleet debrief` |
+| `defer` | File what a PR defers to the owner as linked issues | `fleet defer build-api` |
 | `env` | Create, remove or list a team's test cluster | `fleet env status` |
 | `escalate` | Raise a question by severity; it stays open until resolved | `fleet escalate build-api/lead P1 "which database?" postgres sqlite` |
 | `escalations` | List escalations, the open ones or all | `fleet escalations --open` |

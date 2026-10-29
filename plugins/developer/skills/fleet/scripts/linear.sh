@@ -27,6 +27,9 @@
 #                                             sweep passes the fleet's repos), else in the cwd's repo
 #   linear.sh state <ISSUE> <Done|Verify|Todo>   move the issue to that workflow state, labels untouched; refuses an
 #                                             issue another machine holds
+#   linear.sh create-issue <FROM-ISSUE> <title> <description> [--link URL]   create an issue in FROM-ISSUE's team, link the URL
+#                                             (a PR) to it, and print {identifier, url} (a write; the mutations are UNVERIFIED
+#                                             against the real API); in test mode only when FROM-ISSUE is in the test team
 #   linear.sh comments <ISSUE>                JSON: the issue's comments, oldest first, [{id, at, user, body}]   (read-only; the query is UNVERIFIED against the real API)
 #   linear.sh verify-list                     JSON: the issues in Verify, each {issue, title, url, age_days, check, expiry}: age is
 #                                             days since the issue last changed, check the UNVERIFIED line(s) a row's done
@@ -199,7 +202,7 @@ gql_write() {
 clear_write() {
   CLEARED="$1"; [ -n "$TEST_TEAM" ] || return 0
   case "$1" in
-    IssueUpdate | CommentCreate | CommentDelete) case " $ISSUES_OK " in *" $2 "*) return 0 ;; esac ;;
+    IssueUpdate | CommentCreate | CommentDelete | IssueCreate | AttachmentCreate) case " $ISSUES_OK " in *" $2 "*) return 0 ;; esac ;;
     IssueLabelUpdate) [ -z "$OWN_LID" ] || [ "$2" != "$OWN_LID" ] || return 0 ;;
     IssueLabelCreate) [ "$2" != "$(machine_label)" ] || return 0 ;;
   esac
@@ -279,6 +282,17 @@ m_comment_create() { # m_comment_create <issue id> <body>
   clear_write CommentCreate "$1"
   gql_write CommentCreate 'mutation CommentCreate($input: CommentCreateInput!) { commentCreate(input: $input) { success } }' \
     "$(jq -nc --arg i "$1" --arg b "$2" '{input: {issueId: $i, body: $b}}')" >/dev/null
+}
+m_issue_create() { # m_issue_create <source issue id> <team id> <title> <description> → the new issue as {id, identifier, url}
+  clear_write IssueCreate "$1"
+  gql_write IssueCreate 'mutation IssueCreate($input: IssueCreateInput!) { issueCreate(input: $input) { success issue { id identifier url } } }' \
+    "$(jq -nc --arg t "$2" --arg ti "$3" --arg d "$4" '{input: {teamId: $t, title: $ti, description: $d}}')" |
+    jq -c '.data.issueCreate.issue // error("no issue created")'
+}
+m_attachment_create() { # m_attachment_create <issue id> <title> <url>
+  clear_write AttachmentCreate "$1"
+  gql_write AttachmentCreate 'mutation AttachmentCreate($input: AttachmentCreateInput!) { attachmentCreate(input: $input) { success } }' \
+    "$(jq -nc --arg i "$1" --arg ti "$2" --arg u "$3" '{input: {issueId: $i, title: $ti, url: $u}}')" >/dev/null
 }
 m_comment_delete() { # m_comment_delete <comment id> <issue id>
   clear_write CommentDelete "$2"
@@ -486,7 +500,7 @@ write_heartbeat() {
 cmd="${1:-}"; [ $# -gt 0 ] && shift
 # Every API subcommand needs the key; check it here, at the top level, so a missing key is exit 3
 # and not an error swallowed inside a command substitution.
-case "$cmd" in claim | heartbeat | holder | peers | candidates | blocks | whoami | takeover | release | state | migrate | verify-list | verify-sweep | comment | comments) load_key ;; esac
+case "$cmd" in claim | heartbeat | holder | peers | candidates | blocks | whoami | takeover | release | state | migrate | verify-list | verify-sweep | comment | comments | create-issue) load_key ;; esac
 case "$cmd" in
   has-key)
     has_key || no_key ;;
@@ -697,6 +711,19 @@ case "$cmd" in
         | ($a | with_entries(select(.key as $k | $keep | index($k)))) + $new' "$asked" >"$tmp" && mv "$tmp" "$asked"
     fi
     printf '%s\n' "$items" ;;
+
+  create-issue)
+    from="${1:-}"; title="${2:-}"; body="${3:-}"; link=""
+    [ -n "$from" ] && [ -n "$title" ] && [ -n "$body" ] || die "usage: create-issue <FROM-ISSUE> <title> <description> [--link URL]"
+    shift 3; while [ $# -gt 0 ]; do case "$1" in --link) link="${2:?--link needs a URL}"; shift 2 ;; *) die "unknown option: $1" ;; esac; done
+    [ "$WMODE" != off ] || writes_off
+    guard_issue "$from"; iss="$(q_issue "$from")"
+    new="$(m_issue_create "$(printf '%s' "$iss" | jq -r .id)" "$(printf '%s' "$iss" | jq -r .team.id)" "$title" "$body${link:+
+
+Linked: $link}")" || die "could not create the issue"
+    ISSUES_OK="$ISSUES_OK $(printf '%s' "$new" | jq -r .id)"
+    [ -z "$link" ] || m_attachment_create "$(printf '%s' "$new" | jq -r .id)" "Pull request" "$link"
+    printf '%s' "$new" | jq -c '{identifier, url}' ;;
 
   comments)
     READONLY=1

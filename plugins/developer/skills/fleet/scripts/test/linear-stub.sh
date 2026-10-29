@@ -92,6 +92,12 @@ case "$op" in
          inverseRelations: {nodes: [($i.blocked_by // [])[] | {type: "blocks", issue: {identifier: ., state: {type: "started"}}}]}}]}}')" ;;
   IssueComments)
     ok "$(db --argjson v "$vars" '{issue: ((.issues[] | select(.identifier == $v.id)) | {comments: {nodes: [(.comments // [])[] | {id, createdAt: (.createdAt // "2026-01-01T00:00:00Z"), body, user: {name: (.user // "Someone")}}]}})}')" ;;
+  IssueCreate)
+    save "$(db --argjson v "$vars" '(.next + 1) as $n | .next = $n | .issues += [{id: ("N" + ($n | tostring)), identifier: ("NEW-" + ($n | tostring)), team: (.issues[0].team), state: {id: "S0", name: "Backlog"}, labelIds: [], comments: [], title: $v.input.title, description: $v.input.description, url: ("https://linear.example/issue/NEW-" + ($n | tostring))}]')"
+    ok "$(db '.issues[-1] | {issueCreate: {success: true, issue: {id, identifier, url}}}')" ;;
+  AttachmentCreate)
+    save "$(db --argjson v "$vars" '.issues |= map(if .id == $v.input.issueId then .attachments = ((.attachments // []) + [$v.input.url]) else . end)')"
+    ok '{"attachmentCreate": {"success": true}}' ;;
   VerifyItems)
     ok "$(db '{issues: {nodes: [.issues[] | select(.state.name == "Verify") | {identifier, title: (.title // "t"), url: (.url // ""), updatedAt: (.updatedAt // "2026-01-01T00:00:00Z")}]}}')" ;;
   OpenIssues)

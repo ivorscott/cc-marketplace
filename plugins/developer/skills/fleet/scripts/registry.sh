@@ -275,9 +275,9 @@ case "$cmd" in
     render_line resolved id="$ref" name="$name" decision="$note"
     ;;
   note)
-    name="${1:?usage: note <name> discovered|decision|picked TEXT}"; kind="${2:?usage: note <name> discovered|decision|picked TEXT}"
-    msg="${3:?usage: note <name> discovered|decision|picked TEXT}"
-    case "$kind" in discovered | decision | picked) ;; *) die "a note is discovered, decision or picked, not '$kind'" ;; esac
+    name="${1:?usage: note <name> discovered|decision|picked|deferred|parked TEXT}"; kind="${2:?usage: note <name> discovered|decision|picked|deferred|parked TEXT}"
+    msg="${3:?usage: note <name> discovered|decision|picked|deferred|parked TEXT}"
+    case "$kind" in discovered | decision | picked | deferred | parked) ;; *) die "a note is discovered, decision, picked, deferred or parked, not '$kind'" ;; esac
     exists "$name"
     if [ "$kind" = discovered ]; then
       update --arg n "$name" --arg m "$msg" --arg t "$(now)" '.agents[$n] |= (.discovered += [{message: $m, at: $t}] | .updated_at = $t)'

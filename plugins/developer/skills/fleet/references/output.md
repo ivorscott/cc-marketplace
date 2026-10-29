@@ -380,6 +380,17 @@ DEV-1: held by <machine|this machine (<machine>)>[, heartbeat lapsed|, no heartb
 
 `DEV-1: held by nobody.` for an unclaimed issue.
 
+### defer
+
+```
+Deferred <ISSUE>: <item>
+Deferred (not filed: <why>): <item>
+```
+
+One line per item a team's PR leaves for the owner (the list under `Deferred:`, `Left for the owner:`, `For the owner:` or `Needs the
+owner:` in the PR body), each filed once as an issue linked to the PR and noted on the lead (`registry.sh note ... deferred`). With
+no Linear key, or writes off, the item is only noted (`not filed`) so the morning report lists it. tick runs it when a PR becomes ready.
+
 ### run
 
 `fleet run init` asks one question at a time, each as `<question> [<recommended or saved answer>]:`, then ends with
@@ -647,10 +658,15 @@ The decision form of the escalation, with its options.
 
 ### morning report
 
-`metrics.sh --morning [--since 12h]`, written by tick in overnight mode to `reports/fleet-morning-<date>.md`:
+`metrics.sh --morning [--since 12h]`, written by tick once a day at the `report_at` time of the `[run]` profile (overnight mode's 07:00
+without one) to `reports/fleet-morning-<date>.md`, covering the time since the last report:
 
 ```
 # Morning report <YYYY-MM-DD>
+
+## Merged
+
+- <PR url> (<team>)
 
 ## Ready to merge
 
@@ -663,6 +679,20 @@ The decision form of the escalation, with its options.
 ## UNVERIFIED
 
 - <team/role>: <the done summary's UNVERIFIED line>
+
+## Needs your eyes
+
+- deferred (<team/lead>): <item> → <ISSUE> <url>
+- parked for you (<team/lead>): <the human-only step that was set aside>
+- Verify <ISSUE> (<n> days old): check <what>. Still worth checking? With no answer by the next report it moves to Done
+
+## Failures
+
+- <team/role>: failed
+
+## Proposed lessons
+
+- <team> (<outcome>): <role>: <lesson, or "lesson due (fleet debrief)">
 
 ## Takeovers
 
@@ -677,10 +707,17 @@ The decision form of the escalation, with its options.
 
 - <PR url>: conflicts after <PR url>
 - <PR url>: conflicting now
+
+## What is next
+
+- next to pick: DEV-1, DEV-2
 ```
 
-The sections always come in this order, one line per entry, `none` for an empty one. Ready to merge is the merge
-queue as it is when the report is written.
+The sections always come in this order, one line per entry. The older ones say `none` when empty; Merged, Needs your eyes,
+Failures, Proposed lessons and What is next appear only when they have lines, so the report stays short. Ready to merge is the merge
+queue as it is when the report is written. Needs your eyes is where nothing waits in a PR body: each deferred item is an issue
+(`fleet defer`), each Verify item says what to check, and an item in Verify over 7 days is asked about once (`Still worth
+checking?`) and moved to Done with a comment at the next report.
 
 ## Disk and alerts
 

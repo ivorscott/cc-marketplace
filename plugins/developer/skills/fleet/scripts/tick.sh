@@ -636,6 +636,8 @@ if [ "$(printf '%s' "$prs" | jq length)" != 0 ]; then
             rm -f "$FLEET_STATE_DIR/park.err"
           fi ;;
         pr_ready)
+          # What the PR leaves for the owner becomes linked issues (defer.sh files each once; quiet when there is none).
+          "$FLEET_SCRIPTS/defer.sh" "$(printf '%s' "$ev" | jq -r .team)" --pr "$(printf '%s' "$ev" | jq -r .url)" >/dev/null 2>&1 || true
           # The PR is ready again: the team's fix is done, so it no longer goes over the slot limits.
           for fn in $("$registry" list --team "$(printf '%s' "$ev" | jq -r .team)" | jq -r '.[] | select(.fixing == "true") | .name'); do "$registry" set "$fn" fixing= >/dev/null 2>&1 || true; done
           st_upd --argjson e "$ev" '$st + {pr_ready_emitted: ((($st.pr_ready_emitted // []) + [$e.url + "@" + $e.sha]) | unique)}' ;;
@@ -846,17 +848,26 @@ done < <("$registry" list ${team:+--team "$team"} | jq -r "$RENDER_DEFS"'[.[] | 
     + "|" + ([.[].pr // empty] | first // "") + "|" + ([.[].issue // empty] | first // ""))] | @tsv')
 
 # --- morning report ----------------------------------------------------------------------------------------
-# Overnight mode (overnight = true in config.toml): the first tick on or after 07:00 local time each day (the
-# FLEET_MORNING_HOUR constant) writes the morning report (metrics.sh --morning) to reports/fleet-morning-<date>.md
-# (common.sh report_dir: the Orchestrator's cwd) and wakes with its path, once per date.
-if [ -z "$team" ] && [ "$(cfg_bool overnight false)" = true ]; then
-  mday="$(local_time "$now_epoch" %Y-%m-%d)"
-  if [ "$(local_time "$now_epoch" %H | sed 's/^0//')" -ge "$(const_int MORNING_HOUR 7)" ] && [ "$(jq -r '.morning_date // ""' "$STATE_FILE")" != "$mday" ]; then
+# The first tick on or after the report time each day writes the morning report (metrics.sh --morning) to
+# reports/fleet-morning-<date>.md (common.sh report_dir: the Orchestrator's cwd) and wakes with its path, once per date.
+# The time is `report_at` of the [run] profile (fleet run init, HH:MM local); without a profile, overnight mode's 07:00
+# (the FLEET_MORNING_HOUR constant). With neither there is no report. The report covers the time since the last one (a day
+# at most, an hour at least). After it is written, linear.sh verify-sweep applies the Verify expiry: an item the report just
+# asked about is remembered as asked, one it announced is moved to Done with a comment.
+if [ -z "$team" ] && { [ "$(cfg_bool overnight false)" = true ] || [ -n "$(run_val report_at)" ]; }; then
+  mday="$(local_time "$now_epoch" %Y-%m-%d)"; rat="$(run_str report_at "")"
+  case "$rat" in [0-2][0-9]:[0-5][0-9]) rmin=$((10#${rat%%:*} * 60 + 10#${rat##*:})) ;; *) rmin=$(($(const_int MORNING_HOUR 7) * 60)) ;; esac
+  nmin=$((10#$(local_time "$now_epoch" %H) * 60 + 10#$(local_time "$now_epoch" %M)))
+  if [ "$nmin" -ge "$rmin" ] && [ "$(jq -r '.morning_date // ""' "$STATE_FILE")" != "$mday" ]; then
     mpath="$(report_dir)/fleet-morning-$mday.md"
-    if mkdir -p "$(dirname "$mpath")" && FLEET_NOW="$now_iso" "$FLEET_SCRIPTS/metrics.sh" --morning >"$mpath" 2>/dev/null; then
+    msince=$((now_epoch - $(jq -r '.morning_at // 0' "$STATE_FILE"))); [ "$msince" -le 86400 ] || msince=86400; [ "$msince" -ge 3600 ] || msince=3600
+    if mkdir -p "$(dirname "$mpath")" && FLEET_NOW="$now_iso" "$FLEET_SCRIPTS/metrics.sh" --morning --since "$((msince / 60))m" >"$mpath" 2>/dev/null; then
       add_events "$(jq -cn --arg p "$mpath" --arg d "$mday" '[{type: "morning_report", team: "", name: "", path: $p, date: $d, detail: ("the morning report is " + $p)}]')"
+      if "$FLEET_SCRIPTS/linear.sh" has-key >/dev/null 2>&1 && [ "$(linear_writes)" != off ]; then
+        FLEET_NOW="$now_iso" "$FLEET_SCRIPTS/linear.sh" verify-sweep >/dev/null 2>&1 || warn "could not apply the Verify expiry"
+      fi
     else warn "could not write the morning report to $mpath"; fi
-    st_upd --arg d "$mday" '$st + {morning_date: $d}'
+    st_upd --arg d "$mday" --argjson n "$now_epoch" '$st + {morning_date: $d, morning_at: $n}'
   fi
 fi
 

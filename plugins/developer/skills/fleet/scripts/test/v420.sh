@@ -235,7 +235,7 @@ v420_overlap() { # the overlap check at plan time: files against open PRs and li
 }
 
 v420_tick() { # run one tick at a fixed time; the events it printed
-  FLEET_NOW="$1" "$SCRIPTS/tick.sh" 2>/dev/null
+  FLEET_NOW="$1" ${V420_X:+bash -x} "$SCRIPTS/tick.sh" 2>>"${V420_ERR:-/dev/null}"
 }
 v420_evn() { # v420_evn <events json> <type>: how many events of the type
   printf '%s' "${1:-[]}" | jq -r --arg t "$2" '[.[]? | select(.type == $t)] | length' 2>/dev/null || echo 0
@@ -352,20 +352,50 @@ v420_fix() { # a fix on an open PR goes over the slot limits; a new issue or a f
   unset PROMPT_SEQ FLEET_GH; gcfg
 }
 
-v420_smoke() { # the critical cases, CI
-  v420_redact_gate
-  v420_run_init
-  v420_run_collide
-  v420_verify
-  v420_claims
-  v420_comments
-  v420_heartbeat_name
-  v420_overlap
-  v420_usage
-  v420_status_changes
-  v420_failure_push
-  v420_quiet
-  v420_fix
+v420_report() { # deferred items become linked issues; the morning report fires at the profile time and lists them
+  qfresh v420rp; export FLEET_STATE_DIR="$QD/state.v420rp" FLEET_REGISTRY="$QD/state.v420rp/fleet.json" FLEET_INBOX="$QD/state.v420rp/escalations.jsonl" FLEET_WORKTREES="$QD/state.v420rp/worktrees"
+  rm -rf "$FLEET_STATE_DIR"; mkdir -p "$FLEET_STATE_DIR" "$QD/rpcwd"; rm -f "$AS"/*
+  export FLEET_GH="$QD/gh-shim" DF_GB=100 TZ=UTC
+  local o ev body="Fixes DEV-1
+
+Deferred:
+- review the onboarding copy
+- decide on the export name
+
+Done."
+  v420_linear '[{"id":"I2","identifier":"DEV-2","team":{"id":"T1"},"state":{"id":"S4","name":"Verify"},"labelIds":[],"title":"old one","updatedAt":"2026-10-20T10:00:00Z"}]'
+  "$REG" add "$(jq -cn --arg c "$QD/rpcwd" '{name: "orchestrator", team: "orchestrator", tier: "Orchestrator", status: "Working", herdr_ref: "om", pane: "pom", cwd: $c}')" >/dev/null
+  qpr app-api 70 fleet/dev-1-x main 2026-10-29T08:00:00Z '["a.go"]' "$body"
+  qteam rp-a app-api 70 DEV-1 aaaaaaa70; "$REG" add '{"name":"rp-a/lead","team":"rp-a","tier":"Lead","status":"Working","herdr_ref":"rp-a-lead","pane":"plead","issue":"DEV-1","pr":"https://github.com/acme/app-api/pull/70"}' >/dev/null
+  o="$("$SCRIPTS/defer.sh" rp-a 2>&1)"; gold defer "$(printf '%s' "$o" | sed 's/NEW-[0-9]*/NEW-N/')"
+  eq "v420 defer: a PR that defers two things files two issues, linked to the PR" \
+    "$(printf '%s\n' "$o" | grep -c '^Deferred NEW-'):$(jq -r '[.issues[] | select(.identifier | startswith("NEW-")) | .attachments[0]] | unique | join(",")' "$LINEAR_DB"):$(grep -c '^mutation IssueCreate' "$LINEAR_LOG")" "2:https://github.com/acme/app-api/pull/70:2"
+  eq "v420 defer: each is recorded on the lead" "$("$REG" get rp-a/lead | jq -r '[.notes[] | select(.kind == "deferred") | .message | split(" → ")[0]] | join("|")')" "review the onboarding copy|decide on the export name"
+  "$SCRIPTS/defer.sh" rp-a >/dev/null 2>&1
+  eq "v420 defer: and once: running it again files nothing more" "$(grep -c '^mutation IssueCreate' "$LINEAR_LOG")" 2
+  # the morning report: at the profile time only, once a day, with the deferred items and the Verify item
+  gcfg 'linear_writes = "on"' '[run]' 'report_at = "08:00"'
+  ev="$(TZ=UTC FLEET_NOW=2026-10-29T07:59:00Z "$SCRIPTS/tick.sh" 2>/dev/null)"
+  eq "v420 report: before the profile time there is no report" "$(v420_evn "$ev" morning_report)" 0
+  ev="$(TZ=UTC FLEET_NOW=2026-10-29T08:00:00Z "$SCRIPTS/tick.sh" 2>/dev/null)"
+  local mr="$QD/rpcwd/reports/fleet-morning-2026-10-29.md"
+  eq "v420 report: at the profile time it is written and woken with, once" "$(v420_evn "$ev" morning_report):$(head -n 1 "$mr")" "1:# Morning report 2026-10-29"
+  eq "v420 report: Needs your eyes lists each deferred item with its issue" "$(awk '/^## Needs your eyes/ {on = 1; next} /^## / {on = 0} on' "$mr" | grep -c 'deferred (rp-a/lead): .* → NEW-')" 2
+  eq "v420 report: and the Verify item, with what to check and the question" "$(grep -c '^- Verify DEV-2 (8 days old): check see the issue. Still worth checking?' "$mr")" 1
+  ev="$(TZ=UTC FLEET_NOW=2026-10-29T09:00:00Z "$SCRIPTS/tick.sh" 2>/dev/null)"
+  eq "v420 report: not again the same day" "$(v420_evn "$ev" morning_report)" 0
+  eq "v420 report: the Verify item is asked once, not moved" "$(jq -r '.issues[] | select(.identifier == "DEV-2") | .state.name' "$LINEAR_DB"):$(jq -r 'keys | join(",")' "$FLEET_STATE_DIR/verify.asked.json")" "Verify:DEV-2"
+  ev="$(TZ=UTC FLEET_NOW=2026-10-30T08:00:00Z "$SCRIPTS/tick.sh" 2>/dev/null)"
+  eq "v420 report: the next day's report announces the close, and the item is Done with a comment" \
+    "$(v420_evn "$ev" morning_report):$(grep -c 'No answer since the last report: moved to Done' "$QD/rpcwd/reports/fleet-morning-2026-10-30.md"):$(jq -r '.issues[] | select(.identifier == "DEV-2") | .state.name' "$LINEAR_DB"):$(jq -r '.issues[] | select(.identifier == "DEV-2") | .comments | length' "$LINEAR_DB")" "1:1:Done:1"
+  v420_nolinear; unset FLEET_GH DF_GB TZ
+}
+
+v420_smoke() { # the critical cases, CI (V420_ONLY="name name" runs just those, to debug one)
+  local f
+  for f in v420_redact_gate v420_run_init v420_run_collide v420_verify v420_claims v420_comments v420_heartbeat_name v420_overlap v420_usage v420_status_changes v420_failure_push v420_quiet v420_fix v420_report; do
+    case " ${V420_ONLY:-$f} " in *" $f "*) "$f" ;; esac
+  done
 }
 v420_full() { # every case
   v420_smoke

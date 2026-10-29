@@ -5,7 +5,7 @@
 #   metrics.sh --morning [--since 12h]
 #
 # --morning prints the morning report of overnight mode instead (tick writes it to reports/fleet-morning-<date>.md):
-# six sections in a fixed order, one line per entry and "none" for an empty one (references/output.md): Ready to
+# sections in a fixed order (Merged, Needs your eyes, Failures, Proposed lessons and What is next only when they have lines), one line per entry and "none" for an empty one (references/output.md): Ready to
 # merge (the merge queue as it is now), Decisions taken (the leads' decision notes), UNVERIFIED (lines of the done
 # summaries), Takeovers (claims taken from us, lapsed claims released), Boots (with the search that picked each issue)
 # and Merge-order conflicts (pr_conflicting events, and PRs that conflict now).
@@ -54,11 +54,27 @@ if $morning; then
   rows="$("$FLEET_SCRIPTS/registry.sh" list --with-archived 2>/dev/null || echo '[]')"
   q="$("$FLEET_SCRIPTS/queue.sh" 2>/dev/null)" || q='{"ready":[],"not_ready":[],"notes":[]}'
   printf '# Morning report %s\n' "$(local_time "$now_epoch" %Y-%m-%d)"
+  opt_section() { [ -z "${2:-}" ] || section "$1" "$2"; } # a section that only appears when it has lines (the report stays short)
+  opt_section "Merged" "$(jq -r "$RENDER_DEFS"'.[] | select(.type == "pr_merged") | "- \(pr_cell(.pr))\(if (.team // "") != "" then " (" + .team + ")" else "" end)"' <<<"$events")"
   section "Ready to merge" "$(render_queue "$q")"
   section "Decisions taken" "$(jq -r --arg c "$cutoff" "$RENDER_DEFS"'.[] | .name as $n | (.notes // [])[]
     | select(.kind == "decision" and (.at // "") >= $c) | "- \($n | md): \(.message | md)"' <<<"$rows")"
   section "UNVERIFIED" "$(jq -r --arg c "$cutoff" "$RENDER_DEFS"'.[] | select((.updated_at // "") >= $c) | .name as $n
     | (.summary // "") | split("\n")[] | split("; ")[] | select(test("UNVERIFIED")) | "- \($n | md): \(. | md)"' <<<"$rows")"
+  # Needs your eyes: what teams left for the owner (each filed as an issue by defer.sh), every Verify item with what to
+  # check, and what was parked because it is the human's (merging, production, infrastructure, secrets, branch protection).
+  verify="$("$FLEET_SCRIPTS/linear.sh" verify-list 2>/dev/null)" || verify='[]'
+  printf '%s' "$verify" | jq -e 'type == "array"' >/dev/null 2>&1 || verify='[]'
+  opt_section "Needs your eyes" "$( {
+    jq -r --arg c "$cutoff" '.[] | .name as $n | [(.notes // [])[] | select(.kind == "deferred")] | group_by(.message | split(" → ")[0])[] | last
+      | select(.at >= $c or (.message | contains("not filed"))) | "- deferred (\($n)): \(.message)"' <<<"$rows"
+    jq -r --arg c "$cutoff" '.[] | .name as $n | (.notes // [])[] | select(.kind == "parked" and .at >= $c) | "- parked for you (\($n)): \(.message)"' <<<"$rows"
+    jq -r '.[] | "- Verify \(.issue) (\(.age_days) days old): check \(.check)\(if .expiry == "ask" then ". Still worth checking? With no answer by the next report it moves to Done" elif .expiry == "close" then ". No answer since the last report: moved to Done with a comment" else "" end)"' <<<"$verify"
+  } )"
+  opt_section "Failures" "$(jq -r '.[] | select(.type == "failed" or .type == "dead") | "- \(.name // .team): \(.type)\(if (.detail // "") != "" then " (" + .detail + ")" else "" end)"' <<<"$events" | sort -u)"
+  opt_section "Proposed lessons" "$(jq -r --arg c "$cutoff" '[.[] | select(.tier != "Orchestrator" and .status == "Retired" and (.outcome // "") != "" and (.updated_at // "") >= $c)]
+    | group_by(.team)[] | "- \(.[0].team) (\([.[].outcome] | unique | join("/"))): " + (sort_by(if .tier == "Lead" then 0 else 1 end) | map((.name | split("/")[1:] | join("/")) + ": "
+      + (if (.lessons // "") == "" then "lesson due (fleet debrief)" else (.lessons | gsub("[\r\n\t]+"; " ")) end)) | join("; "))' <<<"$rows")"
   section "Takeovers" "$(jq -r '.[] | select(.type == "claim_takeover" or .type == "claim_released" or .type == "claim_lost")
     | ((.detail // "") | sub("^holder "; "") | split(": ")[0]) as $h
     | if .type == "claim_takeover" then "- \(.issue // "?"): taken over by \($h)"
@@ -71,6 +87,7 @@ if $morning; then
       | ((.detail // "") | sub("^after "; "") | split(", ") | map(select(test("^https?://\\S+/[0-9]+$")) | pr_cell(.)) | join(", ")) as $after
       | "- \(pr_cell(.pr)): conflicts \(if $after == "" then "with main" else "after " + $after end)"' <<<"$events"
     jq -r '.not_ready[] | select((.missing | index("conflicting")) != null) | "- \(.pr): conflicting now"' <<<"$q"; } )"
+  opt_section "What is next" "$("$FLEET_SCRIPTS/linear.sh" candidates 2>/dev/null | jq -r 'if type == "array" and length > 0 then "- next to pick: " + (.[:5] | join(", ")) else empty end' 2>/dev/null || true)"
   exit 0
 fi
 
