@@ -7,6 +7,7 @@
 #   LINEAR_LOG           one line per operation: "query|mutation <OperationName>"
 #   LINEAR_ARGV_LOG      one line per call with its argv (the key is never in it; it arrives on stdin)
 #   LINEAR_STUB_KEY      the key the stub accepts, read from the `-K -` config on stdin
+#   LINEAR_STUB_ALSO     label name: after an issueUpdate, that label is added beside ours (two machine labels on the issue)
 #   LINEAR_STUB_RACE     label name: after an issueUpdate, another machine "wins" and replaces the labels
 # An unknown operation is logged as "UNKNOWN <name>" and answered with an error.
 set -u
@@ -74,6 +75,9 @@ case "$op" in
     if [ -n "${LINEAR_STUB_RACE:-}" ]; then # another machine wrote after us: the group is single-select
       save "$(db --arg r "$LINEAR_STUB_RACE" '(.labels[] | select(.name == $r) | .id) as $rid | .issues |= map(.labelIds = [$rid])')"
     fi
+    if [ -n "${LINEAR_STUB_ALSO:-}" ]; then # another machine's label lands beside ours (LINEAR_STUB_ALSO=<label name>)
+      save "$(db --arg r "$LINEAR_STUB_ALSO" '(.labels[] | select(.name == $r) | .id) as $rid | .issues |= map(.labelIds = ((.labelIds + [$rid]) | unique))')"
+    fi
     ok '{"issueUpdate": {"success": true}}' ;;
   CommentCreate)
     save "$(db --argjson v "$vars" '(.next + 1) as $n | .next = $n | .issues |= map(if .id == $v.input.issueId then .comments += [{id: ("C" + ($n | tostring)), body: $v.input.body}] else . end)')"
@@ -86,6 +90,8 @@ case "$op" in
       | {identifier, state: {name: .state.name, type: (if .state.name == "In Progress" then "started" else "unstarted" end)},
          labels: {nodes: [$i.labelIds[] as $l | $r.labels[] | select(.id == $l) | {name, description}]},
          inverseRelations: {nodes: [($i.blocked_by // [])[] | {type: "blocks", issue: {identifier: ., state: {type: "started"}}}]}}]}}')" ;;
+  IssueComments)
+    ok "$(db --argjson v "$vars" '{issue: ((.issues[] | select(.identifier == $v.id)) | {comments: {nodes: [(.comments // [])[] | {id, createdAt: (.createdAt // "2026-01-01T00:00:00Z"), body, user: {name: (.user // "Someone")}}]}})}')" ;;
   VerifyItems)
     ok "$(db '{issues: {nodes: [.issues[] | select(.state.name == "Verify") | {identifier, title: (.title // "t"), url: (.url // ""), updatedAt: (.updatedAt // "2026-01-01T00:00:00Z")}]}}')" ;;
   OpenIssues)

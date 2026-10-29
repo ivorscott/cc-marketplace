@@ -4,7 +4,8 @@
 # claim, lease or heartbeat comment is ever posted: the only comment this script can post is the
 # single note a takeover leaves.
 #
-#   linear.sh claim <ISSUE> [--dry-run]       label the issue with this machine's label, set In Progress
+#   linear.sh claim <ISSUE> [--dry-run]       label the issue with this machine's label, set In Progress; exit 1 when the
+#                                             claim was lost, 4 when it stood down to an earlier claim (nothing to start)
 #   linear.sh heartbeat                       rewrite the heartbeat line of this machine's label (ONE mutation)
 #   linear.sh holder <ISSUE>                  JSON: who holds the issue, their last heartbeat and whether it lapsed
 #                                             (`lapsed`: older than lease_hours, takeover's own check; null without a
@@ -26,6 +27,7 @@
 #                                             sweep passes the fleet's repos), else in the cwd's repo
 #   linear.sh state <ISSUE> <Done|Verify|Todo>   move the issue to that workflow state, labels untouched; refuses an
 #                                             issue another machine holds
+#   linear.sh comments <ISSUE>                JSON: the issue's comments, oldest first, [{id, at, user, body}]   (read-only; the query is UNVERIFIED against the real API)
 #   linear.sh verify-list                     JSON: the issues in Verify, each {issue, title, url, age_days, check, expiry}: age is
 #                                             days since the issue last changed, check the UNVERIFIED line(s) a row's done
 #                                             summary held (live or archived registry; "see the issue" when none), expiry
@@ -80,6 +82,9 @@
 # Labels are looked up by name; when several match (an older team label beside the workspace one), the
 # workspace label (no team) is used, for the group and for each machine label alike.
 #
+# Two machines claiming at once: the claim time rides on the machine label (a claimed=<ISSUE>@<ISO> line written with the
+# heartbeat). If both labels end up on the issue, the earlier claim wins, then the lowest label name; the loser removes
+# its own label and exits 4 ("stood down") before any agent starts.
 # Claim race: the machine label is in a single-select group, and an issue update replaces the
 # issue's labels, so the last writer wins; both machines re-read after claim_settle_secs
 # (config.toml, default 5) and the one whose label is gone exits 1. This is not compare-and-swap.
@@ -227,6 +232,10 @@ q_verify_items() { # q_verify_items → the issues in the Verify state with titl
   gql_read VerifyItems 'query VerifyItems { issues(first: 100, filter: { state: { name: { eq: "Verify" } } }) { nodes { identifier title url updatedAt } } }' '{}' |
     jq -c '.data.issues.nodes // error("no issues")'
 }
+q_comments() { # q_comments <ISSUE> → the issue's comments, oldest first (UNVERIFIED query)
+  gql_read IssueComments 'query IssueComments($id: String!) { issue(id: $id) { comments(first: 100) { nodes { id createdAt body user { name } } } } }' \
+    "$(jq -nc --arg id "$1" '{id: $id}')" | jq -c '[(.data.issue.comments.nodes // [])[] | {id, at: .createdAt, user: (.user.name // ""), body: (.body // "")}] | sort_by(.at)'
+}
 q_issue_team_key() { # q_issue_team_key <ISSUE> → the team key of the issue, empty when unknown
   gql_read IssueTeamKey 'query IssueTeamKey($id: String!) { issue(id: $id) { identifier team { key } } }' \
     "$(jq -nc --arg id "$1" '{id: $id}')" | jq -r '.data.issue.team.key // empty'
@@ -285,6 +294,13 @@ describe_with_hb() { # describe_with_hb <description> <ISO>: the description wit
     /^heartbeat=/ { if (!d) { print hb; d = 1 } ; next }
     NF { print }
     END { if (!d) print hb }'
+}
+describe_with_claim() { # describe_with_claim <description> <claimed=ISSUE@ISO | "">: the description with its claimed= line set
+  [ -n "$2" ] || { printf '%s\n' "$1"; return 0; }
+  printf '%s\n' "$1" | FLEET_AWK_V="$2" awk 'BEGIN { c = ENVIRON["FLEET_AWK_V"] }
+    /^claimed=/ { if (!d) { print c; d = 1 } ; next }
+    NF { print }
+    END { if (!d) print c }'
 }
 describe_with_summary() { # describe_with_summary <description> <summary JSON | "">: the description with its summary= line set (dropped for "")
   printf '%s\n' "$1" | FLEET_AWK_V="${2:+summary=$2}" awk 'BEGIN { sm = ENVIRON["FLEET_AWK_V"] }
@@ -446,10 +462,11 @@ write_heartbeat() {
   cur="$(legacy_ids_hashed "$(printf '%s' "$found" | jq -r '.[0].description // ""')")" || return 1
   # The summary line (fleet_summary) rides on the same write: one mutation, and none when neither line changed. It is fitted
   # to what is left under DESC_CAP once the other lines are in (whole teams dropped, never a cut line).
-  base="$(describe_with_summary "$(describe_with_hb "$(describe_with_owner "$cur" "$(owner_name)")" "$HB_AT")" "")"
+  base="$(describe_with_summary "$(describe_with_claim "$(describe_with_hb "$(describe_with_owner "$cur" "$(owner_name)")" "$HB_AT")" "${CLAIM_LINE:-}")" "")"
   room=$((DESC_CAP - ${#base} - 10)); [ "$room" -gt 2 ] || room=2
   sm="$(fleet_summary "$room" 2>/dev/null)" || sm=""; [ "$sm" != "[]" ] || sm=""
   if [ "$(printf '%s\n' "$cur" | sed -n 's/^heartbeat=//p' | head -n 1)" != "$HB_AT" ] ||
+    { [ -n "${CLAIM_LINE:-}" ] && [ "$(printf '%s\n' "$cur" | sed -n 's/^claimed=//p' | head -n 1)" != "${CLAIM_LINE#claimed=}" ]; } ||
     [ "$(printf '%s\n' "$cur" | sed -n 's/^summary=//p' | head -n 1)" != "$sm" ]; then
     # Linear can refuse a long label description ("Argument Validation Error"). A refused write is tried again without the
     # summary, and says so on stderr: the heartbeat always lands, whatever the limit is.
@@ -469,7 +486,7 @@ write_heartbeat() {
 cmd="${1:-}"; [ $# -gt 0 ] && shift
 # Every API subcommand needs the key; check it here, at the top level, so a missing key is exit 3
 # and not an error swallowed inside a command substitution.
-case "$cmd" in claim | heartbeat | holder | peers | candidates | blocks | whoami | takeover | release | state | migrate | verify-list | verify-sweep | comment) load_key ;; esac
+case "$cmd" in claim | heartbeat | holder | peers | candidates | blocks | whoami | takeover | release | state | migrate | verify-list | verify-sweep | comment | comments) load_key ;; esac
 case "$cmd" in
   has-key)
     has_key || no_key ;;
@@ -535,7 +552,7 @@ case "$cmd" in
     [ "$dry" = 1 ] || guard_issue "$issue"
     lid="$(ensure_label "$dry")"
     # The label's heartbeat is refreshed before the label reaches the issue, or another machine's tick reads the old line.
-    [ "$dry" = 1 ] || (write_heartbeat) || [ $? = 2 ] || warn "could not refresh the heartbeat of $mine"
+    [ "$dry" = 1 ] || (CLAIM_LINE="claimed=$issue@${FLEET_NOW:-$(now)}"; write_heartbeat) || [ $? = 2 ] || warn "could not refresh the heartbeat of $mine"
     sid="$(q_state_id "$team" "In Progress")"
     keep="$(printf '%s' "$iss" | jq -c --arg p "$(label_prefix)" '[.labels.nodes[] | select(.name | startswith($p) | not) | .id]')"
     ids="$(jq -cn --argjson k "$keep" --arg l "$lid" '$k + [$l] | unique')"
@@ -547,6 +564,18 @@ case "$cmd" in
     sleep "$(const_int CLAIM_SETTLE_SECS 5)"
     after="$(q_issue "$issue")"
     if printf '%s' "$after" | jq -e --arg m "$mine" 'any(.labels.nodes[]; .name == $m)' >/dev/null; then
+      # Two machine labels on the issue (the group is single-select, but a write can still land beside another): the
+      # earlier claim wins, then the lowest label name, so both sides reach the same answer. The loser takes its own label
+      # off and stands down (exit 4) before any agent starts. Linear has no compare-and-set; this is a tie-break.
+      rival="$(other_fleet_labels "$after" | LC_ALL=C sort | head -n 1)"
+      if [ -n "$rival" ]; then
+        mine_at="$(q_labels_named "$mine" | jq -r --arg i "$issue" '.[0].description // "" | capture("(^|\n)claimed=" + $i + "@(?<t>[^\n ]+)").t // "9999"' 2>/dev/null || echo 9999)"
+        rival_at="$(q_labels_named "$rival" | jq -r --arg i "$issue" '.[0].description // "" | capture("(^|\n)claimed=" + $i + "@(?<t>[^\n ]+)").t // "9999"' 2>/dev/null || echo 9999)"
+        if [ "$rival_at" \< "$mine_at" ] || { [ "$rival_at" = "$mine_at" ] && [ "$(printf '%s\n%s\n' "$mine" "$rival" | LC_ALL=C sort | head -n 1)" = "$rival" ]; }; then
+          m_issue_update "$iid" "$(printf '%s' "$after" | jq -c --arg m "$mine" '[.labels.nodes[] | select(.name != $m) | .id]')" ""
+          printf 'fleet: stood down on %s: %s claimed it first (%s before %s). No agent was started\n' "$issue" "$rival" "$rival_at" "$mine_at" >&2; exit 4
+        fi
+      fi
       say --arg i "$issue" --arg m "$mine" '{claimed: true, issue: $i, label: $m}'
     else
       who="$(other_fleet_labels "$after" | head -n 1)"
@@ -667,6 +696,11 @@ case "$cmd" in
         | ($a | with_entries(select(.key as $k | $keep | index($k)))) + $new' "$asked" >"$tmp" && mv "$tmp" "$asked"
     fi
     printf '%s\n' "$items" ;;
+
+  comments)
+    READONLY=1
+    [ $# = 1 ] || die "usage: comments <ISSUE>"
+    q_comments "$1" ;;
 
   comment)
     issue="${1:-}"; text="${2:-}"

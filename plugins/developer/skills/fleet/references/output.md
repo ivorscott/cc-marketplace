@@ -380,6 +380,16 @@ DEV-1: held by <machine|this machine (<machine>)>[, heartbeat lapsed|, no heartb
 
 `DEV-1: held by nobody.` for an unclaimed issue.
 
+### claim, stood down
+
+```
+fleet: stood down on DEV-1: fleet:<machine> claimed it first (<its time> before <ours>). No agent was started.
+```
+
+Two machines claimed one issue at once and both labels reached it: the earlier claim wins, then the lowest machine key. The
+loser takes its own label off and exits 4; boot and next do not start. `next` ends `<issue> was claimed first by another
+machine; this machine stood down and <team> keeps its current issue.`
+
 ### redact-check
 
 ```
