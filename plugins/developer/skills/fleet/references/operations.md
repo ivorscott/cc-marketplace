@@ -6,7 +6,7 @@ mechanics: claims on Linear, chat, the tick events, the sandbox, the retire summ
 ## Claims: identity
 
 Several machines can run a fleet against one Linear workspace. Claims rely on Linear label
-groups and label descriptions, so claims, heartbeat, takeover and `status --all` need Linear.
+groups and label descriptions, so claims, heartbeat, takeover and the other machines in `status` need Linear (`FLEET_STATUS_LOCAL=1` keeps status to this machine).
 Other trackers (Jira, ...) run the fleet on one machine only. On one machine, with any tracker,
 skip **A0**, **A0b** and the heartbeat, and boot without the claim options. The chat channel
 (**A0c**) works with any tracker but is coordination, never a lock.
@@ -155,8 +155,10 @@ has `type`, `team`, `name` and, where a PR exists, the full `url`. Act on each:
 - `pr_opened`: a builder opened a PR without running done; tick recorded it on the row and told the lead.
 - `pr_conflicting`: a PR that was ready (on the tick before, or since while GitHub read its mergeable as unknown)
   conflicts now, after the merges it names or a change on main. It left the merge queue;
-  tick unparked its team when it was parked and told its lead, once per (PR, head), to bring it up to date with main
-  and have the tester sign off again. When the unpark was refused (a cap is full), unpark the team when a slot frees.
+  tick brought its team back when it was parked or had a Done or exited agent (`catchup.sh`) and told its lead, once per
+  (PR, head), to merge `origin/main` into it (a merge commit, a plain push) and have the tester sign off again. After two
+  rounds on one PR a P1 escalation asks you instead. When the catch-up was refused (a cap is full), bring the team back when a
+  slot frees.
   Tick reads a parked team's PR for this (and for `pr_merged`), and nothing else of a parked team.
 - `escalation`, `stalled`, `dead`, `repo_without_team`, `disk`, `disk_ok`: as in routes B, E and F.
 
@@ -204,8 +206,8 @@ The fleet cleans up as it goes:
 
 When the user asks to keep N teams running, set `$F/registry.sh set orchestrator target_teams=N`. It is on the
 Orchestrator's row, so it survives a compaction and `registry.sh orchestrator here`. Tick then wakes you with
-`slot_free` while fewer teams run than N and than `max_teams` (Parked teams do not count), once per (live count,
-target). Answer by picking and booting (SKILL.md route A, step 0, noting the pick); never hand the user a menu: an
+`slot_free` while fewer teams run than N and than `max_teams` (Parked teams do not count), a configured repo has room
+(`teams_per_repo`) and an unclaimed, unblocked issue exists (`linear.sh candidates`), once per change. Answer by picking and booting (SKILL.md route A, step 0, noting the pick); never hand the user a menu: an
 issue with a "Decide first" section takes its acceptance default (stated in the PR body), named follow-ups are filed,
 and a requested split is done. When the only blocker is a nearly ready PR, boot plan-first; when nothing is bootable,
 reply "Nothing bootable" from its template, listing only what truly cannot run (a blocker, a live claim, a missing key).

@@ -77,6 +77,11 @@ case "$op" in
   CommentDelete)
     save "$(db --argjson v "$vars" '.issues |= map(.comments |= map(select(.id != $v.id)))')"
     ok '{"commentDelete": {"success": true}}' ;;
+  Candidates)
+    ok "$(db '. as $r | {issues: {nodes: [.issues[] | select(.state.name != "Done" and .state.name != "Canceled") | . as $i
+      | {identifier, state: {name: .state.name, type: (if .state.name == "In Progress" then "started" else "unstarted" end)},
+         labels: {nodes: [$i.labelIds[] as $l | $r.labels[] | select(.id == $l) | {name, description}]},
+         inverseRelations: {nodes: [($i.blocked_by // [])[] | {type: "blocks", issue: {identifier: ., state: {type: "started"}}}]}}]}}')" ;;
   OpenIssues)
     mode=eq; case "$query" in *startsWith*) mode=startsWith ;; esac
     ok "$(db --argjson v "$vars" --arg mode "$mode" '

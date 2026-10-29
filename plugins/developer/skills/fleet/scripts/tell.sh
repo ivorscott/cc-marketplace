@@ -28,9 +28,16 @@
 #   (b) herdr `agent get` shows .state_change_seq increased, or agent_status went to working or
 #       blocked. herdr's Claude integration (its hooks) gives these; boot and status say when it is
 #       not current.
-# The screen is never read. Not seen: press enter once (the text may sit in the box unsent) and look again.
+# The screen is read once, before the send, for text left in the input box (see below); delivery is never judged from it. Not seen: press enter once (the text may sit in the box unsent) and look again.
 # UNVERIFIED: state_change_seq is observed in `agent get` JSON, not documented by herdr (`herdr --skill`),
 # so it is a signal, not a contract; the transcript format may change between Claude Code versions.
+#
+# A bare team name (no "/") means the team's lead: `tell.sh build-x "..."` is `tell.sh build-x/lead "..."`, unless a
+# herdr agent is registered under that name.
+# A plain message from the Orchestrator to a team that is not running (a Done or Parked row, or an agent that is gone) with
+# its PR still open brings the team back: revive.sh starts its agents again in their worktrees and the lead gets the message
+# in its resume brief; the reply ends "(revived)". A message for a worker goes to the lead, who is told the role it was for.
+# A merged or closed PR is refused ("Boot a new team, or move the team on (fleet next)").
 # Command: Send a team's lead (or one agent) a message and check it arrived · e.g. fleet tell build-api/lead "focus on token expiry"
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
@@ -49,6 +56,11 @@ while [ $# -gt 0 ]; do
 done
 
 ref="$target"; pane=""; transcript=""
+case "$target" in
+  */*) ;;
+  *) if ! "$FLEET_SCRIPTS/registry.sh" list | jq -e --arg r "$target" 'any(.[]; .herdr_ref == $r)' >/dev/null 2>&1 &&
+       "$FLEET_SCRIPTS/registry.sh" get "$target/lead" >/dev/null 2>&1; then target="$target/lead"; ref="$target"; fi ;;
+esac
 case "$target" in
   */*)
     row="$("$FLEET_SCRIPTS/registry.sh" get "$target")" || exit 1
@@ -100,13 +112,57 @@ verdict() { # verdict <delivered true|false> <reason> <exit code>
   fi
   if [ "$1" = true ]; then
     render_line told name="$target" text="$(jq -rn --arg t "$text" '$t | split("\n")[0] | .[0:60]')" how="${how:-$($confirm && echo delivered || echo sent)}"
-  elif [ "$3" = 2 ]; then render_error tell "not delivered to $target: $2" "Respawn it (fleet respawn $target) or retire it" >&2
+  elif [ "$3" = 2 ] && "$FLEET_SCRIPTS/registry.sh" get "$target" >/dev/null 2>&1; then
+    render_error tell "not delivered to $target: $2" "Respawn it (fleet respawn $target) or retire it" >&2
+  elif [ "$3" = 2 ]; then render_error tell "not delivered to $target: $2" "No such agent in the registry or herdr; run fleet status" >&2
   else render_error tell "not delivered to $target: $2" "Look at its pane, then send it again" >&2; fi
   exit "$3"
 }
 
 agent_state() { hd agent get "$ref" 2>/dev/null | jq -r '.result.agent.agent_status // "gone"' 2>/dev/null || echo gone; }
 agent_seq() { hd agent get "$ref" 2>/dev/null | jq -r '.result.agent.state_change_seq // ""' 2>/dev/null || true; }
+
+# --- a message to a team that is not running brings it back (the Orchestrator's plain tells only) -------------------
+# The team's lead and workers are started again in their worktrees (revive.sh) and the lead is given the message in its
+# resume brief, when the target is a row of the registry whose agent is Done, Parked or gone and the team's PR is still
+# open. A merged or closed PR is refused with what to do instead; with no PR, or gh unable to say, today's verdict stands.
+# A message meant for a worker goes to the lead, who is told which role it was meant for: a worker is never typed into.
+if [ -z "${FLEET_ROLE:-}" ] && ! $is_brief && $confirm; then
+  case "$target" in */*)
+    trow="$("$FLEET_SCRIPTS/registry.sh" get "$target" 2>/dev/null || true)"
+    if [ -n "$trow" ]; then
+      tstatus="$(printf '%s' "$trow" | jq -r '.status // ""')"; tteam="${target%%/*}"; revive=false
+      case "$tstatus" in Done | Parked) revive=true ;; Retired) ;; *) revive=maybe ;; esac
+      if [ "$revive" != false ]; then
+        tprs="$("$FLEET_SCRIPTS/registry.sh" list --team "$tteam" | jq -r '[.[] | (.pr // empty), (.prs // [])[] | select(. != "")] | unique[]')"
+        open_pr=""; merged_pr=""
+        for u in $tprs; do
+          case "$(forge_pr_json "$u" 2>/dev/null | jq -r '.state // ""' 2>/dev/null || true)" in
+            OPEN) open_pr="$u" ;; MERGED | CLOSED) merged_pr="$u" ;;
+          esac
+        done
+        # An agent that is not Done or Parked is revived only when it is gone (herdr does not know it, or its pane is back at the shell).
+        if [ "$revive" = maybe ] && [ -n "$open_pr" ]; then
+          revive=false
+          { [ "$(agent_state)" = gone ] || { [ -n "$pane" ] && ! hd pane process-info --pane "$pane" 2>/dev/null |
+            jq -e '.result.process_info | .foreground_process_group_id != .shell_pid' >/dev/null 2>&1; }; } && revive=true
+          [ "$revive" = true ] || open_pr=""
+        fi
+        if [ -n "$open_pr" ]; then
+          tlead="$tteam/lead"; ttext="$text"; [ "$target" = "$tlead" ] || ttext="(meant for ${target#*/}) $text"
+          if "$FLEET_SCRIPTS/revive.sh" "$tteam" --text "$ttext" --why "you were sent a message while your team was not running; it has been brought back for it" --pr "$open_pr" >/dev/null 2>"$FLEET_STATE_DIR/tell-revive.err"; then
+            rm -f "$FLEET_STATE_DIR/tell-revive.err"
+            render_line told name="$tlead" text="$(jq -rn --arg t "$text" '$t | split("\n")[0] | .[0:60]')" how=revived; exit 0
+          fi
+          render_error tell "not delivered to $target: $(grep -v '^fleet: warning:' "$FLEET_STATE_DIR/tell-revive.err" | head -n 1 | sed 's/^fleet: //')" "Free a slot, then tell it again" >&2
+          rm -f "$FLEET_STATE_DIR/tell-revive.err"; exit 1
+        elif [ -n "$merged_pr" ] && { [ "$tstatus" = Done ] || [ "$tstatus" = Parked ]; }; then
+          render_error tell "not delivered to $target: its PR $merged_pr is merged or closed" "Boot a new team, or move the team on (fleet next)" >&2; exit 1
+        fi
+      fi
+    fi ;;
+  esac
+fi
 [ "$(agent_state)" != "gone" ] || verdict false "agent not found in herdr" 2
 if [ -n "$pane" ] && ! hd pane process-info --pane "$pane" 2>/dev/null |
   jq -e '.result.process_info | .foreground_process_group_id != .shell_pid' >/dev/null 2>&1; then
@@ -121,6 +177,14 @@ if $is_brief; then
     if [ "$w" -ge "$idle_secs" ]; then verdict false "not idle after ${idle_secs}s" 1; fi
     sleep "$poll"; w=$((w + 1))
   done
+fi
+# Unsent text in an idle agent's input box (typed by a person, or a grayed suggestion Claude Code put there) would come out
+# in front of the message, or let it be submitted as something else: the box is cleared first with the one key that clears a
+# line, ctrl+u (never escape: pressed twice it opens Claude Code's rewind menu). Never to a working or blocked agent: a dialog
+# would take the keys. When herdr refuses the key nothing is sent. UNVERIFIED against a real herdr: that it accepts ctrl+u.
+unsent="$(input_line "$ref")"
+if [ -n "$unsent" ]; then
+  hd agent send-keys "$ref" ctrl+u >/dev/null 2>&1 || verdict false "its input box holds unsent text (\"${unsent:0:40}\") and herdr refused the key that clears it" 1
 fi
 before_state="$(agent_state)"; before_seq="$(agent_seq)"
 needle40="$(jq -rn --arg t "$text" '$t[0:40]')"

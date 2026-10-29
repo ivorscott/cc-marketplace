@@ -360,7 +360,7 @@ build_brief() {
   house_rules "$1"
 }
 
-# house_rules <agent row name>: the fleet's house rules, then the agent's repository's .claude/fleet-rules.md
+# house_rules <agent row name>: the fleet's house rules (the install rule reads `installs` in config.toml, as the guard does), then the agent's repository's .claude/fleet-rules.md
 # when it has one, then the overnight block while `overnight = true` in config.toml. The repository is the row's
 # `repo`; without a row only the fleet's rules are printed. The block is part of the brief, so the agent's own session
 # holds the grant, and a respawn or next restart (their briefs come through here too) carries it.
@@ -368,13 +368,20 @@ house_rules() {
   local repo f
   repo="$("$FLEET_SCRIPTS/registry.sh" get "$1" 2>/dev/null | jq -r '.repo // ""' 2>/dev/null)" || repo=""
   printf '\n\n'
-  cat "$FLEET_SKILL_DIR/rules/house.md" 2>/dev/null || warn "house rules missing: $FLEET_SKILL_DIR/rules/house.md"
+  # The install rule follows the guard's setting (hooks/fleet-bash-guard.sh): `installs = "allow"` in config.toml.
+  if [ "$(cfg_str installs "")" = allow ]; then
+    sed 's/^- Installing is allowed only when.*$/- Install what the work needs yourself. List each install in your report (what, where, why). A new project dependency goes in its own commit together with its lockfile change./' \
+      "$FLEET_SKILL_DIR/rules/house.md" 2>/dev/null || warn "house rules missing: $FLEET_SKILL_DIR/rules/house.md"
+  else
+    cat "$FLEET_SKILL_DIR/rules/house.md" 2>/dev/null || warn "house rules missing: $FLEET_SKILL_DIR/rules/house.md"
+  fi
   f="$repo/.claude/fleet-rules.md"
   if [ -n "$repo" ] && [ -f "$f" ]; then printf '\nRepository rules (%s):\n' "$f"; cat "$f"; fi
   [ "$(cfg_bool overnight false)" = true ] || return 0
   printf '\nOvernight mode (on until the user turns it off; it adds to the house rules and lifts none of them):\n'
   printf -- '- A lead applies its own recommended option for a decision inside the issue'"'"'s scope, notes it in the PR body and runs `%s note %s decision "<the choice>"`.\n' "$FLEET_SCRIPTS/registry.sh" "$1"
-  printf -- '- Installs, IAM, AWS or production, branch protection, `gh pr ready` and closing a PR or an issue stay with the user: escalate them P1.\n'
+  if [ "$(cfg_str installs "")" = allow ]; then printf -- '- IAM, AWS or production, branch protection, `gh pr ready` and closing a PR or an issue stay with the user: escalate them P1.\n'
+  else printf -- '- Installs, IAM, AWS or production, branch protection, `gh pr ready` and closing a PR or an issue stay with the user: escalate them P1.\n'; fi
   printf -- '- A P0 still stops the team.\n'
   printf -- '- Catch a branch up with the default branch with a merge commit, never a force-push.\n'
 }
@@ -559,6 +566,30 @@ fleet_queue() {
   q="$("$FLEET_SCRIPTS/queue.sh")" || return 1
   queue_write "$q"; printf '%s\n' "$q"
 }
+# fleet_summary: this machine's teams as one compact JSON array, the line `summary=` of its Linear label description
+# (linear.sh write_heartbeat), which is how another machine's `fleet status` sees them: [{t: team, i: issue key, pr: PR
+# URL, s: state word, n: what it needs from you, r: true when the merge queue lists its PR as ready}], the 12 teams
+# changed last, and fewer when the line would pass 1500 characters (the label description has a size limit that is
+# UNVERIFIED). Built from the registry and the queue tick kept (never from GitHub); keys with no value are left out.
+SUMMARY_CAP=1500
+fleet_summary() {
+  local rows esc q='null' f; f="$(queue_file)"
+  rows="$("$FLEET_SCRIPTS/registry.sh" list)" || return 1
+  esc="$("$FLEET_SCRIPTS/registry.sh" escalations --open --not-retired 2>/dev/null)" || esc='[]'
+  [ ! -s "$f" ] || q="$(jq -c '.queue // null' "$f" 2>/dev/null)" || q='null'
+  jq -nc --slurpfile rows <(printf '%s' "$rows") --slurpfile esc <(printf '%s' "$esc") --argjson q "$q" --argjson cap "$SUMMARY_CAP" "$RENDER_DEFS"'
+    def fit: if length > 0 and (tojson | length) > $cap then .[:-1] | fit else . end;
+    [$rows[0][] | select(.tier != "Orchestrator" and .status != "Retired" and (.team // "") != "")]
+    | group_by(.team) | map(. as $g | $g[0].team as $t
+      | ([$esc[0][] | select(.team == $t)] | sort_by({"P0": 0, "P1": 1, "P2": 2}[.severity] // 3) | first) as $e
+      | team_state($g) as $state
+      | ($g | map(.pr // "") | map(select(. != "")) | first // "") as $pr
+      | (team_needs($g; $e; $state; $pr; $q) | if . == "-" then "" else .[0:60] end) as $n
+      | {u: ($g | map(.updated_at // "") | max), t: $t, i: ($g | map(.issue // "") | map(select(. != "")) | first // ""), pr: $pr, s: $state, n: $n,
+         r: (([($q.ready // [])[] | select(.url == $pr)] | length) > 0 and $pr != "")})
+    | sort_by(.u) | reverse | .[:12] | map(del(.u) | with_entries(select(.value != "" and .value != false))) | fit'
+}
+
 # PART_OF_JQ: jq `def part_of;` on a PR body: the issue a "Part of <issue>" line names (its identifier, a markdown link
 # to it, or its tracker URL), upper-cased, else null. Any case, and only before an issue reference, so prose such as
 # "part of the cleanup" is not one. retire leaves such an issue In Progress; the merge queue orders its slices.
@@ -731,6 +762,21 @@ RENDER_DEFS='def md: tostring | gsub("[\r\n\t]+"; " ") | gsub("\\|"; "\\|");
   def group: {"Working": "working", "Idle": "idle", "Waiting": "waiting", "Stalled": "blocked", "Failed": "blocked",
     "Zombie": "blocked", "Parked": "parked", "Done": "done"}[.] // "idle";
   def sev: if . == "P0" or . == "P1" then "**\(.)**" else . end;
+  def team_state($g): if any($g[]; .status == "Parked") then "Parked" else ($g | map(.status | word) | sort_by(rank) | last) end;
+  def team_needs($g; $e; $state; $pr; $q):
+    def qready($u): ([($q.ready // [])[] | select(.url == $u)] | first);
+    def merge_cell($u): (qready($u)) as $r | if $r != null and ($r.after // "—") != "—" then $r.after else "merge the PR" end;
+    if $e != null then "\($e.severity | sev): \($e.message | .[0:60])"
+    elif any($g[]; .status == "Needs input") then ($g | map(.status_detail // "") | map(select(. != "")) | first // "answer its prompt")
+    elif $state == "Zombie" then "agent gone: respawn or retire"
+    elif $state == "Stalled" then "ask for its done step"
+    elif $state == "Failed" then "brief not delivered"
+    elif any($g[]; (.input_flag // "") != "") then "unsent text in \([$g[] | select((.input_flag // "") != "") | .name][0] | split("/")[1:] | join("/"))'"'"'s input box"
+    elif $state == "Done" then (if $pr != "" then merge_cell($pr) else "retire the team" end)
+    elif $state == "Parked" and $pr != "" then
+      (if $q != null then (if qready($pr) != null then merge_cell($pr) else "-" end)
+       elif any($g[]; .parked_reason == "signed-off") then "merge the PR" else "-" end)
+    else "-" end;
   def ago($now): if (. // "") == "" then "-"
     else ([(($now - (sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601)) / 60 | floor), 0] | max) as $m
       | if $m < 60 then "\($m)m ago" elif $m < 2880 then "\($m / 60 | floor)h ago" else "\($m / 1440 | floor)d ago" end end;
@@ -747,42 +793,52 @@ roles_line() {
         elif .status == "Zombie" then "✗ (did not start)" else "✓" end)) | join(" ")'
 }
 
-# render_table [team...]: the team table of the registry as it stands (no herdr call): the summary line ("3 teams ·
-# 2 working · 1 blocked"), then one row per team that has a row not yet Retired, or only the teams named, then
-# "Waiting on you: ..." when a P0 or P1 is open, a blank line between the three (reply). "No teams." when there is
-# none. State is the worst agent state, one word (Parked when the team is parked); Needs you is the
-# team's most severe open escalation, else what its state needs, else -.
+# render_table [--queue <queue JSON>] [--peers <rows JSON>] [team...]: the team table of the registry as it stands (no
+# herdr call): the summary line ("3 teams · 2 working · 1 blocked"), then one row per team that has a row not yet
+# Retired, or only the teams named, then "Waiting on you: ..." when a P0 or P1 is open, a blank line between the three
+# (reply). "No teams." when there is none. State is the worst agent state, one word (Parked when the team is parked);
+# Needs you is the team's most severe open escalation, else what its state needs, else -. A team with a PR in the
+# queue (--queue) says what the queue says ("rebase after #N") or "merge the PR": a Done team and a Parked one alike,
+# so parking a signed-off team changes its State and not its Needs you. A Parked team with no queue given says "merge
+# the PR" when it was parked at sign-off (parked_reason signed-off), else -.
+# One table for every machine: every row carries its Machine (this machine's key for the registry's teams), and
+# --peers adds the other machines' teams (status.sh builds them from their published summaries: machine, team, issue,
+# pr, state, needs, ready). The rows whose PR the queue lists go first, in the queue's order, then the rest by team.
 render_table() {
-  local rows esc only
+  local rows esc only q='null' peers='[]' me
+  while [ "${1:-}" = --queue ] || [ "${1:-}" = --peers ]; do
+    if [ "$1" = --queue ]; then q="$2"; printf '%s' "$q" | jq -e 'type == "object"' >/dev/null 2>&1 || q='null'
+    else peers="$2"; printf '%s' "$peers" | jq -e 'type == "array"' >/dev/null 2>&1 || peers='[]'; fi
+    shift 2
+  done
+  me="$(machine_key 2>/dev/null || echo local)"
   rows="$("$FLEET_SCRIPTS/registry.sh" list)" || return 1
   esc="$("$FLEET_SCRIPTS/registry.sh" escalations --open --not-retired 2>/dev/null)" || esc='[]'
   only="$(printf '%s\n' "$@" | jq -Rsc 'split("\n") | map(select(. != ""))')"
-  jq -rn --slurpfile rows <(printf '%s' "$rows") --slurpfile esc <(printf '%s' "$esc") --argjson only "$only" "$RENDER_DEFS"'
+  jq -rn --slurpfile rows <(printf '%s' "$rows") --slurpfile esc <(printf '%s' "$esc") --argjson only "$only" --argjson q "$q" --argjson peers "$peers" --arg me "$me" "$RENDER_DEFS"'
     $rows[0] as $rows | $esc[0] as $esc
-    | def shown: ($only | length) == 0 or (. as $t | $only | index($t) != null);
+    | def qready($u): ([($q.ready // [])[] | select(.url == $u)] | first);
+      def shown: ($only | length) == 0 or (. as $t | $only | index($t) != null);
     [$rows[] | select(.tier != "Orchestrator" and .status != "Retired" and (.team // "") != "" and (.team | shown))]
     | group_by(.team) | map(. as $g | $g[0].team as $t
       | ([$esc[] | select(.team == $t)] | sort_by({"P0": 0, "P1": 1, "P2": 2}[.severity] // 3) | first) as $e
-      | (if any($g[]; .status == "Parked") then "Parked" else ($g | map(.status | word) | sort_by(rank) | last) end) as $state
+      | team_state($g) as $state
       | ($g | map(.pr // "") | map(select(. != "")) | first // "") as $pr
-      | {team: $t,
+      | {team: $t, machine: $me,
          issue: issue_cell(($g | map(.issue // "") | map(select(. != "")) | first // ""); ($g | map(.issue_url // "") | map(select(. != "")) | first // "");
            ($g | map(.issue_title // "") | map(select(. != "")) | first // "")),
-         pr: pr_cell($pr), state: $state,
-         needs: (if $e != null then "\($e.severity | sev): \($e.message | .[0:60])"
-           elif any($g[]; .status == "Needs input") then ($g | map(.status_detail // "") | map(select(. != "")) | first // "answer its prompt")
-           elif $state == "Zombie" then "agent gone: respawn or retire"
-           elif $state == "Stalled" then "ask for its done step"
-           elif $state == "Failed" then "brief not delivered"
-           elif $state == "Done" then (if $pr != "" then "merge the PR" else "retire the team" end)
-           else "-" end)}) as $t
+         pr: pr_cell($pr), pr_url: $pr, state: $state, needs: team_needs($g; $e; $state; $pr; $q)}) as $local
+    | ([$peers[] | select((.team | shown))
+        | {team: .team, machine: .machine, issue: issue_cell(.issue; ""; ""), pr: pr_cell(.pr), pr_url: (.pr // ""), state: .state,
+           needs: ((.needs // "") | if . == "" then "-" else . end)}]) as $other
+    | ($local + $other | map(. + {n: (qready(.pr_url) | .n // 1000000)}) | sort_by([.n, .team, .machine])) as $t
     | if ($t | length) == 0 then "No teams." else
         [([$t | length | "\(.) team\(if . == 1 then "" else "s" end)"]
-          + ([$t[].state] as $s | ["Working", "Idle", "Waiting", "Stalled", "Parked", "Done"]
+          + ([$t[].state | sub(" \\(stale .*$"; "")] as $s | ["Working", "Idle", "Waiting", "Stalled", "Parked", "Done"]
             | map(. as $w | group as $g | ([$s[] | select(group == $g)] | length) as $n | select($n > 0) | "\($n) \($g)"))
           | join(" · ")),
-         (["| Team | Issue | PR | State | Needs you |", "|---|---|---|---|---|",
-           ($t[] | "| \(.team | md) | \(.issue) | \(.pr) | \(.state) | \(.needs | md) |")] | join("\n")),
+         (["| Team | Machine | Issue | PR | State | Needs you |", "|---|---|---|---|---|---|",
+           ($t[] | "| \(.team | md) | \(.machine | md) | \(.issue) | \(.pr) | \(.state | md) | \(.needs | md) |")] | join("\n")),
          ([$esc[] | select((.severity | IN("P0", "P1")) and (.team | shown)) | "\(.name) \(.severity | sev): \(.message | .[0:60] | md)"]
           | if length > 0 then "Waiting on you: " + join("; ") else empty end)]
         | join("\n\n")
@@ -816,7 +872,7 @@ render_escalations() {
     end'
 }
 
-# render_queue <queue.sh JSON>: "Merge in this order:" and | # | PR | Issue | Why this order | After merge |, each
+# render_queue <queue.sh JSON>: "Merge in this order:" and | # | PR | Issue | Machine | Why this order | After merge |, each
 # PR its URL ("Merge in this order: none ready." when nothing is), then "Not ready: <url> ✗ <missing> · ✗
 # ..." per open PR that is not, then the queue's notes, a blank line between any two (reply). Nothing at all when
 # no PR is open.
@@ -824,8 +880,8 @@ render_queue() {
   jq -r 'if (.ready | length) == 0 and (.not_ready | length) == 0 then empty else
       [(if (.ready | length) == 0 then "Merge in this order: none ready." else "Merge in this order:" end),
        (if (.ready | length) == 0 then empty else
-         (["| # | PR | Issue | Why this order | After merge |", "|---|---|---|---|---|",
-           (.ready[] | "| \(.n) | \(.pr) | \(.issue) | \(.why) | \(.after) |")] | join("\n")) end),
+         (["| # | PR | Issue | Machine | Why this order | After merge |", "|---|---|---|---|---|---|",
+           (.ready[] | "| \(.n) | \(.pr) | \(.issue) | \(.machine // "-" | gsub("\\|"; "/")) | \(.why) | \(.after) |")] | join("\n")) end),
        (.not_ready[] | "Not ready: \(.pr) \(.missing | map("✗ " + .) | join(" · "))"),
        (.notes[] | "\(.).")]
       | join("\n\n")
@@ -909,14 +965,16 @@ render_line() {
     loop) printf 'Fleet loop: %s. Last good tick %s. %s.\n' "${L_loaded:-not loaded}" "${L_when:-never}" "${L_health:-problem}" ;;
     env) printf 'Env %s: %s. Context fleet-%s.\n' "${L_team:-}" "${L_state:-Down}" "${L_team:-}" ;;
     claimed) printf 'Claimed %s for %s.\n' "${L_issue:-}" "${L_machine:-}" ;;
-    took_over) printf 'Took over %s from %s (heartbeat %s).\n' "${L_issue:-}" "${L_machine:-}" "${L_age:-unknown}" ;;
-    holder) if [ -n "${L_machine:-}" ]; then printf '%s: held by %s (heartbeat %s%s).\n' "${L_issue:-}" "$L_machine" "${L_age:-none}" "${L_lapsed:+, lapsed}"
+    took_over) printf 'Took over %s from %s.\n' "${L_issue:-}" "${L_machine:-}" ;;
+    machine_heartbeat) printf '%s: %s.\n' "${L_machine:-}" "${L_what:-}" ;;
+    holder) if [ -n "${L_machine:-}" ]; then printf '%s: held by %s%s.\n' "${L_issue:-}" "$L_machine" "${L_lapsed:+, heartbeat lapsed}${L_nohb:+, no heartbeat}"
             else printf '%s: held by nobody.\n' "${L_issue:-}"; fi ;;
     sandbox) printf 'Sandbox at %s: %s exited %s.%s\n' "${L_dir:-}" "${L_cmd:-}" "${L_code:-0}" "${L_kept:+ Kept.}" ;;
     disk) printf 'Disk: %s GB free (warn below %s).%s\n' "${L_free:-?}" "${L_warn:-?}" "${L_held:+ Fleet holds $L_held GB. Reclaimed ${L_reclaimed:-0} GB.}" ;;
     alert) printf 'Alert: %s. %s.\n' "${L_cause%.}" "${L_next%.}" ;;
     pr_ready) printf '✓ Ready to merge: %s%s. Tester signed %s = head, CI %s, mergeable.\n' "${L_pr:-}" "${L_issue:+ for $L_issue}" "${L_sha:-}" "${L_ci:-green}" ;;
     pr_merged) printf 'Merged %s. Next: %s.\n' "${L_pr:-}" "${L_next:-}" ;;
+    input_pending) printf 'Unsent text in %s'"'"'s input box: "%s". It was not typed by the owner; clear it before answering.\n' "${L_name:-}" "${L_text:-}" ;;
     pr_opened) printf 'PR opened: %s%s. %s.\n' "${L_pr:-}" "${L_issue:+ for $L_issue}" "${L_told:-Lead told to start the tester}" ;;
     event) printf '%s %s: %s. %s.\n' "${L_event:-}" "${L_name:-}" "${L_what%.}" "${L_next%.}" ;;
     claim_takeover) printf '%s taken over by %s. Stop or hand off %s.\n' "${L_issue:-}" "${L_machine:-}" "${L_team:-}" ;;
@@ -953,12 +1011,13 @@ render_notice() {
     pr_merged) d="move $team to its next issue, or retire it"; [ -z "$(jq -r '.parks // ""' <<<"$e")" ] || d="$team parked"
       [ "$(jq -r '.parked // false' <<<"$e")" != true ] || d="unpark $team and move it to its next issue, or retire it"
       render_line pr_merged pr="$(pr_link "$url")" next="$d" ;;
-    pr_conflicting) d="$(jq -r '.unpark_refused // ""' <<<"$e")"
+    pr_conflicting) d="$(jq -r '.catchup_refused // .unpark_refused // ""' <<<"$e")"
       o="$(jq -r '.merged // ""' <<<"$e" | tr ',' '\n' | sed 's/^ *//' | while IFS= read -r u; do [ -z "$u" ] || pr_link "$u"; done | paste -sd, - | sed 's/,/, /g')"
-      if [ -n "$d" ]; then n="Unpark refused ($d): unpark it when a slot frees, then tell its lead"
-      elif [ "$(jq -r '.lead_told == false' <<<"$e")" = true ]; then n="Lead not reached: tell it to bring it up to date with main and have the tester sign off again"
-      else n="Lead told to bring it up to date with main and have the tester sign off again"; fi
-      render_line event event=Conflicting name="$name" what="$(pr_link "$url") conflicts $(if [ -n "$o" ]; then printf 'after %s' "$o"; else printf 'with main'; fi)" next="$n" ;;
+      if [ -n "$d" ]; then n="Catch-up refused ($d): bring the team back when a slot frees, then tell its lead to merge main into the PR"
+      elif [ "$(jq -r '.lead_told == false' <<<"$e")" = true ]; then n="Lead not reached: tell it to merge main into the PR and have the tester sign off again"
+      else n="Lead told to merge main into the PR and have the tester sign off again"; fi
+      render_line event event=Conflicting name="$name" what="$(pr_link "$url") conflicts $(if [ -n "$o" ]; then printf 'after %s merged' "$o"; else printf 'with main'; fi)" next="$n" ;;
+    input_pending) render_line input_pending name="$name" text="$(jq -r '.detail // ""' <<<"$e")" ;;
     pr_opened) render_line pr_opened pr="$(pr_link "$url")" issue="$(team_issue "$team")" told="Lead not reached: tell it to start the tester" ;;
     dead) render_line event event=Dead name="$name" what="its agent is gone" next="Tick respawns it once in $(const_int RESPAWN_WINDOW_HOURS 6)h, then escalates P1" ;;
     failed) render_line event event=Failed name="$name" what="a restart or its brief did not arrive" next="Re-send its brief or re-boot the team" ;;
@@ -993,9 +1052,23 @@ render_notice() {
 
 # WAKE_TYPES: the tick events that wake the Orchestrator (loop-tick.sh) and get a notice (tick.sh); each has an entry
 # in references/output.md. An escalation wakes at any severity, pr_opened only when the lead could not be told.
-WAKE_TYPES="pr_ready pr_merged pr_opened pr_conflicting dead failed stalled needs_input brief_failed claim_takeover claim_lost claim_released claim_held_pr claim_lapsed stale_version slot_free weekly_summary morning_report escalation"
+WAKE_TYPES="pr_ready pr_merged pr_opened pr_conflicting input_pending dead failed stalled needs_input brief_failed claim_takeover claim_lost claim_released claim_held_pr claim_lapsed stale_version slot_free weekly_summary morning_report escalation"
 # WAKE_JQ: the jq filter that keeps the events that wake, with $wake bound to WAKE_TYPES (--arg wake "$WAKE_TYPES").
 WAKE_JQ='select(type == "object") | select((.type as $t | $wake | split(" ") | index($t)) and (.type != "pr_opened" or .lead_told == false))'
+
+# input_line <agent ref>: the text sitting unsent in an idle agent's input box, nothing when the agent is working, blocked
+# (a dialog), gone or the box is empty. The one place the screen is read besides the exit dialog: `herdr agent read
+# --source visible`, the last line that starts with the prompt marker (❯ or >, with or without the box's border) above the
+# footer. UNVERIFIED against a real Claude Code: the screen layout; the tests use the herdr shim's screen.
+input_line() {
+  local st
+  st="$(hd agent get "$1" 2>/dev/null | jq -r '.result.agent.agent_status // "gone"' 2>/dev/null || echo gone)"
+  case "$st" in idle | done) ;; *) return 0 ;; esac
+  hd agent read "$1" --source visible 2>/dev/null | awk '
+    /^[[:space:]]*(│[[:space:]]*)?(❯|>)([[:space:]]|$)/ {
+      l = $0; sub(/^[[:space:]]*(│[[:space:]]*)?(❯|>)[[:space:]]?/, "", l); sub(/[[:space:]]*(│[[:space:]]*)?$/, "", l); last = l }
+    END { print last }' || true
+}
 
 # Notices: the wake replies tick renders for the Orchestrator. notices.log in the state dir holds one JSON line
 # each, {at, text} and what it is about (type, team, name, url, issue, esc, to: notice_add); `status` prints the
@@ -1013,14 +1086,14 @@ notices_lock() {
 }
 notices_unlock() { rmdir "$(notices_file).lock" 2>/dev/null || true; }
 notice_add() { # notice_add <text> [tick event JSON]: one notice (it may span lines), and what the event was about:
-  # its type, team, name, url, the team's issue then, its escalation (name|id) and, for stale_version, the version.
+  # its type, team, name, url, the head sha of a pr_ready, the team's issue then, its escalation (name|id) and, for stale_version, the version.
   local f ev="${2:-}" iss="" tm; f="$(notices_file)"; mkdir -p "$(dirname "$f")"
   [ -n "$ev" ] || ev='{}'
   tm="$(jq -r '.team // ""' <<<"$ev" 2>/dev/null)" || tm=""
   [ -z "$tm" ] || iss="$("$FLEET_SCRIPTS/registry.sh" list --team "$tm" 2>/dev/null | jq -r '[.[] | select(.status != "Retired") | .issue // empty | select(. != "")] | first // ""' 2>/dev/null)" || iss=""
   notices_lock || { warn "notices are locked; dropped one: $(printf '%s' "$1" | head -n 1)"; return 0; }
   jq -c --arg at "${FLEET_NOW:-$(now)}" --arg t "$1" --arg i "$iss" '{at: $at, text: $t}
-    + ({type, team, name, url, to} | with_entries(select((.value // "") != "")))
+    + ({type, team, name, url, to, sha} | with_entries(select((.value // "") != "")))
     + (if $i != "" then {issue: $i} else {} end)
     + (if .type == "escalation" and (.id // "") != "" then {esc: "\(.name)|\(.id)"} else {} end)' <<<"$ev" >>"$f" 2>/dev/null || warn "cannot write $f"
   notices_unlock
@@ -1028,7 +1101,10 @@ notice_add() { # notice_add <text> [tick event JSON]: one notice (it may span li
 # notices_show: print the notices not shown yet, a blank line between two (reply), and mark them shown. A notice
 # something already handled is dropped, from the registry as it is now (one read, D6 of DEV-512): its team has no
 # row left that is not Retired (retire); its PR is on none of the team's rows any more, or the team is on another
-# issue (next); its escalation is closed (resolve, or the close at retire and next); a stale_version whose version
+# issue (next); its escalation is closed (resolve, or the close at retire and next); a pr_ready that a later unshown
+# notice of the same PR supersedes (the PR conflicts, merged, or its head moved to another sha: a newer pr_ready) and a
+# pr_conflicting that a later pr_ready follows (the fix landed), so one `fleet status` never says "Ready" about a PR
+# a later line has overtaken (no network: only the notices themselves); a stale_version whose version
 # has the user's go (version_ok); a failed or brief_failed whose row is no longer Failed. A line with no type (from
 # 4.1.0) is shown as it is.
 notices_show() {
@@ -1048,7 +1124,13 @@ notices_show() {
           or (($x.esc // "") != "" and ($open | index($x.esc)) == null)
           or ($x.type == "stale_version" and ($x.to // "") != "" and $ok == $x.to)
           or (($x.type == "failed" or $x.type == "brief_failed") and ([$rows[] | select(.name == $x.name and .status == "Failed")] | length) == 0);
-      [inputs | fromjson? | select(type == "object" and (.text | type) == "string" and .text != "") | select(handled | not) | .text] | join("\n\n")' 2>/dev/null
+      def newer($x; $y): $y.url == $x.url and ($x.url // "") != "" and (
+        (($x.type == "pr_ready") and ($y.type == "pr_conflicting" or $y.type == "pr_merged"
+          or ($y.type == "pr_ready" and ($y.sha // "") != "" and $y.sha != ($x.sha // ""))))
+        or ($x.type == "pr_conflicting" and $y.type == "pr_ready"));
+      [inputs | fromjson? | select(type == "object" and (.text | type) == "string" and .text != "")] as $all
+      | [$all | to_entries[] | .key as $k | .value as $v | select(($v | handled | not) and ([$all[$k + 1:][] | select(newer($v; .))] | length) == 0) | $v.text]
+      | join("\n\n")' 2>/dev/null
   # Once everything is shown, a long log starts over (nothing unshown is lost).
   if [ "$n" -gt 200 ]; then : >"$f"; n=0; fi
   printf '%s\n' "$n" >"$f.shown"

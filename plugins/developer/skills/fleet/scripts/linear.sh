@@ -9,7 +9,11 @@
 #   linear.sh holder <ISSUE>                  JSON: who holds the issue, their last heartbeat and whether it lapsed
 #                                             (`lapsed`: older than lease_hours, takeover's own check; null without a
 #                                             heartbeat)   (read-only)
-#   linear.sh peers                           JSON: other machines' claims, for `status.sh --all`   (read-only)
+#   linear.sh peers                           JSON: other machines' claims {machine, label, issue, heartbeat, summary}, for
+#                                             `fleet status` (summary: the parsed `summary=` line, null when there is none)   (read-only)
+#   linear.sh candidates                      JSON: identifiers of the open issues a team could take now: Todo or Backlog, or In
+#                                             Progress with no fleet label or only lapsed ones, and not blocked by an open
+#                                             issue; one Linear read (the query is UNVERIFIED against the real API)   (read-only)
 #   linear.sh blocks <ISSUE...>               JSON: {"<ISSUE>": [issues it blocks]} from Linear's `blocks` relations,
 #                                             one query for all of them   (read-only)
 #   linear.sh takeover <ISSUE> [--repo OWNER/NAME]   take an issue over from a lapsed holder; refuses while an
@@ -206,6 +210,10 @@ q_open_issues_labelled() { # q_open_issues_labelled <label name | prefix> <eq|st
     "$(jq -nc --arg n "$1" '{n: $n}')" | jq -c '.data.issues.nodes // []'
 }
 
+q_candidates() { # q_candidates → open issues with their state, fleet labels and the open issues that block them (UNVERIFIED query)
+  gql_read Candidates 'query Candidates { issues(first: 100, filter: { state: { type: { in: ["backlog", "unstarted", "started"] } } }) { nodes { identifier state { name type } labels { nodes { name description } } inverseRelations(first: 20) { nodes { type issue { identifier state { type } } } } } } }' '{}' |
+    jq -c '.data.issues.nodes // error("no issues")'
+}
 q_issue_team_key() { # q_issue_team_key <ISSUE> → the team key of the issue, empty when unknown
   gql_read IssueTeamKey 'query IssueTeamKey($id: String!) { issue(id: $id) { identifier team { key } } }' \
     "$(jq -nc --arg id "$1" '{id: $id}')" | jq -r '.data.issue.team.key // empty'
@@ -259,10 +267,17 @@ m_comment_delete() { # m_comment_delete <comment id> <issue id>
 # ---- helpers (no API calls) ----------------------------------------------------------------------
 hb_of() { printf '%s\n' "$1" | "$FLEET_SCRIPTS/claim.sh" hb; }
 describe_with_hb() { # describe_with_hb <description> <ISO>: the description with its heartbeat line set
-  printf '%s\n' "$1" | awk -v hb="heartbeat=$2" '
+  # The value goes in through the environment, not awk -v: -v processes backslash escapes, which corrupts free text.
+  printf '%s\n' "$1" | FLEET_AWK_V="heartbeat=$2" awk 'BEGIN { hb = ENVIRON["FLEET_AWK_V"] }
     /^heartbeat=/ { if (!d) { print hb; d = 1 } ; next }
     NF { print }
     END { if (!d) print hb }'
+}
+describe_with_summary() { # describe_with_summary <description> <summary JSON | "">: the description with its summary= line set (dropped for "")
+  printf '%s\n' "$1" | FLEET_AWK_V="${2:+summary=$2}" awk 'BEGIN { sm = ENVIRON["FLEET_AWK_V"] }
+    /^summary=/ { if (!d && sm != "") { print sm; d = 1 } ; next }
+    NF { print }
+    END { if (!d && sm != "") print sm }'
 }
 other_fleet_labels() { # other_fleet_labels <issue json> → names of fleet labels on it that are not ours
   local mine legacy; mine="$(machine_label)"; legacy="$(cfg_str machine_legacy_label '')"
@@ -360,7 +375,7 @@ owner_name() { viewer 2>/dev/null | jq -r '.name // ""' 2>/dev/null || true; }
 # heartbeat= line when it is new); everything else is kept.
 describe_with_owner() {
   if [ -z "$2" ]; then printf '%s\n' "$1"; return 0; fi
-  printf '%s\n' "$1" | awk -v o="owner=$2" '
+  printf '%s\n' "$1" | FLEET_AWK_V="owner=$2" awk 'BEGIN { o = ENVIRON["FLEET_AWK_V"] }
     /^owner=/ { if (!d) { print o; d = 1 } ; next }
     /^heartbeat=/ && !d { print o; d = 1 }
     NF { print }
@@ -408,7 +423,7 @@ ensure_label() {
 # write_heartbeat: rewrite the heartbeat= line of this machine's label to now (one mutation, none when the line already
 # says now). Sets HB_AT and returns 0; returns 2 when the machine has no label yet. Claim, takeover and heartbeat share it.
 write_heartbeat() {
-  local mine found lid cur
+  local mine found lid cur sm
   mine="$(machine_label)"
   found="$(q_labels_named "$mine")" || return 1
   lid="$(printf '%s' "$found" | jq -r '.[0].id // empty')"
@@ -416,8 +431,11 @@ write_heartbeat() {
   HB_AT="${FLEET_NOW:-$(now)}"; OWN_LID="$lid"
   # A description an older version wrote still holds the full machine id: hashed here too, or nothing is written.
   cur="$(legacy_ids_hashed "$(printf '%s' "$found" | jq -r '.[0].description // ""')")" || return 1
-  if [ "$(printf '%s\n' "$cur" | sed -n 's/^heartbeat=//p' | head -n 1)" != "$HB_AT" ]; then
-    m_label_describe "$lid" "$(describe_with_hb "$(describe_with_owner "$cur" "$(owner_name)")" "$HB_AT")" || return 1
+  # The summary line (fleet_summary) rides on the same write: one mutation, and none when neither line changed.
+  sm="$(fleet_summary 2>/dev/null)" || sm=""; [ "$sm" != "[]" ] || sm=""
+  if [ "$(printf '%s\n' "$cur" | sed -n 's/^heartbeat=//p' | head -n 1)" != "$HB_AT" ] ||
+    [ "$(printf '%s\n' "$cur" | sed -n 's/^summary=//p' | head -n 1)" != "$sm" ]; then
+    m_label_describe "$lid" "$(describe_with_summary "$(describe_with_hb "$(describe_with_owner "$cur" "$(owner_name)")" "$HB_AT")" "$sm")" || return 1
   fi
 }
 
@@ -425,7 +443,7 @@ write_heartbeat() {
 cmd="${1:-}"; [ $# -gt 0 ] && shift
 # Every API subcommand needs the key; check it here, at the top level, so a missing key is exit 3
 # and not an error swallowed inside a command substitution.
-case "$cmd" in claim | heartbeat | holder | peers | blocks | whoami | takeover | release | state | migrate) load_key ;; esac
+case "$cmd" in claim | heartbeat | holder | peers | candidates | blocks | whoami | takeover | release | state | migrate) load_key ;; esac
 case "$cmd" in
   has-key)
     has_key || no_key ;;
@@ -458,7 +476,19 @@ case "$cmd" in
     mine="$(machine_label)"
     q_open_issues_labelled "$(label_prefix)" startsWith | jq -c --arg p "$(label_prefix)" --arg m "$mine" --arg l "$(cfg_str machine_legacy_label '')" '
       [.[] | . as $i | .labels.nodes[] | select((.name | startswith($p)) and .name != $m and ($l == "" or .name != $l))
-        | {machine: (.name | ltrimstr($p)), label: .name, issue: $i.identifier, heartbeat: ([(.description // "") | match("(^|\n)heartbeat=([^\n ]+)").captures[1].string] | first // null)}]' ;;
+        | {machine: (.name | ltrimstr($p)), label: .name, issue: $i.identifier, heartbeat: ([(.description // "") | match("(^|\n)heartbeat=([^\n ]+)").captures[1].string] | first // null),
+          summary: ([(.description // "") | match("(^|\n)summary=([^\n]*)").captures[1].string | fromjson? | select(type == "array")] | first // null)}]' ;;
+
+  candidates)
+    READONLY=1
+    q_candidates | jq -c --arg p "$(label_prefix)" --arg now "${FLEET_NOW:-$(now)}" --argjson lease "$(lease_hours)" '
+      [.[] | select(.state.name == "Todo" or .state.name == "Backlog" or .state.name == "In Progress")
+        | select([.inverseRelations.nodes[]? | select(.type == "blocks" and (.issue.state.type != "completed" and .issue.state.type != "canceled"))] | length == 0)
+        | ([.labels.nodes[]? | select(.name | startswith($p))]) as $f
+        | select(.state.name != "In Progress" or ($f | length) == 0
+            or all($f[]; ([(.description // "") | match("(^|\n)heartbeat=([^\n ]+)").captures[1].string] | first) as $hb
+                | ($hb == null or (($now | fromdateiso8601) - ($hb | fromdateiso8601)) > ($lease * 3600))))
+        | .identifier]' ;;
 
   claim)
     dry=0; issue=""

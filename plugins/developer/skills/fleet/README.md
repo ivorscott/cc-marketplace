@@ -62,6 +62,7 @@ Each command works the same from Claude Code (`/fleet <command>`) and from a she
 | Command | What it does | Example |
 |---|---|---|
 | `boot` | Boot a team on a task or an issue | `fleet boot build export ~/code/api "add CSV invoice export"` |
+| `catchup` | Bring a finished team back to merge main into its conflicting PR | `fleet catchup build-api https://github.com/acme/app-api/pull/12` |
 | `claim` | Claim an issue on Linear for this machine | `fleet claim DEV-123` |
 | `debrief` | List the retired teams and their lessons, the ones still due marked | `fleet debrief` |
 | `env` | Create, remove or list a team's test cluster | `fleet env status` |
@@ -78,10 +79,11 @@ Each command works the same from Claude Code (`/fleet <command>`) and from a she
 | `resolve` | Close an escalation once its answer reached the agent | `fleet resolve build-api/lead 20261024T090000Z-1 --note "use pg"` |
 | `respawn` | Start a dead agent again from its row | `fleet respawn build-api/builder` |
 | `retire` | Shut a team (or one agent) down safely | `fleet retire build-api --outcome Shipped` |
+| `revive` | Bring a finished or parked team back with something to do | `fleet revive build-api --text "the PR needs a review reply"` |
 | `sandbox` | Run a reproduction away from the live fleet | `fleet sandbox --keep` |
 | `schedule` | Install, remove or check the launchd loop | `fleet schedule status` |
 | `slim` | Turn the fleet's panel style for herdr on or off, or say if it is on | `fleet slim status` |
-| `status` | Show each team's health and what needs you | `fleet status --problems` |
+| `status` | Show every machine's teams and what needs you | `fleet status` |
 | `takeover` | Take an issue over from a machine whose claim lapsed | `fleet takeover DEV-123` |
 | `tell` | Send a team's lead (or one agent) a message and check it arrived | `fleet tell build-api/lead "focus on token expiry"` |
 | `unpark` | Bring a parked team back | `fleet unpark build-api` |
@@ -124,7 +126,8 @@ The Orchestrator and agents call these directly (from `scripts/`). You can call 
 | `linear.sh` | claims and heartbeat on the Linear API: `claim <ISSUE> [--dry-run]` · `heartbeat` (one mutation) · `holder <ISSUE>` (with `lapsed`), `peers` and `blocks <ISSUE…>` (read-only) · `takeover <ISSUE> [--repo OWNER/NAME]` (refuses while a PR is open) · `release <ISSUE> [--lapsed]` (removes this machine's label, or with `--lapsed` a lapsed machine's, under takeover's guards) · `state <ISSUE> <Done\|Verify\|Todo>` · `migrate [--dry-run]` · `has-key`. Key in `~/.config/fleet/linear_api_key` (mode 600) or `LINEAR_API_KEY`; none: exit 3. Writes need `linear_writes` (below): off, the default, exits 3 too. Never posts claim or lease comments |
 | `chat.sh` | `channel` and `allow` print `chat_channel` and `chat_allow` · `format <event> …` prints the one-line message. It never posts or reads; the Orchestrator does with its own chat tools |
 | `machine-id.sh` | `id\|key\|label\|description\|hash\|show`: this machine's tracker identity, e.g. `fleet:3f9a2c1e`. The label description publishes `machine id sha256:<12 hex>`, never the full id; `linear.sh migrate` rewrites an older label that still holds the full id |
-| `status.sh` | `status.sh [<team>] [--problems] [--json] [--all]` recomputes health, writes it to the registry and prints the waiting wake notices, then the team table (or, with a team, one row per agent); `--all` reads other machines' claims from Linear |
+| `status.sh` | `status.sh [<team>] [--problems] [--json]` recomputes health, writes it to the registry and prints the waiting wake notices, then one team table for every machine (Machine column; the other machines' teams come from the summaries they publish on Linear) and the merge queue (or, with a team, one row per agent) |
+| `catchup.sh` | `catchup.sh <team> <pr-url> [<merged-by>]` brings a finished or parked team back to merge main into its PR that conflicts now (tick runs it); `respawn.sh --revive` also starts a Done row again |
 | `registry.sh archive` | moves Retired rows with lessons and no open escalation to `fleet-archive.json` (`archive_after_days` in config.toml, default 0), and past 512 KB also those with no lessons; `get --archived` and `list --with-archived` read both |
 | `tick.sh` | `tick.sh [--team T]` one JSON array of what changed since the last tick (stalled, dead, escalation, pr_ready, pr_merged, pr_conflicting, repo_without_team, disk), or nothing, and each wake's reply in `notices.log` · reads PRs with read-only `gh pr view` and `gh pr list` through `FLEET_GH`, and builds the merge queue once for status |
 | `queue.sh` | the merge queue as JSON: the open PRs the fleet holds (one read-only `gh pr list` per repo; a PR whose head branch a local team pushed is ours even when no row names it yet), the ready ones in the order to merge them (dependencies first, then fewest rebases, then oldest), the rest with what is missing. `status` reuses the one tick built in the last minute; the pr_ready/pr_merged wakes print it |
@@ -308,7 +311,7 @@ Example using kind:
 
 ## Several machines
 
-Claims, leases, takeover and `status --all` need Linear (label groups and comments). Any other
+Claims, leases, takeover and the other machines in `status` (`FLEET_STATUS_LOCAL=1` keeps it local) need Linear (label groups and comments). Any other
 tracker runs the fleet on one machine, and those parts are skipped.
 
 - A claim is the machine's label on the issue; liveness is a `heartbeat=` line in that label's
@@ -324,8 +327,10 @@ tracker runs the fleet on one machine, and those parts are skipped.
 - **The tracker has no compare-and-swap.** The last writer wins and both machines re-read; that
   narrows the race, it does not remove it. A machine whose issue was taken over stops and tells
   you; it never fights back.
-- `status --all` builds one table from `linear.sh peers` and this machine's registry. Other
-  machines' health is not probed: their rows show `Claimed`, the issue and the heartbeat age.
+- `status` builds one table from `linear.sh peers` and this machine's registry. Each machine publishes a compact
+  `summary=` line next to its `heartbeat=` in its label description (its teams: issue, PR, state, what it needs, whether
+  its PR is ready), and the others show those rows with a Machine column and one merge queue. Other machines' health is
+  not probed; a machine with no summary shows as a claim only.
 - The Linear API key lives only on the Orchestrator machine (`~/.config/fleet/linear_api_key`,
   mode 600, or `LINEAR_API_KEY` in its shell). Boot gives it to no agent: panes start with
   `LINEAR_API_KEY` unset, the scope guard denies Read, Grep and Glob of the file (and a Grep or Glob,
@@ -455,7 +460,7 @@ Fixes from the first day of 4.1 (DEV-512), one per item:
    records it on the builder's row (`pr_opened`).
 2. **Handled notices go.** A notice is dropped once retire, next or resolve handled it, the version switch has the
    user's yes, or its row is no longer Failed.
-3. **`status --all` reads other machines' claims itself** (`linear.sh peers`); `--claims` is gone. With no key it says
+3. **`status` reads other machines' claims itself** (`linear.sh peers`); `--claims` is gone. With no key it says
    `Other machines: unknown (no Linear key).`
 4. **herdr's Claude integration reads current.** Its status is read whole: a `| grep -q` let herdr die of SIGPIPE, which
    read as "missing". The same pipe shape is gone from tell and retire.
@@ -507,7 +512,7 @@ Fixes from the first day of 4.1 (DEV-512), one per item:
 | `scripts/sandbox.sh` | reproductions away from the live fleet |
 | `scripts/redact-check.sh` | the redact check the house rules require: private terms counted, never printed |
 | `scripts/slim.sh`, `styles/slim.toml` | the slim panel style for herdr, between markers in herdr's config |
-| `rules/house.md` | the house rules every brief ends with (a repo's `.claude/fleet-rules.md` follows them) |
+| `rules/house.md` | the house rules every brief ends with (a repo's `.claude/fleet-rules.md` follows them); with `installs = "allow"` in config.toml, the install rule says agents install what the work needs themselves and list each install |
 | `scripts/retire.sh` | safe teardown: archives reports to `reports/fleet-archive/`, removes worktrees, removes the team's test cluster |
 | `scripts/env.sh` | per-team disposable test cluster, declared by the repo's `.claude/fleet-env.json` |
 | `scripts/test/run.sh` | offline tests (stub `up`/`down`, docker, df and herdr; no kind, no live fleet) |
@@ -535,3 +540,42 @@ Fixes found after 4.1.1 (DEV-530), one per item:
    filed and a requested split is done. `retire --summary` stays as a read-only view.
 5. **A fresh claim is fresh.** `claim` and `takeover` refresh the machine label's heartbeat in the same call, and tick
    refreshes it first of all, before herdr is checked and with or without claimed rows.
+
+## What changed in 4.1.3
+
+Thirteen fixes, one per item:
+
+1. **One status for every machine.** Each machine publishes a compact `summary=` line of its teams (issue, PR, state,
+   what it needs, whether its PR is ready) in its Linear label description, in the same write as the heartbeat.
+   `fleet status` reads them and prints one table with a Machine column and one merge queue; a machine with no summary
+   (an older plugin) is a single `claim only` line, and with no Linear key one line says the others are unknown. A
+   summary older than `lease_hours` stays in the table marked stale and is never counted ready. The `--all` switch is
+   gone from the docs (it is still accepted and does nothing for the table); `FLEET_STATUS_LOCAL=1` keeps status local.
+2. **Escalation ids are unique.** The id is `<timestamp>-<n>`, with n counted over the whole registry, so two agents
+   escalating in the same second no longer share one and `resolve` closes the right one.
+3. **A team name is its lead.** `tell build-x "..."` reaches `build-x/lead`, and `resolve build-x <id>` closes the open
+   escalation of that id on the team (an error names the agents when it is on more than one). `tell` no longer says
+   "Respawn it" about an agent that is in no registry.
+4. **A parked team's Needs you cell** says what a Done team's says (`merge the PR`, `rebase after #N`), so parking a
+   signed-off team changes its State and nothing else.
+5. **No stale "Ready to merge".** A ready notice is dropped when a later notice for the same PR says it conflicts, merged,
+   or moved to another head; a conflict is dropped when a later ready follows it.
+6. **One merge order across machines.** The queue counts another machine's PR as ready when its summary says so, orders
+   it with ours, and a ready PR says when a not-ready one touches the same files.
+7. **A conflict after a merge restarts the team.** When a ready PR conflicts, a team that is parked or has a Done or
+   exited agent is brought back (`catchup.sh`, `respawn.sh --revive`): builder and tester in their worktrees, the lead
+   briefed to merge `origin/main` (a merge commit, a plain push, never a rewrite of history) and have the tester sign off
+   again. Two rounds at most per PR, then a P1 escalation. The notice names the PR whose merge caused it.
+8. **A message to a finished team brings it back.** `tell` to a Done or Parked team (or one whose agents are gone) with its PR
+   still open runs `revive.sh`: the agents start again in their worktrees and the lead gets the message in its resume brief
+   (`(revived)`). `catchup.sh` is the same revive plus the merge-main procedure. A merged PR is refused with what to do instead.
+9. **Unsent text in an input box.** `tell` clears the box with ctrl+u (an idle agent only) before it types; tick flags text
+   left there (`input_flag`, an `input_pending` wake, the Needs you cell); agents start with prompt suggestions off.
+10. **`retire --outcome` wins** over the outcome the rows reported.
+11. **Retire leaves another machine's issue alone**: no state move and no label release for an issue or claim it holds.
+12. **`slot_free` only when a slot is usable**: a repo with room and an unclaimed, unblocked issue (`linear.sh candidates`).
+13. **The house install rule follows `installs = "allow"`**: agents install what the work needs and list each install; a new
+    dependency goes in its own commit with its lockfile. Unset, the text is unchanged.
+
+Also: status prints no heartbeat age (a lapsed or missing heartbeat gets one plain line), and the merge queue compares changed
+files and migration numbers only within one repo.

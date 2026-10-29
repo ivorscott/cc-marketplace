@@ -23,7 +23,7 @@ restarted, compacted or replaced agent picks up from the row, not from memory.
 | `issue`, `claimed_by`, `scope` | the tracker issue, the machine key that claimed it, and the declared file scope `{repo, paths[]}` (empty paths = whole repo); set by `boot.sh --issue/--claimed-by/--scope`; `registry.sh reassign --claimed-by` (`next.sh`, when its claim succeeded) moves `claimed_by` to the new issue and drops it otherwise, and tick's `claim_lost` reads it |
 | `assignment` | the task it owes (the hook) |
 | `status` | Booting, Working, Needs input, Stalled, Zombie, Idle, Done, Parked, Retired |
-| `escalation`, `escalations[]` | `escalation` is derived: the highest severity among open entries, `""` when none. Each entry is `{id, severity, message, at}` (`id` is `<at compact>-<seq>`, seq the 1-based array position; entries filed before ids existed get the same derived id on read) plus `resolved_at` and `resolution` once `registry.sh resolve` closes it; `(name, id)` identifies one. Open entries survive `done`; `retire` closes them with resolution "closed at retire". A non-array `escalations` reads as empty and non-object elements are skipped |
+| `escalation`, `escalations[]` | `escalation` is derived: the highest severity among open entries, `""` when none. Each entry is `{id, severity, message, at}` (`id` is `<at compact>-<n>`, n one more than the number of escalations in the whole registry whose id starts with that timestamp, so two agents escalating in the same second get different ids; entries filed before ids existed get `<at compact>-<seq>`, seq the 1-based array position, on read) plus `resolved_at` and `resolution` once `registry.sh resolve` closes it; `(name, id)` identifies one. Open entries survive `done`; `retire` closes them with resolution "closed at retire". A non-array `escalations` reads as empty and non-object elements are skipped |
 | `transcript` | path of the agent's Claude Code transcript (`<projects>/<cwd slug>/<session id>.jsonl`), set by boot (`--session-id`) and replaced when `respawn.sh` or `next.sh` restarts the agent with a new session |
 | `transcripts` | earlier transcript paths of the agent (a list), appended by `respawn.sh` (also when `next.sh` restarts the agent); `metrics.sh` counts tokens only from these and `transcript` |
 | `status_detail` | "login expired" or "API error" while the newest assistant line of the transcript is an API error (status.sh); empty otherwise |
@@ -31,6 +31,7 @@ restarted, compacted or replaced agent picks up from the row, not from memory.
 | `parked_at`, `parked_reason` | set for the whole team by `park.sh` (`registry.sh park`, one write): when, and why (`park`, `after-merge` or `focus:<team>`). Done rows keep their status. The panes are closed; rows, worktrees, branches and the claim stay. `unpark.sh` empties both |
 | `park_after_merge` | the reason the team parks with once its PR merges (`park.sh --after-merge`, `focus.sh` without `--now`); `tick.sh` parks the team then. `unpark.sh` and `focus.sh --clear` clear it |
 | `nudged_at` | set by `tick.sh` when it nudged a Stalled agent; cleared when the agent stops being Stalled |
+| `input_flag` | set by `tick.sh` to the first 80 characters of text left unsent in an idle agent's input box; cleared when the box is empty (status shows it; tell clears the box before it types) |
 | `plugin_version`, `issue_url`, `issue_title` | the plugin version that booted (or last restarted) the agent, for tick's `stale_version`; the issue's full URL, for the brief's `Fixes` line; the issue's title (`boot.sh --issue-title`, `next.sh --issue-title`, `registry.sh reassign --issue-title`), which the team table's Issue cell shortens, so status never calls the tracker for it |
 | `last_brief`, `brief_failed_at`, `brief_failed_line`, `brief_resent` | the agent's latest brief file (`briefs/<team>/<role>/<id>.md` in the state dir, mode 600); set when a brief did not arrive, with the transcript's length then (the row stays Failed, never Stalled, until the brief's id shows in its transcript after that line: `status.sh` then clears these and the row comes back, logging `brief_delivered` with detail `late`); set when tick re-sent the pointer, once |
 | `pr`, `signoff` | `registry.sh signoff <name> <PR URL or N> <sha>` (the tester) sets `pr` and `signoff = {pr, sha, at}`; `tick.sh` reads them. `registry.sh reassign <team> <issue>` (run by `next.sh`) clears `outcome`, `summary`, `done_at`, `pr`, `signoff` and `lessons`, closes open escalations with `resolution: "closed at next"`, sets `issue`, rewrites `assignment`, and sets the lead Working and the workers Idle; it logs `issue_done` (the old issue, PR and outcome) to the event log first |
@@ -182,10 +183,18 @@ The tracker label is `<label_prefix><key>`, e.g. `fleet:3f9a2c1e`, and its descr
 there; no claim, lease or heartbeat comment exists). A heartbeat older than `lease_hours` with no open PR
 can be taken over with `linear.sh takeover` (`claim.sh expired` checks the lease, takeover looks the PR up). Writes need `linear_writes` (default off).
 
-`status.sh --all --json` is a bare array. Registry rows keep their fields and add `source: "registry"`;
-claims from other machines (`linear.sh peers`, which `--all` runs itself) are rows with `source: "tracker"`, `status` `Claimed`
-(`Claimed (heartbeat lapsed)`, `Claimed (no heartbeat)`), `machine`, `issue`, `heartbeat` and
-`heartbeat_age`.
+`status.sh --json` is the bare array of this machine's rows. `status.sh --all --json` adds the other machines' rows: registry
+rows keep their fields and add `source: "registry"` and `machine`; a team another machine published in its `summary=` line
+(`linear.sh peers`, which `--all` runs itself) is a row with `source: "tracker"`, `machine`, `team`, `issue`, `pr`,
+`needs`, `ready` and `status` (its state, `Done (stale 3h)` when older than `lease_hours`); the claims of a machine with
+no summary are rows with `status` `Claimed` (`Claimed (heartbeat lapsed)`, `Claimed (no heartbeat)`), `machine`, `issue`,
+`heartbeat` and `heartbeat_age`.
+
+**`summary=` line.** The label description of a machine holds, next to `heartbeat=`, one `summary=<compact JSON array>`
+line, rewritten in the same label update: `[{"t": team, "i": issue key, "pr": PR url, "s": state word, "n": needs you,
+"r": true when its PR is ready}]`, keys with no value left out, the 12 teams changed last, and fewer when the line would
+pass 1500 characters. `linear.sh peers` returns it as `summary` (null when the label has none). UNVERIFIED: Linear's own
+limit on a label description.
 
 **Cloned machine id.** A cloned VM or restored disk copies the machine id, and two machines then
 share one key. Set `FLEET_MACHINE=<unique>` or delete the stored `machine-id` file on the clone.

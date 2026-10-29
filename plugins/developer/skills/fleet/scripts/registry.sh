@@ -14,13 +14,14 @@
 #                                                          options are the answers to choose from, the recommended one
 #                                                          first. Prints the decision form (references/output.md)
 #   registry.sh escalations [--open] [--team T] [--not-retired]  every escalation, Done and Retired rows included unless --not-retired
-#   registry.sh resolve <name> <id|at> [--note TEXT]       close one escalation (the Orchestrator does this; <id> is unique, <at> is the legacy form);
+#   registry.sh resolve <name> <id|at> [--note TEXT]       close one escalation (the Orchestrator does this; <id> is unique across the registry, <at> is the legacy form;
+#                                                          a team name for <name> means the team's agent that has the open <id>, the lead first);
 #                                                          prints "Resolved <id> for <name>: <note>."
 #   registry.sh note <name> discovered|decision|picked TEXT   discovered: work filed instead of done (the row's
 #                                                          `discovered`); decision: the option an agent took on its own
 #                                                          (overnight mode); picked: the search behind a boot (the
 #                                                          Orchestrator, on the lead's row). The last two go to `notes`
-#   registry.sh retire <name|team> [--outcome O]           also closes the rows' open escalations ("closed at retire")
+#   registry.sh retire <name|team> [--outcome O]           an explicit --outcome is every retired row's outcome (else the one it reported); also closes the rows' open escalations ("closed at retire")
 #   registry.sh signoff <name> <pr-url|N> <sha>            the tester's sign-off: records the PR and the exact SHA verified
 #   registry.sh reassign <team> <issue> [--assignment TEXT] [--issue-url URL] [--issue-title TEXT] [--claimed-by KEY]
 #                                                          move a team to a new issue (next.sh): logs issue_done for the old one,
@@ -93,7 +94,14 @@ update() {
   fi
 }
 
-exists() { jq -e --arg n "$1" '.agents[$n] != null' "$FLEET_REGISTRY" >/dev/null || die "no agent '$1' in the registry"; }
+exists() {
+  jq -e --arg n "$1" '.agents[$n] != null' "$FLEET_REGISTRY" >/dev/null && return 0
+  # A bare team name is a team, not an agent: point at its lead rather than say there is nothing.
+  if jq -e --arg n "$1" '[.agents[] | select(.team == $n)] | length > 0' "$FLEET_REGISTRY" >/dev/null 2>&1; then
+    die "'$1' is a team; did you mean '$1/lead'?"
+  fi
+  die "no agent '$1' in the registry"
+}
 
 LIVE='(.status != "Done" and .status != "Retired" and .status != "Parked")'
 OPEN_ESC='([escs[] | select(.resolved_at == null)] | length > 0)'
@@ -198,10 +206,12 @@ case "$cmd" in
     msg="${3:?usage: escalate <name> P0|P1|P2 TEXT [OPTION...]}"; shift 3
     case "$sev" in P0|P1|P2) ;; *) die "severity must be P0, P1 or P2" ;; esac
     exists "$name"
-    at="$(now)"; opts="$(printf '%s\n' "$@" | jq -Rsc 'split("\n") | map(select(. != ""))')"; [ $# -gt 0 ] || opts='[]'
+    at="${FLEET_NOW:-$(now)}"; opts="$(printf '%s\n' "$@" | jq -Rsc 'split("\n") | map(select(. != ""))')"; [ $# -gt 0 ] || opts='[]'
     update --arg n "$name" --arg s "$sev" --arg m "$msg" --arg t "$at" --argjson o "$opts" \
-      "$DERIVE"'.agents[$n] |= (norm | .status = "Needs input"
-        | .escalations += [{id: (($t | gsub("[-:]"; "")) + "-" + ((.escalations | length) + 1 | tostring)), severity: $s, message: $m, at: $t}
+      "$DERIVE"'(($t | gsub("[-:]"; "")) + "-") as $pre
+        | ([.agents[] | select(type == "object") | escs[] | select(.id | startswith($pre))] | length + 1) as $k
+        | .agents[$n] |= (norm | .status = "Needs input"
+        | .escalations += [{id: ($pre + ($k | tostring)), severity: $s, message: $m, at: $t}
             + (if ($o | length) > 0 then {options: $o} else {} end)]
         | derive | .updated_at = $t)'
     # update() holds the lock until this process exits, so the new entry is still the last one.
@@ -239,6 +249,15 @@ case "$cmd" in
         *) die "unknown resolve option: $1" ;;
       esac
     done
+    # A team name stands for the team's agent holding the open escalation <ref> (the lead first): exactly one, or an error naming them.
+    if ! jq -e --arg n "$name" '.agents[$n] != null' "$FLEET_REGISTRY" >/dev/null; then
+      cands="$(jq -r --arg t "$name" --arg a "$ref" "$ESC_DEFS"'[.agents[] | select(type == "object" and .team == $t)
+        | select([escs[] | select((.id == $a or .at == $a) and .resolved_at == null)] | length > 0) | .name] | sort_by(if endswith("/lead") then 0 else 1 end) | .[]' "$FLEET_REGISTRY")"
+      if [ -n "$cands" ]; then
+        [ "$(printf '%s\n' "$cands" | wc -l | tr -d ' ')" = 1 ] || die "'$ref' is open on more than one agent of $name: $(printf '%s' "$cands" | paste -sd, - | sed 's/,/, /g'); name one"
+        name="$cands"
+      fi
+    fi
     exists "$name"
     # An id matches first, then (legacy) an at. seq is the first open match's array position; 0 when none is open.
     seq="$(jq -r --arg n "$name" --arg a "$ref" "$ESC_DEFS"'.agents[$n] | [escs[]] as $e
@@ -276,7 +295,7 @@ case "$cmd" in
         if (.key == $x or .value.team == $x) and .value.status != "Retired" then
           .value |= (norm | esc_close("closed at retire"; $t)
             | derive | .status = "Retired" | .ended = $t | .updated_at = $t
-            | .outcome = (if .name == $x and $o != "" then $o else (.outcome // (if $o != "" then $o else "Abandoned" end)) end))
+            | .outcome = (if $o != "" then $o else (.outcome // "Abandoned") end))
         else . end)'
     ;;
   archive)

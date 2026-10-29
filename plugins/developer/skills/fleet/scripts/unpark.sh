@@ -29,7 +29,7 @@ if [ "${FLEET_FORCE:-}" != 1 ]; then
 fi
 hd agent list >/dev/null 2>&1 || die "herdr is not answering; $team stays parked"
 
-export FLEET_RESUME_WHY="you were parked and the user has brought you back; your panes were closed, nothing else was lost"
+export FLEET_RESUME_WHY="${FLEET_RESUME_WHY:-you were parked and the user has brought you back; your panes were closed, nothing else was lost}"
 failed=()
 for tier in Lead Worker; do
   while IFS= read -r name; do
