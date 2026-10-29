@@ -21,7 +21,7 @@
 #                                                          `discovered`); decision: the option an agent took on its own
 #                                                          (overnight mode); picked: the search behind a boot (the
 #                                                          Orchestrator, on the lead's row). The last two go to `notes`
-#   registry.sh retire <name|team> [--outcome O]           also closes the rows' open escalations ("closed at retire")
+#   registry.sh retire <name|team> [--outcome O]           an explicit --outcome is every retired row's outcome (else the one it reported); also closes the rows' open escalations ("closed at retire")
 #   registry.sh signoff <name> <pr-url|N> <sha>            the tester's sign-off: records the PR and the exact SHA verified
 #   registry.sh reassign <team> <issue> [--assignment TEXT] [--issue-url URL] [--issue-title TEXT] [--claimed-by KEY]
 #                                                          move a team to a new issue (next.sh): logs issue_done for the old one,
@@ -295,7 +295,7 @@ case "$cmd" in
         if (.key == $x or .value.team == $x) and .value.status != "Retired" then
           .value |= (norm | esc_close("closed at retire"; $t)
             | derive | .status = "Retired" | .ended = $t | .updated_at = $t
-            | .outcome = (if .name == $x and $o != "" then $o else (.outcome // (if $o != "" then $o else "Abandoned" end)) end))
+            | .outcome = (if $o != "" then $o else (.outcome // "Abandoned") end))
         else . end)'
     ;;
   archive)

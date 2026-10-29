@@ -9,11 +9,13 @@
 # failure warns, never fails the retire): Shipped → Done, or Verify with --verify, once every PR of the issue merged (an
 # open PR leaves it as it is, with a warning); Abandoned or Failed, or no outcome reported (shown as Abandoned) → Todo,
 # and this machine's claim is released. A PR whose body says it is "Part of" another issue (any case, before an issue
-# reference) leaves the issue In Progress with its label. The Retired line then ends "Issue → <state>.".
+# reference) leaves the issue In Progress with its label. The Retired line then ends "Issue → <state>.". An issue
+# another machine holds (linear.sh holder: its label is on the issue, or the holder cannot be read) is left alone, its
+# state and its label both, whatever the outcome: one warning says who holds it.
 #
 # --summary changes nothing, and a retire never waits on it: it is how to read what a retire would keep. It prints, per target:
 #   Retire <team>? Outcome <X>. Unpushed: <none|list>. Kept: <none|list>. Reply yes to retire.
-# (the outcomes the rows reported, Abandoned when none did; the worktrees with commits on no remote; every worktree
+# (the outcomes the rows reported, Abandoned when none did; an explicit --outcome on the retire itself wins over them; the worktrees with commits on no remote; every worktree
 # a retire would keep, with why). A retire prints
 #   Retired <team> (<outcome>): PRs <links|none>. Archived to <path>. Kept: <list>.
 # ("Nothing archived." when no report was copied; "Kept: ..." only when something was kept), then the team table
@@ -254,6 +256,11 @@ if $whole_team && [ -n "$want" ] && [ "$(linear_writes)" != off ] && "$FLEET_SCR
       if jq -e "$PART_OF_JQ"'(.body // "") | part_of != null' >/dev/null 2>&1 <<<"$j"; then partof=true; fi
       [ "$want" = Todo ] || [ "$(jq -r '.state // ""' <<<"$j" 2>/dev/null)" = MERGED ] || unmerged="$unmerged${unmerged:+, }$u"
     done
+    # Another machine's issue is never moved or released from here; an unreadable holder counts as another's (a skipped
+    # move is easy to do by hand, a clobbered issue is not).
+    if hj="$("$FLEET_SCRIPTS/linear.sh" holder "$iss" 2>/dev/null)" && jq -e 'type == "object"' >/dev/null 2>&1 <<<"$hj"; then
+      if [ "$(jq -r '(.holder != null) and (.ours | not)' <<<"$hj")" = true ]; then warn "left $iss alone: $(jq -r '.holder' <<<"$hj") holds it"; continue; fi
+    else warn "left $iss alone: could not tell who holds it"; continue; fi
     if $partof; then warn "$iss stays In Progress: its PR is part of a bigger issue"; continue; fi
     if [ -n "$unmerged" ]; then warn "$iss stays as it is: $unmerged is not merged (or could not be read); move it to $want once it merges"; continue; fi
     if "$FLEET_SCRIPTS/linear.sh" state "$iss" "$want" >/dev/null 2>"$lerr"; then issue_state="$want"

@@ -111,6 +111,7 @@ d588_parked_needs() {
 }
 
 . "$HERE/dev588-status.sh"
+. "$HERE/dev588-retire.sh"
 
 d588_installs() {
   d588_state inst; d588_agent n1/lead Lead Working
@@ -140,6 +141,7 @@ d588_smoke() { # the critical cases, CI
   d588_parked_needs
   d588_all_machines
   d588_conflict_catchup
+  d588_retire
 }
 d588_full() { # every case
   d588_smoke

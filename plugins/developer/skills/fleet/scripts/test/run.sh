@@ -4403,7 +4403,7 @@ eq "dev408-9 retire: a PR that is part of a bigger issue leaves it In Progress w
 d9db; : >"$LINEAR_LOG"; d4cfg; r9team r9e DEV-3 91; rt9 r9e --outcome Shipped >/dev/null
 eq "dev408-9 retire: with linear_writes off nothing is written" "$(d4state DEV-3):$(d4mut)" "In Progress:0"
 d4cfg 'linear_writes = "on"'; d9db; r9team r9f DEV-99 91; rt9 r9f --outcome Shipped >/dev/null; rc=$?
-eq "dev408-9 retire: a Linear failure warns and never fails the retire" "$rc:$(grep -c 'could not move DEV-99 to Done on Linear' "$T/r9.err"):$("$REG" list --team r9f | jq -r '[.[].status] | unique | join(",")')" "0:1:Retired"
+eq "dev408-9 retire: an issue whose holder cannot be read is left alone with a warning, and the retire does not fail" "$rc:$(grep -c 'left DEV-99 alone: could not tell who holds it' "$T/r9.err"):$("$REG" list --team r9f | jq -r '[.[].status] | unique | join(",")')" "0:1:Retired"
 d9db; r9team r9g DEV-3 91; rt9 r9g/builder --outcome Shipped >/dev/null
 eq "dev408-9 retire: retiring one agent leaves the issue alone" "$(d4state DEV-3)" "In Progress"
 # R14: Shipped waits for the merge; "Part of" is a parent reference in any case, never prose; no outcome is Abandoned.
