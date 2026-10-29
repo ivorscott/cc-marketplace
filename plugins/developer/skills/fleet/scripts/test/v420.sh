@@ -443,9 +443,18 @@ v420_decide() { # a lead's escalation is decided, recorded and reported without 
   v420_nolinear; unset FLEET_NOW
 }
 
+v420_version() { # the version, the changelog, the commands and the config example in step with the code
+  eq "v420 version: plugin.json and the marketplace read 4.2.0, and the README has its What changed section" \
+    "$(jq -r .version "$SCRIPTS/../../../.claude-plugin/plugin.json"):$(jq -r '.plugins[] | select(.name == "developer") | .version' "$SCRIPTS/../../../../../.claude-plugin/marketplace.json"):$(grep -c '^## What changed in 4.2.0' "$SCRIPTS/../README.md")" "4.2.0:4.2.0:1"
+  eq "v420 help: fleet help run names the subcommands" "$("$SCRIPTS/fleet" help run | grep -o 'run.sh \(init\|start\|stop\|status\|show\)' | sort -u | wc -l | tr -d ' ')" 5
+  eq "v420 help: and the new commands are listed" "$("$SCRIPTS/fleet" help | grep -c '^| `\(run\|decide\|defer\|overlap\)` ')" 4
+  eq "v420 config: every key of [run] that init writes is in config.example.toml" \
+    "$(bash -c '. "$1/common.sh"; table_pairs "$2" "[run]" 1 | cut -f1 | sort | tr "\n" " "' _ "$SCRIPTS" "$SCRIPTS/../config.example.toml")" "fill install_policy merge_push_mins order report_at status_mins stop teams usage_margin work "
+}
+
 v420_smoke() { # the critical cases, CI (V420_ONLY="name name" runs just those, to debug one)
   local f
-  for f in v420_redact_gate v420_run_init v420_run_collide v420_verify v420_claims v420_comments v420_heartbeat_name v420_overlap v420_usage v420_status_changes v420_failure_push v420_quiet v420_fix v420_report v420_run_start v420_decide; do
+  for f in v420_version v420_redact_gate v420_run_init v420_run_collide v420_verify v420_claims v420_comments v420_heartbeat_name v420_overlap v420_usage v420_status_changes v420_failure_push v420_quiet v420_fix v420_report v420_run_start v420_decide; do
     case " ${V420_ONLY:-$f} " in *" $f "*) "$f" ;; esac
   done
 }

@@ -973,7 +973,9 @@ Fixes from the first day of 4.1 (DEV-512), one per item:
 | `scripts/tick.sh`, `tell.sh`, `next.sh` | loop tick, checked delivery (briefs as files), moving a team to its next issue |
 | `scripts/queue.sh` | the merge queue: which ready PRs to merge, in which order, and why |
 | `scripts/sandbox.sh` | reproductions away from the live fleet |
-| `scripts/redact-check.sh` | the redact check the house rules require: private terms counted, never printed |
+| `scripts/redact-check.sh` | the redact check the house rules require: private terms counted, never printed; it gates public repos only |
+| `scripts/run.sh` | `fleet run`: `init` saves the `[run]` profile, `start` begins the self-driving loop with no questions, `stop`, `status`, `show` |
+| `scripts/decide.sh`, `defer.sh`, `overlap.sh` | an escalation decided on the owner's behalf (what is the human's parked), a PR's deferred items filed as linked issues, the plan-time overlap check |
 | `scripts/slim.sh`, `styles/slim.toml` | the slim panel style for herdr, between markers in herdr's config |
 | `rules/house.md` | the house rules every brief ends with (a repo's `.claude/fleet-rules.md` follows them); with `installs = "allow"` in config.toml, the install rule says agents install what the work needs themselves and list each install |
 | `scripts/retire.sh` | safe teardown: archives reports to `reports/fleet-archive/`, removes worktrees, removes the team's test cluster |
@@ -1003,6 +1005,52 @@ Fixes found after 4.1.1 (DEV-530), one per item:
    filed and a requested split is done. `retire --summary` stays as a read-only view.
 5. **A fresh claim is fresh.** `claim` and `takeover` refresh the machine label's heartbeat in the same call, and tick
    refreshes it first of all, before herdr is checked and with or without claimed rows.
+
+## What changed in 4.2.0
+
+`fleet run`: set the loop up once, then it runs itself. One PR, the items of DEV-622 and its comments:
+
+1. **`fleet run init`** asks once, one question at a time, each with a recommended answer, and saves a `[run]` profile in
+   `config.toml` (teams, which work, order, slot filling, installs, usage margin, the merge-push and status intervals, the
+   morning report time, when to stop). It also sets `max_teams` to match, says how many teams can really run (one per repo per
+   machine), and writes `installs = "allow"` when installs are standing. A re-run shows the saved answers as the defaults;
+   without a terminal it refuses and lists the questions. The top-level config readers never read inside a table, so a key in
+   `[run]` cannot be taken for a top-level one.
+2. **`fleet run start`** reads the profile and asks nothing: it registers the Orchestrator, sets `target_teams`, installs the
+   launchd loop if it is missing, and prints the rules to follow. After a context compaction or in a fresh session
+   `fleet run show` gives them back: they come from the profile, not from memory. `stop` and `status` are small.
+3. **Escalations are decided** (`fleet decide`): the recommended option is taken, the lead told, the escalation resolved, the
+   decision noted for the morning report and commented on the issue. A P0 and what is the human's (merging, production,
+   infrastructure applies, secrets, branch protection) are parked instead: one push, listed in the morning report, never approved.
+4. **Notify on failure, and when what is ready to merge changes.** A failed agent pushes at once, once. The set of PRs ready to merge
+   changing sends one batched push in merge order (`2 ready: merge #A, then #B`), at most every `merge_push_mins`, from the same
+   wake as the status table (`status_changed`, at most every `status_mins`, nothing when nothing changed). A quiet hour prints nothing.
+5. **The only wait is a PR waiting to merge.** Every other wait is removed or decided.
+6. **The morning report** at the profile's `report_at` is written by tick once a day: Merged, Ready to merge, Decisions taken,
+   Needs your eyes (deferred items as linked issues, every Verify item with what to check, what was parked for you), Failures,
+   Proposed lessons, What is next.
+7. **Efficient ticks**: tick prints nothing unless something changed, and the Orchestrator's output rules say what it never reports.
+8. **Usage guard**: agents stopped by the plan's usage limit start a backoff (15 minutes, doubling to 4 hours): no boot, no
+   `slot_free`, running teams carry on, reported once (`usage_limit`). The `usage_margin` answer is kept for when a usage
+   reading exists. UNVERIFIED: the wording of a real limit screen.
+9. **Overlap check at plan time** (`fleet overlap`): the planner lists the files of the change under `Files:`; when the
+   planner is done, tick compares them with the open PRs and live teams of the same repo, on every machine, and tells the lead:
+   `none` (build now), `wait #N`, or `merge-after #N` (build now, `Merge after #N` in the PR body). Paths count only inside one repo.
+10. **Claims don't race**: the claim time rides on the machine label; with two labels on one issue the earlier claim wins, then
+    the lowest machine key, and the loser stands down (exit 4) before any agent starts. Linear has no compare-and-set; UNVERIFIED
+    against the real API.
+11. **New comments reach the lead**: tick forwards a new comment on a live team's issue to its lead once, as quoted data, and the
+    lead re-reads the issue before sign-off.
+12. **Deferred items become issues** (`fleet defer`): what a PR leaves for the owner is filed as a linked issue, noted, and listed.
+13. **No internal chatter**: SKILL.md's output rules list what the Orchestrator never reports.
+
+From the comments: **the redact check gates only public repos** (`private_repos`/`public_repos` in config, else `gh repo view`;
+unreadable counts as public); **Verify only for a real hands-on check** (`retire --verify` counts only with an UNVERIFIED step;
+every other issue goes to Done; a Verify item over 7 days is asked about once and then closed with a comment); **fixes override the
+slot limits** (a fix on an open PR goes over `max_teams` and `teams_per_repo`, is counted apart, and a new issue still respects them);
+**a refused label description no longer fails the heartbeat or a claim**, and **the Machine column shows the machine's name**.
+
+`overnight` is the older switch: `fleet run` supersedes it, and it keeps working.
 
 ## What changed in 4.1.4
 
