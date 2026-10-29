@@ -1,22 +1,55 @@
 # Fleet Skill
 
-Run a fleet of coding agents from one Orchestrator. You say what you want; the Orchestrator
-boots a team into [herdr](https://herdr.dev), keeps every agent visible, notices when one
-stalls or dies, and turns each finished team into lessons for the next one.
+Run a fleet of coding agents from one Orchestrator. You say what you want; the Orchestrator boots a team into
+[herdr](https://herdr.dev), keeps every agent visible, notices when one stalls or dies, and turns each finished team into
+lessons for the next one. A team ends in a pull request that a tester has checked at an exact commit, and you merge it.
 
-## Why
+This README is a guide first and a reference second. Read it top to bottom once: concepts, two walkthroughs, what you gain
+and what it costs, other tools, and what to do when something goes wrong. The tables of every command, script and config
+key start at [Reference](#reference).
+
+- [What it is for](#what-it-is-for)
+- [Concepts](#concepts)
+- [Walkthrough 1: one machine, one repo, one task](#walkthrough-1-one-machine-one-repo-one-task)
+- [Walkthrough 2: two repos, two machines, overnight](#walkthrough-2-two-repos-two-machines-overnight)
+- [Benefits and tradeoffs](#benefits-and-tradeoffs)
+- [Using other tools](#using-other-tools)
+- [Troubleshooting](#troubleshooting)
+- [Reference](#reference)
+
+> **About the output in this guide.** Names, ids and URLs are examples (`acme/app-api`, `PROJ-12`, machine key
+> `3f9a2c1e`). Each reply has the fixed shape listed in [`references/output.md`](references/output.md), which the test
+> suite pins byte for byte. Where a reply could be produced in a `fleet sandbox` (a temporary fleet with herdr, `gh` and
+> `curl` shimmed), it is that output; the sandbox cannot run real agents, so the replies of a team that is working, ready
+> or merged follow the same shapes with example values.
+
+## What it is for
 
 Three problems appear once you run more than a couple of agents:
 
 1. **No programmatic access:** you become the bottleneck, typing into each agent in turn.
-2. **You can't improve what you can't see:** sub-agents are black boxes, so you never learn
-   which agent, model or prompt actually worked.
+2. **You can't improve what you can't see:** sub-agents are black boxes, so you never learn which agent, model or prompt
+   actually worked.
 3. **Booting a team by hand is slow:** the hundredth launch costs as much as the first.
 
-herdr solves the first: it runs agents in real terminals and exposes them through a CLI.
-This skill builds the rest on top of it.
+herdr solves the first: it runs agents in real terminals and exposes them through a CLI. This skill builds the rest on
+top of it.
 
-## Shape
+**It is for you** if you run several agents in parallel on one or more repos and your work goes through a tracker and
+pull requests. **It is not for you** if you run one-off tasks in a single session, or your work doesn't go through PRs:
+a plain Claude Code session is lighter and enough.
+
+| herdr (built in) | /fleet (added) |
+|---|---|
+| workspaces, panes, 20+ agent CLIs | tiers: Orchestrator → lead → workers |
+| `idle / working / blocked / done` | health: **Stalled** and **Zombie**, from the done contract and process checks |
+| `prompt --wait`, `wait --until`, reads, keys | team templates: build, review, research |
+| persistence, restore, multi-machine | a registry: identity, assignment, outcome, lessons |
+| its own agent skill (`herdr --skill`) | escalation P0–P2, team caps (`max_teams`, `teams_per_repo`), context-recovery and scope-guard hooks, debriefs into expertise files |
+
+## Concepts
+
+Everything the walkthroughs use is explained here first, one short paragraph each.
 
 ```
                   ┌──────────────────────┐
@@ -33,27 +66,451 @@ This skill builds the rest on top of it.
                                                              agent CLI; writers get a worktree
 ```
 
-## What herdr gives you, and what this adds
+**Orchestrator.** The Claude Code session you talk to, running inside a herdr pane (start it with
+`claude --agent developer:orchestrator`, or `/fleet` in any Claude Code session there). It boots, watches, steers and
+retires teams, and it never edits code: its edit tools are removed. It is the only agent that claims issues or labels them
+(agents may read the tracker through `tracker_allow`), and it relays every reply in one fixed shape.
 
-| herdr (built in) | /fleet (added) |
-|---|---|
-| workspaces, panes, 20+ agent CLIs | tiers: Orchestrator → lead → workers |
-| `idle / working / blocked / done` | health: **Stalled** and **Zombie**, from the done contract and process checks |
-| `prompt --wait`, `wait --until`, reads, keys | team templates: build, review, research |
-| persistence, restore, multi-machine | a registry: identity, assignment, outcome, lessons |
-| its own agent skill (`herdr --skill`) | escalation P0–P2, a `max_agents` cap, context-recovery and scope-guard hooks, debriefs into expertise files |
+**Team.** One herdr workspace named `<template>-<focus>` (`build-export`). The `build` template has a **lead** (Opus, no
+Write/Edit tools: it coordinates and is the only agent that escalates), a **planner** (writes a plan to
+`<repo>/.fleet/plan/<team>.md` and nothing else), a **builder** (implements the plan on its own worktree and branch,
+pushes, opens the PR) and a **tester** (checks out the builder's exact pushed commit, reviews the diff, and signs off).
+`review` and `research` are smaller teams of read-only reviewers or a researcher. Each writer gets its own `git worktree`,
+so agents never edit the same checkout.
 
-## Flow
+**Registry.** One row per agent (identity, role, assignment, status, worktree, PR, outcome, lessons) in the fleet's state
+directory (`~/.local/state/fleet` by default). It is the fleet's memory: after a crash or a context compaction, `fleet
+prime` rebuilds the Orchestrator's picture from it.
+
+**The done contract.** Every agent ends its work by running `registry.sh done <name> --outcome <Shipped|Partial|Failed>
+--summary "<one line>"`. An agent that goes idle without having done so is **Stalled**; one whose process is gone is a
+**Zombie**. That is how the fleet tells "finished" from "stuck" when herdr only says `idle`.
+
+**Sign-off at a commit.** The tester records `registry.sh signoff <name> <PR> <sha>`. A PR is **ready** only when that SHA
+is the PR's current head, CI is green on it, the PR is mergeable, not a draft and not on hold. Push another commit and the
+sign-off no longer matches until the tester re-verifies. Nothing is ready on the builder's say-so.
+
+**Claims.** With Linear, each machine claims an issue with its own label (`fleet:<8 hex characters of the machine id>`)
+and keeps a heartbeat in the label's description, so two machines never work one issue. A claim whose heartbeat is older
+than `lease_hours` and whose issue has no open PR can be taken over. Without Linear there are no claims: run one machine.
+
+**Parking.** `fleet park <team>` closes a team's panes and frees its slot, and keeps everything else: rows, worktrees,
+branches, plans, reports and the claim. With the tick loop running, a team that has signed off is parked automatically while its PR waits for you; without it,
+the team stays Done and keeps its slot until you retire or park it.
+`fleet unpark` starts it again.
+
+**Escalations.** An agent that needs a decision tells its lead; the lead files an escalation, P0 to P2. The Orchestrator
+answers P2 itself, brings P1 to you with a recommendation (options A and B, recommended first), and stops for P0. An
+escalation stays open until the answer has reached the agent (`fleet resolve`), or the team is retired.
+
+**The merge queue.** `fleet status` lists every ready PR in the order to merge them: dependencies first, then the ones
+that cause the fewest rebases, then the oldest, with a reason for each position. A PR that is not ready is listed with what
+it still misses. You merge; the fleet never does.
+
+**The tick loop.** `tick.sh` looks at the registry, herdr and the PRs and reports what changed (a PR ready or merged, a
+dead or stalled agent, an escalation, a conflict, low disk). Run on a schedule (`fleet schedule install`, launchd), it uses
+no model and appends one line per event to `wakes.log`, which the Orchestrator follows. Without the schedule nothing wakes
+the Orchestrator: you ask `/fleet status`.
+
+## Walkthrough 1: one machine, one repo, one task
+
+The smallest useful run: no tracker, no claims, no schedule. You start from a clean machine that has herdr and Claude Code.
+
+### 1. Install the plugin
+
+In Claude Code, add this marketplace and install the `developer` plugin, exactly as the repo README's Installation section
+shows (`/plugin marketplace add …`, then `/plugin install developer@cc-marketplace`).
+
+Also have `git`, `jq` and your code host's CLI (`gh`, signed in) on your `PATH`. Restart Claude Code or run
+`/reload-plugins` if it was open.
+
+### 2. Start herdr and the Orchestrator
+
+Start herdr from your own terminal. The herdr server must be started there, not by an agent, so it outlives any one
+session. Open a pane in herdr and, once, install herdr's Claude integration there:
 
 ```
-/fleet boot review auth ~/code/api "review the auth refactor on this branch"
-   └─► workspace review-auth: lead + security + correctness reviewers, briefs sent
-/fleet status              → table of agents with Working / Idle / Stalled / Zombie / Done
-/fleet tell review-auth "focus on token expiry"
-/fleet retire review-auth  → push WIP, close the workspace, archive reports and remove worktrees, delete the test cluster and its images
-/fleet prime               → after a compaction: rebuild the picture of the fleet from the registry
-/fleet debrief             → lessons per agent, proposed diffs to .claude/experts/<role>.md
+herdr integration install claude
 ```
+
+Agent state (working, idle, a brief delivered) is read from the integration's hooks, never from the screen, so the fleet
+needs it current; boot and `status` warn when it is not. Then start the Orchestrator in that pane:
+
+```
+claude --agent developer:orchestrator
+```
+
+The first run prompts you twice:
+
+- **Claude Code's folder trust**, for the folder you started it in. Answer it as you would for any project. The agents of
+  a team are different: boot answers that dialog itself, only for the repo and its fleet worktrees.
+- **The slim panel offer.** Before your first boot the Orchestrator asks once, in plain text: *"Turn on slim, the fleet's
+  panel style for herdr, and install herdr's Claude integration? It replaces your own [ui] lines in herdr's config and
+  keeps a backup. (yes/no)"*. Slim makes herdr's sidebar show each agent as `◐ build-export · builder · working` and each
+  team's issue, PR and state. Either answer is recorded and never asked again; `fleet slim on|off|status` changes it later.
+
+### 3. Boot a team
+
+```
+/fleet boot build export ~/code/api "add CSV invoice export"
+```
+
+`build` is the template, `export` the focus (the team becomes `build-export`), `~/code/api` the repo, and the rest is the
+task. Boot creates the workspace, a worktree for the builder and for the tester (branches `fleet/build-export/builder`
+and `fleet/build-export/tester`), starts the four agents, sends each its brief (with the done contract and the house rules
+in `rules/house.md` appended) and writes the registry rows. It prints one line and the team table:
+
+```
+Booted build-export in api: lead ✓ planner ✓ builder ✓ tester ✓
+
+1 team · 1 working
+
+| Team | Machine | Issue | PR | State | Needs you |
+|---|---|---|---|---|---|
+| build-export | 3f9a2c1e | - | - | Working | - |
+```
+
+Each `✓` is an agent that started and got its brief; a `✗ (why)` says what failed. **Next:** anything not `Working` needs
+you now, see [Troubleshooting](#troubleshooting). Otherwise leave it alone.
+
+### 4. Watch it
+
+```
+/fleet status
+```
+
+`status` recomputes every agent's health, writes it back and prints the team table. For one team's agents:
+
+```
+/fleet status build-export
+```
+
+```
+| Agent | Role | State | Model | Last action |
+|---|---|---|---|---|
+| build-export/lead | lead | Working | opus | updated 30m ago |
+| build-export/planner | planner | Done | sonnet | done 25m ago |
+| build-export/builder | builder | Working | sonnet | brief_delivered 10m ago |
+| build-export/tester | tester | Idle | sonnet | updated 15m ago |
+```
+
+A normal team's life: the planner reads the repo and writes the plan, and is done. The builder implements it, pushes
+`fleet/<slug>` and opens the PR. The tester takes the pushed commit, reviews the diff while CI runs, runs only what CI
+cannot, and signs off at that commit. The lead checks that the signed SHA is the PR head and that CI is green, and runs its
+done step. If an agent needs a decision it escalates through the lead, and you see it in the table:
+
+```
+| build-export | 3f9a2c1e | - | - | Working | **P1**: which database? |
+
+Waiting on you: build-export/lead **P1**: which database?
+```
+
+The Orchestrator brings it to you in plain text:
+
+```
+**P1** build-export/lead: which database?
+A) postgres (recommended) · B) sqlite
+Reply A or B.
+```
+
+Reply, and it relays your answer to the lead. To say something to a team yourself, at any time:
+
+```
+/fleet tell build-export "focus on token expiry"
+```
+
+```
+Told build-export/lead: "focus on token expiry" (delivered)
+```
+
+`(queued)` means the agent was in the middle of a turn and will read it when the turn ends.
+
+### 5. Merge
+
+When the team has signed off, `status` shows the PR in the queue:
+
+```
+1 team · 1 done
+
+| Team | Machine | Issue | PR | State | Needs you |
+|---|---|---|---|---|---|
+| build-export | 3f9a2c1e | - | https://github.com/acme/app-api/pull/12 | Done | merge the PR |
+
+Merge in this order:
+
+| # | PR | Issue | Machine | Why this order | After merge |
+|---|---|---|---|---|---|
+| 1 | https://github.com/acme/app-api/pull/12 | - | 3f9a2c1e | oldest first | — |
+```
+
+A PR that is not ready is listed under it: `Not ready: https://github.com/acme/app-api/pull/12 ✗ no sign-off` (the other
+reasons are `signed <sha7> ≠ head`, `CI pending`, `CI red`, `no CI checks`, `conflicting`, `draft`, `held`). With the
+scheduled loop a ready PR also wakes the Orchestrator with `✓ Ready to merge: <PR> … Tester signed abc1234 = head, CI
+green, mergeable.`
+
+Review the PR and **merge it yourself**, on your code host. The fleet never merges: agents are denied `gh pr merge`.
+With no schedule, nothing parks the team (that is the tick's job), so it stays Done and keeps its slot until you retire it.
+
+### 6. Retire
+
+```
+/fleet retire build-export --outcome Shipped
+```
+
+```
+Retired build-export (Shipped): PRs https://github.com/acme/app-api/pull/12. Nothing archived.
+```
+
+Retire asks live agents to push work in progress, closes only the fleet's own panes, removes clean worktrees (a worktree
+with unpushed commits or uncommitted edits is kept and named, with a warning), archives the agents' reports into the repo
+under `reports/fleet-archive/` (kept out of git), and closes open escalations. `Issue → …` appears only when there is an
+issue and Linear writes are on; with no issue the line stops after the archive path. If you merged first and the loop is
+running, the Orchestrator retires the team itself on the merge. Optionally run `/fleet debrief`: it records one or two
+lessons per agent and *proposes* (never applies) changes to `.claude/experts/<role>.md` and the template.
+
+## Walkthrough 2: two repos, two machines, overnight
+
+Each addition below is one thing; none needs the others.
+
+### A second repo
+
+Add the repo to `~/.config/fleet/config.toml`, and raise the cap so both can have a team:
+
+```toml
+max_teams = 4
+repos = ["/Users/you/code/api", "/Users/you/code/web"]
+```
+
+`max_teams` (default 3) caps live teams, `teams_per_repo` (default 1) caps them per repo, and a Parked team counts against
+neither. With `repos` set, only teams on a listed repo take a slot, and the loop reports `repo_without_team` for a listed
+repo with no team. A PR in one repo that another repo's PR depends on is ordered by the queue (`app-web #5 uses its
+contract` puts the contract first):
+
+```
+Merge in this order:
+
+| # | PR | Issue | Machine | Why this order | After merge |
+|---|---|---|---|---|---|
+| 1 | https://github.com/acme/app-api/pull/12 | PROJ-12 | 3f9a2c1e | app-web #5 uses its contract | — |
+| 2 | https://github.com/acme/app-web/pull/5 | PROJ-5 | 3f9a2c1e | needs app-api #12 | — |
+```
+
+### Linear: issues and claims
+
+Put a Linear API key in `~/.config/fleet/linear_api_key` (mode 600) on the Orchestrator's machine only; boot gives it to
+no agent. Allow the Orchestrator's own Claude Code settings to use Linear's label, issue and comment write tools (they go
+in its settings, not in `tracker_allow`, which every agent gets). Then let the fleet write:
+
+```toml
+linear_writes = "on"      # off (default) | "test:<TEAM>" | on
+tracker_allow = ["mcp__claude_ai_Linear__get_issue", "mcp__claude_ai_Linear__list_comments"]
+forge_allow = ["Bash(gh pr view:*)", "Bash(gh pr checks:*)", "Bash(gh pr create:*)"]
+```
+
+`linear_writes` is off until you turn it on: while off, nothing is claimed, no heartbeat is written and no issue moves.
+Now boot on an issue ("boot a build team on PROJ-12 in ~/code/api"): the Orchestrator claims it first, then boots with the
+issue, its URL and its title. The PR body starts with `Fixes <the issue URL>`, the Issue cell reads `PROJ-12 <title>` with
+the key linked, and retire moves the issue: Shipped → Done once the PR merged (Verify with `--verify`), Abandoned or Failed
+→ Todo with the claim released.
+
+```
+Claimed PROJ-12 for fleet:3f9a2c1e.
+```
+
+`fleet holder PROJ-12` says who holds an issue. With no issue named, the Orchestrator picks one itself: Todo, then Backlog,
+then unclaimed or lapsed In Progress, skipping a live claim and any issue whose blockers are not Done, by priority then
+series order, and notes why on the lead's row.
+
+### A second machine
+
+Install the plugin there and give it the same `config.toml` keys, its own `machine_name`, and its own Linear key. Each
+machine is told apart by the first 8 hex characters of its machine id (it is the Machine column of `status`).
+`status` on either machine then prints one table of every machine's teams and one merge queue, from the compact
+`summary=` line each machine keeps in its label description beside its heartbeat. A machine whose plugin is older shows as
+`claim only`; with no Linear key, one line says the others are unknown. A claim is the machine's label; a machine whose
+loop stops (asleep, off) stops heartbeating, and that is the moment a takeover is allowed.
+
+What can go wrong between machines:
+
+- **A takeover.** A heartbeat older than `lease_hours` (default 2) with no open PR lets another machine take the issue
+  (`fleet takeover PROJ-12`: `Took over PROJ-12 from fleet:other.`). The machine that lost it stops and tells you (the
+  `claim_takeover` wake); it never fights back. If your own Mac slept past the lease and another released your claim, you
+  hear `claim_lost`: `fleet holder PROJ-12`, and claim again if nobody holds it.
+- **A race.** Linear has no compare-and-swap, so two machines claiming at the same instant can both think they won. Both
+  re-read, and one yields; this narrows the race, it does not remove it.
+- **Overlapping work.** A new claim whose declared file scope overlaps a live one warns at boot. Two PRs that touch the same
+  files merge in the order the queue gives, and the first one's merge may leave the second conflicting (below).
+- **A cloned machine.** A cloned VM or disk image copies the machine id, so two machines share one key. Set
+  `FLEET_MACHINE=<unique>` on the clone.
+
+### The schedule, and keeping the Mac awake
+
+```
+/fleet schedule install
+```
+
+```
+Fleet loop: loaded. Last good tick 2026-10-24T08:57:00Z (3 min ago). healthy.
+```
+
+It writes a launcher and a launchd job that runs `tick.sh` every `tick_secs` (default 300), with no model. `fleet
+schedule status` says whether the loop is healthy. launchd runs nothing while the Mac sleeps, so keep it awake while a
+fleet runs: `caffeinate -i` in a herdr pane, `sudo pmset -c sleep 0` on the charger, or "Prevent automatic sleeping on
+power adapter when the display is off" in System Settings. A gap caused by sleep is reported as `the Mac slept …, not a
+broken loop`. The Orchestrator registers once per session to follow `wakes.log` (`status` says when none is registered).
+Set `alert_cmd` to a script that sends you a message (iMessage, ntfy, Pushover) and the loop alerts you, at most once per
+cause per four hours, for a P0 or P1, an expired login, no reply from the Orchestrator, low disk and a stopped loop.
+
+With the loop on, the Orchestrator handles events itself: it sends one notification when a PR is ready, retires a team the
+moment its PRs have merged, picks the next issue, and keeps `target_teams` running if you set that.
+
+### Overnight mode
+
+```toml
+overnight = true
+```
+
+Leads then decide inside the issue's scope on their own recommendation and note each decision; installs, cloud,
+production, branch protection, `gh pr ready` and closing stay P1 for you; branches catch up with merge commits instead of
+rebases; an agent blocked on a permission prompt for two ticks gets a P1. At the first tick after 07:00 local time the
+Orchestrator writes `reports/fleet-morning-<date>.md` and relays it:
+
+```
+# Morning report 2026-10-24
+
+## Ready to merge
+
+Merge in this order: none ready.
+
+Not ready: https://github.com/acme/app-api/pull/85 ✗ conflicting
+
+## Decisions taken
+
+- mo1/lead: chose postgres over sqlite
+
+## UNVERIFIED
+
+- mo1/builder: UNVERIFIED: the cluster smoke run
+
+## Takeovers
+
+- PROJ-83: taken over by fleet:other
+```
+
+Read it with your coffee: merge what is ready in the order given, check each UNVERIFIED line (something the team could not
+prove with the tools it had), and review the decisions taken, since those are choices you did not make.
+
+### When a merge conflicts the next PR
+
+Merging one PR can make another conflict. The queue's After merge column warns ahead (`rebase after #10`, `renumber
+migration after #12`), and when a ready PR conflicts, its team is brought back (`catchup`): builder and tester in their
+worktrees, the lead briefed to merge `origin/main` into the branch with a plain merge commit, and the tester signs off
+again. Two rounds at most per PR, then a P1 escalation.
+
+## Benefits and tradeoffs
+
+**Benefits**
+
+- **Parallel work with a human only at the merge.** Several teams run at once across repos and machines; you read PRs, not
+  terminals, and answer the few real decisions.
+- **A tester proves each PR at an exact commit.** The sign-off names a SHA; a later push invalidates it, and ready means
+  signed, green CI and mergeable on that head.
+- **Nothing reaches main unreviewed.** Agents are denied merging and pushing to the default branch, a tester reviews every
+  head, and every PR waits for you.
+- **Escalations instead of silent guesses.** A decision that is yours reaches you with options and a recommendation, and it
+  stays open until answered.
+- **Resumable.** The registry, the worktrees and the briefs survive a crash, a reboot or a compaction: `fleet prime`
+  rebuilds the picture, `respawn` restarts a dead agent, `unpark` and `revive` bring a team back.
+- **You can see and learn from it.** Every agent is a real pane, health is more than `idle`, and `fleet metrics` and
+  debriefs turn finished work into numbers and lessons.
+
+**Tradeoffs**
+
+- **herdr is required, and new to most people.** There is no mode without it, and its Claude integration must be installed
+  and current.
+- **The Orchestrator and the leads are Claude Code only.** Workers can be another CLI herdr supports; the control tier
+  cannot.
+- **Usage grows with teams.** A build team is four agents with a lead on Opus, each reading the repo; usage grows roughly in step with the
+  number of teams. Cap it with `max_teams` and `teams_per_repo`, park a team you are not waiting on (`fleet park`,
+  `fleet focus`), use the lighter `review` and `research` templates where they fit, and read `fleet metrics` for tokens per
+  PR. The loop itself uses no model.
+- **One team per repo per machine** by default, because two writers racing on one repo is where conflicts come from. Raise
+  `teams_per_repo` knowingly.
+- **Parallel PRs conflict.** The queue orders merges and `catchup` repairs conflicts, but the first merge can still cost the
+  next PR a rebase and a re-verification.
+- **A learning curve of about a dozen concepts** (this guide's first section). The simple example needs only a few.
+- **Several machines need Linear.** Claims, leases and the shared status are built on Linear's labels; with another tracker
+  you run one machine.
+- **The scheduled loop is macOS only** (launchd), and the Mac must stay awake. On Linux you run `loop-tick.sh` from your own
+  systemd user timer.
+- **The guards catch mistakes, not attackers.** Agents run as your user, so a determined or prompt-injected agent could still
+  reach a mode-600 key file; see [Guard residuals](#guard-residuals-41).
+
+## Using other tools
+
+**Jira, GitLab or another tracker or host (one machine).** Templates name no tracker or code host, so you change two lists in
+`~/.config/fleet/config.toml`, the permissions added to every Claude agent at boot:
+
+```toml
+tracker_allow = ["mcp__atlassian__getJiraIssue"]   # or "Bash(jira issue view:*)"
+forge_allow = ["Bash(glab mr view:*)", "Bash(glab ci status:*)", "Bash(glab mr create:*)"]
+```
+
+Claims, leases, takeover and the shared status need Linear: leave their keys unset and run one machine. Without these lists
+agents still work; they just ask before each tracker or host call. A repo that has no CI can be listed in `no_pr_ci`.
+
+**Codex or another agent CLI as a worker.** A role in a template names its CLI as `kind`. Copy `templates/build.json`
+somewhere of your own, change a worker's `"kind"` to the CLI's name as herdr knows it (for example `"codex"`), and boot with
+the path: `/fleet boot ./my-build.json export ~/code/api "…"`. The Orchestrator and leads stay Claude Code. If the CLI is
+not installed, the role runs on Claude Code instead. The fleet's hooks, guards and `allow` lists are Claude Code's, so a
+worker on another CLI is not held by them.
+
+**No tracker at all.** The task text is the whole assignment: `/fleet boot build export ~/code/api "add CSV invoice
+export"`, as in walkthrough 1. There is no Issue cell, no claim and no state move.
+
+## Troubleshooting
+
+Start with `/fleet status --problems`: it lists only what needs someone, and the Needs you column says what.
+
+**1. A team stalls.** *Stalled* is an agent idle without having run its done step; *Zombie* is a gone process. For a stall,
+send the lead `/fleet tell <team> "what is missing? run your done step"`. Tick nudges a stalled agent once. For a Zombie,
+the loop respawns it once per window, then escalates P1; by hand, `fleet respawn
+<team>/<role>`. If the team is hopeless, `fleet retire <team> --outcome Abandoned` keeps any unpushed work and names it.
+
+**2. A message doesn't arrive.** `fleet tell` checks delivery and says so; do not treat an undelivered message as sent:
+
+```
+tell: not delivered to build-export/lead: no transcript line and no state change after 15s and one enter. Look at its pane, then send it again.
+```
+
+Exit 1 means not delivered, exit 2 the pane or agent is gone (`fleet respawn`). `(queued)` is fine. The usual causes are a
+dialog open in the pane (read it with `herdr agent read <agent> --source visible`) and herdr's Claude integration not being
+current; `fleet status` prints `herdr Claude integration: not current (run herdr integration install claude)`, and a boot
+without it can end with `✗ (brief not delivered)` on every agent. Run the install, then `fleet tell <agent> - --brief-file
+<path>` or boot again.
+
+**3. A PR conflicts after another merges.** The queue's `After merge` column predicted it (`rebase after #N`), and the loop
+brings the team back to merge main into its PR (`pr_conflicting`; automatic, two rounds at most). To do it yourself:
+`fleet catchup <team> <pr-url>`. If the notice says the unpark was refused, a cap is full: free a slot with `fleet park`.
+After a second failed round it becomes a P1: decide whether to resolve it by hand or retire the team and boot again.
+
+**4. A permission prompt blocks an agent.** *Needs input* with `answer its prompt` in Needs you. The Orchestrator answers
+only what its policy allows (folder trust for the repo and fleet worktrees, edits inside the worker's own worktree,
+read-only git) and quotes the rest to you; after two ticks of the same block it files a P1. Stop it recurring: add the rule
+to `tracker_allow` or `forge_allow`, or to the repo's `.claude/settings.json`; `permission_mode` (default `auto`) sets the
+mode every agent starts in. `bypassPermissions` is refused.
+
+**5. The disk floor.** Boot refuses below `min_free_gb` (default 40) and says so. Worktrees carry
+`node_modules` and build output, and team clusters build images. Retire finished teams (`fleet retire`, which removes clean
+worktrees and a team's cluster), let the loop prune (`prune_cap_gb`), and empty Docker Desktop's own cache. `FLEET_FORCE=1`
+overrides the floor and the team cap for one boot; the Orchestrator asks you first, and it never overrides another
+machine's claim.
+
+Anything else: `fleet help <command>` prints one command's usage, and a reproduction runs only in `fleet sandbox`.
+
+## Reference
+
+Everything below is reference: look things up here. `fleet help` prints the Commands table from the scripts' own headers.
 
 ## Commands
 
@@ -119,7 +576,7 @@ The Orchestrator and agents call these directly (from `scripts/`). You can call 
 
 | Script | Commands |
 |---|---|
-| `boot.sh` | `boot.sh [--issue ID --issue-url URL --issue-title TEXT --claimed-by KEY --labels a,b --scope 'repo: paths'] <template> <focus> <dir> [task…]` boots a team (`FLEET_FORCE=1` goes over the `max_agents` cap and the `min_free_gb` disk floor, never over another machine's claim). A takeover is done with `linear.sh takeover` before boot. It writes every row (Idle) before any agent starts; a boot that fails or is interrupted closes its workspace, removes the worktrees and branches it made and retires its rows (Abandoned), and a name with leftovers of an earlier boot is refused until `retire.sh <team>` tidies them |
+| `boot.sh` | `boot.sh [--issue ID --issue-url URL --issue-title TEXT --claimed-by KEY --labels a,b --scope 'repo: paths'] <template> <focus> <dir> [task…]` boots a team (`FLEET_FORCE=1` goes over the team caps (`max_teams`, `teams_per_repo`) and the `min_free_gb` disk floor, never over another machine's claim). A takeover is done with `linear.sh takeover` before boot. It writes every row (Idle) before any agent starts; a boot that fails or is interrupted closes its workspace, removes the worktrees and branches it made and retires its rows (Abandoned), and a name with leftovers of an earlier boot is refused until `retire.sh <team>` tidies them |
 | `claim.sh` | `lease` prints now + `lease_hours` · `hb` reads the `heartbeat=` line of a label description (stdin) · `expired --lease ISO` says whether a lease has lapsed (the open-PR check is `linear.sh takeover`'s). Pure: it never calls a tracker |
 | `redact-check.sh` | `redact-check.sh --range <base>..<head>` counts the private terms in the lines a branch adds and its commit messages; prints counts only, never a term; exit 0 clean, 1 a match, 2 cannot run (no terms file, no terms, bad range). The terms live in `$FLEET_STATE_DIR/private/redact_terms.txt` (default `~/.local/state/fleet/private/redact_terms.txt`), outside every repo: one per line, blank lines and `#` lines ignored, mode 600 (it warns when the file is group- or world-readable). Every agent may run it: the house rules require it before sign-off and every push |
 | `slim.sh` | `slim.sh on\|off\|status` the slim panel style for herdr (`styles/slim.toml`), written between markers in herdr's config (replacing a hand-written `[ui]` style there), with a backup, the Claude integration and a reload; the choice is a registry pref, so the offer is made once. The Orchestrator's only |
@@ -275,7 +732,7 @@ builds and loads images. Four guards keep it from filling:
   kept only for unpushed commits, untracked source files or uncommitted edits to tracked
   files, and the output names them.
 - **`env.sh down`** removes the team's images and build cache after the repo's `down` (see below).
-- **Boot** refuses below `min_free_gb`, with the same `FLEET_FORCE=1` override as `max_agents`.
+- **Boot** refuses below `min_free_gb`, with the same `FLEET_FORCE=1` override as the team caps.
 - **Status** shows free disk; the launchd loop alerts (notify and `alert_cmd`, once per 4 hours) when disk drops below `warn_free_gb` (or `min_free_gb`).
 
 Docker Desktop's own disk limit is yours to set (Settings, Resources).
