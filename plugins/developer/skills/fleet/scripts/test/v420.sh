@@ -452,9 +452,79 @@ v420_version() { # the version, the changelog, the commands and the config examp
     "$(bash -c '. "$1/common.sh"; table_pairs "$2" "[run]" 1 | cut -f1 | sort | tr "\n" " "' _ "$SCRIPTS" "$SCRIPTS/../config.example.toml")" "fill install_policy merge_push_mins order report_at status_mins stop teams usage_margin work "
 }
 
+v420_probes() { # under fleet run a tick that finds the registry as it was probes no pane; a change or the interval does
+  v420_state probes; export DF_GB=100
+  "$REG" add '{"name":"orchestrator","team":"orchestrator","tier":"Orchestrator","status":"Working","herdr_ref":"om","pane":"pom","run_active":"true"}' >/dev/null
+  "$REG" add '{"name":"pb-a/lead","team":"pb-a","tier":"Lead","status":"Working","herdr_ref":"pb-a-lead","pane":"p1","issue":"DEV-1"}' >/dev/null; echo working >"$AS/pb-a-lead"
+  local ev n
+  probes() { grep -c '^agent list\|^agent get\|^pane process-info\|^agent read' "$HERDR_LOG"; }
+  : >"$HERDR_LOG"; v420_tick 2026-10-29T10:00:00Z >/dev/null
+  eq "v420 probes: the first tick probes the panes" "$([ "$(probes)" -gt 0 ] && echo yes)" yes
+  : >"$HERDR_LOG"; ev="$(v420_tick 2026-10-29T10:01:00Z)"
+  eq "v420 probes: a quiet tick (registry as it was) makes no herdr call and prints nothing" "$(probes):$(printf '%s' "$ev" | wc -c | tr -d ' ')" "0:0"
+  "$REG" set pb-a/lead issue=DEV-2 >/dev/null; : >"$HERDR_LOG"; v420_tick 2026-10-29T10:02:00Z >/dev/null
+  eq "v420 probes: a row that changed makes the next tick probe" "$([ "$(probes)" -gt 0 ] && echo yes)" yes
+  : >"$HERDR_LOG"; v420_tick 2026-10-29T10:03:00Z >/dev/null
+  eq "v420 probes: and the one after is quiet again" "$(probes)" 0
+  : >"$HERDR_LOG"; v420_tick 2026-10-29T10:13:00Z >/dev/null
+  eq "v420 probes: ten minutes on it probes anyway, so a stall or a death is still found" "$([ "$(probes)" -gt 0 ] && echo yes)" yes
+  unset DF_GB
+}
+
+v420_red_signoff() { # a red main and a failed sign-off each push once and stop no other team
+  v420_state redmain; export DF_GB=100
+  local R="$T/v420-rm-repo" ev
+  rm -rf "$R"; git init -q -b main "$R"; git -C "$R" remote add origin https://github.com/acme/app.git
+  printf '#!/usr/bin/env bash\ncase "$*" in *"run list"*"--repo acme/app"*) cat "$V420_RUN" ;; *) echo "[]" ;; esac\n' >"$T/v420-gh2"; chmod +x "$T/v420-gh2"
+  export FLEET_GH="$T/v420-gh2" V420_RUN="$T/v420-run.json"
+  printf '#!/usr/bin/env bash\necho "$1" >>"%s/alerts"\n' "$FLEET_STATE_DIR" >"$T/v420-alert2"; chmod +x "$T/v420-alert2"; gcfg "alert_cmd = \"$T/v420-alert2\""
+  "$REG" add '{"name":"orchestrator","team":"orchestrator","tier":"Orchestrator","status":"Working","herdr_ref":"om","pane":"pom","run_active":"true"}' >/dev/null
+  "$REG" add "$(jq -cn --arg r "$R" '{name:"rm-a/lead",team:"rm-a",tier:"Lead",status:"Working",herdr_ref:"rm-a-lead",pane:"p1",repo:$r,issue:"DEV-1"}')" >/dev/null; echo working >"$AS/rm-a-lead"
+  echo '[{"databaseId":5,"conclusion":"failure","headSha":"abcdef1234"}]' >"$V420_RUN"
+  ev="$(v420_tick 2026-10-29T10:00:00Z)"
+  eq "v420 failures: a red default branch is one main_red event" "$(v420_evn "$ev" main_red):$(printf '%s' "$ev" | jq -r '[.[] | select(.type == "main_red") | .name] | first')" "1:acme/app"
+  ev="$(v420_tick 2026-10-29T10:20:00Z)"
+  eq "v420 failures: and not again for the same run" "$(v420_evn "$ev" main_red)" 0
+  echo '[{"databaseId":6,"conclusion":"success","headSha":"abcdef1235"}]' >"$V420_RUN"; v420_tick 2026-10-29T10:40:00Z >/dev/null
+  echo '[{"databaseId":7,"conclusion":"failure","headSha":"abcdef1236"}]' >"$V420_RUN"
+  ev="$(v420_tick 2026-10-29T11:00:00Z)"
+  eq "v420 failures: after it went green a new red run is reported again" "$(v420_evn "$ev" main_red)" 1
+  # the push: one alert for the repo, however many ticks; the live team carries on
+  rm -f "$FLEET_STATE_DIR/alerts" "$FLEET_STATE_DIR/loop.state.json"; rm -f "$FLEET_STATE_DIR/tick.state.json"
+  FLEET_NOW=2026-10-29T12:00:00Z "$SCRIPTS/loop-tick.sh" >/dev/null 2>&1; FLEET_NOW=2026-10-29T12:20:00Z "$SCRIPTS/loop-tick.sh" >/dev/null 2>&1
+  eq "v420 failures: a red main is one push, and the team is untouched" "$(grep -c 'Alert: CI on the default branch of acme/app is red' "$FLEET_STATE_DIR/alerts" 2>/dev/null || echo 0):$("$REG" get rm-a/lead | jq -r .status)" "1:Working"
+  "$REG" add '{"name":"rm-b/lead","team":"rm-b","tier":"Lead","status":"Working","herdr_ref":"rm-b-lead","pane":"p2","issue":"DEV-2"}' >/dev/null; echo working >"$AS/rm-b-lead"
+  "$REG" add '{"name":"rm-b/tester","team":"rm-b","tier":"Worker","status":"Done","outcome":"Failed","summary":"FAIL: the export is wrong","done_at":"2026-10-29T12:25:00Z","herdr_ref":"rm-b-tester","pane":"p3","issue":"DEV-2"}' >/dev/null
+  rm -f "$FLEET_STATE_DIR/alerts"
+  ev="$(v420_tick 2026-10-29T12:30:00Z)"
+  eq "v420 failures: a tester that finished Failed is one signoff_failed event, once" "$(v420_evn "$ev" signoff_failed):$(v420_evn "$(v420_tick 2026-10-29T12:50:00Z)" signoff_failed)" "1:0"
+  rm -f "$FLEET_STATE_DIR/tick.state.json" "$FLEET_STATE_DIR/loop.state.json"; FLEET_NOW=2026-10-29T13:00:00Z "$SCRIPTS/loop-tick.sh" >/dev/null 2>&1
+  eq "v420 failures: and one push, with the other team still Working" "$(grep -c 'the tester rm-b/tester finished without signing off' "$FLEET_STATE_DIR/alerts" 2>/dev/null || echo 0):$("$REG" get rm-a/lead | jq -r .status)" "1:Working"
+  gcfg; unset FLEET_GH V420_RUN DF_GB
+}
+
+v420_margin() { # the profile's usage_margin keeps new teams from booting when the remaining usage is inside it
+  v420_state margin; export DF_GB=100
+  gcfg '[run]' 'usage_margin = 15'
+  "$REG" add '{"name":"orchestrator","team":"orchestrator","tier":"Orchestrator","status":"Working","herdr_ref":"om","pane":"pom","target_teams":"3"}' >/dev/null
+  local ev o
+  printf '{"remaining_pct": 40, "at": "2026-10-29T10:00:00Z"}\n' >"$FLEET_STATE_DIR/usage.json"
+  ev="$(v420_tick 2026-10-29T10:01:00Z)"
+  eq "v420 margin: outside the margin nothing is held back" "$(v420_evn "$ev" usage_limit):$(v420_evn "$ev" slot_free)" "0:1"
+  printf '{"remaining_pct": 10, "at": "2026-10-29T10:02:00Z"}\n' >"$FLEET_STATE_DIR/usage.json"
+  ev="$(v420_tick 2026-10-29T10:03:00Z)"
+  eq "v420 margin: inside it the loop reports once and starts nothing" "$(v420_evn "$ev" usage_limit):$(printf '%s' "$ev" | jq -r '[.[] | select(.type == "usage_limit") | .detail] | first')" "1:within the usage margin (10% left, margin 15%)"
+  o="$(FLEET_NOW=2026-10-29T10:04:00Z "$SCRIPTS/boot.sh" build mg "$T" x 2>&1)"
+  eq "v420 margin: boot refuses" "$(printf '%s' "$o" | grep -c 'usage limit, so no team starts')" 1
+  printf '{"remaining_pct": 10, "at": "2026-10-29T06:00:00Z"}\n' >"$FLEET_STATE_DIR/usage.json"
+  ev="$(v420_tick 2026-10-29T10:30:00Z)"
+  eq "v420 margin: a reading older than 2 hours is ignored, and the backoff ends" "$(v420_evn "$ev" usage_limit):$(jq -r '.usage_active' "$FLEET_STATE_DIR/tick.state.json")" "0:false"
+  gcfg; unset DF_GB
+}
+
 v420_smoke() { # the critical cases, CI (V420_ONLY="name name" runs just those, to debug one)
   local f
-  for f in v420_version v420_redact_gate v420_run_init v420_run_collide v420_verify v420_claims v420_comments v420_heartbeat_name v420_overlap v420_usage v420_status_changes v420_failure_push v420_quiet v420_fix v420_report v420_run_start v420_decide; do
+  for f in v420_version v420_redact_gate v420_run_init v420_run_collide v420_verify v420_claims v420_comments v420_heartbeat_name v420_overlap v420_usage v420_status_changes v420_failure_push v420_quiet v420_fix v420_report v420_run_start v420_decide v420_probes v420_red_signoff v420_margin; do
     case " ${V420_ONLY:-$f} " in *" $f "*) "$f" ;; esac
   done
 }

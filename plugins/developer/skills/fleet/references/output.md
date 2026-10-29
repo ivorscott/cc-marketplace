@@ -648,7 +648,10 @@ Usage limit fleet: agents hit the plan's usage limit. No team boots until <time>
 Once per episode: agents stopped on a rate or usage limit (their transcript's last line is an API error that says so) start a
 backoff, 15 minutes at first and doubling with each hit after one ran out, 4 hours at most. During it there is no `slot_free` and
 `boot` refuses (`FLEET_FORCE=1` boots anyway); running teams carry on. The wake is reported once; the episode ends when no agent
-is limited and the backoff has run out. These agents are not `needs_input` wakes. UNVERIFIED: the wording of the real limit screen.
+is limited and the backoff has run out. These agents are not `needs_input` wakes. The profile's `usage_margin` counts too: when
+`usage.json` in the state dir (`{"remaining_pct": 12, "at": "<ISO>"}`, a reading under 2 hours old) says less than the margin is left,
+the backoff starts the same way (`detail`: "within the usage margin"). UNVERIFIED: nothing in the fleet reads the remaining usage
+offline, so without that file only the limit errors start it. UNVERIFIED: the wording of the real limit screen.
 
 ### wake status_changed
 
@@ -661,6 +664,23 @@ merges, the merge order moves, something needs the owner). At most once every `s
 in between wait for the next window; nothing changed, nothing sent. The notice is there only when the ready set changed to a
 non-empty one, at most once every `merge_push_mins` (15): it is the text of the one batched push, in merge order. Answer the wake
 with `fleet status`, relayed as it is; with a ready notice, push it as well.
+
+### wake main_red
+
+```
+Main red <owner/name>: CI on <branch> failed at <sha>. Look at the run; the teams keep working.
+```
+
+Under `fleet run`: the newest CI run of a repo's default branch (a repo with a live team, `gh run list`, read at most every 10
+minutes) failed. Once per run; it clears when a later run passes. loop-tick sends the one push; no team stops.
+
+### wake signoff_failed
+
+```
+Sign-off failed <team/tester>: the tester finished without signing the PR head off. Its lead has the report; the other teams are not affected.
+```
+
+Under `fleet run`: a team's tester finished with outcome Failed. Once per tester finish; one push; no team stops.
 
 ### wake morning_report
 

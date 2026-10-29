@@ -299,8 +299,10 @@ the deterministic parts so they survive a compaction:
 - Escalations: `fleet decide` (recommended option, recorded, commented; what is the human's is parked with one push).
 - `status_changed`: the status table or the ready-to-merge set changed, at most every `status_mins`; the ready push at most every
   `merge_push_mins`, in merge order. A quiet tick prints nothing and wakes no one.
-- `usage_limit`: agents hit the plan's rate or usage limit; backoff 15 minutes doubling to 4 hours; no boot, no `slot_free`;
-  once per episode. The profile's `usage_margin` is kept for when a usage reading exists; today the loop reacts to the limit errors.
+- Quiet ticks: under `fleet run`, a tick that finds the registry as it left it probes no pane (no herdr call); the panes are probed when a row changed or every 10 minutes (`PROBE_SECS`).
+- Pushes on failure: a failed agent, a red default branch (`main_red`), a tester that finished Failed (`signoff_failed`), each once.
+- `usage_limit`: agents hit the plan's rate or usage limit, or `usage.json` puts the remaining usage inside `usage_margin`; backoff 15 minutes doubling to 4 hours; no boot, no `slot_free`;
+  once per episode.
 - Overlap: when a planner is Done, `overlap.sh` compares its `Files:` list with the open PRs and live teams of the same repo and
   tick tells the lead. Comments on a live team's issue reach its lead. Deferred items in a PR body become linked issues.
 - The morning report at `report_at`; the Verify expiry is applied after it. The profile's `stop` ends the run quietly.

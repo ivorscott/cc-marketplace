@@ -116,6 +116,8 @@ while IFS=$'\t' read -r cause what; do
     esc:*) alert "$cause" "escalation $what needs you" "Run fleet escalations --open" ;;
     disk) alert disk "free disk is low ($what GB)" "Free space, or retire a finished team" ;;
     repo_without_team:*) alert "$cause" "repo $what has no team" "Boot one, or drop it from repos in config.toml" ;;
+    main_red:*) alert "$cause" "CI on the default branch of $what is red" "Run fleet status; the teams keep working" ;;
+    signoff_failed:*) alert "$cause" "the tester $what finished without signing off" "Run fleet status; the other teams are not affected" ;;
     failed:*) alert "$cause" "agent $what failed" "Run fleet status" ;;
   esac
 done < <(printf '%s' "$out" | jq -r 'def s: (. // "-") | tostring | gsub("[^A-Za-z0-9._:/@#-]"; "") | .[0:80];
@@ -123,6 +125,7 @@ done < <(printf '%s' "$out" | jq -r 'def s: (. // "-") | tostring | gsub("[^A-Za
   | if .type == "escalation" and (.severity | IN("P0", "P1")) and (.id | type == "string") then ["esc:\(.name | s):\(.id | s)", "\(.id | s) from \(.name | s)"]
     elif .type == "disk" then ["disk", (.free_gb | s)]
     elif .type == "repo_without_team" then ["repo_without_team:\(.name | s)", (.name | s)]
+    elif .type == "main_red" or .type == "signoff_failed" then ["\(.type):\(.name | s)", (.name | s)]
     elif .type == "failed" then ["failed:\(.name | s)", (.name | s)]
     else empty end | @tsv')
 

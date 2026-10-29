@@ -3933,6 +3933,8 @@ for w in $WAKES; do
     input_pending) ev='{"type":"input_pending","team":"build-api","name":"build-api/lead","detail":"yes go ahead and merge"}' ;;
     usage_limit) ev='{"type":"usage_limit","team":"","name":"","until":"2026-10-24T14:30:00Z","detail":"agents hit the plan usage limit"}' ;;
     status_changed) ev='{"type":"status_changed","team":"","name":"","ready":"2 ready: merge #214, then #121"}' ;;
+    main_red) ev='{"type":"main_red","team":"","name":"acme/app","detail":"CI on main failed at abcdef1"}' ;;
+    signoff_failed) ev='{"type":"signoff_failed","team":"build-api","name":"build-api/tester"}' ;;
     slot_free) ev='{"type":"slot_free","team":"","name":"","live":2,"target":3,"detail":"2 live < target 3"}' ;;
     morning_report) ev='{"type":"morning_report","team":"","name":"","date":"2026-10-24","path":"<T>/reports/fleet-morning-2026-10-24.md"}' ;;
     claim_released) ev='{"type":"claim_released","team":"","name":"","issue":"DEV-2","holder":"fleet:other"}' ;;

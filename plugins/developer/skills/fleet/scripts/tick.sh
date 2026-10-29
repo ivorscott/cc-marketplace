@@ -59,6 +59,8 @@
 #                   is told to that team's lead once, as quoted data (linear.sh comments), and the lead re-reads the issue.
 #   usage_limit     agents stopped on the plan's usage limit: no boot until usage_until, once per episode (usage_guard)
 #   status_changed  the status table or the set of PRs ready to merge changed, at most once per status_mins / merge_push_mins
+#   main_red        under fleet run: CI on a repo's default branch failed (gh run list, every 10 minutes); one push, no team stops
+#   signoff_failed  under fleet run: a team's tester finished with outcome Failed, without signing the PR head off; one push
 #   claims_unavailable  teams hold issues but no Linear key is configured (once)
 #   claims_readonly     teams hold issues and a key exists, but linear_writes = off (once)
 # With a key and linear_writes allowing it, every tick makes ONE heartbeat mutation (linear.sh heartbeat), first of
@@ -293,9 +295,18 @@ plan_overlap
 # is woken once (usage_limit) for the whole episode. Each hit after a backoff ended doubles the next one (usage_backoff_secs,
 # 15 minutes at first, 4 hours at most): no retry storm. An episode ends when no agent is limited and the backoff has run
 # out. These agents are not needs_input events: one wake covers them all.
-usage_guard() { # usage_guard <number of agents stopped by a usage limit>
-  local n="$1" until hits active secs
+usage_guard() { # usage_guard <number of agents stopped by a usage limit, or -1 when this tick did not look at the agents>
+  local n="$1" until hits active secs um rem uf why=""
   until="$(jq -r '.usage_until // 0' "$STATE_FILE")"; hits="$(jq -r '.usage_hits // 0' "$STATE_FILE")"; active="$(jq -r '.usage_active // false' "$STATE_FILE")"
+  # The profile's usage_margin: the percent of the plan's limit to leave unused. The remaining usage is read from
+  # usage.json in the state dir ({"remaining_pct": 12, "at": "<ISO>"}, written by whatever can read it; a reading older than
+  # 2 hours is ignored). Inside the margin counts as a limit: no boot and no slot_free until the reading says otherwise.
+  # UNVERIFIED: nothing in the fleet reads the remaining usage offline, so with no usage.json only the reactive guard works.
+  um="$(run_int usage_margin 0)"; uf="$FLEET_STATE_DIR/usage.json"
+  if [ "$um" -gt 0 ] && [ -f "$uf" ]; then
+    rem="$(jq -r --argjson now "$now_epoch" 'if (.at | type) == "string" and (.remaining_pct | type) == "number" and ($now - (.at | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601)) <= 7200 then .remaining_pct else empty end' "$uf" 2>/dev/null || true)"
+    if [ -n "$rem" ] && [ "${rem%.*}" -lt "$um" ]; then why="within the usage margin ($rem% left, margin $um%)"; [ "$n" -gt 0 ] || n=1; fi
+  fi
   if [ "$n" -gt 0 ]; then
     if [ "$now_epoch" -ge "$until" ]; then
       hits=$((hits + 1)); secs="$(const_int USAGE_BACKOFF_SECS 900)"
@@ -303,10 +314,10 @@ usage_guard() { # usage_guard <number of agents stopped by a usage limit>
       until=$((now_epoch + secs))
       st_upd --argjson u "$until" --argjson h "$hits" '$st + {usage_until: $u, usage_hits: $h, usage_active: true}'
       if [ "$active" != true ]; then
-        add_events "$(jq -cn --argjson u "$until" '[{type: "usage_limit", team: "", name: "", until: ($u | todate), detail: "agents hit the plan usage limit"}]')"
+        add_events "$(jq -cn --argjson u "$until" --arg w "${why:-agents hit the plan usage limit}" '[{type: "usage_limit", team: "", name: "", until: ($u | todate), detail: $w}]')"
       fi
     fi
-  elif [ "$active" = true ] && [ -z "$team" ] && [ "$now_epoch" -ge "$until" ]; then
+  elif [ "$n" = 0 ] && [ "$active" = true ] && [ -z "$team" ] && [ "$now_epoch" -ge "$until" ]; then
     st_upd '$st + {usage_active: false, usage_hits: 0, usage_until: 0}'
   fi
 }
@@ -320,7 +331,18 @@ now_iso="${FLEET_NOW:-$(now)}"; now_epoch="$(jq -rn --arg t "$now_iso" '$t | fro
 targs=(); [ -n "$team" ] && targs=("$team")
 # One `herdr agent list` first: when herdr itself is down, every row would read as Zombie, so a failed
 # call skips classification and respawn for this tick.
-if ! hd agent list >/dev/null 2>&1; then
+# Under fleet run (run_active) a tick that finds the registry as it left it reads the registry and the wake log only: no
+# herdr call, no pane read. The panes are probed when a row changed since the last probe, or at least every probe_secs
+# (the PROBE_SECS constant, 10 minutes), which is how a stall or a death is still found. Without fleet run every tick probes.
+run_mode=false; usage_n=-1; probe=true
+if [ -z "$team" ] && [ "$("$registry" get orchestrator 2>/dev/null | jq -r '.run_active // ""' 2>/dev/null || true)" = true ]; then
+  run_mode=true
+  reg_sig() { "$registry" list | jq -c '[.[] | select(.status != "Retired") | [.name, .status, (.pr // ""), (.issue // ""), (.signoff.sha? // ""), (.herdr_ref // "")]] | sort' | cksum | awk '{print $1}'; }
+  if [ "$(reg_sig)" = "$(jq -r '.probe_sig // ""' "$STATE_FILE")" ] && [ $((now_epoch - $(jq -r '.probe_at // 0' "$STATE_FILE"))) -lt "$(const_int PROBE_SECS 600)" ]; then probe=false; fi
+fi
+if ! $probe; then
+  :
+elif ! hd agent list >/dev/null 2>&1; then
   warn "herdr agent list failed; no classification or respawn this tick"
 elif rows="$("$FLEET_SCRIPTS/status.sh" ${targs[@]+"${targs[@]}"} --json 2>/dev/null)" && printf '%s' "$rows" | jq -e 'type == "array"' >/dev/null 2>&1; then
   add_events "$(jq -cn --slurpfile rows <(printf '%s' "$rows") --slurpfile stf "$STATE_FILE" '$rows[0] as $rows
@@ -360,7 +382,7 @@ elif rows="$("$FLEET_SCRIPTS/status.sh" ${targs[@]+"${targs[@]}"} --json 2>/dev/
         and .status_detail != "usage limit"
         and ((($stf[0].needs_input_emitted // []) | index($k)) == null))
       | {type: "needs_input", team, name, detail: .status_detail}]')"
-  usage_guard "$(printf '%s' "$rows" | jq '[.[] | select(.tier != "Orchestrator" and .status == "Needs input" and (.status_detail // "") == "usage limit")] | length')"
+  usage_n="$(printf '%s' "$rows" | jq '[.[] | select(.tier != "Orchestrator" and .status == "Needs input" and (.status_detail // "") == "usage limit")] | length')"
   # Only the rows this tick read are re-derived: a --team tick keeps the other teams' keys.
   st_upd --slurpfile rows <(printf '%s' "$rows") '$rows[0] as $rows | [$rows[].name] as $seen
     | $st + {needs_input_emitted: ([($st.needs_input_emitted // [])[] | select(split("|")[0] as $n | $seen | index($n) | not)]
@@ -436,6 +458,40 @@ elif rows="$("$FLEET_SCRIPTS/status.sh" ${targs[@]+"${targs[@]}"} --json 2>/dev/
     dead_emitted: (($st.dead_emitted // []) - [$rows[] | select(.status != "Zombie") | .name])}'
 else
   warn "status.sh failed; no stalled/dead events this tick"
+fi
+if $run_mode && $probe; then st_upd --arg s "$(reg_sig)" --argjson n "$now_epoch" '$st + {probe_sig: $s, probe_at: $n}'; fi
+usage_guard "$usage_n"
+
+# --- fleet run: failures that push --------------------------------------------------------------------------------
+# Only while fleet run is active (the run's push set), and each once. main_red: the CI run of a repo's default branch
+# failed (gh run list, read at most every 10 minutes, for each repo with a live team); it clears when a later run passes.
+# signoff_failed: a team's tester finished with outcome Failed (it did not sign the PR head off), once per tester finish.
+# loop-tick turns each into one push; no team is stopped by either.
+if $run_mode; then
+  if [ $((now_epoch - $(jq -r '.main_checked_at // 0' "$STATE_FILE"))) -ge "$(const_int MAIN_CHECK_SECS 600)" ] && command -v "$FLEET_GH" >/dev/null 2>&1; then
+    st_upd --argjson n "$now_epoch" '$st + {main_checked_at: $n}'
+    for md in $("$registry" list --live | jq -r '[.[] | select(.tier != "Orchestrator" and (.repo // "") != "") | .repo] | unique[]'); do
+      mslug="$(repo_slug "$md")"; [ -n "$mslug" ] || continue
+      mbr="$(git -C "$md" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##' || true)"; mbr="${mbr:-main}"
+      mrun="$("$FLEET_GH" run list --repo "$mslug" --branch "$mbr" --limit 1 --json databaseId,conclusion,headSha 2>/dev/null | jq -c '.[0] // empty' 2>/dev/null || true)"
+      [ -n "$mrun" ] || continue
+      mk="$mslug|$(jq -r '.databaseId' <<<"$mrun")"
+      if [ "$(jq -r '.conclusion // ""' <<<"$mrun")" = failure ]; then
+        if [ "$(jq --arg k "$mk" '(.main_red_emitted // []) | index($k) == null' "$STATE_FILE")" = true ]; then
+          add_events "$(jq -cn --arg r "$mslug" --arg b "$mbr" --arg s "$(jq -r '.headSha // "" | .[0:7]' <<<"$mrun")" '[{type: "main_red", team: "", name: $r, branch: $b, sha: $s, detail: ("CI on " + $b + " failed at " + $s)}]')"
+          st_upd --arg k "$mk" '$st + {main_red_emitted: ((($st.main_red_emitted // []) + [$k]) | unique)}'
+        fi
+      elif [ "$(jq -r '.conclusion // ""' <<<"$mrun")" = success ]; then
+        st_upd --arg r "$mslug|" '$st + {main_red_emitted: [($st.main_red_emitted // [])[] | select(startswith($r) | not)]}'
+      fi
+    done
+  fi
+  while IFS=$'\t' read -r fname fteam fkey; do
+    [ -n "$fname" ] || continue
+    [ "$(jq --arg k "$fkey" '(.signoff_failed_emitted // []) | index($k) == null' "$STATE_FILE")" = true ] || continue
+    add_events "$(jq -cn --arg n "$fname" --arg t "$fteam" '[{type: "signoff_failed", team: $t, name: $n, detail: "the tester finished without signing off"}]')"
+    st_upd --arg k "$fkey" '$st + {signoff_failed_emitted: ((($st.signoff_failed_emitted // []) + [$k]) | unique)}'
+  done < <("$registry" list | jq -r '.[] | select(.tier != "Orchestrator" and .status == "Done" and (.name | endswith("/tester")) and .outcome == "Failed") | [.name, .team, (.name + "|" + (.done_at // ""))] | @tsv')
 fi
 
 # --- stale plugin version ------------------------------------------------------------------------------
@@ -933,7 +989,7 @@ while IFS=$'\t' read -r etype eteam ename eurl esha eissue edetail; do
   [ "$eissue" != - ] || eissue=""; [ "$edetail" != - ] || edetail=""
   ev_log "$etype" team="$eteam" name="$ename" pr="$eurl" sha="$esha" issue="$eissue" detail="$edetail"
 done < <(jq -r 'def d: if . == null or . == "" then "-" else tostring end;
-  .[] | select(.type | IN("pr_opened", "pr_ready", "pr_merged", "pr_conflicting", "stalled", "dead", "failed", "needs_input", "stale_version", "slot_free", "usage_limit", "status_changed",
+  .[] | select(.type | IN("pr_opened", "pr_ready", "pr_merged", "pr_conflicting", "stalled", "dead", "failed", "needs_input", "stale_version", "slot_free", "usage_limit", "status_changed", "main_red", "signoff_failed",
     "claim_takeover", "claim_lost", "claim_released", "claim_held_pr", "claim_lapsed", "morning_report"))
   | [.type, (.team | d), (.name | d), (.url | d), (.sha | d), (if (.type | startswith("claim_")) then (.issue | d) else "-" end),
      (if .type == "claim_lost" then "claimed by this machine, released by another"

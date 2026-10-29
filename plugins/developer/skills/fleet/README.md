@@ -1022,17 +1022,17 @@ Fixes found after 4.1.1 (DEV-530), one per item:
 3. **Escalations are decided** (`fleet decide`): the recommended option is taken, the lead told, the escalation resolved, the
    decision noted for the morning report and commented on the issue. A P0 and what is the human's (merging, production,
    infrastructure applies, secrets, branch protection) are parked instead: one push, listed in the morning report, never approved.
-4. **Notify on failure, and when what is ready to merge changes.** A failed agent pushes at once, once. The set of PRs ready to merge
+4. **Notify on failure, and when what is ready to merge changes.** A failed agent, a red default branch and a tester that finished Failed each push at once, once. The set of PRs ready to merge
    changing sends one batched push in merge order (`2 ready: merge #A, then #B`), at most every `merge_push_mins`, from the same
    wake as the status table (`status_changed`, at most every `status_mins`, nothing when nothing changed). A quiet hour prints nothing.
 5. **The only wait is a PR waiting to merge.** Every other wait is removed or decided.
 6. **The morning report** at the profile's `report_at` is written by tick once a day: Merged, Ready to merge, Decisions taken,
    Needs your eyes (deferred items as linked issues, every Verify item with what to check, what was parked for you), Failures,
    Proposed lessons, What is next.
-7. **Efficient ticks**: tick prints nothing unless something changed, and the Orchestrator's output rules say what it never reports.
+7. **Efficient ticks**: under `fleet run` a tick that finds the registry as it was probes no pane (every 10 minutes at most between probes); it prints nothing unless something changed, and the Orchestrator's output rules say what it never reports.
 8. **Usage guard**: agents stopped by the plan's usage limit start a backoff (15 minutes, doubling to 4 hours): no boot, no
-   `slot_free`, running teams carry on, reported once (`usage_limit`). The `usage_margin` answer is kept for when a usage
-   reading exists. UNVERIFIED: the wording of a real limit screen.
+   `slot_free`, running teams carry on, reported once (`usage_limit`). The `usage_margin` answer is enforced when `usage.json` gives the
+   remaining usage (UNVERIFIED: nothing reads it offline today). UNVERIFIED: the wording of a real limit screen.
 9. **Overlap check at plan time** (`fleet overlap`): the planner lists the files of the change under `Files:`; when the
    planner is done, tick compares them with the open PRs and live teams of the same repo, on every machine, and tells the lead:
    `none` (build now), `wait #N`, or `merge-after #N` (build now, `Merge after #N` in the PR body). Paths count only inside one repo.
