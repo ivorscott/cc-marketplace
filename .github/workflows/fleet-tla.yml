@@ -1,0 +1,36 @@
+name: fleet-tla
+
+on:
+  pull_request:
+    paths:
+      - 'specs/**'
+      - '.github/workflows/fleet-tla.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'specs/**'
+
+permissions:
+  contents: read
+
+jobs:
+  tlc:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+      - name: Install tla2tools.jar (pinned)
+        run: |
+          set -euo pipefail
+          mkdir -p "$HOME/.local/share/tla"
+          curl -fsSL -o "$HOME/.local/share/tla/tla2tools.jar" \
+            https://github.com/tlaplus/tlaplus/releases/download/v1.7.4/tla2tools.jar
+          echo "936a262061c914694dfd669a543be24573c45d5aa0ff20a8b96b23d01e050e88  $HOME/.local/share/tla/tla2tools.jar" | sha256sum -c -
+      - name: shellcheck
+        run: shellcheck specs/fleet/run-tlc.sh
+      - name: Model check
+        run: specs/fleet/run-tlc.sh
