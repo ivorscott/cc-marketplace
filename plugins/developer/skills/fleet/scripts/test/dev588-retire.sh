@@ -46,3 +46,44 @@ d588_retire() {
   eq "dev588-11 retire: a holder that cannot be read leaves the issue alone, with a warning" "$(grep -c '^mutation' "$LINEAR_LOG"):$(grep -c 'left DEV-1 alone: could not tell who holds it' "$T/d588.err")" "0:1"
   gcfg; d588_nolinear; unset FLEET_NOW
 }
+
+# ---- 8: a message to a finished team brings it back ---------------------------------------------------------------
+d588_revive_team() { # d588_revive_team <team> <status> <pr number>: lead, builder, tester with the PR, herdr knows none of them
+  local r
+  for r in lead builder tester; do
+    "$REG" add "$(jq -cn --arg t "$1" --arg r "$r" --arg st "$2" --arg repo "$QD/repo-rv" --arg u "https://github.com/acme/app-api/pull/$3" '{name: ($t + "/" + $r), team: $t, tier: (if $r == "lead" then "Lead" else "Worker" end),
+      template: "build", harness: "claude", status: $st, herdr_ref: ($t + "-" + $r), pane: ("p" + $t + $r), workspace: "w", repo: $repo, cwd: $repo, assignment: "task", issue: "DEV-1", pr: $u}')" >/dev/null
+    echo gone >"$AS/$1-$r"
+  done
+}
+d588_revive() {
+  qfresh d588rv; export FLEET_STATE_DIR="$QD/state.d588rv" FLEET_REGISTRY="$QD/state.d588rv/fleet.json" FLEET_INBOX="$QD/state.d588rv/escalations.jsonl" FLEET_WORKTREES="$QD/state.d588rv/worktrees"
+  rm -rf "$FLEET_STATE_DIR"; mkdir -p "$FLEET_STATE_DIR"; rm -f "$AS"/*; git init -q -b main "$QD/repo-rv" 2>/dev/null
+  export FLEET_GH="$QD/gh-shim" PROMPT_SEQ=1; gcfg "teams_per_repo = 9" "max_teams = 9"
+  local o rc b
+  qpr app-api 80 fleet/dev-1-x main 2026-10-29T08:00:00Z '["a.go"]' x
+  d588_revive_team rv-a Done 80; "$REG" signoff rv-a/tester https://github.com/acme/app-api/pull/80 aaaaaaa80 >/dev/null
+  o="$("$SCRIPTS/tell.sh" rv-a/lead "please answer the review comment" 2>&1)"; rc=$?
+  b="$("$REG" get rv-a/lead | jq -r .last_brief)"
+  eq "dev588-8 tell: a message to a Done team with an open PR brings it back" \
+    "$rc:$(printf '%s' "$o" | grep -c '(revived)$'):$("$REG" get rv-a/lead | jq -r .status):$("$REG" get rv-a/builder | jq -r .status):$("$REG" get rv-a/tester | jq -r .status)" "0:1:Working:Idle:Idle"
+  eq "dev588-8 tell: the lead's brief holds the message, and the PR, branch and sign-off are unchanged" \
+    "$(grep -c 'please answer the review comment' "$b"):$("$REG" get rv-a/builder | jq -r .pr):$("$REG" get rv-a/tester | jq -r .signoff.sha)" "1:https://github.com/acme/app-api/pull/80:aaaaaaa80"
+  eq "dev588-8 tell: nothing was booted or retired" "$(jq -s '[.[] | select(.type == "boot" or .type == "retired")] | length' "$FLEET_STATE_DIR/events.jsonl" 2>/dev/null || echo 0)" 0
+  # a message for a worker goes to the lead
+  d588_revive_team rv-b Done 80
+  "$SCRIPTS/tell.sh" rv-b/builder "check the build" >/dev/null 2>&1
+  eq "dev588-8 tell: a message for a worker revives the team and goes to the lead, naming the role" \
+    "$(grep -c '(meant for builder) check the build' "$("$REG" get rv-b/lead | jq -r .last_brief)")" 1
+  # a bare team name, and a parked team
+  d588_revive_team rv-c Parked 80
+  o="$("$SCRIPTS/tell.sh" rv-c "back to work" 2>&1)"; rc=$?
+  eq "dev588-8 tell: a bare team name revives a parked team the same way" "$rc:$(printf '%s' "$o" | grep -c '(revived)$'):$("$REG" list --team rv-c | jq -r '[.[].status] | unique | join(",")')" "0:1:Idle,Working"
+  # a merged PR is refused and the rows are left as they were
+  qpr app-api 81 fleet/dev-2-x main 2026-10-29T08:00:00Z '["b.go"]' x; jq '.state = "MERGED"' "$QGHD/app-api-81.json" >"$QD/m.json" && mv "$QD/m.json" "$QGHD/app-api-81.json"
+  d588_revive_team rv-d Done 81
+  o="$("$SCRIPTS/tell.sh" rv-d/lead "one more thing" 2>&1)"; rc=$?
+  eq "dev588-8 tell: a merged PR is refused with what to do instead, and the rows stay Done" \
+    "$rc:$(printf '%s' "$o" | grep -c 'Boot a new team, or move the team on'):$("$REG" list --team rv-d | jq -r '[.[].status] | unique | join(",")')" "1:1:Done"
+  unset PROMPT_SEQ FLEET_GH; gcfg
+}

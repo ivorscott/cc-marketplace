@@ -34,6 +34,10 @@
 #
 # A bare team name (no "/") means the team's lead: `tell.sh build-x "..."` is `tell.sh build-x/lead "..."`, unless a
 # herdr agent is registered under that name.
+# A plain message from the Orchestrator to a team that is not running (a Done or Parked row, or an agent that is gone) with
+# its PR still open brings the team back: revive.sh starts its agents again in their worktrees and the lead gets the message
+# in its resume brief; the reply ends "(revived)". A message for a worker goes to the lead, who is told the role it was for.
+# A merged or closed PR is refused ("Boot a new team, or move the team on (fleet next)").
 # Command: Send a team's lead (or one agent) a message and check it arrived · e.g. fleet tell build-api/lead "focus on token expiry"
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
@@ -117,6 +121,44 @@ verdict() { # verdict <delivered true|false> <reason> <exit code>
 
 agent_state() { hd agent get "$ref" 2>/dev/null | jq -r '.result.agent.agent_status // "gone"' 2>/dev/null || echo gone; }
 agent_seq() { hd agent get "$ref" 2>/dev/null | jq -r '.result.agent.state_change_seq // ""' 2>/dev/null || true; }
+
+# --- a message to a team that is not running brings it back (the Orchestrator's plain tells only) -------------------
+# The team's lead and workers are started again in their worktrees (revive.sh) and the lead is given the message in its
+# resume brief, when the target is a row of the registry whose agent is Done, Parked or gone and the team's PR is still
+# open. A merged or closed PR is refused with what to do instead; with no PR, or gh unable to say, today's verdict stands.
+# A message meant for a worker goes to the lead, who is told which role it was meant for: a worker is never typed into.
+if [ -z "${FLEET_ROLE:-}" ] && ! $is_brief && $confirm; then
+  case "$target" in */*)
+    trow="$("$FLEET_SCRIPTS/registry.sh" get "$target" 2>/dev/null || true)"
+    if [ -n "$trow" ]; then
+      tstatus="$(printf '%s' "$trow" | jq -r '.status // ""')"; tteam="${target%%/*}"; revive=false
+      case "$tstatus" in Done | Parked) revive=true ;; Retired) ;; *)
+        { [ "$(agent_state)" = gone ] || { [ -n "$pane" ] && ! hd pane process-info --pane "$pane" 2>/dev/null |
+          jq -e '.result.process_info | .foreground_process_group_id != .shell_pid' >/dev/null 2>&1; }; } && revive=true ;;
+      esac
+      if $revive; then
+        tprs="$("$FLEET_SCRIPTS/registry.sh" list --team "$tteam" | jq -r '[.[] | (.pr // empty), (.prs // [])[] | select(. != "")] | unique[]')"
+        open_pr=""; merged_pr=""
+        for u in $tprs; do
+          case "$(forge_pr_json "$u" 2>/dev/null | jq -r '.state // ""' 2>/dev/null || true)" in
+            OPEN) open_pr="$u" ;; MERGED | CLOSED) merged_pr="$u" ;;
+          esac
+        done
+        if [ -n "$open_pr" ]; then
+          tlead="$tteam/lead"; ttext="$text"; [ "$target" = "$tlead" ] || ttext="(meant for ${target#*/}) $text"
+          if "$FLEET_SCRIPTS/revive.sh" "$tteam" --text "$ttext" --why "you were sent a message while your team was not running; it has been brought back for it" --pr "$open_pr" >/dev/null 2>"$FLEET_STATE_DIR/tell-revive.err"; then
+            rm -f "$FLEET_STATE_DIR/tell-revive.err"
+            render_line told name="$tlead" text="$(jq -rn --arg t "$text" '$t | split("\n")[0] | .[0:60]')" how=revived; exit 0
+          fi
+          render_error tell "not delivered to $target: $(grep -v '^fleet: warning:' "$FLEET_STATE_DIR/tell-revive.err" | head -n 1 | sed 's/^fleet: //')" "Free a slot, then tell it again" >&2
+          rm -f "$FLEET_STATE_DIR/tell-revive.err"; exit 1
+        elif [ -n "$merged_pr" ] && { [ "$tstatus" = Done ] || [ "$tstatus" = Parked ]; }; then
+          render_error tell "not delivered to $target: its PR $merged_pr is merged or closed" "Boot a new team, or move the team on (fleet next)" >&2; exit 1
+        fi
+      fi
+    fi ;;
+  esac
+fi
 [ "$(agent_state)" != "gone" ] || verdict false "agent not found in herdr" 2
 if [ -n "$pane" ] && ! hd pane process-info --pane "$pane" 2>/dev/null |
   jq -e '.result.process_info | .foreground_process_group_id != .shell_pid' >/dev/null 2>&1; then

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Bring a finished team back to catch its PR up with the base branch after another PR merged ahead of it and now
-# conflicts with it. tick.sh runs this on a conflict when the team is Parked or any of its agents is Done, Zombie or
+# conflicts with it (revive.sh does the bringing back; this gives the lead the merge procedure). tick.sh runs this on a conflict when the team is Parked or any of its agents is Done, Zombie or
 # gone (a team whose agents are live is only told). Local teams only: a team another machine holds is that machine's.
 #
 #   catchup.sh <team> <pr-url> [<merged-by>]
@@ -24,10 +24,6 @@ registry="$FLEET_SCRIPTS/registry.sh"
 
 usage="usage: catchup.sh <team> <pr-url> [<merged-by>]"
 team="${1:?$usage}"; pr="${2:?$usage}"; by="${3:-}"
-rows="$("$registry" list --team "$team" | jq -c '[.[] | select(.status != "Retired" and .tier != "Orchestrator")]')"
-[ "$(jq length <<<"$rows")" != 0 ] || die "no team '$team' on this machine" "Run fleet status"
-lead="$(jq -r '[.[] | select(.tier == "Lead") | .name] | first // ""' <<<"$rows")"
-[ -n "$lead" ] || die "team '$team' has no lead row"
 
 # What the lead must do, as the lead's brief puts it (no history is rewritten: a merge commit and a plain push).
 procedure="$(
@@ -39,66 +35,5 @@ procedure="$(
   printf 'Your builder and tester are started again in their worktrees for this. If a conflict cannot be resolved safely, escalate it P1 with the files in conflict and do not push a guess.\n'
 )"
 why="another PR merged ahead of $pr and it conflicts now; your team was finished and has been brought back to catch it up"
-lead_respawned=false
-parked="$(jq 'any(.[]; .status == "Parked")' <<<"$rows")"
-if [ "$parked" = true ]; then
-  [ "$(jq -r --arg l "$lead" '.[] | select(.name == $l) | .status' <<<"$rows")" != Parked ] || lead_respawned=true # its resume brief carries the procedure
-  FLEET_RESUME_WHY="$why. What to do now: $procedure" "$FLEET_SCRIPTS/unpark.sh" "$team" >/dev/null 2>"$FLEET_STATE_DIR/catchup.step.err" ||
-    die "$(grep -v '^fleet: warning:' "$FLEET_STATE_DIR/catchup.step.err" | head -n 1 | sed 's/^fleet: //')"
-  rm -f "$FLEET_STATE_DIR/catchup.step.err"
-  rows="$("$registry" list --team "$team" | jq -c '[.[] | select(.status != "Retired" and .tier != "Orchestrator")]')"
-elif [ "${FLEET_FORCE:-}" != 1 ]; then
-  cap_t="$(max_teams)"; live="$(live_team_count "$team")"
-  [ "$live" -lt "$cap_t" ] || die "not bringing $team back: $live live team(s), max_teams=$cap_t; park or retire one first"
-  repo="$(jq -r '[.[] | .repo // ""] | first // ""' <<<"$rows")"; others="$(teams_on_repo "$repo" "$team")"
-  if [ -n "$repo" ] && [ -n "$others" ] && [ "$(printf '%s\n' "$others" | grep -c .)" -ge "$(teams_per_repo)" ]; then
-    die "not bringing $team back: $(printf '%s' "$others" | paste -sd, -) live on $repo, teams_per_repo=$(teams_per_repo)"
-  fi
-fi
-hd agent list >/dev/null 2>&1 || die "herdr is not answering; $team stays as it is"
-
-# An agent is alive when herdr knows it and its pane is not back at the shell.
-alive() { # alive <row JSON>
-  local ref pane
-  ref="$(jq -r '.herdr_ref // ""' <<<"$1")"; pane="$(jq -r '.pane // ""' <<<"$1")"
-  [ -n "$ref" ] || return 1
-  [ "$(hd agent get "$ref" 2>/dev/null | jq -r '.result.agent.agent_status // "gone"' 2>/dev/null || echo gone)" != gone ] || return 1
-  [ -z "$pane" ] || hd pane process-info --pane "$pane" 2>/dev/null | jq -e '.result.process_info | .foreground_process_group_id != .shell_pid' >/dev/null 2>&1
-}
-
-revived=(); failed=()
-for tier in Lead Worker; do
-  while IFS= read -r r; do
-    [ -n "$r" ] || continue
-    name="$(jq -r .name <<<"$r")"; st="$(jq -r .status <<<"$r")"
-    if alive "$r"; then
-      # Still running: its row only has to stop saying Done.
-      if [ "$st" = Done ]; then
-        "$registry" set "$name" status="$([ "$tier" = Lead ] && echo Working || echo Idle)" outcome= summary= done_at= >/dev/null
-      fi
-      continue
-    fi
-    case "$st" in
-      Done | Zombie | Working | Idle | Stalled | Failed | "Needs input" | Booting)
-        # The lead's resume brief carries the procedure, so it needs no second brief (the first one keeps it busy).
-        if [ "$tier" = Lead ]; then export FLEET_RESUME_WHY="$why. What to do now: $procedure"; else export FLEET_RESUME_WHY="$why"; fi
-        if "$FLEET_SCRIPTS/respawn.sh" "$name" --revive >/dev/null 2>"$FLEET_STATE_DIR/catchup.step.err"; then
-          revived+=("${name#*/}"); [ "$tier" != Lead ] || lead_respawned=true
-        else failed+=("$name"); warn "could not bring back $name: $(head -n 1 "$FLEET_STATE_DIR/catchup.step.err" 2>/dev/null)"; fi ;;
-    esac
-  done < <(jq -c --arg t "$tier" '.[] | select(.tier == $t)' <<<"$rows")
-done
-rm -f "$FLEET_STATE_DIR/catchup.step.err"
-[ "${#failed[@]}" = 0 ] || die "${failed[*]} did not start; the catch-up of $pr is not done" "Run fleet respawn ${failed[0]}"
-
-told=$lead_respawned
-if ! $told; then
-  # A lead that was still running: a brief when it is idle, else a plain message it takes after its turn.
-  "$FLEET_SCRIPTS/tell.sh" "$lead" "$procedure" --brief >/dev/null 2>&1 && told=true
-  $told || { "$FLEET_SCRIPTS/tell.sh" "$lead" "$(printf '%s' "$procedure" | tr '\n' ' ')" >/dev/null 2>&1 && told=true; }
-fi
-"$registry" set "$lead" status=Working >/dev/null 2>&1 || true
-ev_log catchup team="$team" name="$lead" detail="$pr${by:+ after $by}"
-herdr_meta "$team"
-$told || die "$team is back but its lead did not take the brief" "Tell $lead to merge origin/main into $pr"
-printf 'Caught up %s: %s back; lead told to merge main into %s.\n' "$team" "$( (IFS=,; printf '%s' "${revived[*]:-nothing needed}") | sed 's/,/, /g')" "$pr"
+out="$("$FLEET_SCRIPTS/revive.sh" "$team" --text "$procedure" --why "$why" --event catchup --pr "$pr${by:+ after $by}")" || exit 1
+printf 'Caught up %s: %s; lead told to merge main into %s.\n' "$team" "$(printf '%s' "$out" | sed 's/^Revived [^:]*: //; s/ back\.$/ back/')" "$pr"
