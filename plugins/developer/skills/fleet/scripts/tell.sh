@@ -31,6 +31,9 @@
 # The screen is never read. Not seen: press enter once (the text may sit in the box unsent) and look again.
 # UNVERIFIED: state_change_seq is observed in `agent get` JSON, not documented by herdr (`herdr --skill`),
 # so it is a signal, not a contract; the transcript format may change between Claude Code versions.
+#
+# A bare team name (no "/") means the team's lead: `tell.sh build-x "..."` is `tell.sh build-x/lead "..."`, unless a
+# herdr agent is registered under that name.
 # Command: Send a team's lead (or one agent) a message and check it arrived · e.g. fleet tell build-api/lead "focus on token expiry"
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
@@ -49,6 +52,11 @@ while [ $# -gt 0 ]; do
 done
 
 ref="$target"; pane=""; transcript=""
+case "$target" in
+  */*) ;;
+  *) if ! "$FLEET_SCRIPTS/registry.sh" list | jq -e --arg r "$target" 'any(.[]; .herdr_ref == $r)' >/dev/null 2>&1 &&
+       "$FLEET_SCRIPTS/registry.sh" get "$target/lead" >/dev/null 2>&1; then target="$target/lead"; ref="$target"; fi ;;
+esac
 case "$target" in
   */*)
     row="$("$FLEET_SCRIPTS/registry.sh" get "$target")" || exit 1
@@ -100,7 +108,9 @@ verdict() { # verdict <delivered true|false> <reason> <exit code>
   fi
   if [ "$1" = true ]; then
     render_line told name="$target" text="$(jq -rn --arg t "$text" '$t | split("\n")[0] | .[0:60]')" how="${how:-$($confirm && echo delivered || echo sent)}"
-  elif [ "$3" = 2 ]; then render_error tell "not delivered to $target: $2" "Respawn it (fleet respawn $target) or retire it" >&2
+  elif [ "$3" = 2 ] && "$FLEET_SCRIPTS/registry.sh" get "$target" >/dev/null 2>&1; then
+    render_error tell "not delivered to $target: $2" "Respawn it (fleet respawn $target) or retire it" >&2
+  elif [ "$3" = 2 ]; then render_error tell "not delivered to $target: $2" "No such agent in the registry or herdr; run fleet status" >&2
   else render_error tell "not delivered to $target: $2" "Look at its pane, then send it again" >&2; fi
   exit "$3"
 }

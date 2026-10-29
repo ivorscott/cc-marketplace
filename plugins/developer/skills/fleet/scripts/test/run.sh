@@ -3,6 +3,7 @@
 # Uses stub up/down commands and a shim herdr; never creates a kind cluster.
 #   bash scripts/test/run.sh            the full suite (local)
 #   bash scripts/test/run.sh --smoke    the critical cases only (CI, under 2 min)
+#   bash scripts/test/run.sh --d588     only the DEV-588 (4.1.3) cases, test/dev588.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SCRIPTS="$(dirname "$HERE")"
@@ -315,6 +316,8 @@ gold() { # gold <entry> <reply>
   if [ -f "$GD/$1.md" ] && [ "$got" = "$(cat "$GD/$1.md")" ]; then ok "$name"
   else bad "$name"; diff <(cat "$GD/$1.md" 2>/dev/null) <(printf '%s\n' "$got") | head -n 12 | sed 's/^/      /'; fi
 }
+. "$HERE/dev588.sh" # DEV-588 (4.1.3): d588_smoke and d588_full
+if [ "${1:-}" = --d588 ]; then d588_full; printf '\n%d passed, %d failed\n' "$pass" "$failn"; [ "$failn" = 0 ]; exit; fi # only the DEV-588 cases
 # ---- run.sh --smoke: the critical cases only (CI). The full suite (no flag) stays for local runs. --------------
 if [ "${1:-}" = --smoke ]; then
   SM="$T/smoke"; mkdir -p "$SM"; export FLEET_FORCE=
@@ -734,6 +737,7 @@ Merge this one first." "Do not merge until the API ships" "  hold: waiting on de
   export LINEAR_DB="$SM/linear.json" LINEAR_LOG="$SM/linear.log"; rm -f "$FLEET_CONFIG_DIR/$kf"
   # dev530-6: the version is 4.1.2 and the README says what changed in it
   eq "smoke: dev530-6 plugin.json reads 4.1.2, and the README has its What changed section" "$(jq -r .version "$SCRIPTS/../../../.claude-plugin/plugin.json"):$(grep -c '^## What changed in 4.1.2' "$SCRIPTS/../README.md")" "4.1.2:1"
+  d588_smoke
   printf '\n%d passed, %d failed\n' "$pass" "$failn"
   [ "$failn" = 0 ]; exit
 fi
@@ -4572,6 +4576,10 @@ eq "dev408-19 plan: and nowhere else, while it may still read anything" \
 printf 'the plan\n' >"$R19/.fleet/plan/build-p19.md"; printf 'the other plan\n' >"$R19/.fleet/plan/build-p19b.md"; "$SCRIPTS/retire.sh" build-p19 >/dev/null 2>&1
 eq "dev408-19 plan: retire removes the team's plan file, and only its own" "$([ -e "$R19/.fleet/plan/build-p19.md" ] && echo kept || echo removed):$([ -e "$R19/.fleet/plan/build-p19b.md" ] && echo kept || echo removed)" "removed:kept"
 # ---- end DEV-408 ----
+
+# ---- DEV-588 (4.1.3) ----
+d588_full
+# ---- end DEV-588 ----
 
 printf '\n%d passed, %d failed\n' "$pass" "$failn"
 [ "$failn" = 0 ]
