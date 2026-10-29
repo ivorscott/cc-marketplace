@@ -3838,7 +3838,7 @@ bad=""; while IFS= read -r row; do
 done < <(sed -n '3,$p' "$D4/help.out")
 eq "dev408-16 commands: every row has an example that runs that command" "$bad" ""
 eq "dev408-16 commands: no internal script is listed" "$(printf '%s\n' "$cmds" | grep -cxE 'common|agent-lib|loop-tick|registry|tick|linear|machine-id|chat|fleet')" 0
-eq "dev408-16 commands: the commands (scripts with a Command line, the aliases, help)" "$(printf '%s\n' "$cmds" | paste -sd' ' -)" "boot catchup claim debrief env escalate escalations focus help holder metrics next park prime redact-check resolve respawn retire revive run sandbox schedule slim status takeover tell unpark"
+eq "dev408-16 commands: the commands (scripts with a Command line, the aliases, help)" "$(printf '%s\n' "$cmds" | paste -sd' ' -)" "boot catchup claim debrief env escalate escalations focus help holder metrics next overlap park prime redact-check resolve respawn retire revive run sandbox schedule slim status takeover tell unpark"
 bad=""; for f in "$SCRIPTS"/*.sh; do
   grep -q '^# Command: ' "$f" || continue; n="$(basename "$f" .sh)"
   awk 'NR == 1 { next } !/^#/ { exit } { print }' "$f" | grep -qE "^#   $n\.sh( |$)" || bad="$bad $n:usage"
@@ -4127,7 +4127,7 @@ rterms "$RS"
 gold redact-check "$(cd "$RR" && FLEET_STATE_DIR="$RS" "$FL" redact-check --range main..feat 2>/dev/null)"
 check "dev408-5 redact check: every agent may run it (the base allow list)" bash -c "grep -l '\"Bash($SCRIPTS/redact-check.sh:\*)\"' '$T/gold/state/settings/'*.json >/dev/null"
 check "dev408-5 redact check: the house rule names the script, and exit 2 is UNVERIFIED" bash -c "grep -q 'redact-check.sh --range <base>..HEAD' '$SCRIPTS/../rules/house.md' && grep -q 'Exit 2 means the check could not run: report it UNVERIFIED' '$SCRIPTS/../rules/house.md'"
-check "dev408-5 redact check: config.toml has no redact key" bash -c "! grep -q redact '$SCRIPTS/../config.example.toml'"
+check "dev408-5 redact check: config.toml has no key for the terms (they live outside every repo)" bash -c "! grep -q redact_terms '$SCRIPTS/../config.example.toml'"
 
 # -- dev408-6: a background task stopped with KillShell or TaskStop is not running (next.sh's safe point)
 bgk "$T/k1.jsonl" KillShell shell_id; bgk "$T/k2.jsonl" TaskStop task_id; bgk "$T/k3.jsonl"; bgk "$T/k4.jsonl" "" "" notified

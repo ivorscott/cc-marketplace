@@ -530,6 +530,7 @@ Each command works the same from Claude Code (`/fleet <command>`) and from a she
 | `holder` | Say which machine holds an issue, and whether its claim lapsed | `fleet holder DEV-123` |
 | `metrics` | Show per-PR metrics from the event log | `fleet metrics --since 7d` |
 | `next` | Move a team to its next issue after its PR merged | `fleet next build-api DEV-124` |
+| `overlap` | Check a plan's files against open PRs and live teams in the same repo | `fleet overlap build-api` |
 | `park` | Free a team's slot and keep its work | `fleet park build-api` |
 | `prime` | Pick the fleet up again after a compaction or in a new session | `fleet prime` |
 | `redact-check` | Count the private terms in what a branch adds (counts only) | `fleet redact-check --range origin/main..HEAD` |

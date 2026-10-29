@@ -55,6 +55,7 @@ v420_run_init() { # fleet run init writes the [run] profile; a re-run shows the 
   out="$(bash -c '. "$1/common.sh"; config_warn_unknown' _ "$SCRIPTS" 2>&1)"
   eq "v420 run init: every key it writes is listed in config.example.toml (no unknown-key warning)" "$out" ""
   printf '[run]\nbogus = 1\n' >>"$C"
+  gold run "$("$SCRIPTS/run.sh" show)"
   eq "v420 run init: an unknown key in [run] is warned about" "$(bash -c '. "$1/common.sh"; config_warn_unknown' _ "$SCRIPTS" 2>&1 | grep -c "unknown key 'bogus' in \[run\]")" 1
   gcfg
 }
@@ -187,6 +188,52 @@ v420_heartbeat_name() { # a refused label description does not fail the claim; t
   v420_nolinear; unset FLEET_NOW FLEET_CLAIM_SETTLE_SECS
 }
 
+v420_overlap() { # the overlap check at plan time: files against open PRs and live teams of the same repo only
+  v420_state overlap
+  local R="$T/v420-ov-repo" O="$T/v420-ov-other" out
+  rm -rf "$R" "$O"; mkdir -p "$R/.fleet/plan" "$O"
+  git init -q -b main "$R"; git -C "$R" remote add origin https://github.com/acme/app.git
+  git init -q -b main "$O"; git -C "$O" remote add origin https://github.com/acme/other.git
+  # gh answers `pr list --repo acme/app` with $V420_PRS and any other repo with a PR on the same path
+  printf '#!/usr/bin/env bash\ncase "$*" in\n  *"pr list"*"--repo acme/app"*) cat "$V420_PRS" ;;\n  *"pr list"*"--repo acme/other"*) echo '"'"'[{"number":99,"url":"https://github.com/acme/other/pull/99","headRefName":"x","files":[{"path":"src/a.go"}]}]'"'"' ;;\n  *) echo "[]" ;;\nesac\n' >"$T/v420-gh"; chmod +x "$T/v420-gh"
+  export FLEET_GH="$T/v420-gh" V420_PRS="$T/v420-prs.json"
+  echo '[{"number":7,"url":"https://github.com/acme/app/pull/7","headRefName":"fleet/dev-7-x","files":[{"path":"src/a.go"},{"path":"docs/x.md"}]}]' >"$V420_PRS"
+  mkplan() { local t="$1"; shift; { printf 'Plan\n\n## Files:\n'; for f in "$@"; do printf -- '- `%s` (a note)\n' "$f"; done; printf '\nHow to verify: x\n'; } >"$R/.fleet/plan/$t.md"; }
+  "$REG" add "$(jq -cn --arg r "$R" '{name:"ov-a/lead",team:"ov-a",tier:"Lead",status:"Working",herdr_ref:"ov-a-lead",pane:"p1",repo:$r,issue:"DEV-1"}')" >/dev/null
+  mkplan ov-a src/a.go src/b.go
+  out="$("$SCRIPTS/overlap.sh" ov-a)"; gold overlap "$out"
+  eq "v420 overlap: a plan that shares much with an open PR in the same repo waits for it" "$(printf '%s' "$out" | head -n 1):$(printf '%s' "$out" | sed -n 2p)" "wait #7:Overlap: #7 touches src/a.go."
+  mkplan ov-a src/a.go src/b.go src/c.go src/d.go
+  eq "v420 overlap: a small overlap builds now and is marked merge-after" "$("$SCRIPTS/overlap.sh" ov-a | head -n 1)" "merge-after #7"
+  mkplan ov-a src/b.go src/c.go
+  eq "v420 overlap: no overlap builds at once, even with another team live in the same repo" "$("$SCRIPTS/overlap.sh" ov-a | head -n 1)" "none"
+  "$REG" add "$(jq -cn --arg r "$R" '{name:"ov-b/lead",team:"ov-b",tier:"Lead",status:"Working",herdr_ref:"ov-b-lead",pane:"p2",repo:$r,issue:"DEV-2"}')" >/dev/null
+  mkplan ov-b src/c.go
+  eq "v420 overlap: a live team in the repo with no PR yet is waited on, by name" "$("$SCRIPTS/overlap.sh" ov-a | head -n 1)" "wait team ov-b"
+  "$REG" retire ov-b >/dev/null 2>&1; rm -f "$R/.fleet/plan/ov-b.md"
+  mkplan ov-a src/a.go src/q.go
+  echo '[{"number":99,"url":"https://github.com/acme/app/pull/99","headRefName":"x","files":[{"path":"lib/z.go"}]}]' >"$V420_PRS"
+  eq "v420 overlap: the same path in a different repo never counts" "$("$SCRIPTS/overlap.sh" ov-a | head -n 1)" "none"
+  out="$(FLEET_PEERS_JSON='[{"machine":"peera","summary":[{"t":"far","s":"Working","f":["acme/other:src/a.go"]}]}]' "$SCRIPTS/overlap.sh" ov-a --json)"
+  eq "v420 overlap: another machine's team is read from its published summary, and only its files in this repo" "$(jq -r .answer <<<"$out")" none
+  out="$(FLEET_PEERS_JSON='[{"machine":"peera","summary":[{"t":"far","s":"Working","f":["acme/app:src/a.go"]}]}]' "$SCRIPTS/overlap.sh" ov-a --json)"
+  eq "v420 overlap: a peer's team on this repo with the same path is an overlap" "$(jq -r '.answer + " " + .ref' <<<"$out")" "wait far (peera)"
+  out="$(FLEET_PEERS_JSON='[]' "$SCRIPTS/overlap.sh" "$R/.fleet/plan/ov-a.md" 2>&1)"
+  eq "v420 overlap: a plan file path works too" "$(printf '%s' "$out" | head -n 1)" none
+  printf 'no block here\n' >"$R/.fleet/plan/ov-a.md"; "$SCRIPTS/overlap.sh" ov-a >/dev/null 2>&1
+  eq "v420 overlap: a plan with no Files: block cannot be checked: exit 1, never none" "$?" 1
+  # the summary publishes a team's plan files (repo-qualified) while it has no PR
+  mkplan ov-a src/a.go src/b.go
+  eq "v420 overlap: fleet_summary publishes the plan files of a team with no PR" \
+    "$(bash -c '. "$1/common.sh"; fleet_summary' _ "$SCRIPTS" | jq -r '.[0].f | join(",")')" "acme/app:src/a.go,acme/app:src/b.go"
+  # tick tells the lead once when the planner is Done
+  "$REG" add "$(jq -cn --arg r "$R" '{name:"ov-a/planner",team:"ov-a",tier:"Worker",status:"Done",herdr_ref:"ov-a-planner",pane:"p3",repo:$r,issue:"DEV-1"}')" >/dev/null
+  echo '[]' >"$V420_PRS"; echo working >"$AS/ov-a-lead"; : >"$HERDR_LOG"; export FLEET_NOW=2026-10-29T10:00:00Z DF_GB=100
+  "$SCRIPTS/tick.sh" >/dev/null 2>&1; "$SCRIPTS/tick.sh" >/dev/null 2>&1
+  eq "v420 overlap: tick tells the lead the answer once, when the planner is Done" "$(grep -c 'Overlap check: none' "$HERDR_LOG")" 1
+  unset FLEET_GH V420_PRS FLEET_NOW
+}
+
 v420_smoke() { # the critical cases, CI
   v420_redact_gate
   v420_run_init
@@ -195,6 +242,7 @@ v420_smoke() { # the critical cases, CI
   v420_claims
   v420_comments
   v420_heartbeat_name
+  v420_overlap
 }
 v420_full() { # every case
   v420_smoke

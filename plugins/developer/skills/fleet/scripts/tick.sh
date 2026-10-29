@@ -261,10 +261,29 @@ comments_forward() {
     st_upd --arg k "$i" --arg l "$(printf '%s' "$cj" | jq -r 'last.id // ""')" '$st + {comments_seen: (($st.comments_seen // {}) + {($k): $l})}'
   done < <(printf '%s' "$claim_rows" | jq -r '[.[] | select(.status != "Parked")] | group_by(.team + "|" + .issue) | .[] | [.[0].team, .[0].issue] | @tsv')
 }
+# The overlap check: once per team, when its planner is Done and its plan file holds a Files: block, overlap.sh compares
+# the plan with the open PRs and live teams of the same repo, and the lead is told the answer (build now, wait for #N, or
+# build now and put "Merge after #N" in the PR body). Not an event: nobody is woken. A check that cannot run is told too,
+# once, so the lead builds on the catch-up rather than waiting for it.
+plan_overlap() {
+  local t r ans rc
+  while IFS=$'\t' read -r t r; do
+    [ -n "$t" ] && [ -f "$r/.fleet/plan/$t.md" ] || continue
+    [ "$(jq --arg t "$t" '(.overlap_told // []) | index($t) == null' "$STATE_FILE")" = true ] || continue
+    rc=0; ans="$("$FLEET_SCRIPTS/overlap.sh" "$t" 2>&1)" || rc=$?
+    if [ "$rc" = 0 ]; then
+      ans="Overlap check: $(printf '%s' "$ans" | head -n 1). $(printf '%s' "$ans" | sed -n 2p) $(case "$ans" in none*) echo 'Build now.' ;; wait*) echo 'Start the builder only after that merges, then branch from main.' ;; *) echo 'Build now, and put the line "Merge after that PR" in your PR body.' ;; esac)"
+    else ans="Overlap check could not run ($(printf '%s' "$ans" | tail -n 1 | cut -c1-160)). Build now; the catch-up handles a conflict."; fi
+    "$FLEET_SCRIPTS/tell.sh" "$t/lead" "$ans" >/dev/null 2>&1 || { warn "could not tell $t/lead the overlap answer"; continue; }
+    st_upd --arg t "$t" '$st + {overlap_told: ((($st.overlap_told // []) + [$t]) | unique)}'
+  done < <("$registry" list ${team:+--team "$team"} | jq -r '[.[] | select(.tier != "Orchestrator" and .status != "Retired" and .status != "Parked")] | group_by(.team) | .[]
+    | select(any(.[]; (.name | endswith("/planner")) and .status == "Done")) | [.[0].team, ([.[].repo // empty | select(. != "")] | first // "")] | @tsv')
+}
 heartbeat
 claims_taken_over
 claims_lapsed
 comments_forward
+plan_overlap
 
 # --- stalled / dead -------------------------------------------------------------------------
 # A newly Stalled agent gets ONE nudge through tell.sh (nudged_at on its row) and no event; still

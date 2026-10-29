@@ -130,8 +130,8 @@ const_int() {
   printf '%s\n' "$v"
 }
 
-# cfg_top: config.toml up to its first [table] header, i.e. the top-level keys. cfg_int, cfg_str, cfg_bool and
-# config_list read only this part, so a key of the same name inside [run] is never taken for a top-level one.
+# cfg_top: config.toml up to its first [table] header, i.e. the top-level keys. The top-level readers use only this
+# part, so a key of the same name inside [run] is never taken for a top-level one.
 cfg_top() { sed '/^[[:space:]]*\[/,$d' "$FLEET_CONFIG_DIR/config.toml"; }
 # cfg_int <key> <default>: an integer from config.toml (key = value).
 cfg_int() {
@@ -622,15 +622,38 @@ fleet_queue() {
 # never shortened, so the line stays a valid JSON array that 4.1.3 machines parse. linear.sh write_heartbeat gives the
 # room left under DESC_CAP, the label description limit (bounded, not confirmed). Built from the registry and the queue tick kept (never from GitHub); keys with no value are left out.
 SUMMARY_CAP=1500
+# plan_files <plan file>: the paths of the Files: block of a planner's plan, one per line: a line `Files:` (a heading or
+# bold is fine), then list lines (`- path`, a note after the path is ignored) up to the first line that is not one.
+plan_files() {
+  awk '
+    on && /^[[:space:]]*[-*][[:space:]]+/ { l = $0; sub(/^[[:space:]]*[-*][[:space:]]+/, "", l); gsub(/`/, "", l); sub(/[[:space:]].*$/, "", l); if (l != "") print l; seen = 1; next }
+    on && /^[[:space:]]*$/ { if (seen) exit; next }
+    on { exit }
+    /^[#*[:space:]]*Files:?[*[:space:]]*:?[*[:space:]]*$/ { on = 1; seen = 0 }' "$1" | awk 'NF && !s[$0]++'
+}
+# plan_file_map <rows json>: JSON {team: ["owner/name:path", ...]} (6 paths at most) for each team of the rows that has a
+# plan file with a Files: block and no PR yet: what fleet_summary publishes so another machine's overlap check sees it.
+plan_file_map() {
+  local t d slug pf out='{}'
+  while IFS=$'\t' read -r t d; do
+    [ -n "$t" ] && [ -n "$d" ] && [ -f "$d/.fleet/plan/$t.md" ] || continue
+    slug="$(repo_slug "$d")"; [ -n "$slug" ] || continue
+    pf="$(plan_files "$d/.fleet/plan/$t.md" | head -n 6 | jq -Rsc --arg s "$slug" 'split("\n") | map(select(. != "") | $s + ":" + .)')"
+    out="$(jq -c --arg t "$t" --argjson f "$pf" '. + {($t): $f}' <<<"$out")"
+  done < <(jq -r '[.[] | select(.tier != "Orchestrator" and .status != "Retired" and (.team // "") != "")] | group_by(.team)
+    | .[] | select(all(.[]; (.pr // "") == "")) | [.[0].team, ([.[].repo // empty | select(. != "")] | first // "")] | @tsv' <<<"$1")
+  printf '%s\n' "$out"
+}
 # shellcheck disable=SC2034  # read by linear.sh write_heartbeat
 DESC_CAP="${FLEET_DESC_CAP:-255}"
 fleet_summary() {
   local cap="${1:-$SUMMARY_CAP}"
-  local rows esc q='null' f; f="$(queue_file)"
+  local rows esc q='null' f pfm; f="$(queue_file)"
   rows="$("$FLEET_SCRIPTS/registry.sh" list)" || return 1
   esc="$("$FLEET_SCRIPTS/registry.sh" escalations --open --not-retired 2>/dev/null)" || esc='[]'
   [ ! -s "$f" ] || q="$(jq -c '.queue // null' "$f" 2>/dev/null)" || q='null'
-  jq -nc --slurpfile rows <(printf '%s' "$rows") --slurpfile esc <(printf '%s' "$esc") --argjson q "$q" --argjson cap "$cap" "$RENDER_DEFS"'
+  pfm="$(plan_file_map "$rows" 2>/dev/null)" || pfm='{}'
+  jq -nc --slurpfile rows <(printf '%s' "$rows") --slurpfile esc <(printf '%s' "$esc") --argjson q "$q" --argjson cap "$cap" --argjson pfm "$pfm" "$RENDER_DEFS"'
     def fit: if length > 0 and (tojson | length) > $cap then .[:-1] | fit else . end;
     [$rows[0][] | select(.tier != "Orchestrator" and .status != "Retired" and (.team // "") != "")]
     | group_by(.team) | map(. as $g | $g[0].team as $t
@@ -639,8 +662,8 @@ fleet_summary() {
       | ($g | map(.pr // "") | map(select(. != "")) | first // "") as $pr
       | (team_needs($g; $e; $state; $pr; $q) | if . == "-" then "" else .[0:60] end) as $n
       | {u: ($g | map(.updated_at // "") | max), t: $t, i: ($g | map(.issue // "") | map(select(. != "")) | first // ""), pr: $pr, s: $state, n: $n,
-         r: (([($q.ready // [])[] | select(.url == $pr)] | length) > 0 and $pr != "")})
-    | sort_by(.u) | reverse | .[:12] | map(del(.u) | with_entries(select(.value != "" and .value != false))) | fit'
+         r: (([($q.ready // [])[] | select(.url == $pr)] | length) > 0 and $pr != ""), f: ($pfm[$t] // [])})
+    | sort_by(.u) | reverse | .[:12] | map(del(.u) | with_entries(select(.value != "" and .value != false and .value != []))) | fit'
 }
 
 # PART_OF_JQ: jq `def part_of;` on a PR body: the issue a "Part of <issue>" line names (its identifier, a markdown link

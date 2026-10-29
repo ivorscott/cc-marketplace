@@ -380,6 +380,28 @@ DEV-1: held by <machine|this machine (<machine>)>[, heartbeat lapsed|, no heartb
 
 `DEV-1: held by nobody.` for an unclaimed issue.
 
+### run
+
+`fleet run init` asks one question at a time, each as `<question> [<recommended or saved answer>]:`, then ends with
+
+```
+Run profile saved: <n> teams (<k> can run), installs <allow|ask>. Written to <config.toml path>.
+```
+
+`<k>` is how many can really run: one team per repo per machine, so at most `teams_per_repo` per repo in `repos`. `fleet run show`
+prints the saved profile, one `key: value` line per answer (the defaults for what is not saved), then `human-only: <list>`.
+
+### overlap
+
+```
+none | wait #<N> | wait team <name> | merge-after #<N>
+Overlap: <ref> touches <files>.
+```
+
+One of three answers, then the reason (`Overlap: no open PR or live team in the repo touches the plan's files.` for `none`). Only
+the plan's own repo counts. tick tells the team's lead the answer once, as `Overlap check: <answer>. <reason> <what to do>`, when
+the planner is Done; it is not a wake.
+
 ### claim, stood down
 
 ```
