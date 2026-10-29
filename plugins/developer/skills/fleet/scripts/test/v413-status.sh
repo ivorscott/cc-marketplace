@@ -111,16 +111,17 @@ v413_conflict_catchup() {
   jq '.state = "MERGED"' "$QGHD/app-api-60.json" >"$QD/m.json" && mv "$QD/m.json" "$QGHD/app-api-60.json"
   jq '.mergeable = "CONFLICTING"' "$QGHD/app-api-61.json" >"$QD/m.json" && mv "$QD/m.json" "$QGHD/app-api-61.json"
   jq -nc '[{number: 60, url: "https://github.com/acme/app-api/pull/60", mergedAt: "2026-10-29T10:02:00Z", files: [{path: "a.go"}]},
-           {number: 62, url: "https://github.com/acme/app-api/pull/62", mergedAt: "2026-10-29T10:03:00Z", files: [{path: "other.go"}]}]' >"$QGHD/merged-app-api.json"
+           {number: 62, url: "https://github.com/acme/app-api/pull/62", mergedAt: "2026-10-29T10:03:00Z", files: [{path: "other.go"}]},
+           {number: 64, url: "https://github.com/acme/app-api/pull/64", mergedAt: "2026-10-29T10:04:00Z", files: [{path: "a.go"}]}]' >"$QGHD/merged-app-api.json"
   : >"$HERDR_LOG"; t2="$(tk 2026-10-29T10:05:00Z)"
   eq "v413-7 catchup: a Done team with exited agents is started again when its PR conflicts" \
     "$(evn "$t2" pr_conflicting):$("$REG" list --team td | jq -r '[.[].status] | map(select(. == "Done")) | length'):$(jq -s '[.[] | select(.type == "respawned" and .team == "td")] | length' "$FLEET_STATE_DIR/events.jsonl")" "1:0:3"
   b="$("$REG" get td/lead | jq -r .last_brief)"
   eq "v413-7 catchup: the lead's brief tells it to merge origin/main with a plain push, and that part has no rebase or force-push" \
     "$(sed -n '/What to do now/,/do not push a guess/p' "$b" | grep -c 'git merge origin/main'):$(sed -n '/What to do now/,/do not push a guess/p' "$b" | grep -ciE 'rebase|force|push -f')" "1:0"
-  eq "v413-7 catchup: the cause is the merged PR that shares files, not the one that does not" \
-    "$(printf '%s' "$t2" | jq -r '.[] | select(.type == "pr_conflicting") | .detail')" "after https://github.com/acme/app-api/pull/60"
-  eq "v413-7 catchup: the notice says it" "$(printf '%s' "$t2" | jq -c '.[] | select(.type == "pr_conflicting")' | while IFS= read -r e; do bash -c '. "$1/common.sh"; render_notice "$2"' _ "$SCRIPTS" "$e"; done | grep -c 'conflicts after https://github.com/acme/app-api/pull/60 merged. Lead told to merge main into the PR')" 1
+  eq "v413-7 catchup: the cause is read from GitHub: every merged PR that shares files (64 was not merged by a fleet team), not the one that does not" \
+    "$(printf '%s' "$t2" | jq -r '.[] | select(.type == "pr_conflicting") | .detail')" "after https://github.com/acme/app-api/pull/60, https://github.com/acme/app-api/pull/64"
+  eq "v413-7 catchup: the notice says it" "$(printf '%s' "$t2" | jq -c '.[] | select(.type == "pr_conflicting")' | while IFS= read -r e; do bash -c '. "$1/common.sh"; render_notice "$2"' _ "$SCRIPTS" "$e"; done | grep -c 'conflicts after https://github.com/acme/app-api/pull/60, https://github.com/acme/app-api/pull/64 merged. Lead told to merge main into the PR')" 1
   eq "v413-7 catchup: told once per head" "$(evn "$(tk 2026-10-29T10:10:00Z)" pr_conflicting)" 0
   # the new head is pushed and signed off: ready again
   jq '.mergeable = "MERGEABLE" | .headRefOid = "bbbbbbb61"' "$QGHD/app-api-61.json" >"$QD/m.json" && mv "$QD/m.json" "$QGHD/app-api-61.json"

@@ -588,7 +588,7 @@ for c in ${conflicting[@]+"${conflicting[@]}"}; do
     crepo="$(printf '%s' "$curl" | sed -E 's#^https?://[^/]+/([^/]+/[^/]+)/pull/.*#\1#')"
     if [ -n "$cbase" ] && [ -n "$crepo" ]; then
       lj="$("$FLEET_GH" pr list --repo "$crepo" --state merged --base "$cbase" --limit 30 --json number,url,mergedAt,files 2>/dev/null || true)"
-      cm="$(jq -rn --slurpfile m <(printf '%s' "${lj:-[]}") --slurpfile c <(printf '%s' "${cj:-{}}") --arg since "$since" --arg u "$curl" '
+      cm="$(jq -rn --slurpfile m <(printf '%s' "${lj:-[]}") --slurpfile c <(printf '%s' "${cj:-{\}}") --arg since "$since" --arg u "$curl" '
         ([($c[0].files // [])[] | .path // empty]) as $mine
         | [($m[0] // [])[]? | select(.url != $u and (($since == "") or ((.mergedAt // "") >= $since))
             and ([(.files // [])[] | .path // empty] | any(. as $f | $mine | index($f) != null)))
