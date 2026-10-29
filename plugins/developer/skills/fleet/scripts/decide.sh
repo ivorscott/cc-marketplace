@@ -30,9 +30,15 @@ issue="$("$registry" get "$lead" 2>/dev/null | jq -r '.issue // ""')"
 short="${msg:0:120}"
 
 # What stays the human's (house rules): merging, production, infrastructure applies, secrets, branch protection; and any P0.
+# It fails safe, parking too much rather than deciding a human-only item. The gate is, in order: (1) the filer marked it
+# (`registry.sh escalate ... --human`); (2) it is a P0; (3) a broader backstop over its words, word-bounded, used only because a
+# filer can forget the mark. "production-ready" and "tokenizer" are not hits; "merge", "key", "apply", "kubectl" are. A question
+# that is not clearly something else is parked when the backstop hits, so a hit is never overruled by an option's wording.
 human=false
+[ "$(jq -r '.human // false' <<<"$esc")" != true ] || human=true
 [ "$sev" != P0 ] || human=true
-printf '%s' "$msg" | grep -qiE 'merg(e|ing) (the |this |a )?(pr|pull)|production|prod\b|infrastructure|terraform|apply (the )?(plan|change)|secret|credential|token|branch protection|force.push' && human=true
+text="$(printf '%s %s' "$msg" "$(jq -r '(.options // []) | join(" ")' <<<"$esc")" | sed -E 's/[Pp]roduction[- ](ready|grade|quality)//g')"
+printf '%s' "$text" | grep -qiE '\b(merg(e|es|ed|ing)|prod|production|deploy(ing|ment)?s?|release to|infra|infrastructure|terraform|tofu|kubectl|helm|pulumi|ansible|cloudformation|apply|applies|secrets?|credentials?|passwords?|passphrase|tokens?|api[ _-]?keys?|keys?|certs?|certificates?|iam|vault|rotate|rotation|branch[ -]protection|protected branch|force[ -]push|required (checks|reviews)|gh pr ready|close the (pr|issue))\b' && human=true
 
 if $human; then
   "$registry" note "$lead" parked "$short" >/dev/null

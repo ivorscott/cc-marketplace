@@ -202,17 +202,20 @@ case "$cmd" in
     notify "fleet: $name done" "$outcome${summary:+ — $summary}"
     ;;
   escalate)
-    name="${1:?usage: escalate <name> P0|P1|P2 TEXT [OPTION...]}"; sev="${2:?usage: escalate <name> P0|P1|P2 TEXT [OPTION...]}"
-    msg="${3:?usage: escalate <name> P0|P1|P2 TEXT [OPTION...]}"; shift 3
+    name="${1:?usage: escalate <name> P0|P1|P2 TEXT [--human] [OPTION...]}"; sev="${2:?usage: escalate <name> P0|P1|P2 TEXT [--human] [OPTION...]}"
+    msg="${3:?usage: escalate <name> P0|P1|P2 TEXT [--human] [OPTION...]}"; shift 3
+    # --human marks a question that is the human's whatever its words say (merging, production, infrastructure applies,
+    # secrets, branch protection): fleet decide never answers it, it parks it.
+    human=false; if [ "${1:-}" = --human ]; then human=true; shift; fi
     case "$sev" in P0|P1|P2) ;; *) die "severity must be P0, P1 or P2" ;; esac
     exists "$name"
     at="${FLEET_NOW:-$(now)}"; opts="$(printf '%s\n' "$@" | jq -Rsc 'split("\n") | map(select(. != ""))')"; [ $# -gt 0 ] || opts='[]'
-    update --arg n "$name" --arg s "$sev" --arg m "$msg" --arg t "$at" --argjson o "$opts" \
+    update --arg n "$name" --arg s "$sev" --arg m "$msg" --arg t "$at" --argjson o "$opts" --argjson h "$human" \
       "$DERIVE"'(($t | gsub("[-:]"; "")) + "-") as $pre
         | ([.agents[] | select(type == "object") | escs[] | select(.id | startswith($pre))] | length + 1) as $k
         | .agents[$n] |= (norm | .status = "Needs input"
         | .escalations += [{id: ($pre + ($k | tostring)), severity: $s, message: $m, at: $t}
-            + (if ($o | length) > 0 then {options: $o} else {} end)]
+            + (if ($o | length) > 0 then {options: $o} else {} end) + (if $h then {human: true} else {} end)]
         | derive | .updated_at = $t)'
     # update() holds the lock until this process exits, so the new entry is still the last one.
     id="$(jq -r --arg n "$name" '.agents[$n].escalations | last | .id' "$FLEET_REGISTRY")"
@@ -237,7 +240,7 @@ case "$cmd" in
     jq --arg t "$team" --argjson open "$open" --argjson live "$live" "$ESC_DEFS"'
       [.agents[] | select(($t == "" or .team == $t) and (($live | not) or .status != "Retired")) | . as $a | escs[]
         | select(($open | not) or .resolved_at == null)
-        | {name: $a.name, team: $a.team, id, at, severity, message, options: (.options // []), resolved_at: (.resolved_at // null), resolution: (.resolution // null)}]
+        | {name: $a.name, team: $a.team, id, at, severity, message, options: (.options // []), resolved_at: (.resolved_at // null), resolution: (.resolution // null)} + (if .human == true then {human: true} else {} end)]
       | sort_by(.at)' "$FLEET_REGISTRY"
     ;;
   resolve)
@@ -493,10 +496,10 @@ case "$cmd" in
     # newest file is this session's when one Claude Code session runs in the directory).
     if [ -z "$otr" ]; then otr="$(ls -t "$(transcript_dir_for "$PWD")"/*.jsonl 2>/dev/null | head -n 1 || true)"; fi
     update --arg r "$oref" --arg p "$opane" --arg tr "$otr" --arg m "$(machine_key 2>/dev/null || true)" --arg cwd "$PWD" --arg t "$(now)" \
-      '(.agents.orchestrator.target_teams // null) as $goal | (.agents.orchestrator.run_active // null) as $ra
+      '(.agents.orchestrator.target_teams // null) as $goal | (.agents.orchestrator.run_active // null) as $ra | (.agents.orchestrator.run_started // null) as $rs
        | .agents.orchestrator = {name: "orchestrator", team: "orchestrator", tier: "Orchestrator", status: "Working", herdr_ref: $r, pane: $p,
          machine: $m, cwd: $cwd, at: $t, started: $t, updated_at: $t, discovered: [], escalations: []} + (if $tr != "" then {transcript: $tr} else {} end)
-         + (if $goal != null then {target_teams: $goal} else {} end) + (if $ra != null then {run_active: $ra} else {} end)'
+         + (if $goal != null then {target_teams: $goal} else {} end) + (if $ra != null then {run_active: $ra} else {} end) + (if $rs != null then {run_started: $rs} else {} end)'
     (umask 077; touch "$FLEET_STATE_DIR/wakes.log")
     "$0" get orchestrator | jq --arg w "$FLEET_STATE_DIR/wakes.log" '. + {wakes: $w}'
     ;;

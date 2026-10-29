@@ -374,7 +374,8 @@ elif rows="$("$FLEET_SCRIPTS/status.sh" ${targs[@]+"${targs[@]}"} --json 2>/dev/
     if [ -n "$last" ] && [ $((now_epoch - $(jq -rn --arg t "$last" '$t | fromdateiso8601'))) -lt 1800 ]; then continue; fi
     "$FLEET_SCRIPTS/tell.sh" "$sname" "continue" --no-confirm >/dev/null 2>&1 || warn "could not send continue to $sname"
     "$registry" set "$sname" continued_at="$now_iso" >/dev/null || true
-  done < <(printf '%s' "$rows" | jq -r '.[] | select(.tier != "Orchestrator" and .status == "Needs input" and (.status_detail // "") != "") | [.name, (.continued_at // "")] | @tsv')
+  done < <(printf '%s' "$rows" | jq -r --argjson now "$now_epoch" --argjson until "$(jq -r '.usage_until // 0' "$STATE_FILE")" --argjson act "$(jq -r '.usage_active // false' "$STATE_FILE")" '.[] | select(.tier != "Orchestrator" and .status == "Needs input" and (.status_detail // "") != ""
+    and ((.status_detail // "") != "usage limit" or ($act and $now >= $until))) | [.name, (.continued_at // "")] | @tsv')
   # needs_input: an agent stopped by an API error, once per (agent, reason); forgotten when it recovers.
   add_events "$(jq -cn --slurpfile rows <(printf '%s' "$rows") --slurpfile stf "$STATE_FILE" '$rows[0] as $rows
     | [$rows[] | (.name + "|" + (.status_detail // "")) as $k
@@ -819,7 +820,16 @@ if [ -z "$team" ] && [ "$("$registry" get orchestrator 2>/dev/null | jq -r '.run
   rstop="$(run_str stop never)"; rdo=false
   case "$rstop" in
     [0-2][0-9]:[0-5][0-9])
-      [ $((10#$(local_time "$now_epoch" %H) * 60 + 10#$(local_time "$now_epoch" %M))) -lt $((10#${rstop%%:*} * 60 + 10#${rstop##*:})) ] || rdo=true ;;
+      # The next HH:MM after the run started: start 22:00 with stop 06:00 runs overnight and ends at 06:00 the next morning.
+      rs_iso="$("$registry" get orchestrator 2>/dev/null | jq -r '.run_started // ""' 2>/dev/null || true)"
+      if [ -n "$rs_iso" ]; then
+        rs_epoch="$(jq -rn --arg t "$rs_iso" '$t | fromdateiso8601' 2>/dev/null || echo "$now_epoch")"
+        rs_min=$((10#$(local_time "$rs_epoch" %H) * 60 + 10#$(local_time "$rs_epoch" %M))); st_min=$((10#${rstop%%:*} * 60 + 10#${rstop##*:}))
+        rs_day=$((rs_epoch - rs_min * 60 - 10#$(local_time "$rs_epoch" %S))); [ "$st_min" -gt "$rs_min" ] || rs_day=$((rs_day + 86400))
+        [ "$now_epoch" -lt $((rs_day + st_min * 60)) ] || rdo=true
+      else
+        [ $((10#$(local_time "$now_epoch" %H) * 60 + 10#$(local_time "$now_epoch" %M))) -lt $((10#${rstop%%:*} * 60 + 10#${rstop##*:})) ] || rdo=true
+      fi ;;
     no-work)
       if [ "$(live_team_count)" = 0 ]; then
         rleft="$(jq -r --argjson held "$("$registry" list | jq -c '[.[] | select(.status != "Retired" and (.issue // "") != "") | .issue] | unique')" \

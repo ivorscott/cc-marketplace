@@ -135,7 +135,7 @@ cmd_start() {
   elif [ -z "$("$reg" get orchestrator 2>/dev/null | jq -r '.herdr_ref // ""')" ]; then
     die "no Orchestrator is registered and this is not a herdr pane" "Run fleet run start in the Orchestrator's herdr pane"
   fi
-  "$reg" set orchestrator target_teams="$teams" run_active=true >/dev/null
+  "$reg" set orchestrator target_teams="$teams" run_active=true run_started="${FLEET_NOW:-$(now)}" >/dev/null
   # The launchd loop runs tick with no model; install it when it is not there (never in a sandbox or a test).
   sched="$("$FLEET_SCRIPTS/schedule.sh" status 2>/dev/null | head -n 1)"
   case "$sched" in

@@ -254,11 +254,14 @@ v420_usage() { # a usage limit stops new boots, is reported once, and running te
   eq "v420 usage: the backoff runs 15 minutes" "$(jq -r '.usage_until' "$FLEET_STATE_DIR/tick.state.json")" "$(jq -rn --arg t "$t0" '($t | fromdateiso8601) + 900')"
   ev="$(v420_tick 2026-10-29T10:01:00Z)"
   eq "v420 usage: and not again on the next tick, and still no slot_free: no retry storm" "$(v420_evn "$ev" usage_limit):$(v420_evn "$ev" slot_free)" "0:0"
+  eq "v420 usage: a limited agent is not told to continue while the backoff runs" "$(grep -c 'continue' "$HERDR_LOG")" 0
   o="$(FLEET_NOW=2026-10-29T10:02:00Z "$SCRIPTS/boot.sh" build us "$T" "x" 2>&1)"
   eq "v420 usage: boot refuses during the backoff" "$(printf '%s' "$o" | grep -c "usage limit, so no team starts until 2026-10-29T10:15:00Z")" 1
   eq "v420 usage: the running team is untouched" "$("$REG" get us-b/lead | jq -r .status)" Working
+  v420_tick 2026-10-29T10:16:00Z >/dev/null
+  eq "v420 usage: once the backoff ended, the still-limited agent is told to continue (the resume)" "$(grep -c 'continue' "$HERDR_LOG")" 1
   printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"back at it"}]}}' >"$tr"; "$REG" set us-a/builder status=Idle >/dev/null
-  ev="$(v420_tick 2026-10-29T10:20:00Z)"
+  ev="$(v420_tick 2026-10-29T10:50:00Z)"
   eq "v420 usage: once the agents recover and the backoff ran out, slot_free comes back" "$(v420_evn "$ev" slot_free):$(jq -r '.usage_active' "$FLEET_STATE_DIR/tick.state.json")" "1:false"
   unset DF_GB
 }
@@ -399,7 +402,7 @@ v420_run_start() { # fleet run start reads the profile and asks nothing; the sto
   eq "v420 run start: without a profile it says to run init, and starts nothing" "$rc:$(printf '%s' "$out" | grep -c 'Run fleet run init once'):$("$REG" get orchestrator | jq -r '.run_active // "none"')" "1:1:none"
   printf '2\nparent DEV-9\n\n\nallow\n\n20\n\n07:30\n10:00\n' >"$T/v420-answers"
   FLEET_RUN_ANSWERS="$T/v420-answers" "$SCRIPTS/run.sh" init >/dev/null 2>&1
-  out="$("$SCRIPTS/run.sh" start </dev/null 2>&1)"; rc=$?
+  out="$(FLEET_NOW=2026-10-29T08:00:00Z "$SCRIPTS/run.sh" start </dev/null 2>&1)"; rc=$?
   eq "v420 run start: with a profile it asks nothing and says what it keeps running" "$rc:$(printf '%s' "$out" | head -n 1):$(printf '%s' "$out" | grep -c '?')" "0:Run started: keeping 2 teams on parent DEV-9 work, critical-path order. Loop: not installed (not touched here).:0"
   eq "v420 run start: the Orchestrator row holds the target and the active mark" "$("$REG" get orchestrator | jq -r '[.target_teams, .run_active] | join(",")')" "2,true"
   eq "v420 run start: the rules it prints come from the profile (teams, work, intervals, report time, stop)" \
@@ -414,6 +417,25 @@ v420_run_start() { # fleet run start reads the profile and asks nothing; the sto
   eq "v420 run start: at the stop time it ends quietly: target 0, no longer active" "$("$REG" get orchestrator | jq -r '[.target_teams, (.run_active // "")] | join(",")')" "0,"
   "$SCRIPTS/run.sh" start >/dev/null 2>&1; out="$("$SCRIPTS/run.sh" stop 2>&1)"
   eq "v420 run stop: no new teams, and it says so" "$out:$("$REG" get orchestrator | jq -r .target_teams)" "Run stopped: no new teams start; running teams carry on.:0"
+  unset TZ DF_GB
+}
+
+v420_stop_midnight() { # stop = HH:MM is the next occurrence after the start: 22:00 to 06:00 runs overnight
+  v420_state midnight; export TZ=UTC DF_GB=100; unset HERDR_PANE_ID
+  "$REG" add '{"name":"orchestrator","team":"orchestrator","tier":"Orchestrator","status":"Working","herdr_ref":"om","pane":"pom"}' >/dev/null
+  printf '3\nanything\n\n\nallow\n\n\n\n08:00\n06:00\n' >"$T/v420-answers"
+  FLEET_RUN_ANSWERS="$T/v420-answers" "$SCRIPTS/run.sh" init >/dev/null 2>&1
+  FLEET_NOW=2026-10-29T22:00:00Z "$SCRIPTS/run.sh" start >/dev/null 2>&1
+  local t
+  for t in 2026-10-29T22:01:00Z 2026-10-30T02:00:00Z 2026-10-30T05:59:00Z; do
+    FLEET_NOW="$t" "$SCRIPTS/tick.sh" >/dev/null 2>&1
+    eq "v420 stop: started 22:00 with stop 06:00 the run is still going at $t" "$("$REG" get orchestrator | jq -r .run_active)" true
+  done
+  FLEET_NOW=2026-10-30T06:00:00Z "$SCRIPTS/tick.sh" >/dev/null 2>&1
+  eq "v420 stop: and ends at 06:00 the next morning" "$("$REG" get orchestrator | jq -r '[.target_teams, (.run_active // "")] | join(",")')" "0,"
+  FLEET_NOW=2026-10-29T10:00:00Z "$SCRIPTS/run.sh" start >/dev/null 2>&1
+  FLEET_NOW=2026-10-29T10:30:00Z "$SCRIPTS/tick.sh" >/dev/null 2>&1
+  eq "v420 stop: started 10:00 with stop 06:00 it is still going at 10:30 (the next 06:00 is tomorrow)" "$("$REG" get orchestrator | jq -r .run_active)" true
   unset TZ DF_GB
 }
 
@@ -437,9 +459,21 @@ v420_decide() { # a lead's escalation is decided, recorded and reported without 
   eq "v420 decide: merging is the human's: parked, not approved, with one push" \
     "$(printf '%s' "$out" | grep -c '^Parked dc-a/lead: .* Left for the owner.$'):$(grep -c '^notification show' "$HERDR_LOG"):$(grep -c 'yes' "$HERDR_LOG"):$("$REG" get dc-a/lead | jq -r '[.notes[] | select(.kind == "parked")] | length')" "1:1:0:1"
   eq "v420 decide: the escalation is closed so nothing waits" "$("$REG" escalations --open | jq length)" 0
+  # the human-only gate fails safe: wording the old keyword list missed is parked, innocent words are decided
+  local q
+  for q in "Should I merge #54 now?" "Rotate the API key" "kubectl apply the manifests"; do
+    "$REG" escalate dc-a/lead P1 "$q" yes no >/dev/null 2>&1; id="$("$REG" escalations --open | jq -r '.[0].id')"
+    eq "v420 decide: '$q' is parked" "$("$SCRIPTS/decide.sh" dc-a "$id" 2>&1 | grep -c '^Parked ')" 1
+  done
+  for q in "Use a tokenizer lib" "production-ready error handling"; do
+    "$REG" escalate dc-a/lead P1 "$q" "yes, do it" no >/dev/null 2>&1; id="$("$REG" escalations --open | jq -r '.[0].id')"
+    eq "v420 decide: '$q' is decided" "$("$SCRIPTS/decide.sh" dc-a "$id" 2>&1 | grep -c '^Decided ')" 1
+  done
+  "$REG" escalate dc-a/lead P1 "Which colour?" --human red blue >/dev/null 2>&1; id="$("$REG" escalations --open | jq -r '.[0].id')"
+  eq "v420 decide: a question the filer marked --human is parked whatever its words" "$("$SCRIPTS/decide.sh" dc-a "$id" 2>&1 | grep -c '^Parked ')" 1
   "$REG" escalate dc-a/lead P0 "something is on fire" >/dev/null 2>&1; id="$("$REG" escalations --open | jq -r '.[0].id')"
   eq "v420 decide: a P0 is parked too" "$("$SCRIPTS/decide.sh" dc-a "$id" 2>&1 | grep -c '^Parked ')" 1
-  eq "v420 decide: the report lists what was parked under Needs your eyes" "$(TZ=UTC "$SCRIPTS/metrics.sh" --morning 2>/dev/null | awk '/^## Needs your eyes/ {on = 1; next} /^## / {on = 0} on' | grep -c '^- parked for you (dc-a/lead)')" 2
+  eq "v420 decide: the report lists what was parked under Needs your eyes" "$(TZ=UTC "$SCRIPTS/metrics.sh" --morning 2>/dev/null | awk '/^## Needs your eyes/ {on = 1; next} /^## / {on = 0} on' | grep -c '^- parked for you (dc-a/lead)')" 6
   v420_nolinear; unset FLEET_NOW
 }
 
@@ -524,7 +558,7 @@ v420_margin() { # the profile's usage_margin keeps new teams from booting when t
 
 v420_smoke() { # the critical cases, CI (V420_ONLY="name name" runs just those, to debug one)
   local f
-  for f in v420_version v420_redact_gate v420_run_init v420_run_collide v420_verify v420_claims v420_comments v420_heartbeat_name v420_overlap v420_usage v420_status_changes v420_failure_push v420_quiet v420_fix v420_report v420_run_start v420_decide v420_probes v420_red_signoff v420_margin; do
+  for f in v420_version v420_redact_gate v420_run_init v420_run_collide v420_verify v420_claims v420_comments v420_heartbeat_name v420_overlap v420_usage v420_status_changes v420_failure_push v420_quiet v420_fix v420_report v420_run_start v420_stop_midnight v420_decide v420_probes v420_red_signoff v420_margin; do
     case " ${V420_ONLY:-$f} " in *" $f "*) "$f" ;; esac
   done
 }
