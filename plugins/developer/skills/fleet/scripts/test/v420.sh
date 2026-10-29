@@ -248,7 +248,7 @@ v420_usage() { # a usage limit stops new boots, is reported once, and running te
   "$REG" add "$(jq -cn --arg t "$tr" '{name:"us-a/builder",team:"us-a",tier:"Worker",status:"Idle",herdr_ref:"us-a-builder",pane:"pus",issue:"DEV-1",transcript:$t}')" >/dev/null
   "$REG" add '{"name":"us-b/lead","team":"us-b","tier":"Lead","status":"Working","herdr_ref":"us-b-lead","pane":"pb","issue":"DEV-2"}' >/dev/null
   echo working >"$AS/us-b-lead"
-  "$REG" orchestrator here >/dev/null 2>&1; "$REG" set orchestrator target_teams=3 >/dev/null 2>&1
+  "$REG" add '{"name":"orchestrator","team":"orchestrator","tier":"Orchestrator","status":"Working","herdr_ref":"om","pane":"pom"}' >/dev/null; "$REG" set orchestrator target_teams=3 >/dev/null 2>&1
   ev="$(v420_tick "$t0")"
   eq "v420 usage: agents stopped by a usage limit are reported once, as one usage_limit and no needs_input" "$(v420_evn "$ev" usage_limit):$(v420_evn "$ev" needs_input):$(v420_evn "$ev" slot_free)" "1:0:0"
   eq "v420 usage: the backoff runs 15 minutes" "$(jq -r '.usage_until' "$FLEET_STATE_DIR/tick.state.json")" "$(jq -rn --arg t "$t0" '($t | fromdateiso8601) + 900')"
