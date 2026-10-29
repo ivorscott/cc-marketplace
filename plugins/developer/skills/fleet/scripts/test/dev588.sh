@@ -65,9 +65,32 @@ d588_bare_team() {
   eq "dev588-3 registry: a team name where an agent is wanted says to use its lead that wants an agent" "$(printf '%s' "$out" | grep -c "'build-x' is a team; did you mean 'build-x/lead'")" "1"
 }
 
+d588_notices() {
+  d588_state ntc
+  local A=https://github.com/o/r/pull/1 B=https://github.com/o/r/pull/2
+  d588_agent build-x/lead Lead Working "pr=$A"; d588_agent build-y/lead Lead Working "pr=$B"
+  nadd() { bash -c '. "$1/common.sh"; notice_add "$2" "$3"' _ "$SCRIPTS" "$1" "$2"; } # nadd <text> <event json>
+  nshow() { bash -c '. "$1/common.sh"; notices_show' _ "$SCRIPTS"; }
+  ev() { jq -cn --arg t "$1" --arg tm "$2" --arg u "$3" --arg s "${4:-}" '{type: $t, team: $tm, url: $u} + (if $s != "" then {sha: $s} else {} end)'; }
+  nadd "READY A" "$(ev pr_ready build-x "$A" aaa1111)"; nadd "CONFLICT A" "$(ev pr_conflicting build-x "$A")"
+  eq "dev588-5 notices: a ready notice and a later conflict for the same PR show only the conflict" "$(nshow)" "CONFLICT A"
+  nadd "READY A" "$(ev pr_ready build-x "$A" aaa1111)"; nadd "MERGED A" "$(ev pr_merged build-x "$A")"
+  eq "dev588-5 notices: a ready notice and a later merge show only the merge" "$(nshow)" "MERGED A"
+  nadd "READY A1" "$(ev pr_ready build-x "$A" aaa1111)"; nadd "READY A2" "$(ev pr_ready build-x "$A" bbb2222)"
+  eq "dev588-5 notices: two ready notices at different heads show only the newer" "$(nshow)" "READY A2"
+  nadd "CONFLICT A" "$(ev pr_conflicting build-x "$A")"; nadd "READY A" "$(ev pr_ready build-x "$A" ccc3333)"
+  eq "dev588-5 notices: a conflict followed by a ready (the fix landed) shows only the ready" "$(nshow)" "READY A"
+  nadd "READY A" "$(ev pr_ready build-x "$A" aaa1111)"; nadd "CONFLICT B" "$(ev pr_conflicting build-y "$B")"
+  eq "dev588-5 notices: another PR's notice leaves a ready one alone" "$(nshow)" "$(printf 'READY A\n\nCONFLICT B')"
+  nadd "READY A" "$(ev pr_ready build-x "$A" aaa1111)"; nshow >/dev/null; nadd "CONFLICT A" "$(ev pr_conflicting build-x "$A")"
+  eq "dev588-5 notices: one already shown stays shown, and the later conflict still shows" "$(nshow)" "CONFLICT A"
+  eq "dev588-5 notices: the head sha is kept in the log" "$(grep -c '"sha":"ccc3333"' "$FLEET_STATE_DIR/notices.log" | sed 's/^[1-9][0-9]*$/kept/')" kept
+}
+
 d588_smoke() { # the critical cases, CI
   d588_escalation_ids
   d588_bare_team
+  d588_notices
 }
 d588_full() { # every case
   d588_smoke

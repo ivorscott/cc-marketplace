@@ -1013,14 +1013,14 @@ notices_lock() {
 }
 notices_unlock() { rmdir "$(notices_file).lock" 2>/dev/null || true; }
 notice_add() { # notice_add <text> [tick event JSON]: one notice (it may span lines), and what the event was about:
-  # its type, team, name, url, the team's issue then, its escalation (name|id) and, for stale_version, the version.
+  # its type, team, name, url, the head sha of a pr_ready, the team's issue then, its escalation (name|id) and, for stale_version, the version.
   local f ev="${2:-}" iss="" tm; f="$(notices_file)"; mkdir -p "$(dirname "$f")"
   [ -n "$ev" ] || ev='{}'
   tm="$(jq -r '.team // ""' <<<"$ev" 2>/dev/null)" || tm=""
   [ -z "$tm" ] || iss="$("$FLEET_SCRIPTS/registry.sh" list --team "$tm" 2>/dev/null | jq -r '[.[] | select(.status != "Retired") | .issue // empty | select(. != "")] | first // ""' 2>/dev/null)" || iss=""
   notices_lock || { warn "notices are locked; dropped one: $(printf '%s' "$1" | head -n 1)"; return 0; }
   jq -c --arg at "${FLEET_NOW:-$(now)}" --arg t "$1" --arg i "$iss" '{at: $at, text: $t}
-    + ({type, team, name, url, to} | with_entries(select((.value // "") != "")))
+    + ({type, team, name, url, to, sha} | with_entries(select((.value // "") != "")))
     + (if $i != "" then {issue: $i} else {} end)
     + (if .type == "escalation" and (.id // "") != "" then {esc: "\(.name)|\(.id)"} else {} end)' <<<"$ev" >>"$f" 2>/dev/null || warn "cannot write $f"
   notices_unlock
@@ -1028,7 +1028,10 @@ notice_add() { # notice_add <text> [tick event JSON]: one notice (it may span li
 # notices_show: print the notices not shown yet, a blank line between two (reply), and mark them shown. A notice
 # something already handled is dropped, from the registry as it is now (one read, D6 of DEV-512): its team has no
 # row left that is not Retired (retire); its PR is on none of the team's rows any more, or the team is on another
-# issue (next); its escalation is closed (resolve, or the close at retire and next); a stale_version whose version
+# issue (next); its escalation is closed (resolve, or the close at retire and next); a pr_ready that a later unshown
+# notice of the same PR supersedes (the PR conflicts, merged, or its head moved to another sha: a newer pr_ready) and a
+# pr_conflicting that a later pr_ready follows (the fix landed), so one `fleet status` never says "Ready" about a PR
+# a later line has overtaken (no network: only the notices themselves); a stale_version whose version
 # has the user's go (version_ok); a failed or brief_failed whose row is no longer Failed. A line with no type (from
 # 4.1.0) is shown as it is.
 notices_show() {
@@ -1048,7 +1051,13 @@ notices_show() {
           or (($x.esc // "") != "" and ($open | index($x.esc)) == null)
           or ($x.type == "stale_version" and ($x.to // "") != "" and $ok == $x.to)
           or (($x.type == "failed" or $x.type == "brief_failed") and ([$rows[] | select(.name == $x.name and .status == "Failed")] | length) == 0);
-      [inputs | fromjson? | select(type == "object" and (.text | type) == "string" and .text != "") | select(handled | not) | .text] | join("\n\n")' 2>/dev/null
+      def newer($x; $y): $y.url == $x.url and ($x.url // "") != "" and (
+        (($x.type == "pr_ready") and ($y.type == "pr_conflicting" or $y.type == "pr_merged"
+          or ($y.type == "pr_ready" and ($y.sha // "") != "" and $y.sha != ($x.sha // ""))))
+        or ($x.type == "pr_conflicting" and $y.type == "pr_ready"));
+      [inputs | fromjson? | select(type == "object" and (.text | type) == "string" and .text != "")] as $all
+      | [$all | to_entries[] | .key as $k | .value as $v | select(($v | handled | not) and ([$all[$k + 1:][] | select(newer($v; .))] | length) == 0) | $v.text]
+      | join("\n\n")' 2>/dev/null
   # Once everything is shown, a long log starts over (nothing unshown is lost).
   if [ "$n" -gt 200 ]; then : >"$f"; n=0; fi
   printf '%s\n' "$n" >"$f.shown"
