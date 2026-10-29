@@ -4,6 +4,7 @@
 #   bash scripts/test/run.sh            the full suite (local)
 #   bash scripts/test/run.sh --smoke    the critical cases only (CI, under 2 min)
 #   bash scripts/test/run.sh --v413     only the 4.1.3 cases, test/v413.sh
+#   bash scripts/test/run.sh --v420     only the 4.2.0 cases, test/v420.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SCRIPTS="$(dirname "$HERE")"
@@ -321,6 +322,8 @@ gold() { # gold <entry> <reply>
 }
 . "$HERE/v413.sh" # 4.1.3: v413_smoke and v413_full
 if [ "${1:-}" = --v413 ]; then v413_full; printf '\n%d passed, %d failed\n' "$pass" "$failn"; [ "$failn" = 0 ]; exit; fi # only the 4.1.3 cases
+. "$HERE/v420.sh" # 4.2.0: v420_smoke and v420_full
+if [ "${1:-}" = --v420 ]; then v420_full; printf '\n%d passed, %d failed\n' "$pass" "$failn"; [ "$failn" = 0 ]; exit; fi # only the 4.2.0 cases
 # ---- run.sh --smoke: the critical cases only (CI). The full suite (no flag) stays for local runs. --------------
 if [ "${1:-}" = --smoke ]; then
   SM="$T/smoke"; mkdir -p "$SM"; export FLEET_FORCE=
@@ -741,6 +744,7 @@ Merge this one first." "Do not merge until the API ships" "  hold: waiting on de
   # dev530-6: the README says what changed in 4.1.2 (the version itself is pinned in the 4.1.3 cases)
   eq "smoke: dev530-6 the README has its What changed in 4.1.2 section" "$(grep -c '^## What changed in 4.1.2' "$SCRIPTS/../README.md")" "1"
   v413_smoke
+  v420_smoke
   printf '\n%d passed, %d failed\n' "$pass" "$failn"
   [ "$failn" = 0 ]; exit
 fi
@@ -4587,6 +4591,9 @@ eq "dev408-19 plan: retire removes the team's plan file, and only its own" "$([ 
 # ---- 4.1.3 ----
 v413_full
 # ---- end 4.1.3 ----
+# ---- 4.2.0 ----
+v420_full
+# ---- end 4.2.0 ----
 
 printf '\n%d passed, %d failed\n' "$pass" "$failn"
 [ "$failn" = 0 ]

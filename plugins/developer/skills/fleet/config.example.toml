@@ -29,6 +29,10 @@ permission_mode = "auto"   # the Claude Code permission mode every agent starts 
 # no_pr_ci = ["repo-without-ci"]   # repos whose PRs have no CI: no checks counts as green
 # installs = "allow"   # agents install what the work needs themselves: the guard stops denying installers, and the house rules say to list each install and commit a new dependency with its lockfile; unset, an install waits for the owner
 
+# The redact check (redact-check.sh) gates pushes to public repos only. Visibility comes from these lists first, else from `gh repo view`; unreadable counts as public.
+# public_repos = ["owner/name"]    # always checked
+# private_repos = ["owner/name"]   # never checked: it prints "skipped (private repo)"
+
 # Overnight mode: leads decide inside the issue's scope (installs, cloud, prod, branch protection, `gh pr ready` and
 # closing stay P1), branches catch up with merge commits, and the first tick after 07:00 writes the morning report
 overnight = false

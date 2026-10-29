@@ -384,7 +384,11 @@ DEV-1: held by <machine|this machine (<machine>)>[, heartbeat lapsed|, no heartb
 
 ```
 Redact check <base>..<head>: <n> matches.
+Redact check <base>..<head>: skipped (private repo).
 ```
+
+The second line is for a private or internal repo (from `private_repos` in `config.toml`, else `gh repo view`), exit 0; a
+repo that is public, or whose visibility cannot be read, gets the count.
 
 Counts only, never a term, a line or a file name. A match also ends with the error form on stderr (`redact-check: <n>
 lines in <range> hold a private term. Remove them before you push.`) and exit 1; a check that cannot run (no terms

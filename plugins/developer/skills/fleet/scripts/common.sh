@@ -990,7 +990,8 @@ render_line() {
     discovered) printf 'Discovered work: %s\n' "${L_work:-}" ;;
     report) printf 'Report: %s\n' "${L_path:-}" ;;
     no_prs) printf 'No PRs in the last %s.\n' "${L_since:-7d}" ;;
-    redact) printf 'Redact check %s: %s matches.\n' "${L_range:-}" "${L_count:-0}" ;;
+    redact) if [ -n "${L_skipped:-}" ]; then printf 'Redact check %s: skipped (private repo).\n' "${L_range:-}"
+            else printf 'Redact check %s: %s matches.\n' "${L_range:-}" "${L_count:-0}"; fi ;;
     no_envs) printf 'No team environments.\n' ;;
     nothing_to_debrief) printf 'Nothing to debrief.\n' ;;
     archived) printf 'Registry: moved %s Retired rows without lessons to fleet-archive.json (fleet.json was %s KB, over %s KB).\n' "${L_n:-0}" "${L_kb:-?}" "${L_cap:-512}" ;;
