@@ -117,3 +117,42 @@ d588_slots() {
     "$(tk 2026-10-29T10:40:00Z | jq -s -r '[.[][]? | select(.type == "slot_free") | .detail] | first // ""')" "0 live < target 4; no Linear key, candidates not checked"
   gcfg; unset FLEET_NOW
 }
+
+# ---- 9: unsent text in the input box ----------------------------------------------------------------------------------
+d588_input_box() {
+  d588_state inb; export FLEET_NOW=2026-10-29T10:00:00Z
+  d588_agent ib-a/lead Lead Idle herdr_ref=ib-lead; d588_agent ib-a/builder Worker Idle herdr_ref=ib-b
+  local box=$'earlier output\n────────\n❯ yes go ahead and merge\n────────\n  ? for shortcuts' o
+  # tell clears a pre-filled box first, then delivers only its message
+  printf '%s\n' "$box" >"$AS/ib-lead.read"; : >"$HERDR_LOG"
+  o="$("$SCRIPTS/tell.sh" ib-a/lead "check the build" 2>&1)"
+  eq "dev588-9 tell: text in the box is cleared with ctrl+u before the message is typed" \
+    "$(grep -n 'agent send-keys ib-lead ctrl+u\|agent prompt ib-lead check the build' "$HERDR_LOG" | cut -d: -f2- | sed 's/ \{1,\}/ /g' | paste -sd'|' -):$(told "$o")" \
+    "agent send-keys ib-lead ctrl+u|agent prompt ib-lead check the build:true"
+  printf '%s\n' $'earlier output\n────────\n❯ \n────────' >"$AS/ib-lead.read"; : >"$HERDR_LOG"; "$SCRIPTS/tell.sh" ib-a/lead "second" >/dev/null 2>&1
+  eq "dev588-9 tell: an empty box gets no key" "$(grep -c 'send-keys' "$HERDR_LOG")" 0
+  printf '%s\n' "$box" >"$AS/ib-lead.read"; echo blocked >"$AS/ib-lead"; : >"$HERDR_LOG"; "$SCRIPTS/tell.sh" ib-a/lead "third" >/dev/null 2>&1
+  eq "dev588-9 tell: a blocked agent (a dialog) is sent no key" "$(grep -c 'send-keys' "$HERDR_LOG")" 0
+  rm -f "$AS/ib-lead"; printf '%s\n' "$box" >"$AS/ib-lead.read"; : >"$HERDR_LOG"
+  SEND_KEYS_FAIL=ctrl+u "$SCRIPTS/tell.sh" ib-a/lead "fourth" >/dev/null 2>"$T/ib.err"; rc=$?
+  eq "dev588-9 tell: when herdr refuses ctrl+u nothing is typed, and no other key is tried" "$rc:$(grep -c 'agent prompt' "$HERDR_LOG"):$(grep -c 'send-keys' "$HERDR_LOG"):$(grep -c 'agent send-keys ib-lead ctrl+u' "$HERDR_LOG")" "1:0:1:1"
+  # tick records the text, raises it once per text, clears it when the box is empty; status shows it
+  printf '%s\n' "$box" >"$AS/ib-lead.read"; rm -f "$AS/ib-lead" "$AS/ib-b"; : >"$HERDR_LOG"
+  t1="$("$SCRIPTS/tick.sh" 2>/dev/null)"; t2="$("$SCRIPTS/tick.sh" 2>/dev/null)"
+  eq "dev588-9 tick: the unsent text is on the row and raised once" \
+    "$("$REG" get ib-a/lead | jq -r .input_flag):$(printf '%s' "$t1" | jq -s '[.[][]? | select(.type == "input_pending")] | length'):$(printf '%s' "$t2" | jq -s '[.[][]? | select(.type == "input_pending")] | length')" "yes go ahead and merge:1:0"
+  eq "dev588-9 tick: nothing was sent or cleared" "$(grep -c 'send-keys\|agent prompt' "$HERDR_LOG")" 0
+  eq "dev588-9 status: the Needs you cell says it" "$(bash -c '. "$1/common.sh"; render_table' _ "$SCRIPTS" | grep '^| ib-a ' | grep -c "unsent text in lead's input box")" 1
+  eq "dev588-9 wake: the notice says it was not typed by the owner" \
+    "$(bash -c '. "$1/common.sh"; render_notice "$2"' _ "$SCRIPTS" '{"type":"input_pending","team":"ib-a","name":"ib-a/lead","detail":"yes go ahead"}')" \
+    "Unsent text in ib-a/lead's input box: \"yes go ahead\". It was not typed by the owner; clear it before answering."
+  printf '%s\n' $'x\n────────\n❯ \n────────' >"$AS/ib-lead.read"; "$SCRIPTS/tick.sh" >/dev/null 2>&1
+  eq "dev588-9 tick: an empty box clears the field" "$("$REG" get ib-a/lead | jq -r '.input_flag // ""')" ""
+  # the settings file and the pane env
+  d588_agent ib-a/tester Worker Idle
+  eq "dev588-9 settings: promptSuggestionEnabled is false in the --settings file" \
+    "$(bash -c '. "$1/common.sh"; registry=x; tool_allow="[]"; . "$1/agent-lib.sh"; f="$(claude_args "" Worker /tmp "[]" | tr "\0" "\n" | sed -n 2p)"; jq -r .promptSuggestionEnabled "$f"' _ "$SCRIPTS")" "false"
+  eq "dev588-9 pane env: boot and respawn pass CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=0 for the lead and the workers" \
+    "$(grep -c 'CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=0' "$SCRIPTS/boot.sh" "$SCRIPTS/respawn.sh" | paste -sd, - | sed 's#[^:,]*:##g')" "2,2"
+  unset FLEET_NOW
+}

@@ -21,7 +21,9 @@ claude_args() { # claude_args <model> <tier> <worktree> <allow-json>
   extra="${extra//\{\{scripts\}\}/$FLEET_SCRIPTS}"
   extra="${extra//\{\{team\}\}/$team}"; extra="${extra//\{\{worktree\}\}/$3}"
   settings="$(jq -cn --arg r "$registry" --argjson extra "$extra" --argjson tools "$tool_allow" --argjson h "$herdr_allow" \
-    --arg rc "$FLEET_SCRIPTS/redact-check.sh" '{permissions: {allow: (["Bash(\($r):*)", "Bash(\($rc):*)"] + $h + $extra + $tools | unique)}}')"
+    --arg rc "$FLEET_SCRIPTS/redact-check.sh" '{promptSuggestionEnabled: false, permissions: {allow: (["Bash(\($r):*)", "Bash(\($rc):*)"] + $h + $extra + $tools | unique)}}')"
+  # promptSuggestionEnabled (and CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=0 in the pane, boot and respawn): Claude Code's grayed
+  # next-prompt suggestion sits in the input box, where a keystroke or a tell can submit it. UNVERIFIED: the setting's name.
   # A file keeps the typed start command short: a long inline JSON outlasted herdr's startup wait.
   local dir="$FLEET_STATE_DIR/settings" file
   mkdir -p "$dir"

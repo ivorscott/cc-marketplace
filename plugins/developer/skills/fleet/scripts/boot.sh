@@ -217,7 +217,7 @@ lead_agent="$(agent_name "$team-lead")"
 lead_name="$team/lead"
 armed=1
 ws_json="$(hd workspace create --cwd "$repo" --label "$team" --no-focus \
-  --env FLEET_ROLE=lead --env "FLEET_NAME=$lead_name" --env "FLEET_TEAM=$team" --env "FLEET_STATE_DIR=$FLEET_STATE_DIR" ${env_args[@]+"${env_args[@]}"})" || ws_json=""
+  --env CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=0 --env FLEET_ROLE=lead --env "FLEET_NAME=$lead_name" --env "FLEET_TEAM=$team" --env "FLEET_STATE_DIR=$FLEET_STATE_DIR" ${env_args[@]+"${env_args[@]}"})" || ws_json=""
 workspace="$(printf '%s' "$ws_json" | jq -r '.result.workspace.workspace_id // empty' 2>/dev/null || true)"
 lead_pane="$(printf '%s' "$ws_json" | jq -r '.result.root_pane.pane_id // empty' 2>/dev/null || true)"
 [ -n "$workspace" ] || die "workspace create failed: $ws_json"
@@ -242,7 +242,7 @@ for i in $(seq 0 $((nworkers - 1))); do
   if [ -z "$prev" ]; then split=(--pane "$lead_pane" --direction right); else split=(--pane "$prev" --direction down); fi
   plan_env=(); [ "$role" != planner ] || plan_env=(--env "FLEET_PLAN_DIR=$repo/.fleet") # the scope guard's planner fence
   pane="$(hd pane split "${split[@]}" --cwd "$cwd" --no-focus \
-    --env FLEET_ROLE=worker --env "FLEET_NAME=$name" --env "FLEET_TEAM=$team" \
+    --env CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=0 --env FLEET_ROLE=worker --env "FLEET_NAME=$name" --env "FLEET_TEAM=$team" \
     --env "FLEET_WORKTREE=$worktree" --env "FLEET_STATE_DIR=$FLEET_STATE_DIR" ${plan_env[@]+"${plan_env[@]}"} \
     ${env_args[@]+"${env_args[@]}"} | jq -r '.result.pane.pane_id // empty')" || pane=""
   [ -n "$pane" ] || die "pane split failed for $name"

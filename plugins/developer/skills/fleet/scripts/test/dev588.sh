@@ -144,6 +144,7 @@ d588_smoke() { # the critical cases, CI
   d588_retire
   d588_revive
   d588_slots
+  d588_input_box
 }
 d588_full() { # every case
   d588_smoke

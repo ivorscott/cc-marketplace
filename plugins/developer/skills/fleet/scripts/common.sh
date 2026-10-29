@@ -771,6 +771,7 @@ RENDER_DEFS='def md: tostring | gsub("[\r\n\t]+"; " ") | gsub("\\|"; "\\|");
     elif $state == "Zombie" then "agent gone: respawn or retire"
     elif $state == "Stalled" then "ask for its done step"
     elif $state == "Failed" then "brief not delivered"
+    elif any($g[]; (.input_flag // "") != "") then "unsent text in \([$g[] | select((.input_flag // "") != "") | .name][0] | split("/")[1:] | join("/"))'"'"'s input box"
     elif $state == "Done" then (if $pr != "" then merge_cell($pr) else "retire the team" end)
     elif $state == "Parked" and $pr != "" then
       (if $q != null then (if qready($pr) != null then merge_cell($pr) else "-" end)
@@ -972,6 +973,7 @@ render_line() {
     alert) printf 'Alert: %s. %s.\n' "${L_cause%.}" "${L_next%.}" ;;
     pr_ready) printf '✓ Ready to merge: %s%s. Tester signed %s = head, CI %s, mergeable.\n' "${L_pr:-}" "${L_issue:+ for $L_issue}" "${L_sha:-}" "${L_ci:-green}" ;;
     pr_merged) printf 'Merged %s. Next: %s.\n' "${L_pr:-}" "${L_next:-}" ;;
+    input_pending) printf 'Unsent text in %s'"'"'s input box: "%s". It was not typed by the owner; clear it before answering.\n' "${L_name:-}" "${L_text:-}" ;;
     pr_opened) printf 'PR opened: %s%s. %s.\n' "${L_pr:-}" "${L_issue:+ for $L_issue}" "${L_told:-Lead told to start the tester}" ;;
     event) printf '%s %s: %s. %s.\n' "${L_event:-}" "${L_name:-}" "${L_what%.}" "${L_next%.}" ;;
     claim_takeover) printf '%s taken over by %s. Stop or hand off %s.\n' "${L_issue:-}" "${L_machine:-}" "${L_team:-}" ;;
@@ -1014,6 +1016,7 @@ render_notice() {
       elif [ "$(jq -r '.lead_told == false' <<<"$e")" = true ]; then n="Lead not reached: tell it to merge main into the PR and have the tester sign off again"
       else n="Lead told to merge main into the PR and have the tester sign off again"; fi
       render_line event event=Conflicting name="$name" what="$(pr_link "$url") conflicts $(if [ -n "$o" ]; then printf 'after %s merged' "$o"; else printf 'with main'; fi)" next="$n" ;;
+    input_pending) render_line input_pending name="$name" text="$(jq -r '.detail // ""' <<<"$e")" ;;
     pr_opened) render_line pr_opened pr="$(pr_link "$url")" issue="$(team_issue "$team")" told="Lead not reached: tell it to start the tester" ;;
     dead) render_line event event=Dead name="$name" what="its agent is gone" next="Tick respawns it once in $(const_int RESPAWN_WINDOW_HOURS 6)h, then escalates P1" ;;
     failed) render_line event event=Failed name="$name" what="a restart or its brief did not arrive" next="Re-send its brief or re-boot the team" ;;
@@ -1048,9 +1051,23 @@ render_notice() {
 
 # WAKE_TYPES: the tick events that wake the Orchestrator (loop-tick.sh) and get a notice (tick.sh); each has an entry
 # in references/output.md. An escalation wakes at any severity, pr_opened only when the lead could not be told.
-WAKE_TYPES="pr_ready pr_merged pr_opened pr_conflicting dead failed stalled needs_input brief_failed claim_takeover claim_lost claim_released claim_held_pr claim_lapsed stale_version slot_free weekly_summary morning_report escalation"
+WAKE_TYPES="pr_ready pr_merged pr_opened pr_conflicting input_pending dead failed stalled needs_input brief_failed claim_takeover claim_lost claim_released claim_held_pr claim_lapsed stale_version slot_free weekly_summary morning_report escalation"
 # WAKE_JQ: the jq filter that keeps the events that wake, with $wake bound to WAKE_TYPES (--arg wake "$WAKE_TYPES").
 WAKE_JQ='select(type == "object") | select((.type as $t | $wake | split(" ") | index($t)) and (.type != "pr_opened" or .lead_told == false))'
+
+# input_line <agent ref>: the text sitting unsent in an idle agent's input box, nothing when the agent is working, blocked
+# (a dialog), gone or the box is empty. The one place the screen is read besides the exit dialog: `herdr agent read
+# --source visible`, the last line that starts with the prompt marker (❯ or >, with or without the box's border) above the
+# footer. UNVERIFIED against a real Claude Code: the screen layout; the tests use the herdr shim's screen.
+input_line() {
+  local st
+  st="$(hd agent get "$1" 2>/dev/null | jq -r '.result.agent.agent_status // "gone"' 2>/dev/null || echo gone)"
+  case "$st" in idle | done) ;; *) return 0 ;; esac
+  hd agent read "$1" --source visible 2>/dev/null | awk '
+    /^[[:space:]]*(│[[:space:]]*)?(❯|>)([[:space:]]|$)/ {
+      l = $0; sub(/^[[:space:]]*(│[[:space:]]*)?(❯|>)[[:space:]]?/, "", l); sub(/[[:space:]]*(│[[:space:]]*)?$/, "", l); last = l }
+    END { print last }' || true
+}
 
 # Notices: the wake replies tick renders for the Orchestrator. notices.log in the state dir holds one JSON line
 # each, {at, text} and what it is about (type, team, name, url, issue, esc, to: notice_add); `status` prints the

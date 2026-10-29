@@ -28,7 +28,7 @@
 #   (b) herdr `agent get` shows .state_change_seq increased, or agent_status went to working or
 #       blocked. herdr's Claude integration (its hooks) gives these; boot and status say when it is
 #       not current.
-# The screen is never read. Not seen: press enter once (the text may sit in the box unsent) and look again.
+# The screen is read once, before the send, for text left in the input box (see below); delivery is never judged from it. Not seen: press enter once (the text may sit in the box unsent) and look again.
 # UNVERIFIED: state_change_seq is observed in `agent get` JSON, not documented by herdr (`herdr --skill`),
 # so it is a signal, not a contract; the transcript format may change between Claude Code versions.
 #
@@ -173,6 +173,14 @@ if $is_brief; then
     if [ "$w" -ge "$idle_secs" ]; then verdict false "not idle after ${idle_secs}s" 1; fi
     sleep "$poll"; w=$((w + 1))
   done
+fi
+# Unsent text in an idle agent's input box (typed by a person, or a grayed suggestion Claude Code put there) would come out
+# in front of the message, or let it be submitted as something else: the box is cleared first with the one key that clears a
+# line, ctrl+u (never escape: pressed twice it opens Claude Code's rewind menu). Never to a working or blocked agent: a dialog
+# would take the keys. When herdr refuses the key nothing is sent. UNVERIFIED against a real herdr: that it accepts ctrl+u.
+unsent="$(input_line "$ref")"
+if [ -n "$unsent" ]; then
+  hd agent send-keys "$ref" ctrl+u >/dev/null 2>&1 || verdict false "its input box holds unsent text (\"${unsent:0:40}\") and herdr refused the key that clears it" 1
 fi
 before_state="$(agent_state)"; before_seq="$(agent_seq)"
 needle40="$(jq -rn --arg t "$text" '$t[0:40]')"

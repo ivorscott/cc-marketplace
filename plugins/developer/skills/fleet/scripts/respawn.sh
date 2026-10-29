@@ -120,14 +120,14 @@ if ! hd pane process-info --pane "$pane" >/dev/null 2>&1; then
   mkdir -p "$FLEET_STATE_DIR/tf-plugin-cache"; env_args+=(--env "TF_PLUGIN_CACHE_DIR=$FLEET_STATE_DIR/tf-plugin-cache") # boot's shared cache
   if [ "$tier" = "Lead" ]; then
     ws_json="$(hd workspace create --cwd "${cwd:-$repo}" --label "$team" --no-focus \
-      --env FLEET_ROLE=lead --env "FLEET_NAME=$name" --env "FLEET_TEAM=$team" --env "FLEET_STATE_DIR=$FLEET_STATE_DIR" ${env_args[@]+"${env_args[@]}"})" ||
+      --env CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=0 --env FLEET_ROLE=lead --env "FLEET_NAME=$name" --env "FLEET_TEAM=$team" --env "FLEET_STATE_DIR=$FLEET_STATE_DIR" ${env_args[@]+"${env_args[@]}"})" ||
       die "could not open a workspace for $name"
     pane="$(printf '%s' "$ws_json" | jq -r .result.root_pane.pane_id)"; new_ws="$(printf '%s' "$ws_json" | jq -r .result.workspace.workspace_id)"
   else
     lead_pane="$("$registry" list --team "$team" | jq -r '[.[] | select(.tier == "Lead") | .pane] | first // ""')"
     [ -n "$lead_pane" ] || die "$name's pane is gone and the team has no lead pane to split from"
     pane="$(hd pane split --pane "$lead_pane" --direction down --cwd "${cwd:-$repo}" --no-focus \
-      --env "FLEET_ROLE=$(printf '%s' "$tier" | tr 'A-Z' 'a-z')" --env "FLEET_NAME=$name" --env "FLEET_TEAM=$team" \
+      --env CLAUDE_CODE_ENABLE_PROMPT_SUGGESTION=0 --env "FLEET_ROLE=$(printf '%s' "$tier" | tr 'A-Z' 'a-z')" --env "FLEET_NAME=$name" --env "FLEET_TEAM=$team" \
       --env "FLEET_WORKTREE=$worktree" --env "FLEET_STATE_DIR=$FLEET_STATE_DIR" ${env_args[@]+"${env_args[@]}"} | jq -r .result.pane.pane_id)"
   fi
   [ -n "$pane" ] && [ "$pane" != null ] || die "could not open a new pane for $name"

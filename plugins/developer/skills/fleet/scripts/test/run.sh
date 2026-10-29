@@ -178,7 +178,9 @@ case "$1 $2" in
              elif [ -z "${EXIT_STUCK:-}" ]; then : >"$AS/exited.$3"; fi ;;
     esac
     echo '{}' ;;
-  "agent send-keys") [ -z "${ENTER_WORKS:-}" ] || echo working >"$AS/$3"
+  "agent send-keys") [ -z "${ENTER_WORKS:-}" ] || [ "$4" != enter ] || echo working >"$AS/$3"
+    # SEND_KEYS_FAIL=<key>: herdr refuses that key (DEV-588 bug 9)
+    [ "${SEND_KEYS_FAIL:-}" != "$4" ] || { echo '{"error":{"code":"invalid_key"}}' >&2; exit 1; }
     if [ -e "$AS/$3.dialog" ] && [ "$4" = enter ]; then rm -f "$AS/$3.dialog" "$AS/$3.read"; : >"$AS/exited.$3"; fi; echo '{}' ;;
   "agent read") cat "$AS/$3.read" 2>/dev/null || true ;;
   "notification show") if [ -n "${NOTIFY_FAIL:-}" ]; then echo "herdr: no server" >&2; exit 1; fi; echo '{}' ;;
@@ -1599,7 +1601,7 @@ out="$("$SCRIPTS/tell.sh" tl/builder "do the thing" 2>/dev/null)"; rc=$?
 eq "tell: delivered when the agent goes working" "$rc:$(told "$out")" "0:true"
 rm -f "$AS"/*; printf '● earlier output\n────────\n❯ Try: ship the thing to prod next\n────────\n' >"$AS/tl-b.read"; : >"$HERDR_LOG"
 out="$(PROMPT_NOSTATE=1 "$SCRIPTS/tell.sh" tl/builder "Try: ship the thing to prod next" 2>/dev/null)"; rc=$?
-eq "tell: text on screen is never delivery, and the screen is not read (exit 1)" "$rc:$(told "$out"):$(grep -c '^agent read' "$HERDR_LOG" || true)" "1:false:0"
+eq "tell: text on screen is never delivery, and the screen is read once, for the input box (exit 1)" "$rc:$(told "$out"):$(grep -c '^agent read' "$HERDR_LOG" || true)" "1:false:1"
 rm -f "$AS"/*; : >"$HERDR_LOG"
 out="$(PROMPT_NOSTATE=1 ENTER_WORKS=1 "$SCRIPTS/tell.sh" tl/builder "needs an enter" 2>/dev/null)"; rc=$?
 eq "tell: retry once (enter) succeeds on the second poll" "$rc:$(told "$out")" "0:true"

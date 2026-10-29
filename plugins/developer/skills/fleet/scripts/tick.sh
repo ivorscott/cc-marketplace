@@ -42,6 +42,8 @@
 #                   last tick that share files with it (merged), or main when none. A team that is Parked, or has a
 #                   Done or Zombie agent, is brought back first (catchup.sh), twice at most per PR, then a P1
 #                   escalation. Once per (PR, head); `catchup_refused` when a cap kept it from coming back.
+#   input_pending   text sits unsent in the input box of an idle agent (read from its screen, `input_line`): the row gets
+#                   `input_flag`, once per (agent, text) a wake; nothing is sent or cleared (tell clears the box first)
 #   repo_without_team  a repo in config.toml `repos` with no live team, when it becomes so
 #   disk, disk_ok   free disk crossed below warn_free_gb, and recovered
 #   slot_free       fewer live teams than target_teams (orchestrator row) and max_teams: the Orchestrator picks and
@@ -288,6 +290,26 @@ elif rows="$("$FLEET_SCRIPTS/status.sh" ${targs[@]+"${targs[@]}"} --json 2>/dev/
   st_upd --slurpfile rows <(printf '%s' "$rows") '$rows[0] as $rows | [$rows[].name] as $seen
     | $st + {needs_input_emitted: ([($st.needs_input_emitted // [])[] | select(split("|")[0] as $n | $seen | index($n) | not)]
         + [$rows[] | select(.status == "Needs input" and (.status_detail // "") != "") | .name + "|" + .status_detail])}'
+  # input_pending: text left unsent in the input box of an idle agent (not typed by the owner: a stray paste, or a
+  # suggestion Claude Code put there) is recorded on the row (`input_flag`, 80 characters, which status shows) and raised
+  # once per (agent, text). Nothing is sent and nothing cleared here: tell clears the box before it sends. An empty box
+  # clears the field, and the key is forgotten so the same text can be reported again later.
+  while IFS= read -r sname; do
+    [ -n "$sname" ] || continue
+    sref="$(printf '%s' "$rows" | jq -r --arg n "$sname" '.[] | select(.name == $n) | .herdr_ref // ""')"
+    itext="$(input_line "$sref" | tr '\n' ' ' | sed 's/ *$//' | cut -c1-80)"
+    ikey="$sname|$(printf '%s' "$itext" | cksum | awk '{print $1}')"
+    if [ -n "$itext" ]; then
+      "$registry" set "$sname" input_flag="$itext" >/dev/null 2>&1 || true
+      if [ "$(jq --arg k "$ikey" '(.input_emitted // []) | index($k) == null' "$STATE_FILE")" = true ]; then
+        add_events "$(printf '%s' "$rows" | jq -c --arg n "$sname" --arg t "$itext" '[.[] | select(.name == $n) | {type: "input_pending", team, name, detail: $t}]')"
+      fi
+      st_upd --arg n "$sname" --arg k "$ikey" '$st + {input_emitted: ((((($st.input_emitted // []) | map(select(startswith($n + "|") | not)))) + [$k]))}'
+    else
+      [ -z "$(printf '%s' "$rows" | jq -r --arg n "$sname" '.[] | select(.name == $n) | .input_flag // ""')" ] || "$registry" set "$sname" input_flag= >/dev/null 2>&1 || true
+      st_upd --arg n "$sname" '$st + {input_emitted: (($st.input_emitted // []) | map(select(startswith($n + "|") | not)))}'
+    fi
+  done < <(printf '%s' "$rows" | jq -r '.[] | select(.tier != "Orchestrator" and (.status == "Idle" or .status == "Stalled" or .status == "Needs input")) | .name')
   # A brief that did not arrive: the row stays Failed (status.sh). Re-send the pointer to the same brief file
   # once; if that does not arrive either, one brief_failed event (a wake).
   while IFS=$'\t' read -r fname fbrief fresent fissue cissue; do
