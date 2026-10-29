@@ -3851,7 +3851,7 @@ eq "dev408-16 commands: an alias's help keeps the usage line's continuation line
 routes="$(awk '/^## Step 0/ { on = 1; next } on && /^## / { exit } on' "$SCRIPTS/../SKILL.md" | grep -o '`/fleet [a-z][a-z-]*' | sed 's#`/fleet ##' | sort -u)"
 missing=""; for r in $routes; do printf '%s\n' "$cmds" | grep -qx "$r" || missing="$missing $r"; done
 eq "dev408-16 commands: every SKILL.md Step 0 route is a command" "$missing" ""
-eq "dev408-16 commands: the Step 0 routes" "$(printf '%s\n' "$routes" | paste -sd' ' -)" "boot debrief escalate escalations focus help park prime resolve retire status tell unpark"
+eq "dev408-16 commands: the Step 0 routes" "$(printf '%s\n' "$routes" | paste -sd' ' -)" "boot debrief escalate escalations focus help park prime resolve retire run status tell unpark"
 check "dev408-16 commands: the README's Commands table is fleet help's output" diff <("$FL" help) <(awk '/^\| Command \| What it does \| Example \|$/ { on = 1 } on && !/^\|/ { exit } on' "$SCRIPTS/../README.md")
 "$FL" bogus >"$D4/u.out" 2>"$D4/u.err"; rc=$?
 eq "dev408-16 commands: an unknown command exits 2, nothing on stdout, the list on stderr" "$rc:$(wc -c <"$D4/u.out" | tr -d ' '):$(grep -c '^| `status` |' "$D4/u.err")" "2:0:1"
