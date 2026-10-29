@@ -2102,7 +2102,7 @@ dbreset; jq --arg n "$ml" '.labels += [{id: "L9", name: $n, description: "", par
 eq "claim: an empty description is filled in" "$(jq -r --arg n "$ml" '.labels[] | select(.name == $n) | .description | test("heartbeat=")' "$LINEAR_DB")" true
 dbreset; jq --arg n "$ml" '.labels += [{id: "L9", name: $n, description: "mine already", parent: {id: "L1", name: "fleet"}}]' "$LINEAR_DB" >"$T/db.tmp" && mv "$T/db.tmp" "$LINEAR_DB"
 "$LIN" claim DEV-1 >/dev/null 2>&1
-eq "claim: a non-empty description is never overwritten (the owner line is added after it)" "$(jq -r --arg n "$ml" '.labels[] | select(.name == $n) | .description' "$LINEAR_DB" | grep -v '^heartbeat=\|^summary=' | paste -sd'|' -)" "mine already|owner=Fixture Owner"
+eq "claim: a non-empty description is never overwritten (the owner line is added after it)" "$(jq -r --arg n "$ml" '.labels[] | select(.name == $n) | .description' "$LINEAR_DB" | grep -v '^heartbeat=\|^summary=\|^claimed=' | paste -sd'|' -)" "mine already|owner=Fixture Owner"
 # the race: another machine writes after us; the last writer wins and we exit 1
 dbreset; LINEAR_STUB_RACE=fleet:other "$LIN" claim DEV-3 >"$T/race.out" 2>"$T/race.err"; rc=$?
 eq "claim race: the loser exits 1" "$rc" 1
@@ -2505,7 +2505,7 @@ eq "N3: as one label update, a write" "$(grep -c '^mutation IssueLabelUpdate' "$
 eq "N3: the rewritten description keeps every other line and the heartbeat" "$(jq -r '.labels[] | select(.id == "L9") | .description' "$LINEAR_DB" | paste -sd'|' -)" "my box · macOS · machine id sha256:$want · first claim 2026-01-02|owner=Fixture Owner|heartbeat=2026-10-18T07:00:00Z|extra note"
 : >"$LINEAR_LOG"; eq "N3: a second migrate rewrites nothing" "$("$LIN" migrate | jq -r .rewrote_label):$(nmut)" "false:0"
 legacy_db; "$LIN" claim DEV-3 >/dev/null 2>&1
-eq "N3: claim (ensure_label) rewrites it too, keeping the other text (the heartbeat line is now)" "$(jq -r '.labels[] | select(.id == "L9") | .description' "$LINEAR_DB" | grep -v '^heartbeat=\|^summary=' | paste -sd'|' -)" "my box · macOS · machine id sha256:$want · first claim 2026-01-02|owner=Fixture Owner|extra note"
+eq "N3: claim (ensure_label) rewrites it too, keeping the other text (the heartbeat line is now)" "$(jq -r '.labels[] | select(.id == "L9") | .description' "$LINEAR_DB" | grep -v '^heartbeat=\|^summary=\|^claimed=' | paste -sd'|' -)" "my box · macOS · machine id sha256:$want · first claim 2026-01-02|owner=Fixture Owner|extra note"
 eq "N3: and the full id is in no request" "$(grep -c "$FIXID" "$LINEAR_ARGV_LOG" || true)" 0
 eq "N3: and no description in the database holds one" "$(jq -r '.labels[].description' "$LINEAR_DB" | grep -Ec "$IDRE" || true)" 0
 # heartbeat hashes a full machine id an older version left in the description, or writes nothing
@@ -2525,10 +2525,10 @@ eq "whoami: prints the Linear user behind the key" "$("$LIN" whoami | jq -c '[.i
 eq "whoami: is a read (no mutation)" "$(nmut)" 0
 "$LIN" claim DEV-1 >/dev/null 2>&1
 odesc() { jq -r --arg n "$ml" '.labels[] | select(.name == $n) | .description' "$LINEAR_DB"; }
-eq "owner: the new label's description has the hashed id, the owner and the heartbeat, in that order" "$(odesc | grep -v '^summary=' | sed 's/ · first claim.*//; s/^[^·]* · [^·]* · //; s/^heartbeat=.*/heartbeat=…/' | paste -sd'|' -)" "machine id sha256:$want|owner=Fixture Owner|heartbeat=…"
+eq "owner: the new label's description has the hashed id, the owner and the heartbeat, in that order" "$(odesc | grep -v '^summary=\|^claimed=' | sed 's/ · first claim.*//; s/^[^·]* · [^·]* · //; s/^heartbeat=.*/heartbeat=…/' | paste -sd'|' -)" "machine id sha256:$want|owner=Fixture Owner|heartbeat=…"
 jq '.viewer = {name: "New Owner"}' "$LINEAR_DB" >"$T/db.tmp" && mv "$T/db.tmp" "$LINEAR_DB"
 FLEET_NOW=2026-10-19T10:00:00Z "$LIN" heartbeat >/dev/null
-eq "owner: heartbeat refreshes the owner line, keeps the hashed id and updates the heartbeat" "$(odesc | grep -c "machine id sha256:$want")$(odesc | grep -c '^owner=New Owner$')$(odesc | grep -c '^heartbeat=2026-10-19T10:00:00Z$')$(odesc | grep -vc '^summary=')" 1113
+eq "owner: heartbeat refreshes the owner line, keeps the hashed id and updates the heartbeat" "$(odesc | grep -c "machine id sha256:$want")$(odesc | grep -c '^owner=New Owner$')$(odesc | grep -c '^heartbeat=2026-10-19T10:00:00Z$')$(odesc | grep -vc '^summary=\|^claimed=')" 1113
 jq '.labels |= map(if .name == "'"$ml"'" then .description = "my box · macOS\nheartbeat=2026-10-18T07:00:00Z\nextra note" else . end) | .viewer = {name: "Fixture Owner"}' "$LINEAR_DB" >"$T/db.tmp" && mv "$T/db.tmp" "$LINEAR_DB"
 "$LIN" migrate >/dev/null
 eq "owner: migrate adds a missing owner line and keeps the rest" "$(odesc | paste -sd'|' -)" "my box · macOS|owner=Fixture Owner|heartbeat=2026-10-18T07:00:00Z|extra note"

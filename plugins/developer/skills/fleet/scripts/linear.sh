@@ -519,8 +519,9 @@ case "$cmd" in
     mine="$(machine_label)"
     q_open_issues_labelled "$(label_prefix)" startsWith | jq -c --arg p "$(label_prefix)" --arg m "$mine" --arg l "$(cfg_str machine_legacy_label '')" '
       [.[] | . as $i | .labels.nodes[] | select((.name | startswith($p)) and .name != $m and ($l == "" or .name != $l))
-        | {machine: (.name | ltrimstr($p)), label: .name, name: ([(.description // "") | split("\n")[] | select(contains(" · ")) | split(" · ")[0]] | first // null), issue: $i.identifier, heartbeat: ([(.description // "") | match("(^|\n)heartbeat=([^\n ]+)").captures[1].string] | first // null),
-          summary: ([(.description // "") | match("(^|\n)summary=([^\n]*)").captures[1].string | fromjson? | select(type == "array")] | first // null)}]' ;;
+        | {machine: (.name | ltrimstr($p)), label: .name, issue: $i.identifier, heartbeat: ([(.description // "") | match("(^|\n)heartbeat=([^\n ]+)").captures[1].string] | first // null),
+          summary: ([(.description // "") | match("(^|\n)summary=([^\n]*)").captures[1].string | fromjson? | select(type == "array")] | first // null)}
+          + ([(.description // "") | split("\n")[] | select(contains(" · ")) | split(" · ")[0]] | first | if . then {name: .} else {} end)]' ;;
 
   candidates)
     READONLY=1
