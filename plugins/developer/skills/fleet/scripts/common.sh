@@ -130,11 +130,14 @@ const_int() {
   printf '%s\n' "$v"
 }
 
+# cfg_top: config.toml up to its first [table] header, i.e. the top-level keys. cfg_int, cfg_str, cfg_bool and
+# config_list read only this part, so a key of the same name inside [run] is never taken for a top-level one.
+cfg_top() { sed '/^[[:space:]]*\[/,$d' "$FLEET_CONFIG_DIR/config.toml"; }
 # cfg_int <key> <default>: an integer from config.toml (key = value).
 cfg_int() {
   local v=""
   [ -f "$FLEET_CONFIG_DIR/config.toml" ] &&
-    v="$(sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*\([0-9][0-9]*\).*/\1/p" "$FLEET_CONFIG_DIR/config.toml" | head -1)"
+    v="$(cfg_top | sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*\([0-9][0-9]*\).*/\1/p" | head -1)"
   printf '%s\n' "${v:-$2}"
 }
 # permission_mode: the Claude Code --permission-mode every agent starts in. FLEET_PERMISSION_MODE
@@ -222,6 +225,7 @@ config_list() {
   local f="$FLEET_CONFIG_DIR/config.toml" v
   [ -f "$f" ] || { printf '[]\n'; return 0; }
   v="$(awk -v k="$1" '
+    /^[[:space:]]*\[[A-Za-z_]+\]/ { exit }
     !on && $0 ~ "^[[:space:]]*" k "[[:space:]]*=" { on = 1; sub(/^[^=]*=/, "") }
     on { sub(/#[^"]*$/, ""); buf = buf $0 " "; if ($0 ~ /\]/) exit }
     END { printf "%s", buf }' "$f")"
@@ -258,6 +262,51 @@ config_warn_unknown() {
     case "$v" in [0-9]*) got=number ;; '"'*) got=string ;; '['*) got=array ;; *) got=other ;; esac
     [ -z "$want" ] || [ "$got" = "$want" ] || warn "key '$k' in $f is not a $want (ignored)"
   done < <(config_pairs "$f")
+  # the keys of [run] are listed in the example's [run] table too
+  while IFS=$'\t' read -r k v; do
+    [ -n "$k" ] || continue
+    want="$(table_pairs "$ex" '[run]' 1 | awk -F'\t' -v k="$k" '$1 == k { print $2; found = 1; exit } END { if (!found) print "?" }')"
+    if [ "$want" = "?" ]; then warn "unknown key '$k' in [run] of $f (ignored; the keys are listed in config.example.toml)"; continue; fi
+    case "$want" in [0-9]*) want=number ;; '"'*) want=string ;; *) want="" ;; esac
+    case "$v" in [0-9]*) got=number ;; '"'*) got=string ;; *) got=other ;; esac
+    [ -z "$want" ] || [ "$got" = "$want" ] || warn "key '$k' in [run] of $f is not a $want (ignored)"
+  done < <(table_pairs "$f" '[run]')
+}
+
+# table_pairs <file> <[table]> [commented]: the keys inside one table as "key<TAB>value" lines (commented lines count
+# with a 3rd argument, as in config_pairs).
+table_pairs() {
+  awk -v t="$2" -v c="${3:-}" '
+    /^[[:space:]]*\[[A-Za-z_]+\]/ { h = $0; gsub(/[][[:space:]]/, "", h); on = ("[" h "]" == t); next }
+    on { l = $0; if (c != "") sub(/^[[:space:]]*#+[[:space:]]*/, "", l)
+      if (match(l, /^[a-z_]+[[:space:]]*=[[:space:]]*/)) { k = substr(l, 1, RLENGTH); v = substr(l, RLENGTH + 1)
+        sub(/[[:space:]]*=[[:space:]]*$/, "", k); print k "\t" v } }' "$1"
+}
+# run_str|run_int|run_bool <key> <default>: a value from the [run] table of config.toml, the profile fleet run init saves.
+run_val() { # run_val <key>: the raw text after "key =" in [run], a trailing comment off
+  [ -f "$FLEET_CONFIG_DIR/config.toml" ] || return 0
+  table_pairs "$FLEET_CONFIG_DIR/config.toml" '[run]' | awk -F'\t' -v k="$1" '$1 == k { v = $2; sub(/[[:space:]]+#[^"]*$/, "", v); sub(/[[:space:]]+$/, "", v); print v; exit }'
+}
+run_str() { local v; v="$(run_val "$1" | sed -n 's/^"\(.*\)"$/\1/p')"; printf '%s\n' "${v:-$2}"; }
+run_int() { local v; v="$(run_val "$1" | sed -n 's/^\([0-9][0-9]*\)$/\1/p')"; printf '%s\n' "${v:-$2}"; }
+run_bool() { local v; v="$(run_val "$1" | sed -n 's/^\(true\|false\)$/\1/p')"; printf '%s\n' "${v:-$2}"; }
+# cfg_write <table|-> <key> <toml value|->: set (or, with -, drop) one key of config.toml in [table], or at the top level
+# with -, and change nothing else: other lines, comments and tables stay as they are. A missing file, table or key is
+# created; a new top-level key goes before the first table.
+cfg_write() {
+  local f="$FLEET_CONFIG_DIR/config.toml" t="" tmp
+  [ "$1" = - ] || t="[$1]"
+  mkdir -p "$FLEET_CONFIG_DIR"; [ -f "$f" ] || : >"$f"
+  tmp="$(mktemp "$f.XXXXXX")"
+  awk -v t="$t" -v k="$2" -v v="$3" '
+    function put() { if (!done && v != "-") print k " = " v; done = 1 }
+    BEGIN { intab = (t == "") }
+    /^[[:space:]]*\[[A-Za-z_]+\]/ { h = $0; gsub(/[][[:space:]]/, "", h); h = "[" h "]"
+      if (intab) put()
+      intab = (t != "" && h == t); if (intab) seen = 1; print; next }
+    intab && $0 ~ "^[[:space:]]*" k "[[:space:]]*=" { put(); next }
+    { print }
+    END { if (intab) put(); else if (t != "" && !seen && v != "-") { print ""; print t; print k " = " v } }' "$f" >"$tmp" && mv "$tmp" "$f" || { rm -f "$tmp"; return 1; }
 }
 
 # live_team_count [exclude-team]: teams with a live row (Parked, Done and Retired rows are not live), which is what
@@ -312,14 +361,14 @@ render_env() {
 cfg_str() {
   local v=""
   [ -f "$FLEET_CONFIG_DIR/config.toml" ] &&
-    v="$(sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*\"\([^\"]*\)\".*/\1/p" "$FLEET_CONFIG_DIR/config.toml" | head -1)"
+    v="$(cfg_top | sed -n "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*\"\([^\"]*\)\".*/\1/p" | head -1)"
   printf '%s\n' "${v:-$2}"
 }
 # cfg_bool <key> <default>: a TOML boolean (true or false, unquoted) from config.toml.
 cfg_bool() {
   local v=""
   [ -f "$FLEET_CONFIG_DIR/config.toml" ] &&
-    v="$(sed -nE "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*(true|false)([[:space:]#].*)?$/\1/p" "$FLEET_CONFIG_DIR/config.toml" | head -1)"
+    v="$(cfg_top | sed -nE "s/^[[:space:]]*$1[[:space:]]*=[[:space:]]*(true|false)([[:space:]#].*)?$/\1/p" | head -1)"
   printf '%s\n' "${v:-$2}"
 }
 
@@ -948,7 +997,7 @@ render_line() {
     retire_ask) printf 'Retire %s? Outcome %s. Unpushed: %s. Kept: %s. Reply yes to retire.\n' "${L_team:-}" "${L_outcome:-Abandoned}" "${L_unpushed:-none}" "${L_kept:-none}" ;;
     retired) printf 'Retired %s (%s): PRs %s. %s%s%s\n' "${L_team:-}" "${L_outcome:-Abandoned}" "${L_prs:-none}" \
       "$([ -n "${L_archived:-}" ] && printf 'Archived to %s.' "$L_archived" || printf 'Nothing archived.')" \
-      "${L_kept:+ Kept: $L_kept.}" "${L_issue_state:+ Issue → $L_issue_state.}" ;;
+      "${L_kept:+ Kept: $L_kept.}" "${L_issue_state:+ Issue → $L_issue_state.}${L_note:+ $L_note}" ;;
     parked) printf 'Parked %s: slot free, worktrees and claim kept.\n' "${L_team:-}" ;;
     park_marked) printf 'Marked %s: it parks when its PR merges.\n' "${L_team:-}" ;;
     unparked) printf 'Unparked %s: %s back.\n' "${L_team:-}" "${L_agents:-}" ;;
@@ -990,6 +1039,7 @@ render_line() {
     discovered) printf 'Discovered work: %s\n' "${L_work:-}" ;;
     report) printf 'Report: %s\n' "${L_path:-}" ;;
     no_prs) printf 'No PRs in the last %s.\n' "${L_since:-7d}" ;;
+    run_saved) printf 'Run profile saved: %s teams (%s can run), installs %s. Written to %s.\n' "${L_teams:-?}" "${L_can_run:-?}" "${L_installs:-allow}" "${L_path:-}" ;;
     redact) if [ -n "${L_skipped:-}" ]; then printf 'Redact check %s: skipped (private repo).\n' "${L_range:-}"
             else printf 'Redact check %s: %s matches.\n' "${L_range:-}" "${L_count:-0}"; fi ;;
     no_envs) printf 'No team environments.\n' ;;
