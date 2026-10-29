@@ -1048,7 +1048,7 @@ From the comments: **the redact check gates only public repos** (`private_repos`
 unreadable counts as public); **Verify only for a real hands-on check** (`retire --verify` counts only with an UNVERIFIED step;
 every other issue goes to Done; a Verify item over 7 days is asked about once and then closed with a comment); **fixes override the
 slot limits** (a fix on an open PR goes over `max_teams` and `teams_per_repo`, is counted apart, and a new issue still respects them);
-**a refused label description no longer fails the heartbeat or a claim**, and **the Machine column shows the machine's name**.
+**the Machine column shows the machine's name** (the heartbeat fix is 4.1.4's).
 
 `overnight` is the older switch: `fleet run` supersedes it, and it keeps working.
 

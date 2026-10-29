@@ -171,7 +171,7 @@ v420_heartbeat_name() { # a refused label description does not fail the claim; t
   local out rc
   out="$(LINEAR_STUB_DESC_MAX=60 "$SCRIPTS/linear.sh" heartbeat 2>&1)"; rc=$?
   eq "v420 heartbeat: a description Linear refuses is tried again without the summary: exit 0, one warning" \
-    "$rc:$(printf '%s' "$out" | grep -c 'published the heartbeat without the summary'):$(jq -r '.labels[] | select(.name == "fleet:test") | .description' "$LINEAR_DB" | grep -c '^heartbeat=2026-10-29T10:00:00Z$'):$(jq -r '.labels[] | select(.name == "fleet:test") | .description' "$LINEAR_DB" | grep -c '^summary=')" "0:1:1:0"
+    "$rc:$(printf '%s' "$out" | grep -c 'heartbeat written without the team summary'):$(jq -r '.labels[] | select(.name == "fleet:test") | .description' "$LINEAR_DB" | grep -c '^heartbeat=2026-10-29T10:00:00Z$'):$(jq -r '.labels[] | select(.name == "fleet:test") | .description' "$LINEAR_DB" | grep -c '^summary=')" "0:1:1:0"
   out="$("$SCRIPTS/linear.sh" heartbeat 2>&1)"; rc=$?
   eq "v420 heartbeat: and without a limit the summary rides along again" "$rc:$(jq -r '.labels[] | select(.name == "fleet:test") | .description' "$LINEAR_DB" | grep -c '^summary=')" "0:1"
   out="$(LINEAR_STUB_DESC_MAX=60 "$SCRIPTS/linear.sh" claim DEV-1 2>&1)"; rc=$?
