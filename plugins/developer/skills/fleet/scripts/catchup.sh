@@ -7,7 +7,7 @@
 #
 # <merged-by> names the PR(s) merged ahead of it, for the lead's brief. A Parked team comes back through unpark.sh (the
 # same max_teams and teams_per_repo checks, FLEET_FORCE=1 overrides); any other team that is not live is checked against
-# the same caps. Then each agent that is Done or Zombie, or whose pane is gone, is started again in its own worktree
+# the same caps. A catch-up is a fix on an open PR, so it goes over both without FLEET_FORCE (revive.sh --fix). Then each agent that is Done or Zombie, or whose pane is gone, is started again in its own worktree
 # with respawn.sh --revive, lead first (a live agent is left alone), and the lead gets a brief (tell.sh --brief) with the
 # procedure: git fetch origin; git merge origin/main in the PR's branch (a merge commit, no history is rewritten);
 # resolve the conflicts; run the repo's verify; a plain git push; the tester signs the new head off again. A conflict
@@ -35,5 +35,5 @@ procedure="$(
   printf 'Your builder and tester are started again in their worktrees for this. If a conflict cannot be resolved safely, escalate it P1 with the files in conflict and do not push a guess.\n'
 )"
 why="another PR merged ahead of $pr and it conflicts now; your team was finished and has been brought back to catch it up"
-out="$("$FLEET_SCRIPTS/revive.sh" "$team" --text "$procedure" --why "$why" --event catchup --pr "$pr${by:+ after $by}")" || exit 1
+out="$("$FLEET_SCRIPTS/revive.sh" "$team" --text "$procedure" --why "$why" --event catchup --fix --pr "$pr${by:+ after $by}")" || exit 1
 printf 'Caught up %s: %s; lead told to merge main into %s.\n' "$team" "$(printf '%s' "$out" | sed 's/^Revived [^:]*: //; s/ back\.$/ back/')" "$pr"

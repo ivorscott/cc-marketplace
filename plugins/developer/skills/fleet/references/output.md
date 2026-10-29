@@ -596,6 +596,14 @@ Slot free (<n> of <N> teams running). Pick the next issue and boot it.
 issue is unclaimed and not blocked (`linear.sh candidates`; with no Linear key that last check is skipped and the wake says
 so). UNVERIFIED: the Linear query behind `candidates`.
 
+### fixes
+
+A team brought back to fix its open PR (a conflict after another merge, red checks, a head the tester has not signed, or
+`revive --fix` for review rework) goes over `max_teams` and `teams_per_repo` without `FLEET_FORCE`: its rows carry `fixing`, the
+caps leave it out, and the team table's summary line counts it apart (`3 teams · 2 Working · 1 Idle · 1 fixing`; `Slot free (2 of 3
+teams running, 1 fixing)`). The mark goes when the PR is ready again or merged, or the team is parked. A new issue and a parked
+feature team still respect the limits.
+
 ### wake usage_limit
 
 ```

@@ -5,7 +5,7 @@
 #
 # Nothing is charged to the respawn budget. It refuses at once, with the team still Parked, when the team
 # is not Parked, when max_teams live teams already run, or when another live team works the same repo
-# (FLEET_FORCE=1 overrides the last two). A row that does not start stays Parked; run unpark.sh again for it.
+# (FLEET_FORCE=1 overrides the last two; revive.sh sets FLEET_FIX=1 for a team brought back to fix its open PR). A row that does not start stays Parked; run unpark.sh again for it.
 # It prints "Unparked <team>: <roles> back.", then the team table (references/output.md).
 # Command: Bring a parked team back · e.g. fleet unpark build-api
 set -euo pipefail
@@ -18,7 +18,7 @@ team="${1:?usage: unpark.sh <team>}"
 rows="$("$registry" list --team "$team" --parked)"
 [ "$(printf '%s' "$rows" | jq length)" != 0 ] || die "team '$team' is not parked"
 
-if [ "${FLEET_FORCE:-}" != 1 ]; then
+if [ "${FLEET_FORCE:-}" != 1 ] && [ "${FLEET_FIX:-}" != 1 ]; then
   cap="$(max_teams)"; live="$(live_team_count "$team")"
   [ "$live" -lt "$cap" ] || die "not unparking $team: $live live team(s), max_teams=$cap; park or retire one first"
   repo="$(printf '%s' "$rows" | jq -r '[.[] | .repo // ""] | first // ""')"

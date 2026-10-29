@@ -319,6 +319,39 @@ v420_quiet() { # a quiet hour of loop ticks prints nothing and wakes no one
   unset DF_GB
 }
 
+v420_fix() { # a fix on an open PR goes over the slot limits; a new issue or a feature team does not
+  qfresh v420fix; export FLEET_STATE_DIR="$QD/state.v420fix" FLEET_REGISTRY="$QD/state.v420fix/fleet.json" FLEET_INBOX="$QD/state.v420fix/escalations.jsonl" FLEET_WORKTREES="$QD/state.v420fix/worktrees"
+  rm -rf "$FLEET_STATE_DIR"; mkdir -p "$FLEET_STATE_DIR"; rm -f "$AS"/*; git init -q -b main "$QD/repo-rv" 2>/dev/null
+  export FLEET_GH="$QD/gh-shim" PROMPT_SEQ=1; gcfg "teams_per_repo = 1" "max_teams = 1"
+  local o rc
+  v413_agent fx-live/lead Lead Working; "$REG" set fx-live/lead "repo=$QD/repo-rv" >/dev/null; echo working >"$AS/fx-live-lead"
+  qpr app-api 90 fleet/dev-90-x main 2026-10-29T08:00:00Z '["a.go"]' x CONFLICTING
+  v413_revive_team fx-a Parked 90
+  o="$("$SCRIPTS/tell.sh" fx-a "fix the conflict" 2>&1)"; rc=$?
+  eq "v420 fix: a parked team whose PR conflicts comes back over max_teams and teams_per_repo, with no FLEET_FORCE" \
+    "$rc:$(printf '%s' "$o" | grep -c '(revived)$'):$("$REG" list --team fx-a | jq -r '[.[].fixing] | unique | join(",")')" "0:1:true"
+  eq "v420 fix: status counts it apart" "$(DF_GB=100 "$SCRIPTS/status.sh" 2>/dev/null | grep -c ' · 1 fixing$')" 1
+  qpr app-api 91 fleet/dev-91-x main 2026-10-29T08:00:00Z '["b.go"]' x
+  v413_revive_team fx-b Parked 91; "$REG" signoff fx-b/tester https://github.com/acme/app-api/pull/91 aaaaaaa91 >/dev/null
+  o="$("$SCRIPTS/tell.sh" fx-b "back to work" 2>&1)"; rc=$?
+  eq "v420 fix: a parked feature team with a healthy PR still respects the limits" \
+    "$([ "$rc" != 0 ] && echo refused):$(printf '%s' "$o" | grep -c 'max_teams=1'):$("$REG" list --team fx-b | jq -r '[.[].status] | unique | join(",")')" "refused:1:Parked"
+  o="$(DF_GB=100 "$SCRIPTS/boot.sh" build nx "$QD/repo-rv" "a new issue" 2>&1)"; rc=$?
+  eq "v420 fix: and a new issue is refused while the fix does not use a slot but the live team does" "$([ "$rc" != 0 ] && echo refused):$(printf '%s' "$o" | grep -c 'max_teams=1')" "refused:1"
+  qpr app-api 92 fleet/dev-92-x main 2026-10-29T08:00:00Z '["c.go"]' x; jq '.statusCheckRollup = [{__typename: "CheckRun", status: "COMPLETED", conclusion: "FAILURE"}]' "$QGHD/app-api-92.json" >"$QD/f.json" && mv "$QD/f.json" "$QGHD/app-api-92.json"
+  v413_revive_team fx-c Done 92
+  "$SCRIPTS/tell.sh" fx-c "fix the red CI" >/dev/null 2>&1
+  eq "v420 fix: red CI on an open PR is a fix too" "$("$REG" list --team fx-c | jq -r '[.[].fixing] | unique | join(",")')" true
+  qpr app-api 93 fleet/dev-93-x main 2026-10-29T08:00:00Z '["d.go"]' x
+  v413_revive_team fx-d Done 93; "$REG" signoff fx-d/tester https://github.com/acme/app-api/pull/93 bbbbbbb93 >/dev/null
+  "$SCRIPTS/tell.sh" fx-d "head moved" >/dev/null 2>&1
+  eq "v420 fix: so is a head the tester has not signed" "$("$REG" list --team fx-d | jq -r '[.[].fixing] | unique | join(",")')" true
+  eq "v420 fix: none of the fixes took a slot" "$(bash -c '. "$1/common.sh"; live_team_count' _ "$SCRIPTS")" 1
+  "$SCRIPTS/park.sh" fx-a >/dev/null 2>&1
+  eq "v420 fix: parking the team clears the mark" "$("$REG" list --team fx-a | jq -r '[.[].fixing // "none"] | unique | join(",")')" none
+  unset PROMPT_SEQ FLEET_GH; gcfg
+}
+
 v420_smoke() { # the critical cases, CI
   v420_redact_gate
   v420_run_init
@@ -332,6 +365,7 @@ v420_smoke() { # the critical cases, CI
   v420_status_changes
   v420_failure_push
   v420_quiet
+  v420_fix
 }
 v420_full() { # every case
   v420_smoke

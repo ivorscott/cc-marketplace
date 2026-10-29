@@ -625,6 +625,7 @@ if [ "$(printf '%s' "$prs" | jq length)" != 0 ]; then
       add_events "[$ev]"
       case "$(printf '%s' "$ev" | jq -r .type)" in
         pr_merged)
+          for fn in $("$registry" list --team "$(printf '%s' "$ev" | jq -r .team)" | jq -r '.[] | select(.fixing == "true") | .name'); do "$registry" set "$fn" fixing= >/dev/null 2>&1 || true; done
           st_upd --arg u "$url" --argjson all "$(printf '%s' "$prs" | jq -c --arg t "$(printf '%s' "$ev" | jq -r .team)" '[.[] | select(.team == $t) | .pr]')" \
             '$st + {pr_merged_emitted: ((($st.pr_merged_emitted // []) + [$u] + $all) | unique)}'
           # A team marked to park after its merge parks now, instead of taking the next issue.
@@ -635,6 +636,8 @@ if [ "$(printf '%s' "$prs" | jq length)" != 0 ]; then
             rm -f "$FLEET_STATE_DIR/park.err"
           fi ;;
         pr_ready)
+          # The PR is ready again: the team's fix is done, so it no longer goes over the slot limits.
+          for fn in $("$registry" list --team "$(printf '%s' "$ev" | jq -r .team)" | jq -r '.[] | select(.fixing == "true") | .name'); do "$registry" set "$fn" fixing= >/dev/null 2>&1 || true; done
           st_upd --argjson e "$ev" '$st + {pr_ready_emitted: ((($st.pr_ready_emitted // []) + [$e.url + "@" + $e.sha]) | unique)}' ;;
       esac
     done < <(printf '%s' "$prs" | jq -c '.[]')
@@ -741,7 +744,7 @@ if [ -z "$team" ]; then
     fi
     if $sf_ok; then
       if [ "$(jq -r '.slot_free_emitted // ""' "$STATE_FILE")" != "$sf_key" ]; then
-        add_events "$(jq -cn --argjson n "$nlive" --argjson t "$tgt" --arg note "$sf_note" '[{type: "slot_free", team: "", name: "", live: $n, target: $t, detail: "\($n) live < target \($t)\($note)"}]')"
+        add_events "$(jq -cn --argjson n "$nlive" --argjson t "$tgt" --argjson fx "$("$registry" list --live | jq '[.[] | select(.fixing == "true") | .team] | unique | length')" --arg note "$sf_note" '[{type: "slot_free", team: "", name: "", live: $n, target: $t, fixing: $fx, detail: "\($n) live < target \($t)\($note)"}]')"
         st_upd --arg k "$sf_key" '$st + {slot_free_emitted: $k}'
       fi
     else

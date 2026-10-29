@@ -2,10 +2,13 @@
 # Bring a finished, parked or exited team back, in its own worktrees, and give its lead one thing to do. catchup.sh (a
 # PR that conflicts now) and tell.sh (a message to a team that is not running) use it. Local teams only.
 #
-#   revive.sh <team> --text TEXT [--why WHY] [--event NAME] [--pr URL]
+#   revive.sh <team> --text TEXT [--why WHY] [--event NAME] [--pr URL] [--fix]
 #
 # A Parked team comes back through unpark.sh (the max_teams and teams_per_repo checks; FLEET_FORCE=1 overrides); any other
-# team that is not live is checked against the same caps. Then each agent that is Done or Zombie, or whose pane is gone,
+# team that is not live is checked against the same caps. A FIX is not: a team brought back to fix its open PR (--fix, or
+# the PR conflicts, its checks are red, or its head is not the one the tester signed) goes over both caps without
+# FLEET_FORCE, is marked `fixing` (status counts it apart: "3 teams · 1 fixing") and does not use a slot; only a fix on an
+# existing open PR counts, never a new issue. Then each agent that is Done or Zombie, or whose pane is gone,
 # is started again with respawn.sh --revive, lead first (a live agent is left alone; a worker comes back Idle, the lead
 # Working). The lead's resume brief carries TEXT ("What to do now: ..."), so it gets no second brief; a lead that was
 # still running is given TEXT by tell.sh (a brief when idle, else a message). Nothing but the rows' status changes: the PR,
@@ -19,15 +22,16 @@ require_herdr
 [ -z "${FLEET_ROLE:-}" ] || die "revive is the Orchestrator's; an agent (FLEET_ROLE=$FLEET_ROLE) may not run it"
 registry="$FLEET_SCRIPTS/registry.sh"
 
-usage="usage: revive.sh <team> --text TEXT [--why WHY] [--event NAME] [--pr URL]"
+usage="usage: revive.sh <team> --text TEXT [--why WHY] [--event NAME] [--pr URL] [--fix]"
 team="${1:?$usage}"; shift
-procedure=""; why="your team was finished and has been brought back"; evname=revived; pr=""
+procedure=""; why="your team was finished and has been brought back"; evname=revived; pr=""; fixing=false
 while [ $# -gt 0 ]; do
   case "$1" in
     --text) procedure="${2:?--text needs text}"; shift 2 ;;
     --why) why="${2:?--why needs text}"; shift 2 ;;
     --event) evname="${2:?--event needs a name}"; shift 2 ;;
     --pr) pr="${2:?--pr needs a URL}"; shift 2 ;;
+    --fix) fixing=true; shift ;;
     *) die "unknown option: $1" ;;
   esac
 done
@@ -37,14 +41,16 @@ rows="$("$registry" list --team "$team" | jq -c '[.[] | select(.status != "Retir
 lead="$(jq -r '[.[] | select(.tier == "Lead") | .name] | first // ""' <<<"$rows")"
 [ -n "$lead" ] || die "team '$team' has no lead row"
 lead_respawned=false
+# A fix on an open PR goes over the caps. Anything else stays under them.
+$fixing || [ -z "$(fix_reason "$team")" ] || fixing=true
 parked="$(jq 'any(.[]; .status == "Parked")' <<<"$rows")"
 if [ "$parked" = true ]; then
   [ "$(jq -r --arg l "$lead" '.[] | select(.name == $l) | .status' <<<"$rows")" != Parked ] || lead_respawned=true # its resume brief carries the procedure
-  FLEET_RESUME_WHY="$why. What to do now: $procedure" "$FLEET_SCRIPTS/unpark.sh" "$team" >/dev/null 2>"$FLEET_STATE_DIR/revive.step.err" ||
+  FLEET_FIX="$($fixing && echo 1)" FLEET_RESUME_WHY="$why. What to do now: $procedure" "$FLEET_SCRIPTS/unpark.sh" "$team" >/dev/null 2>"$FLEET_STATE_DIR/revive.step.err" ||
     die "$(grep -v '^fleet: warning:' "$FLEET_STATE_DIR/revive.step.err" | head -n 1 | sed 's/^fleet: //')"
   rm -f "$FLEET_STATE_DIR/revive.step.err"
   rows="$("$registry" list --team "$team" | jq -c '[.[] | select(.status != "Retired" and .tier != "Orchestrator")]')"
-elif [ "${FLEET_FORCE:-}" != 1 ]; then
+elif [ "${FLEET_FORCE:-}" != 1 ] && ! $fixing; then
   cap_t="$(max_teams)"; live="$(live_team_count "$team")"
   [ "$live" -lt "$cap_t" ] || die "not bringing $team back: $live live team(s), max_teams=$cap_t; park or retire one first"
   repo="$(jq -r '[.[] | .repo // ""] | first // ""' <<<"$rows")"; others="$(teams_on_repo "$repo" "$team")"
@@ -95,6 +101,7 @@ if ! $told; then
   $told || { "$FLEET_SCRIPTS/tell.sh" "$lead" "$(printf '%s' "$procedure" | tr '\n' ' ')" >/dev/null 2>&1 && told=true; }
 fi
 "$registry" set "$lead" status=Working >/dev/null 2>&1 || true
+if $fixing; then for n in $(jq -r '.[].name' <<<"$rows"); do "$registry" set "$n" fixing=true >/dev/null 2>&1 || true; done; fi
 # A worker comes back Idle (the lead hands it work); the next status reads herdr's word for it.
 for w in $(jq -r '.[] | select(.tier == "Worker") | .name' <<<"$rows"); do
   case "$("$registry" get "$w" | jq -r .status)" in Working | Booting) "$registry" set "$w" status=Idle >/dev/null 2>&1 || true ;; esac

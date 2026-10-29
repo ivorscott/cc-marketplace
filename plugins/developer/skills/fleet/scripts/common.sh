@@ -314,16 +314,35 @@ cfg_write() {
 # takes a slot only when it is listed.
 live_team_count() {
   "$FLEET_SCRIPTS/registry.sh" list --live | jq -r --arg x "${1:-}" --argjson repos "$(config_list repos)" '
-    [.[] | select(.tier != "Orchestrator" and .team != $x)
+    [.[] | select(.tier != "Orchestrator" and .team != $x and (.fixing // "") != "true")
       | select(($repos | length) == 0 or ((.repo // "") as $r | any($repos[]; . == $r or (split("/") | last) == ($r | split("/") | last))))
       | .team] | unique | length'
+}
+# Fixes override the slot limits. A team brought back to fix its open PR (a conflict after another merge, red CI, a head
+# the tester has not signed, review rework) is marked `fixing` on its rows (revive.sh); live_team_count and teams_on_repo
+# leave such a team out, so it goes over max_teams and teams_per_repo without parking anything and without taking a slot
+# from the next issue. The mark goes when the PR is ready again or merged (tick), or the team is parked. New issues and
+# a parked feature team still respect the limits.
+# fix_reason <team>: why bringing the team back is a fix on its open PR (it conflicts, its checks are red, or its head is
+# not the one the tester signed), nothing when it is not.
+fix_reason() {
+  local pr j so
+  pr="$("$FLEET_SCRIPTS/registry.sh" list --team "$1" | jq -r '[.[].pr // empty | select(. != "")] | first // ""')"
+  [ -n "$pr" ] || return 0
+  j="$(forge_pr_json "$pr" 2>/dev/null)" || return 0
+  [ "$(jq -r '.state // ""' <<<"$j")" = OPEN ] || return 0
+  so="$("$FLEET_SCRIPTS/registry.sh" list --team "$1" | jq -r '[.[] | select((.signoff | objects | .sha) != null) | .signoff.sha] | first // ""')"
+  jq -r --arg so "$so" "$PR_DEFS"'if .mergeable == "CONFLICTING" then "it conflicts with its base"
+    elif pr_ci(false) == "red" then "its checks are red"
+    elif $so != "" and ((.headRefOid // "") | startswith($so) | not) then "its head is not the one the tester signed"
+    else empty end' <<<"$j" 2>/dev/null || true
 }
 # teams_per_repo: live teams on one repo, default 1.
 teams_per_repo() { cfg_int teams_per_repo 1; }
 # teams_on_repo <repo> [exclude-team]: the live teams other than exclude-team that work <repo>, one per line.
 teams_on_repo() {
   "$FLEET_SCRIPTS/registry.sh" list --live | jq -r --arg r "$1" --arg x "${2:-}" \
-    '[.[] | select(.tier != "Orchestrator" and .team != $x and (.repo // "") == $r) | .team] | unique[]'
+    '[.[] | select(.tier != "Orchestrator" and .team != $x and (.fixing // "") != "true" and (.repo // "") == $r) | .team] | unique[]'
 }
 
 # Agent names must match herdr's rule: [a-z][a-z0-9_-]{0,31}.
@@ -924,7 +943,8 @@ render_table() {
         [([$t | length | "\(.) team\(if . == 1 then "" else "s" end)"]
           + ([$t[].state | sub(" \\(stale .*$"; "")] as $s | ["Working", "Idle", "Waiting", "Stalled", "Parked", "Done"]
             | map(. as $w | group as $g | ([$s[] | select(group == $g)] | length) as $n | select($n > 0) | "\($n) \($g)"))
-          | join(" · ")),
+          | join(" · ")
+          + ([$rows[] | select(.tier != "Orchestrator" and .status != "Retired" and .fixing == "true" and (.team | shown)) | .team] | unique | length | if . > 0 then " · \(.) fixing" else "" end)),
          (["| Team | Machine | Issue | PR | State | Needs you |", "|---|---|---|---|---|---|",
            ($t[] | "| \(.team | md) | \($names[.machine] // .machine | md) | \(.issue) | \(.pr) | \(.state | md) | \(.needs | md) |")] | join("\n")),
          ([$esc[] | select((.severity | IN("P0", "P1")) and (.team | shown)) | "\(.name) \(.severity | sev): \(.message | .[0:60] | md)"]
@@ -1066,7 +1086,7 @@ render_line() {
     pr_opened) printf 'PR opened: %s%s. %s.\n' "${L_pr:-}" "${L_issue:+ for $L_issue}" "${L_told:-Lead told to start the tester}" ;;
     event) printf '%s %s: %s. %s.\n' "${L_event:-}" "${L_name:-}" "${L_what%.}" "${L_next%.}" ;;
     claim_takeover) printf '%s taken over by %s. Stop or hand off %s.\n' "${L_issue:-}" "${L_machine:-}" "${L_team:-}" ;;
-    slot_free) printf 'Slot free (%s of %s teams running). Pick the next issue and boot it.\n' "${L_live:-?}" "${L_target:-?}" ;;
+    slot_free) printf 'Slot free (%s of %s teams running%s). Pick the next issue and boot it.\n' "${L_live:-?}" "${L_target:-?}" "${L_fixing:+, $L_fixing fixing}" ;;
     morning_report) printf 'Morning report %s: %s. Relay it as it is.\n' "${L_date:-}" "${L_path:-}" ;;
     slim) printf 'Slim: %s.%s%s\n' "${L_state:-off}" "${L_backup:+ Backup at $L_backup.}" "${L_replaced:+ Replaced $L_replaced.}" ;;
     slim_status) printf 'Slim: %s. herdr Claude integration: %s. Offer: %s.\n' "${L_slim:-off}" "${L_integration:-missing}" "${L_offer:-done}" ;;
@@ -1130,7 +1150,7 @@ render_notice() {
     stale_version) d="$(jq -r '.to // "a newer version"' <<<"$e")"
       render_decision P2 "$name" "$team runs plugin $(jq -r '.from // "an older version"' <<<"$e") and $d is installed. Switch it to $d at its next issue? A yes is kept for $d (registry.sh pref version_ok $d), then restart this Claude Code session or run /reload-plugins." \
         "yes, at its next issue" "no, retire it after this issue" ;;
-    slot_free) render_line slot_free live="$(jq -r '.live // "?"' <<<"$e")" target="$(jq -r '.target // "?"' <<<"$e")" ;;
+    slot_free) render_line slot_free live="$(jq -r '.live // "?"' <<<"$e")" target="$(jq -r '.target // "?"' <<<"$e")" fixing="$(jq -r 'if (.fixing // 0) > 0 then .fixing else "" end' <<<"$e")" ;;
     usage_limit) render_line event event="Usage limit" name=fleet what="agents hit the plan's usage limit" \
       next="No team boots until $(jq -r '.until // "the backoff ends"' <<<"$e"); running teams continue" ;;
     status_changed) jq -r 'if (.ready // "") != "" then "Ready to merge: \(.ready)." else empty end' <<<"$e" ;;

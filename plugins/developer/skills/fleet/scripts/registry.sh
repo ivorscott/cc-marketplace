@@ -416,7 +416,7 @@ case "$cmd" in
       if ([.agents[] | select(.team == $t and .status == "Parked")] | length) > 0 then error("team is already parked") else . end
       | .agents |= with_entries(
         if .value.team == $t and .value.tier != "Orchestrator" and .value.status != "Retired" then
-          .value |= (.status = "Parked" | .parked_at = $now | .parked_reason = $r | del(.park_after_merge) | .updated_at = $now)
+          .value |= (.status = "Parked" | .parked_at = $now | .parked_reason = $r | del(.park_after_merge) | del(.fixing) | .updated_at = $now)
         else . end)'
     ;;
   park-mark)
