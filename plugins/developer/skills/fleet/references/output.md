@@ -193,7 +193,11 @@ Ranked as the Pick step ranks them (priority, then series order), at most five.
 Told <team/role>: "<first 60 characters>" (delivered)
 ```
 
-`(sent)` with `--no-confirm`; `(queued)` when the agent was working at the send and still is (Claude Code holds the
+`(revived)` when the team was not running: a plain message from the Orchestrator to a Done or Parked team, or one whose agents are
+gone, with its PR still open starts the team again (`revive`) and gives the lead the message in its resume brief; a message for
+a worker goes to the lead as `(meant for <role>) <text>`. A merged or closed PR is refused: `tell: not delivered to <target>:
+its PR <url> is merged or closed. Boot a new team, or move the team on (fleet next).` Unsent text in the agent's input box is
+cleared first (ctrl+u, an idle agent only); if herdr refuses the key nothing is typed. `(sent)` with `--no-confirm`; `(queued)` when the agent was working at the send and still is (Claude Code holds the
 text until its turn ends; no enter is pressed). A team name with no `/` is its lead: `tell build-x "..."` is `tell
 build-x/lead "..."`. Not delivered: the error form, `tell: not delivered to <target>: <why>. <next step>.`; the next step
 is `Respawn it (fleet respawn <target>) or retire it` only for an agent the registry has, and `No such agent in the
@@ -220,6 +224,10 @@ After:
 ```
 Retired <team> (<outcome>): PRs <PR url, …|none>. Archived to <path>. Kept: <role (why), …>. Issue → <Done|Verify|Todo>.
 ```
+
+An explicit `--outcome` is the outcome of every retired row, whatever the rows reported. An issue (or claim) another machine
+holds is never moved or released from here, whatever the outcome: one warning says `left DEV-1 alone: <machine> holds it` (or
+`could not tell who holds it`), and no `Issue →` is printed.
 
 `Nothing archived.` when no report was copied; ` Kept: …` only when something was kept; ` Issue → …` only when the
 retire moved the team's issue on Linear. Then the table.
@@ -267,6 +275,16 @@ Caught up <team>: <roles> back; lead told to merge main into <PR url>.
 The finished or parked team of a PR that conflicts now (tick runs it, and says so in the `Conflicting` wake): the agents that
 had exited are started again in their worktrees (`respawn --revive`), listed by role; `nothing needed` when all were running.
 Refused, with the team as it was, when a cap is full or herdr does not answer.
+
+### revive
+
+```
+Revived <team>: <roles> back.
+```
+
+A finished, parked or exited team started again in its own worktrees, its lead briefed with the text (`catchup` and a `tell`
+to a team that is not running use it). The PR, branch, worktrees and sign-off stay. Refused, with the team as it was, when a
+cap is full, herdr does not answer or an agent did not start.
 
 ### escalate
 
@@ -442,6 +460,18 @@ again.` After two catch-ups of one PR a P1 escalation is raised instead.
 PR opened: <PR url> for [DEV-1](url) <title>. Lead not reached: tell it to start the tester.
 ```
 
+### wake input_pending
+
+```
+Unsent text in <team/role>'s input box: "<text>". It was not typed by the owner; clear it before answering.
+```
+
+Tick found text left in the input box of an idle agent (`herdr agent read --source visible`, the line after the last prompt
+marker). Once per (agent, text); the row's `input_flag` holds the first 80 characters until the box is empty again, and the
+Needs you cell of its team says `unsent text in <role>'s input box` meanwhile (after an escalation, a prompt and a stall,
+before `merge the PR`). Nothing is sent or cleared by tick: `tell` clears the box with ctrl+u before it types, to an idle
+agent only. UNVERIFIED against a real Claude Code: the screen layout and herdr accepting ctrl+u.
+
 ### wake dead
 
 ```
@@ -525,8 +555,10 @@ switch it to <new>. Ask the user; on a yes, record it with registry.sh pref vers
 Slot free (<n> of <N> teams running). Pick the next issue and boot it.
 ```
 
-`<N>` is `target_teams` on the orchestrator row; it comes once per (live count, target) while fewer teams run than
-the target and than `max_teams` (Parked teams do not count).
+`<N>` is `target_teams` on the orchestrator row; it comes once per change while fewer teams run than the target and than
+`max_teams` (Parked teams do not count), a configured repo has fewer live teams than `teams_per_repo`, and at least one open
+issue is unclaimed and not blocked (`linear.sh candidates`; with no Linear key that last check is skipped and the wake says
+so). UNVERIFIED: the Linear query behind `candidates`.
 
 ### wake morning_report
 

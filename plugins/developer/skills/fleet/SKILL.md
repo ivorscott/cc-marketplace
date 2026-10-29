@@ -104,7 +104,8 @@ retire (F) or re-boot; **Failed**, re-send with `$F/fleet tell <team/role> - --b
 
 ## C. Steer
 
-- Send to the **lead** unless the user names a worker: `$F/fleet tell <team/role> <text>`. It checks the message
+- Send to the **lead** unless the user names a worker: `$F/fleet tell <team/role> <text>` (a bare team name is its lead). A
+  message to a Done or Parked team whose PR is still open starts the team again and reaches its lead (`(revived)`). It checks the message
   arrived and exits 1 (not delivered) or 2 (pane or agent gone); never treat an undelivered message as sent.
 - `agent_blocked` → read the screen first, apply the policy, then wait with `--until idle --until blocked`, never on
   idle alone. A wait that times out: check the agent again with `herdr agent get` and its row before waiting again.

@@ -79,6 +79,7 @@ Each command works the same from Claude Code (`/fleet <command>`) and from a she
 | `resolve` | Close an escalation once its answer reached the agent | `fleet resolve build-api/lead 20261024T090000Z-1 --note "use pg"` |
 | `respawn` | Start a dead agent again from its row | `fleet respawn build-api/builder` |
 | `retire` | Shut a team (or one agent) down safely | `fleet retire build-api --outcome Shipped` |
+| `revive` | Bring a finished or parked team back with something to do | `fleet revive build-api --text "the PR needs a review reply"` |
 | `sandbox` | Run a reproduction away from the live fleet | `fleet sandbox --keep` |
 | `schedule` | Install, remove or check the launchd loop | `fleet schedule status` |
 | `slim` | Turn the fleet's panel style for herdr on or off, or say if it is on | `fleet slim status` |
@@ -542,7 +543,7 @@ Fixes found after 4.1.1 (DEV-530), one per item:
 
 ## What changed in 4.1.3
 
-Seven fixes (DEV-588), one per item:
+Thirteen fixes (DEV-588), one per item:
 
 1. **One status for every machine.** Each machine publishes a compact `summary=` line of its teams (issue, PR, state,
    what it needs, whether its PR is ready) in its Linear label description, in the same write as the heartbeat.
@@ -565,3 +566,16 @@ Seven fixes (DEV-588), one per item:
    exited agent is brought back (`catchup.sh`, `respawn.sh --revive`): builder and tester in their worktrees, the lead
    briefed to merge `origin/main` (a merge commit, a plain push, never a rewrite of history) and have the tester sign off
    again. Two rounds at most per PR, then a P1 escalation. The notice names the PR whose merge caused it.
+8. **A message to a finished team brings it back.** `tell` to a Done or Parked team (or one whose agents are gone) with its PR
+   still open runs `revive.sh`: the agents start again in their worktrees and the lead gets the message in its resume brief
+   (`(revived)`). `catchup.sh` is the same revive plus the merge-main procedure. A merged PR is refused with what to do instead.
+9. **Unsent text in an input box.** `tell` clears the box with ctrl+u (an idle agent only) before it types; tick flags text
+   left there (`input_flag`, an `input_pending` wake, the Needs you cell); agents start with prompt suggestions off.
+10. **`retire --outcome` wins** over the outcome the rows reported.
+11. **Retire leaves another machine's issue alone**: no state move and no label release for an issue or claim it holds.
+12. **`slot_free` only when a slot is usable**: a repo with room and an unclaimed, unblocked issue (`linear.sh candidates`).
+13. **The house install rule follows `installs = "allow"`**: agents install what the work needs and list each install; a new
+    dependency goes in its own commit with its lockfile. Unset, the text is unchanged.
+
+Also: status prints no heartbeat age (a lapsed or missing heartbeat gets one plain line), and the merge queue compares changed
+files and migration numbers only within one repo.

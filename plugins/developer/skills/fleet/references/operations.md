@@ -206,8 +206,8 @@ The fleet cleans up as it goes:
 
 When the user asks to keep N teams running, set `$F/registry.sh set orchestrator target_teams=N`. It is on the
 Orchestrator's row, so it survives a compaction and `registry.sh orchestrator here`. Tick then wakes you with
-`slot_free` while fewer teams run than N and than `max_teams` (Parked teams do not count), once per (live count,
-target). Answer by picking and booting (SKILL.md route A, step 0, noting the pick); never hand the user a menu: an
+`slot_free` while fewer teams run than N and than `max_teams` (Parked teams do not count), a configured repo has room
+(`teams_per_repo`) and an unclaimed, unblocked issue exists (`linear.sh candidates`), once per change. Answer by picking and booting (SKILL.md route A, step 0, noting the pick); never hand the user a menu: an
 issue with a "Decide first" section takes its acceptance default (stated in the PR body), named follow-ups are filed,
 and a requested split is done. When the only blocker is a nearly ready PR, boot plan-first; when nothing is bootable,
 reply "Nothing bootable" from its template, listing only what truly cannot run (a blocker, a live claim, a missing key).
