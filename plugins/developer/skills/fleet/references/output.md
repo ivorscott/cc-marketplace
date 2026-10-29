@@ -58,7 +58,7 @@ retire`, `brief not delivered`, `merge the PR` or the queue's `rebase after #N`,
 parked team with an open PR the queue lists says what a Done team says; with no PR in the queue it is `-`. `Waiting on
 you` appears only while a P0 or P1 is open (this machine's escalations). With no team: `No teams.`
 
-One table for every machine: Machine is this machine's key on its own rows and the other machine's key on the rows read
+One table for every machine: Machine is this machine's name (`machine_name`, else its host name) on its own rows and the other machine's own name, from its label description (its key when it has none), on the rows read
 from its published summary (a summary older than `lease_hours` stays in the table, and its PR is never counted ready). The rows whose PR is in the merge queue come first, in the queue's order, then the rest by team; there
 is no heading per machine.
 

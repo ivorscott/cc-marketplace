@@ -162,6 +162,31 @@ v420_comments() { # a new comment on a live team's issue reaches its lead within
   v420_nolinear; unset FLEET_NOW
 }
 
+v420_heartbeat_name() { # a refused label description does not fail the claim; the Machine column shows a name
+  v420_state hbname; export FLEET_NOW=2026-10-29T10:00:00Z FLEET_CLAIM_SETTLE_SECS=0
+  v420_linear
+  jq '.states["In Progress"] = "S1"' "$LINEAR_DB" >"$LINEAR_DB.t" && mv "$LINEAR_DB.t" "$LINEAR_DB"
+  "$REG" add '{"name":"hn-a/lead","team":"hn-a","tier":"Lead","status":"Working","herdr_ref":"hn-a-lead","pane":"p1","issue":"DEV-5","pr":"https://github.com/acme/app-api/pull/5"}' >/dev/null
+  local out rc
+  out="$(LINEAR_STUB_DESC_MAX=60 "$SCRIPTS/linear.sh" heartbeat 2>&1)"; rc=$?
+  eq "v420 heartbeat: a description Linear refuses is tried again without the summary: exit 0, one warning" \
+    "$rc:$(printf '%s' "$out" | grep -c 'published the heartbeat without the summary'):$(jq -r '.labels[] | select(.name == "fleet:test") | .description' "$LINEAR_DB" | grep -c '^heartbeat=2026-10-29T10:00:00Z$'):$(jq -r '.labels[] | select(.name == "fleet:test") | .description' "$LINEAR_DB" | grep -c '^summary=')" "0:1:1:0"
+  out="$("$SCRIPTS/linear.sh" heartbeat 2>&1)"; rc=$?
+  eq "v420 heartbeat: and without a limit the summary rides along again" "$rc:$(jq -r '.labels[] | select(.name == "fleet:test") | .description' "$LINEAR_DB" | grep -c '^summary=')" "0:1"
+  out="$(LINEAR_STUB_DESC_MAX=60 "$SCRIPTS/linear.sh" claim DEV-1 2>&1)"; rc=$?
+  eq "v420 heartbeat: a claim still succeeds when the description is refused" "$rc:$(jq -r '.issues[0].labelIds | join(",")' "$LINEAR_DB")" "0:L2"
+  # the Machine column: this machine's name, and a peer's own name from its label description
+  jq '.labels += [{id: "L1", name: "fleet:peera", description: "Peer Mac · macOS · machine id sha256:abc · first claim 2026-10-01\nheartbeat=2026-10-29T09:55:00Z\nsummary=[{\"t\":\"hn-p\",\"i\":\"DEV-30\",\"s\":\"Working\"}]", parent: {id: "L0", name: "fleet"}}]
+    | .issues += [{id: "I30", identifier: "DEV-30", team: {id: "T1"}, state: {id: "S", name: "In Progress"}, labelIds: ["L1"], comments: []}]' "$LINEAR_DB" >"$LINEAR_DB.t" && mv "$LINEAR_DB.t" "$LINEAR_DB"
+  gcfg 'linear_writes = "on"' 'machine_name = "Desk Mac"'
+  out="$("$SCRIPTS/status.sh" 2>/dev/null)"
+  eq "v420 status: the Machine column shows the machine's name, this one's and a peer's, not the key" \
+    "$(printf '%s\n' "$out" | grep '^| hn-a ' | cut -d'|' -f3 | tr -d ' '):$(printf '%s\n' "$out" | grep '^| hn-p ' | cut -d'|' -f3 | sed 's/^ //; s/ $//')" "DeskMac:Peer Mac"
+  gcfg 'linear_writes = "on"'
+  eq "v420 status: without a machine_name, FLEET_MACHINE (the key override) is the name" "$("$SCRIPTS/status.sh" 2>/dev/null | grep '^| hn-a ' | cut -d'|' -f3 | tr -d ' ')" "test"
+  v420_nolinear; unset FLEET_NOW FLEET_CLAIM_SETTLE_SECS
+}
+
 v420_smoke() { # the critical cases, CI
   v420_redact_gate
   v420_run_init
@@ -169,6 +194,7 @@ v420_smoke() { # the critical cases, CI
   v420_verify
   v420_claims
   v420_comments
+  v420_heartbeat_name
 }
 v420_full() { # every case
   v420_smoke

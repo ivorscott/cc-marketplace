@@ -123,6 +123,13 @@ key() {
 }
 
 machine_name() { cfg_str machine_name ""; }
+# display_name: what the Machine column shows for this machine: machine_name from config.toml, else the host name
+# (the key when FLEET_MACHINE overrides it, as the tests do, since then the host says nothing about the machine).
+display_name() {
+  local n; n="$(machine_name)"
+  if [ -z "$n" ]; then if [ -n "${FLEET_MACHINE:-}" ]; then n="$FLEET_MACHINE"; else n="$(host_name)"; fi; fi
+  printf '%s\n' "$n"
+}
 
 case "${1:-}" in
   id) resolve; printf '%s\n' "$ID" ;;
@@ -135,6 +142,7 @@ case "${1:-}" in
     name="$(machine_name)"; [ -n "$name" ] || name="$(host_name)"
     hid="$(id_hash "$ID")" || exit 1
     printf '%s · %s · machine id sha256:%s · first claim %s\n' "$name" "$(host_os)" "$hid" "$date_s" ;;
+  name) display_name ;;
   hash) id_hash "${2:?usage: hash <string>}" || exit 1 ;;
   show)
     resolve; KEY="$(key)"
@@ -142,6 +150,6 @@ case "${1:-}" in
       --arg name "$(machine_name)" --arg host "$(host_name)" --arg os "$(host_os)" \
       --arg legacy "$(cfg_str machine_legacy_label "")" --arg source "$SOURCE" \
       '{id: $id, key: $key, label: $label, name: $name, host: $host, os: $os, legacy_label: $legacy, source: $source}' ;;
-  *) echo "usage: machine-id.sh id|key|label|description [--date D]|hash <string>|show" >&2; exit 2 ;;
+  *) echo "usage: machine-id.sh id|key|name|label|description [--date D]|hash <string>|show" >&2; exit 2 ;;
 esac
 exit 0

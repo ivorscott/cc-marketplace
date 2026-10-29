@@ -10,7 +10,7 @@
 #   linear.sh holder <ISSUE>                  JSON: who holds the issue, their last heartbeat and whether it lapsed
 #                                             (`lapsed`: older than lease_hours, takeover's own check; null without a
 #                                             heartbeat)   (read-only)
-#   linear.sh peers                           JSON: other machines' claims {machine, label, issue, heartbeat, summary}, for
+#   linear.sh peers                           JSON: other machines' claims {machine, label, name, issue, heartbeat, summary}, for
 #                                             `fleet status` (summary: the parsed `summary=` line, null when there is none)   (read-only)
 #   linear.sh candidates                      JSON: identifiers of the open issues a team could take now: Todo or Backlog, or In
 #                                             Progress with no fleet label or only lapsed ones, and not blocked by an open
@@ -519,7 +519,7 @@ case "$cmd" in
     mine="$(machine_label)"
     q_open_issues_labelled "$(label_prefix)" startsWith | jq -c --arg p "$(label_prefix)" --arg m "$mine" --arg l "$(cfg_str machine_legacy_label '')" '
       [.[] | . as $i | .labels.nodes[] | select((.name | startswith($p)) and .name != $m and ($l == "" or .name != $l))
-        | {machine: (.name | ltrimstr($p)), label: .name, issue: $i.identifier, heartbeat: ([(.description // "") | match("(^|\n)heartbeat=([^\n ]+)").captures[1].string] | first // null),
+        | {machine: (.name | ltrimstr($p)), label: .name, name: ([(.description // "") | split("\n")[] | select(contains(" · ")) | split(" · ")[0]] | first // null), issue: $i.identifier, heartbeat: ([(.description // "") | match("(^|\n)heartbeat=([^\n ]+)").captures[1].string] | first // null),
           summary: ([(.description // "") | match("(^|\n)summary=([^\n]*)").captures[1].string | fromjson? | select(type == "array")] | first // null)}]' ;;
 
   candidates)

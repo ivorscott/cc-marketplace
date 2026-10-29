@@ -854,6 +854,13 @@ roles_line() {
 # queue (--queue) says what the queue says ("rebase after #N") or "merge the PR": a Done team and a Parked one alike,
 # so parking a signed-off team changes its State and not its Needs you. A Parked team with no queue given says "merge
 # the PR" when it was parked at sign-off (parked_reason signed-off), else -.
+# machine_names: JSON {machine key: display name} for the Machine column: this machine's name, and the other machines'
+# own names from their label descriptions (FLEET_PEERS_JSON, which status.sh exports after reading linear.sh peers).
+machine_names() {
+  local me; me="$(machine_key 2>/dev/null || echo local)"
+  printf '%s' "${FLEET_PEERS_JSON:-[]}" | jq -c --arg me "$me" --arg n "$("$FLEET_SCRIPTS/machine-id.sh" name 2>/dev/null || echo "$me")" \
+    '([.[]? | select((.name // "") != "") | {key: .machine, value: .name}] | from_entries) + {($me): $n}' 2>/dev/null || printf '{}'
+}
 # One table for every machine: every row carries its Machine (this machine's key for the registry's teams), and
 # --peers adds the other machines' teams (status.sh builds them from their published summaries: machine, team, issue,
 # pr, state, needs, ready). The rows whose PR the queue lists go first, in the queue's order, then the rest by team.
@@ -868,7 +875,7 @@ render_table() {
   rows="$("$FLEET_SCRIPTS/registry.sh" list)" || return 1
   esc="$("$FLEET_SCRIPTS/registry.sh" escalations --open --not-retired 2>/dev/null)" || esc='[]'
   only="$(printf '%s\n' "$@" | jq -Rsc 'split("\n") | map(select(. != ""))')"
-  jq -rn --slurpfile rows <(printf '%s' "$rows") --slurpfile esc <(printf '%s' "$esc") --argjson only "$only" --argjson q "$q" --argjson peers "$peers" --arg me "$me" "$RENDER_DEFS"'
+  jq -rn --slurpfile rows <(printf '%s' "$rows") --slurpfile esc <(printf '%s' "$esc") --argjson only "$only" --argjson q "$q" --argjson peers "$peers" --arg me "$me" --argjson names "$(machine_names)" "$RENDER_DEFS"'
     $rows[0] as $rows | $esc[0] as $esc
     | def qready($u): ([($q.ready // [])[] | select(.url == $u)] | first);
       def shown: ($only | length) == 0 or (. as $t | $only | index($t) != null);
@@ -891,7 +898,7 @@ render_table() {
             | map(. as $w | group as $g | ([$s[] | select(group == $g)] | length) as $n | select($n > 0) | "\($n) \($g)"))
           | join(" · ")),
          (["| Team | Machine | Issue | PR | State | Needs you |", "|---|---|---|---|---|---|",
-           ($t[] | "| \(.team | md) | \(.machine | md) | \(.issue) | \(.pr) | \(.state | md) | \(.needs | md) |")] | join("\n")),
+           ($t[] | "| \(.team | md) | \($names[.machine] // .machine | md) | \(.issue) | \(.pr) | \(.state | md) | \(.needs | md) |")] | join("\n")),
          ([$esc[] | select((.severity | IN("P0", "P1")) and (.team | shown)) | "\(.name) \(.severity | sev): \(.message | .[0:60] | md)"]
           | if length > 0 then "Waiting on you: " + join("; ") else empty end)]
         | join("\n\n")
@@ -930,11 +937,11 @@ render_escalations() {
 # ..." per open PR that is not, then the queue's notes, a blank line between any two (reply). Nothing at all when
 # no PR is open.
 render_queue() {
-  jq -r 'if (.ready | length) == 0 and (.not_ready | length) == 0 then empty else
+  jq -r --argjson names "$(machine_names)" 'if (.ready | length) == 0 and (.not_ready | length) == 0 then empty else
       [(if (.ready | length) == 0 then "Merge in this order: none ready." else "Merge in this order:" end),
        (if (.ready | length) == 0 then empty else
          (["| # | PR | Issue | Machine | Why this order | After merge |", "|---|---|---|---|---|---|",
-           (.ready[] | "| \(.n) | \(.pr) | \(.issue) | \(.machine // "-" | gsub("\\|"; "/")) | \(.why) | \(.after) |")] | join("\n")) end),
+           (.ready[] | "| \(.n) | \(.pr) | \(.issue) | \($names[.machine // ""] // .machine // "-" | gsub("\\|"; "/")) | \(.why) | \(.after) |")] | join("\n")) end),
        (.not_ready[] | "Not ready: \(.pr) \(.missing | map("✗ " + .) | join(" · "))"),
        (.notes[] | "\(.).")]
       | join("\n\n")
