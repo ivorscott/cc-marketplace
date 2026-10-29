@@ -17,7 +17,7 @@ expect() {
     fleet-label) echo LabelAtMostOne ;;
     fleet-draft) echo Authority ;;
     fleet-relay) echo RelayRule ;;
-    fleet|fleet-gate|fleet-authority) echo "" ;;
+    fleet|fleet-2x2|fleet-gate|fleet-authority) echo "" ;;
     *) echo "run-tlc: unknown configuration $1" >&2; return 2 ;;
   esac
 }
@@ -55,7 +55,7 @@ if [ $# -gt 0 ]; then
 fi
 
 bad=0
-for n in fleet fleet-gate fleet-authority fleet-stale fleet-label fleet-draft fleet-relay; do
+for n in fleet fleet-2x2 fleet-gate fleet-authority fleet-stale fleet-label fleet-draft fleet-relay; do
   run_one "$n" || bad=1
 done
 exit "$bad"

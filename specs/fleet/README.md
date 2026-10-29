@@ -17,6 +17,7 @@ exactly its violation, so a counterexample that vanishes also fails the run.
 | config | covers | holds? |
 |---|---|---|
 | `fleet` | 2 machines, 1 issue: claim race, takeover, push, sign-off, merge | must hold: `OneOwner`, `NoStalePush`, `MergeGate` |
+| `fleet-2x2` | 2 machines, 2 issues, clock to 3, lease 1, issues folded by symmetry: one heartbeat covering two claims | must hold: `OneOwner`, `NoStalePush`, `MergeGate` |
 | `fleet-gate` | 1 machine, 1 issue, 3 pushes: the gate alone | must hold: `MergeGate` |
 | `fleet-authority` | escalations, `decide`, relay, TTL, Owner offline; no git | must hold: `Authority`, `RelayRule` |
 | `fleet-stale` | `fleet` without the claim check before a push | fails `NoStalePush` |
@@ -29,7 +30,7 @@ counts and times are in the PR description.
 
 ## What the spec proved
 
-On the bounds in the configs (2 machines, lease 3, settle 1, clock to 8):
+On the bounds in the configs (2 machines, settle 1; the longer horizon is 1 issue with lease 3 and clock to 8, the 2-issue one a short clock):
 
 1. **One owner.** At most one machine is a live holder of an issue, even when two machines race for the claim.
 2. **No stale work**, once a push first checks the claim (`CheckLeaseBeforePush = TRUE`).

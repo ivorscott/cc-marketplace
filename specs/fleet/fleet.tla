@@ -10,7 +10,7 @@
 (*                                                                         *)
 (* Model only. Nothing here is plugin code; see README.md.                 *)
 (***************************************************************************)
-EXTENDS Naturals, Integers, FiniteSets
+EXTENDS Naturals, Integers, FiniteSets, TLC
 
 CONSTANTS
     Machines,              \* machines, one Orchestrator and one team each
@@ -268,6 +268,9 @@ Next ==
 Spec == Init /\ [][Next]_vars
 
 MsgBound == Cardinality(msgs) <= MaxMsgs
+
+\* Issues are interchangeable, so a configuration may fold them.
+IssueSymmetry == Permutations(Issues)
 
 (* ---- properties ---- *)
 
