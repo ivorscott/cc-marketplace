@@ -267,13 +267,14 @@ m_comment_delete() { # m_comment_delete <comment id> <issue id>
 # ---- helpers (no API calls) ----------------------------------------------------------------------
 hb_of() { printf '%s\n' "$1" | "$FLEET_SCRIPTS/claim.sh" hb; }
 describe_with_hb() { # describe_with_hb <description> <ISO>: the description with its heartbeat line set
-  printf '%s\n' "$1" | awk -v hb="heartbeat=$2" '
+  # The value goes in through the environment, not awk -v: -v processes backslash escapes, which corrupts free text.
+  printf '%s\n' "$1" | FLEET_AWK_V="heartbeat=$2" awk 'BEGIN { hb = ENVIRON["FLEET_AWK_V"] }
     /^heartbeat=/ { if (!d) { print hb; d = 1 } ; next }
     NF { print }
     END { if (!d) print hb }'
 }
 describe_with_summary() { # describe_with_summary <description> <summary JSON | "">: the description with its summary= line set (dropped for "")
-  printf '%s\n' "$1" | awk -v sm="${2:+summary=$2}" '
+  printf '%s\n' "$1" | FLEET_AWK_V="${2:+summary=$2}" awk 'BEGIN { sm = ENVIRON["FLEET_AWK_V"] }
     /^summary=/ { if (!d && sm != "") { print sm; d = 1 } ; next }
     NF { print }
     END { if (!d && sm != "") print sm }'
@@ -374,7 +375,7 @@ owner_name() { viewer 2>/dev/null | jq -r '.name // ""' 2>/dev/null || true; }
 # heartbeat= line when it is new); everything else is kept.
 describe_with_owner() {
   if [ -z "$2" ]; then printf '%s\n' "$1"; return 0; fi
-  printf '%s\n' "$1" | awk -v o="owner=$2" '
+  printf '%s\n' "$1" | FLEET_AWK_V="owner=$2" awk 'BEGIN { o = ENVIRON["FLEET_AWK_V"] }
     /^owner=/ { if (!d) { print o; d = 1 } ; next }
     /^heartbeat=/ && !d { print o; d = 1 }
     NF { print }

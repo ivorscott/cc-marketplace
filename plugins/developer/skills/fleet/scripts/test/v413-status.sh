@@ -160,3 +160,22 @@ v413_same_repo() {
     "$(q | jq -r '[.ready[] | (.url | sub(".*/pull/"; "#")) + " " + .after] | join(";")')" "#30 —;#32 rebase after #30"
   unset FLEET_GH
 }
+
+v413_summary_escape() {
+  qfresh v413esc; export FLEET_STATE_DIR="$QD/state.v413esc" FLEET_REGISTRY="$QD/state.v413esc/fleet.json" FLEET_INBOX="$QD/state.v413esc/escalations.jsonl"
+  rm -rf "$FLEET_STATE_DIR"; mkdir -p "$FLEET_STATE_DIR"; export FLEET_NOW=2026-10-29T10:00:00Z
+  v413_agent build-e/lead Lead Working
+  "$REG" escalate build-e/lead P1 'say "no" to C:\temp\new and a\\b' a b >/dev/null 2>&1
+  v413_linear
+  jq '.labels += [{id: "L9", name: "fleet:test", description: "owner=Fixture", parent: {id: "L0", name: "fleet"}}]
+      | .issues += [{id: "I1", identifier: "DEV-1", team: {id: "T1"}, state: {id: "S", name: "In Progress"}, labelIds: ["L9"], comments: []}]' "$LINEAR_DB" >"$LINEAR_DB.t" && mv "$LINEAR_DB.t" "$LINEAR_DB"
+  gcfg 'linear_writes = "on"'; "$SCRIPTS/linear.sh" heartbeat >/dev/null 2>&1
+  local want got
+  want="$(bash -c '. "$1/common.sh"; fleet_summary' _ "$SCRIPTS" | jq -c .)"
+  got="$(FLEET_MACHINE=other "$SCRIPTS/linear.sh" peers | jq -c '[.[] | select(.machine == "test")] | first | .summary')"
+  eq "v413-1 summary: an escalation text with a quote and a backslash survives the label, and peers reads it back exactly" \
+    "$([ "$got" != null ] && [ "$got" = "$want" ] && echo same):$(printf '%s' "$want" | jq -r '.[0].n' | grep -cF 'say "no" to C:\temp\new and a\\b')" "same:1"
+  : >"$LINEAR_LOG"; "$SCRIPTS/linear.sh" heartbeat >/dev/null 2>&1
+  eq "v413-1 heartbeat: a second heartbeat with nothing changed makes no mutation" "$(grep -c '^mutation' "$LINEAR_LOG")" 0
+  gcfg; v413_nolinear; unset FLEET_NOW
+}

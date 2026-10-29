@@ -16,7 +16,9 @@
 #
 # Every Claude agent also gets the tracker_allow and forge_allow lists from config.toml, so
 # reading tickets (Linear, Jira, ...) and pull/merge requests (gh, glab, ...) never blocks
-# and no template names a particular tool.
+# and no template names a particular tool. `installs = "allow"` in config.toml lets agents install what the work needs: the
+# guard stops denying installers, and the house rules say to list each install (what, where, why) and to commit a new
+# dependency with its lockfile; unset, an install waits for the owner (the house rules' default text).
 #
 # If the repo declares a team environment (.claude/fleet-env.json), every agent in the
 # team, lead included, starts with KUBECONFIG pointing at the team's own kubeconfig, even
