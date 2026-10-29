@@ -143,6 +143,7 @@ d588_smoke() { # the critical cases, CI
   d588_conflict_catchup
   d588_retire
   d588_revive
+  d588_slots
 }
 d588_full() { # every case
   d588_smoke

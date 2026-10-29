@@ -4231,7 +4231,7 @@ eq "dev408-2 slots: with no target there is no slot_free" "$(evc "$(stk)" slot_f
 "$REG" set orchestrator target_teams=3 >/dev/null
 k1="$(stk)"; k2="$(stk)"
 eq "dev408-2 slots: under the target, one slot_free, once" "$(evc "$k1" slot_free):$(evc "$k2" slot_free)" "1:0"
-eq "dev408-2 slots: it says how many run of the target" "$(printf '%s' "$k1" | jq -r '.[] | select(.type == "slot_free") | [.detail, .live, .target] | map(tostring) | join("|")')" "1 live < target 3|1|3"
+eq "dev408-2 slots: it says how many run of the target" "$(printf '%s' "$k1" | jq -r '.[] | select(.type == "slot_free") | [.detail, .live, .target] | map(tostring) | join("|")')" "1 live < target 3; no Linear key, candidates not checked|1|3"
 slot sb; eq "dev408-2 slots: a new count still under the target fires again" "$(evc "$(stk)" slot_free)" 1
 slot sc; eq "dev408-2 slots: at the target, none" "$(evc "$(stk)" slot_free)" 0
 "$REG" retire sc/lead >/dev/null; eq "dev408-2 slots: after the count recovered, a drop fires again" "$(evc "$(stk)" slot_free)" 1

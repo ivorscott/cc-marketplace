@@ -608,19 +608,44 @@ st_upd --argjson read "$(printf '%s\n' ${read_now[@]+"${read_now[@]}"} | jq -Rsc
   '($st.ready_prev // []) as $prev | $st + {ready_prev: (($prev - $read) + $ready + ($prev - ($prev - $unknown)) | unique)}'
 
 # --- keep N teams running ------------------------------------------------------------------------------
-# target_teams on the orchestrator row (registry.sh set orchestrator target_teams=N). With fewer live teams than the
-# target and than max_teams (counted as boot counts them: Parked teams do not), one slot_free wake, once per (live
-# count, target), forgotten when the count recovers. The Orchestrator answers it by picking and booting (SKILL.md).
-# A fleet-wide count, so tick --team skips it.
+# target_teams on the orchestrator row (registry.sh set orchestrator target_teams=N). One slot_free wake, once per change,
+# only when a team could really start: fewer live teams than the target and than max_teams (counted as boot counts them:
+# Parked teams do not); a configured repo (`repos` in config.toml) with fewer live teams than teams_per_repo; and at least
+# one open issue nobody holds and nothing blocks (linear.sh candidates, read at most every 10 minutes; any candidate counts
+# for any free repo, the Orchestrator picks; without a Linear key this third condition is skipped and the wake says so).
+# Forgotten when a condition fails. The Orchestrator answers it by picking and booting (SKILL.md). A fleet-wide count, so
+# tick --team skips it.
 if [ -z "$team" ]; then
   tgt="$("$registry" get orchestrator 2>/dev/null | jq -r '.target_teams // empty' 2>/dev/null || true)"
   case "$tgt" in "" | *[!0-9]*) tgt="" ;; esac
   if [ -n "$tgt" ]; then
-    nlive="$(live_team_count)"; cap="$(max_teams)"
+    nlive="$(live_team_count)"; cap="$(max_teams)"; sf_ok=false; sf_note=""; sf_key=""
     if [ "$nlive" -lt "$tgt" ] && [ "$nlive" -lt "$cap" ]; then
-      if [ "$(jq -r '.slot_free_emitted // ""' "$STATE_FILE")" != "$nlive|$tgt" ]; then
-        add_events "$(jq -cn --argjson n "$nlive" --argjson t "$tgt" '[{type: "slot_free", team: "", name: "", live: $n, target: $t, detail: "\($n) live < target \($t)"}]')"
-        st_upd --arg k "$nlive|$tgt" '$st + {slot_free_emitted: $k}'
+      freerepos="$(jq -rn --argjson r "$(config_list repos)" --argjson per "$(teams_per_repo)" --argjson live "$("$registry" list --live | jq -c '[.[] | select(.tier != "Orchestrator") | {team, repo: (.repo // "")}] | unique')" '
+        if ($r | length) == 0 then "any" else [$r[] | . as $x | select(([$live[] | select(.repo == $x or (.repo | split("/") | last) == ($x | split("/") | last)) | .team] | unique | length) < $per)] | join(",") end')"
+      if [ -n "$freerepos" ]; then
+        cand="-"; ckeyless=false
+        if "$FLEET_SCRIPTS/linear.sh" has-key >/dev/null 2>&1; then
+          cc="$(jq -c --argjson now "$now_epoch" '(.cand_cache // null) | select(. != null and ($now - .at) < 600)' "$STATE_FILE")"
+          if [ -z "$cc" ]; then
+            if cj="$("$FLEET_SCRIPTS/linear.sh" candidates 2>/dev/null)" && printf '%s' "$cj" | jq -e 'type == "array"' >/dev/null 2>&1; then
+              cc="$(jq -cn --argjson at "$now_epoch" --argjson ids "$cj" '{at: $at, ids: $ids}')"; st_upd --argjson c "$cc" '$st + {cand_cache: $c}'
+            fi
+          fi
+          if [ -n "$cc" ]; then
+            held="$("$registry" list | jq -c '[.[] | select(.status != "Retired" and (.issue // "") != "") | .issue] | unique')"
+            cand="$(jq -rn --argjson c "$cc" --argjson held "$held" '[$c.ids[] | select(. as $i | $held | index($i) | not)] | sort | join(",")')"
+          else ckeyless=true; sf_note="; candidates could not be read"; fi
+        else ckeyless=true; sf_note="; no Linear key, candidates not checked"; fi
+        if $ckeyless || [ -n "$cand" ]; then
+          sf_ok=true; sf_key="$nlive|$tgt|$freerepos|$(printf '%s' "$cand" | cksum | awk '{print $1}')"
+        fi
+      fi
+    fi
+    if $sf_ok; then
+      if [ "$(jq -r '.slot_free_emitted // ""' "$STATE_FILE")" != "$sf_key" ]; then
+        add_events "$(jq -cn --argjson n "$nlive" --argjson t "$tgt" --arg note "$sf_note" '[{type: "slot_free", team: "", name: "", live: $n, target: $t, detail: "\($n) live < target \($t)\($note)"}]')"
+        st_upd --arg k "$sf_key" '$st + {slot_free_emitted: $k}'
       fi
     else
       st_upd '$st | del(.slot_free_emitted)'

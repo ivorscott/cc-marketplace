@@ -11,6 +11,9 @@
 #                                             heartbeat)   (read-only)
 #   linear.sh peers                           JSON: other machines' claims {machine, label, issue, heartbeat, summary}, for
 #                                             `fleet status` (summary: the parsed `summary=` line, null when there is none)   (read-only)
+#   linear.sh candidates                      JSON: identifiers of the open issues a team could take now: Todo or Backlog, or In
+#                                             Progress with no fleet label or only lapsed ones, and not blocked by an open
+#                                             issue; one Linear read (the query is UNVERIFIED against the real API)   (read-only)
 #   linear.sh blocks <ISSUE...>               JSON: {"<ISSUE>": [issues it blocks]} from Linear's `blocks` relations,
 #                                             one query for all of them   (read-only)
 #   linear.sh takeover <ISSUE> [--repo OWNER/NAME]   take an issue over from a lapsed holder; refuses while an
@@ -207,6 +210,10 @@ q_open_issues_labelled() { # q_open_issues_labelled <label name | prefix> <eq|st
     "$(jq -nc --arg n "$1" '{n: $n}')" | jq -c '.data.issues.nodes // []'
 }
 
+q_candidates() { # q_candidates → open issues with their state, fleet labels and the open issues that block them (UNVERIFIED query)
+  gql_read Candidates 'query Candidates { issues(first: 100, filter: { state: { type: { in: ["backlog", "unstarted", "started"] } } }) { nodes { identifier state { name type } labels { nodes { name description } } inverseRelations(first: 20) { nodes { type issue { identifier state { type } } } } } } }' '{}' |
+    jq -c '.data.issues.nodes // error("no issues")'
+}
 q_issue_team_key() { # q_issue_team_key <ISSUE> → the team key of the issue, empty when unknown
   gql_read IssueTeamKey 'query IssueTeamKey($id: String!) { issue(id: $id) { identifier team { key } } }' \
     "$(jq -nc --arg id "$1" '{id: $id}')" | jq -r '.data.issue.team.key // empty'
@@ -435,7 +442,7 @@ write_heartbeat() {
 cmd="${1:-}"; [ $# -gt 0 ] && shift
 # Every API subcommand needs the key; check it here, at the top level, so a missing key is exit 3
 # and not an error swallowed inside a command substitution.
-case "$cmd" in claim | heartbeat | holder | peers | blocks | whoami | takeover | release | state | migrate) load_key ;; esac
+case "$cmd" in claim | heartbeat | holder | peers | candidates | blocks | whoami | takeover | release | state | migrate) load_key ;; esac
 case "$cmd" in
   has-key)
     has_key || no_key ;;
@@ -470,6 +477,17 @@ case "$cmd" in
       [.[] | . as $i | .labels.nodes[] | select((.name | startswith($p)) and .name != $m and ($l == "" or .name != $l))
         | {machine: (.name | ltrimstr($p)), label: .name, issue: $i.identifier, heartbeat: ([(.description // "") | match("(^|\n)heartbeat=([^\n ]+)").captures[1].string] | first // null),
           summary: ([(.description // "") | match("(^|\n)summary=([^\n]*)").captures[1].string | fromjson? | select(type == "array")] | first // null)}]' ;;
+
+  candidates)
+    READONLY=1
+    q_candidates | jq -c --arg p "$(label_prefix)" --arg now "${FLEET_NOW:-$(now)}" --argjson lease "$(lease_hours)" '
+      [.[] | select(.state.name == "Todo" or .state.name == "Backlog" or .state.name == "In Progress")
+        | select([.inverseRelations.nodes[]? | select(.type == "blocks" and (.issue.state.type != "completed" and .issue.state.type != "canceled"))] | length == 0)
+        | ([.labels.nodes[]? | select(.name | startswith($p))]) as $f
+        | select(.state.name != "In Progress" or ($f | length) == 0
+            or all($f[]; ([(.description // "") | match("(^|\n)heartbeat=([^\n ]+)").captures[1].string] | first) as $hb
+                | ($hb == null or (($now | fromdateiso8601) - ($hb | fromdateiso8601)) > ($lease * 3600))))
+        | .identifier]' ;;
 
   claim)
     dry=0; issue=""

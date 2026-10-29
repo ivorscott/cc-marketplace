@@ -87,3 +87,33 @@ d588_revive() {
     "$rc:$(printf '%s' "$o" | grep -c 'Boot a new team, or move the team on'):$("$REG" list --team rv-d | jq -r '[.[].status] | unique | join(",")')" "1:1:Done"
   unset PROMPT_SEQ FLEET_GH; gcfg
 }
+
+# ---- 12: slot_free only when a slot is usable -----------------------------------------------------------------------
+d588_slots() {
+  d588_state slot; export FLEET_NOW=2026-10-29T10:00:00Z
+  git init -q -b main "$T/d588-slot-repo" 2>/dev/null
+  local ra="$T/d588-slot-repo" evc_
+  evc_() { printf '%s' "$1" | jq -s '[.[][]? | select(.type == "slot_free")] | length'; }
+  "$REG" add '{"name":"orchestrator","team":"orchestrator","tier":"Orchestrator","status":"Working","herdr_ref":"o2","pane":"po2"}' >/dev/null
+  "$REG" set orchestrator target_teams=3 >/dev/null
+  "$REG" add "$(jq -cn --arg r "$ra" '{name: "sl-a/lead", team: "sl-a", tier: "Lead", status: "Working", herdr_ref: "sl-a-lead", pane: "psla", repo: $r, issue: "DEV-1"}')" >/dev/null
+  d588_retire_db none
+  gcfg 'linear_writes = "on"' "repos = [\"$ra\"]" "teams_per_repo = 1" "max_teams = 9"
+  jq '.issues += [{id: "I2", identifier: "DEV-2", team: {id: "T1"}, state: {id: "S0", name: "Todo"}, labelIds: [], comments: []}]' "$LINEAR_DB" >"$LINEAR_DB.t" && mv "$LINEAR_DB.t" "$LINEAR_DB"
+  tk() { FLEET_NOW="$1" "$SCRIPTS/tick.sh" 2>/dev/null; }
+  eq "dev588-12 slots: every repo busy (teams_per_repo 1), several ticks, no slot_free" "$(evc_ "$(tk 2026-10-29T10:00:00Z)")$(evc_ "$(tk 2026-10-29T10:01:00Z)")" "00"
+  "$REG" retire sl-a >/dev/null; "$REG" add "$(jq -cn --arg r "$ra" '{name: "sl-b/lead", team: "sl-b", tier: "Lead", status: "Working", herdr_ref: "sl-b-lead", pane: "pslb", repo: $r, issue: "DEV-1"}')" >/dev/null
+  "$REG" park sl-b park >/dev/null
+  # a free repo and a candidate (DEV-2 is Todo; DEV-1 is held by a local team's row)
+  s1="$(tk 2026-10-29T10:02:00Z)"; s2="$(tk 2026-10-29T10:03:00Z)"
+  eq "dev588-12 slots: a free repo with a candidate fires exactly once, not on the next tick" "$(evc_ "$s1"):$(evc_ "$s2")" "1:0"
+  # every candidate blocked: none
+  "$REG" retire sl-b >/dev/null; "$REG" set orchestrator target_teams=4 >/dev/null
+  jq '.issues[1].blocked_by = ["DEV-1"] | .issues[0].blocked_by = ["DEV-2"]' "$LINEAR_DB" >"$LINEAR_DB.t" && mv "$LINEAR_DB.t" "$LINEAR_DB"
+  jq 'del(.cand_cache)' "$FLEET_STATE_DIR/tick.state.json" >"$FLEET_STATE_DIR/t.t" && mv "$FLEET_STATE_DIR/t.t" "$FLEET_STATE_DIR/tick.state.json"
+  eq "dev588-12 slots: only a blocked or claimed candidate: none" "$(evc_ "$(tk 2026-10-29T10:20:00Z)")" 0
+  d588_nolinear
+  eq "dev588-12 slots: with no Linear key it fires on the target and the repos alone, and says so" \
+    "$(tk 2026-10-29T10:40:00Z | jq -s -r '[.[][]? | select(.type == "slot_free") | .detail] | first // ""')" "0 live < target 4; no Linear key, candidates not checked"
+  gcfg; unset FLEET_NOW
+}
