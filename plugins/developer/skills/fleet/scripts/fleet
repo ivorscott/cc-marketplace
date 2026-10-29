@@ -82,13 +82,11 @@ present() {
   case "$1" in
     escalations) render_escalations "$j" ;;
     claim) if [ "$(jq -r '.claimed // false' <<<"$j")" = true ]; then render_line claimed issue="$(jq -r .issue <<<"$j")" machine="$who"; else printf '%s\n' "$j"; fi ;;
-    takeover) h="$(jq -r '.heartbeat // ""' <<<"$j")"
-      render_line took_over issue="$(jq -r .issue <<<"$j")" machine="$(jq -r .from <<<"$j")" \
-        age="$(jq -rn --arg h "$h" --argjson now "$(jq -rn --arg t "${FLEET_NOW:-$(now)}" '$t | fromdateiso8601')" "$RENDER_DEFS"'$h | ago($now)')" ;;
-    holder) h="$(jq -r '.heartbeat // ""' <<<"$j")"
+    takeover) render_line took_over issue="$(jq -r .issue <<<"$j")" machine="$(jq -r .from <<<"$j")" ;;
+    holder) h="$(jq -r '.heartbeat // ""' <<<"$j")" # no heartbeat age is printed: only "lapsed" or "no heartbeat"
       render_line holder issue="$(jq -r .issue <<<"$j")" \
         machine="$(jq -r --arg w "$who" 'if .holder == null then "" elif .ours then "this machine (\($w))" else .holder end' <<<"$j")" \
-        age="$([ -z "$h" ] || jq -rn --arg h "$h" --argjson now "$(jq -rn --arg t "${FLEET_NOW:-$(now)}" '$t | fromdateiso8601')" "$RENDER_DEFS"'$h | ago($now)')" \
+        nohb="$([ -n "$h" ] || echo yes)" \
         lapsed="$([ "$(jq -r '.lapsed' <<<"$j")" != true ] || echo yes)" ;;
     *) printf '%s\n' "$j" ;;
   esac

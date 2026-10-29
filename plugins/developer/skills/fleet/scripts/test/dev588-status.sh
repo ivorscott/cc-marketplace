@@ -32,7 +32,8 @@ d588_all_machines() {
   eq "dev588-6 status: a peer's cells come from its summary (state, needs you)" "$(printf '%s\n' "$out" | grep '^| build-p ' | cut -d'|' -f6,7 | tr -d ' ')" "Done|mergethePR"
   eq "dev588-6 status: no heading per machine" "$(printf '%s\n' "$out" | grep -ci '^machine\|^peera\|on peera:')" 0
   eq "dev588-6 status: a machine with no summary is one claim-only line" "$(printf '%s\n' "$out" | grep '^Other machines:')" \
-    "Other machines: DEV-30 on peerb (heartbeat 10m ago, claim only: no summary)."
+    "Other machines: DEV-30 on peerb (claim only: no summary)."
+  eq "dev588 heartbeat: a fresh heartbeat produces no heartbeat text at all, in the table, the lines or the queue" "$(printf '%s\n' "$out" | grep -ci 'heartbeat\|ago')" 0
   eq "dev588-6 status: the rows whose PR is in the queue come first, in its order" \
     "$(printf '%s\n' "$out" | grep '^| \(build-p\|d588-x\|d588-y\|build-q\) ' | cut -d'|' -f2 | tr -d ' ' | paste -sd, -)" "build-p,d588-x,build-q,d588-y"
   eq "dev588-6 queue: a local and a peer ready PR are in one numbered list, each with its machine" \
@@ -44,7 +45,8 @@ d588_all_machines() {
   jq '.labels[1].description |= sub("09:55:00"; "03:55:00")' "$LINEAR_DB" >"$LINEAR_DB.t" && mv "$LINEAR_DB.t" "$LINEAR_DB"; rm -f "$FLEET_STATE_DIR/queue.json"
   out="$("$SCRIPTS/status.sh" 2>/dev/null)"
   eq "dev588-6 status: a summary older than lease_hours stays in the table with its age, and its PR is not ready" \
-    "$(printf '%s\n' "$out" | grep '^| build-p ' | cut -d'|' -f6 | tr -d ' '):$(printf '%s\n' "$out" | grep -c '^| [12] | .*pull/21')" "Done(stale6h):0"
+    "$(printf '%s\n' "$out" | grep '^| build-p ' | cut -d'|' -f6 | tr -d ' '):$(printf '%s\n' "$out" | grep -c '^| [12] | .*pull/21')" "Done:0"
+  eq "dev588 heartbeat: and a plain line says its heartbeat lapsed, with no age" "$(printf '%s\n' "$out" | grep -i 'heartbeat')" "peera: heartbeat lapsed."
   eq "dev588-6 queue: and it is listed as not ready, with the peer's state" "$(printf '%s\n' "$out" | grep -c 'Not ready: https://github.com/acme/app-api/pull/21 ✗ other machine (Done)')" 1
   # --json
   eq "dev588-6 status --json: this machine only, the shape unchanged" "$("$SCRIPTS/status.sh" --json 2>/dev/null | jq -c '[.[] | .source // "none"] | unique')" '["none"]'

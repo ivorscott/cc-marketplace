@@ -1309,7 +1309,9 @@ jq -n '{team: "T1", states: {}, next: 100, labels: [{id: "L0", name: "fleet", de
 pst() { LINEAR_STUB_KEY=KEYFIXTURE-peers LINEAR_DB="$PL/db.json" LINEAR_LOG="$PL/log" FLEET_CURL="$HERE/linear-stub.sh" "$SCRIPTS/status.sh" "$@"; }
 printf 'KEYFIXTURE-peers\n' >"$FLEET_CONFIG_DIR/$kf"; chmod 600 "$FLEET_CONFIG_DIR/$kf"
 FLEET_NOW=2026-10-18T10:00:00Z DF_GB=100 pst >"$T/all.out" 2>"$T/all.err"
-eq "status: one line names each peer claim, its heartbeat age, a lapsed lease and that it is a claim only" "$(grep '^Other machines:' "$T/all.out")" "Other machines: DEV-9 on 3f9a2c1e (heartbeat 10m ago, claim only: no summary); DEV-10 on 9b1d4e07 (no heartbeat, claim only: no summary); DEV-11 on 5555aaaa (heartbeat 5h ago, lapsed, claim only: no summary)."
+eq "status: one line names each peer claim as a claim only, with no heartbeat age" "$(grep '^Other machines:' "$T/all.out")" "Other machines: DEV-9 on 3f9a2c1e (claim only: no summary); DEV-10 on 9b1d4e07 (claim only: no summary); DEV-11 on 5555aaaa (claim only: no summary)."
+eq "dev588 heartbeat: a lapsed or missing heartbeat gets one plain line each, a live one none, and no age" "$(grep -i 'heartbeat' "$T/all.out")" "5555aaaa: heartbeat lapsed.
+9b1d4e07: no heartbeat."
 eq "status --all: still accepted, and prints the same table" "$(FLEET_NOW=2026-10-18T10:00:00Z DF_GB=100 pst --all 2>/dev/null)" "$(cat "$T/all.out")"
 check "status: the local teams are in the team table" grep -q '^| build-own1 |' "$T/all.out"
 eq "status --all: no lease column, no SAME KEY?" "$(grep -c 'LEASE\|SAME KEY' "$T/all.out")" 0

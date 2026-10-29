@@ -59,8 +59,7 @@ parked team with an open PR the queue lists says what a Done team says; with no 
 you` appears only while a P0 or P1 is open (this machine's escalations). With no team: `No teams.`
 
 One table for every machine: Machine is this machine's key on its own rows and the other machine's key on the rows read
-from its published summary (State then reads `Done`, or `Working (stale 3h)` when the summary is older than
-`lease_hours`). The rows whose PR is in the merge queue come first, in the queue's order, then the rest by team; there
+from its published summary (a summary older than `lease_hours` stays in the table, and its PR is never counted ready). The rows whose PR is in the merge queue come first, in the queue's order, then the rest by team; there
 is no heading per machine.
 
 ### merge queue
@@ -124,7 +123,9 @@ Focus: <team>.
 
 Disk: <n> GB free (warn below <w>). Fleet holds <n> GB. Reclaimed <n> GB.
 
-Other machines: DEV-1 on <machine> (heartbeat <age>[, lapsed]); …
+Other machines: DEV-1 on <machine> (claim only: no summary); …
+
+<machine>: heartbeat lapsed.
 
 Loop: no Orchestrator registered, so wakes reach desktop notifications only. Run registry.sh orchestrator here in its pane.
 
@@ -134,7 +135,9 @@ Skill <running> is running and <installed> is installed: restart this Claude Cod
 ```
 
 `Other machines` comes from `linear.sh peers` and appears only for a machine that published no summary (an older plugin):
-`Other machines: DEV-1 on <machine> (heartbeat 3h ago, lapsed, claim only: no summary).` With no Linear key it is one line,
+`Other machines: DEV-1 on <machine> (claim only: no summary).` No heartbeat age is printed anywhere in status: a machine whose
+heartbeat is lapsed (older than `lease_hours`) or missing gets one plain line, `<machine>: heartbeat lapsed.` or
+`<machine>: no heartbeat.`, and a machine with a live heartbeat gets no heartbeat text at all. With no Linear key it is one line,
 `Other machines: unknown (no Linear key).`, and this machine's rows still print. The skill line appears when the plugin installed is newer than the scripts (and skill text) this session runs.
 A `Ready to merge` notice a later notice of the same PR overtook is not shown either (the PR conflicts or merged since,
 or its head moved to another sha), nor a `Conflicting` one that a later `Ready to merge` follows. A wake notice something
@@ -348,13 +351,13 @@ Claimed DEV-1 for <machine>.
 ### takeover
 
 ```
-Took over DEV-1 from <machine> (heartbeat <age>).
+Took over DEV-1 from <machine>.
 ```
 
 ### holder
 
 ```
-DEV-1: held by <machine|this machine (<machine>)> (heartbeat <age>[, lapsed]).
+DEV-1: held by <machine|this machine (<machine>)>[, heartbeat lapsed|, no heartbeat].
 ```
 
 `DEV-1: held by nobody.` for an unclaimed issue.

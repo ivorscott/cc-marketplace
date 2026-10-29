@@ -965,8 +965,9 @@ render_line() {
     loop) printf 'Fleet loop: %s. Last good tick %s. %s.\n' "${L_loaded:-not loaded}" "${L_when:-never}" "${L_health:-problem}" ;;
     env) printf 'Env %s: %s. Context fleet-%s.\n' "${L_team:-}" "${L_state:-Down}" "${L_team:-}" ;;
     claimed) printf 'Claimed %s for %s.\n' "${L_issue:-}" "${L_machine:-}" ;;
-    took_over) printf 'Took over %s from %s (heartbeat %s).\n' "${L_issue:-}" "${L_machine:-}" "${L_age:-unknown}" ;;
-    holder) if [ -n "${L_machine:-}" ]; then printf '%s: held by %s (heartbeat %s%s).\n' "${L_issue:-}" "$L_machine" "${L_age:-none}" "${L_lapsed:+, lapsed}"
+    took_over) printf 'Took over %s from %s.\n' "${L_issue:-}" "${L_machine:-}" ;;
+    machine_heartbeat) printf '%s: %s.\n' "${L_machine:-}" "${L_what:-}" ;;
+    holder) if [ -n "${L_machine:-}" ]; then printf '%s: held by %s%s.\n' "${L_issue:-}" "$L_machine" "${L_lapsed:+, heartbeat lapsed}${L_nohb:+, no heartbeat}"
             else printf '%s: held by nobody.\n' "${L_issue:-}"; fi ;;
     sandbox) printf 'Sandbox at %s: %s exited %s.%s\n' "${L_dir:-}" "${L_cmd:-}" "${L_code:-0}" "${L_kept:+ Kept.}" ;;
     disk) printf 'Disk: %s GB free (warn below %s).%s\n' "${L_free:-?}" "${L_warn:-?}" "${L_held:+ Fleet holds $L_held GB. Reclaimed ${L_reclaimed:-0} GB.}" ;;

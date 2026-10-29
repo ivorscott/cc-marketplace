@@ -16,9 +16,10 @@
 # Every machine in one table. Status reads the other machines' published summaries from Linear (linear.sh peers: one
 # read) and shows their teams in the same table and the same merge queue, each row with its Machine; the rows are never
 # probed and nothing is written for them. A machine on an older plugin, or one that has published no summary, shows as
-# one line, "Other machines: DEV-1 on <key> (heartbeat 3h ago, claim only: no summary)"; with no Linear key the table
+# one line, "Other machines: DEV-1 on <key> (claim only: no summary)"; with no Linear key the table
 # is this machine's alone and a line says "Other machines: unknown (no Linear key)". A summary older than lease_hours
-# stays in the table, its State marked "(stale 3h)", and is never counted as ready. To show less, the Orchestrator picks
+# stays in the table and is never counted as ready. No heartbeat age is printed: a machine whose heartbeat is lapsed or
+# missing gets one plain line ("<machine>: heartbeat lapsed." or "<machine>: no heartbeat."), a live one gets none. To show less, the Orchestrator picks
 # rows out of the table; there is no switch. --all is accepted and does nothing for the table; with --json it adds the
 # other machines' rows to the array (machine and source: registry | tracker on every row).
 # Internal: FLEET_STATUS_LOCAL=1 keeps status to this machine and skips the Linear read (tick and the done contract
@@ -67,16 +68,15 @@ if $want_peers; then
   export FLEET_PEERS_JSON="$claims" # queue.sh reuses it instead of reading Linear again
 fi
 # peer_teams: the other machines' teams out of their summaries ([] for a machine with none), one row per team with its
-# age; peer_claims: the claims of the machines that published none.
+# stale flag; peer_claims: the claims of the machines that published none.
 peer_teams="[]"; peer_claims="[]"
 if $want_peers; then
   pj="$(printf '%s' "$claims" | jq -c --arg now "${FLEET_NOW:-$(now)}" --argjson lease "$(lease_hours)" '
-    def agetxt: if . < 3600 then "\((. / 60) | floor)m" elif . < 172800 then "\((. / 3600) | floor)h" else "\((. / 86400) | floor)d" end;
     (group_by(.machine) | map(select(any(.[]; .summary != null)) | . as $g | ($g | map(select(.summary != null)) | first) as $c
       | (if $c.heartbeat == null then null else (($now | fromdateiso8601) - ($c.heartbeat | fromdateiso8601)) end) as $age
       | ($age != null and $age > ($lease * 3600)) as $stale
       | $c.summary[] | {machine: $c.machine, team: .t, issue: (.i // ""), pr: (.pr // ""), needs: (.n // ""), ready: ((.r // false) and ($stale | not)),
-          state: ((.s // "Idle") + (if $stale then " (stale \($age | agetxt))" else "" end)), heartbeat: $c.heartbeat, stale: $stale})) as $teams
+          state: (.s // "Idle"), heartbeat: $c.heartbeat, stale: $stale})) as $teams
     | ([.[] | select(.machine as $m | ($teams | map(.machine) | index($m)) == null)]) as $claims
     | {teams: $teams, claims: $claims}')"
   peer_teams="$(printf '%s' "$pj" | jq -c .teams)"; peer_claims="$(printf '%s' "$pj" | jq -c .claims)"
@@ -197,12 +197,20 @@ if [ -n "$free" ] && [ "$free" -lt "$(warn_free_gb)" ]; then
 fi
 if $want_peers; then
   if [ -n "$claims_why" ]; then blocks+=("$(render_line other_machines list="unknown ($claims_why)")")
-  elif [ "$peer_claims" != "[]" ]; then
-    blocks+=("$(render_line other_machines list="$(printf '%s' "$peer_claims" | jq -r --argjson now "$(jq -rn --arg t "${FLEET_NOW:-$(now)}" '$t | fromdateiso8601')" \
-      --argjson lease "$(lease_hours)" "$RENDER_DEFS"'
-      [.[] | "\(issue_cell(.issue; ""; "")) on \(.machine // .label) (\(if .heartbeat == null then "no heartbeat"
-        else "heartbeat \(.heartbeat | ago($now))" + (if ($now - (.heartbeat | fromdateiso8601)) > ($lease * 3600) then ", lapsed" else "" end) end), claim only: no summary)"]
-      | join("; ")')")")
+  else
+    # A machine that published no summary: its claims, one line. No heartbeat age anywhere in what status prints.
+    if [ "$peer_claims" != "[]" ]; then
+      blocks+=("$(render_line other_machines list="$(printf '%s' "$peer_claims" | jq -r "$RENDER_DEFS"'
+        [.[] | "\(issue_cell(.issue; ""; "")) on \(.machine // .label) (claim only: no summary)"] | join("; ")')")")
+    fi
+    # A machine whose heartbeat is lapsed or missing gets one plain line, whether or not it published a summary.
+    hbl="$(printf '%s' "$claims" | jq -r --arg now "${FLEET_NOW:-$(now)}" --argjson lease "$(lease_hours)" '
+      group_by(.machine) | map({machine: .[0].machine, hb: (map(.heartbeat | select(. != null)) | max)})
+      | .[] | if .hb == null then "\(.machine)\tno heartbeat"
+        elif (($now | fromdateiso8601) - (.hb | fromdateiso8601)) > ($lease * 3600) then "\(.machine)\theartbeat lapsed" else empty end')"
+    while IFS=$'\t' read -r hm hw; do
+      [ -z "$hm" ] || blocks+=("$(render_line machine_heartbeat machine="$hm" what="$hw")")
+    done <<<"$hbl"
   fi
 fi
 # The launchd loop is installed (its launcher exists) but has no Orchestrator to wake: say so in one line.
