@@ -234,6 +234,91 @@ v420_overlap() { # the overlap check at plan time: files against open PRs and li
   unset FLEET_GH V420_PRS FLEET_NOW
 }
 
+v420_tick() { # run one tick at a fixed time; the events it printed
+  FLEET_NOW="$1" "$SCRIPTS/tick.sh" 2>/dev/null
+}
+v420_evn() { # v420_evn <events json> <type>: how many events of the type
+  printf '%s' "${1:-[]}" | jq -r --arg t "$2" '[.[]? | select(.type == $t)] | length' 2>/dev/null || echo 0
+}
+
+v420_usage() { # a usage limit stops new boots, is reported once, and running teams carry on
+  v420_state usage; export DF_GB=100
+  local tr="$HOME/.claude/projects/v420/usage.jsonl" ev o t0=2026-10-29T10:00:00Z; mkdir -p "$(dirname "$tr")"
+  printf '%s\n' '{"type":"assistant","isApiErrorMessage":true,"message":{"content":[{"type":"text","text":"Claude usage limit reached. Your limit will reset at 3pm."}]}}' >"$tr"
+  "$REG" add "$(jq -cn --arg t "$tr" '{name:"us-a/builder",team:"us-a",tier:"Worker",status:"Idle",herdr_ref:"us-a-builder",pane:"pus",issue:"DEV-1",transcript:$t}')" >/dev/null
+  "$REG" add '{"name":"us-b/lead","team":"us-b","tier":"Lead","status":"Working","herdr_ref":"us-b-lead","pane":"pb","issue":"DEV-2"}' >/dev/null
+  echo working >"$AS/us-b-lead"
+  "$REG" orchestrator here >/dev/null 2>&1; "$REG" set orchestrator target_teams=3 >/dev/null 2>&1
+  ev="$(v420_tick "$t0")"
+  eq "v420 usage: agents stopped by a usage limit are reported once, as one usage_limit and no needs_input" "$(v420_evn "$ev" usage_limit):$(v420_evn "$ev" needs_input):$(v420_evn "$ev" slot_free)" "1:0:0"
+  eq "v420 usage: the backoff runs 15 minutes" "$(jq -r '.usage_until' "$FLEET_STATE_DIR/tick.state.json")" "$(jq -rn --arg t "$t0" '($t | fromdateiso8601) + 900')"
+  ev="$(v420_tick 2026-10-29T10:01:00Z)"
+  eq "v420 usage: and not again on the next tick, and still no slot_free: no retry storm" "$(v420_evn "$ev" usage_limit):$(v420_evn "$ev" slot_free)" "0:0"
+  o="$(FLEET_NOW=2026-10-29T10:02:00Z "$SCRIPTS/boot.sh" build us "$T" "x" 2>&1)"
+  eq "v420 usage: boot refuses during the backoff" "$(printf '%s' "$o" | grep -c "usage limit, so no team starts until 2026-10-29T10:15:00Z")" 1
+  eq "v420 usage: the running team is untouched" "$("$REG" get us-b/lead | jq -r .status)" Working
+  printf '%s\n' '{"type":"assistant","message":{"content":[{"type":"text","text":"back at it"}]}}' >"$tr"; "$REG" set us-a/builder status=Idle >/dev/null
+  ev="$(v420_tick 2026-10-29T10:20:00Z)"
+  eq "v420 usage: once the agents recover and the backoff ran out, slot_free comes back" "$(v420_evn "$ev" slot_free):$(jq -r '.usage_active' "$FLEET_STATE_DIR/tick.state.json")" "1:false"
+  unset DF_GB
+}
+
+v420_status_changes() { # one table per window, one batched ready push in merge order
+  v420_state status; export DF_GB=100 FLEET_GH="$QD/gh-shim"
+  qfresh v420st; export FLEET_STATE_DIR="$QD/state.v420st" FLEET_REGISTRY="$QD/state.v420st/fleet.json"; rm -f "$AS"/*
+  local ev t
+  "$REG" add '{"name":"st-a/lead","team":"st-a","tier":"Lead","status":"Working","herdr_ref":"st-a-lead","pane":"p1","issue":"DEV-1"}' >/dev/null; echo working >"$AS/st-a-lead"
+  ev="$(v420_tick 2026-10-29T10:00:00Z)"
+  eq "v420 status: the first tick only records the table: nothing is sent" "$(v420_evn "$ev" status_changed)" 0
+  ev="$(v420_tick 2026-10-29T10:30:00Z)"
+  eq "v420 status: a quiet stretch produces no status_changed at all" "$(v420_evn "$ev" status_changed)" 0
+  for t in 10:31:00 10:32:00 10:33:00; do
+    "$REG" add "$(jq -cn --arg n "st-$t" '{name:($n + "/lead"),team:$n,tier:"Lead",status:"Working",herdr_ref:("l" + $n),pane:("p" + $n),issue:"DEV-9"}')" >/dev/null; echo working >"$AS/lst-$t"
+    ev="$(v420_tick "2026-10-29T$t""Z")"
+    eq "v420 status: the first change after a quiet stretch is sent at once, the ones inside the window wait ($t)" "$(v420_evn "$ev" status_changed)" "$([ "$t" = 10:31:00 ] && echo 1 || echo 0)"
+  done
+  ev="$(v420_tick 2026-10-29T10:41:00Z)"
+  eq "v420 status: the two changes inside the window make one status_changed, at the next window" "$(v420_evn "$ev" status_changed)" 1
+  ev="$(v420_tick 2026-10-29T10:42:00Z)"
+  eq "v420 status: and nothing more until something changes again" "$(v420_evn "$ev" status_changed)" 0
+  # two PRs becoming ready send one batched push, in merge order
+  qpr app-api 20 fleet/dev-20-a main 2026-10-29T08:00:00Z '["a.go"]' x; qpr app-api 21 fleet/dev-21-b main 2026-10-29T09:00:00Z '["b.go"]' y
+  qteam rd-a app-api 20 DEV-20 aaaaaaa20; qteam rd-b app-api 21 DEV-21 aaaaaaa21
+  ev="$(v420_tick 2026-10-29T11:00:00Z)"
+  eq "v420 status: two PRs becoming ready send one status_changed carrying both, in merge order" \
+    "$(v420_evn "$ev" status_changed):$(printf '%s' "$ev" | jq -r '[.[] | select(.type == "status_changed") | .ready] | first')" "1:2 ready: merge #20, then #21"
+  eq "v420 status: the notice is the push text" "$(grep -c 'Ready to merge: 2 ready: merge #20, then #21.' "$FLEET_STATE_DIR/notices.log")" 1
+  "$REG" add '{"name":"st-z/lead","team":"st-z","tier":"Lead","status":"Working","herdr_ref":"st-z-lead","pane":"pz","issue":"DEV-30"}' >/dev/null
+  ev="$(v420_tick 2026-10-29T11:12:00Z)"
+  eq "v420 status: a table change with the same ready set pushes no ready text" "$(printf '%s' "$ev" | jq -r '[.[] | select(.type == "status_changed") | .ready // ""] | first // "none"')" ""
+  unset DF_GB FLEET_GH
+}
+
+v420_failure_push() { # a failed agent is pushed at once, once, and other teams carry on
+  v420_state failpush; export DF_GB=100
+  printf '#!/usr/bin/env bash\necho "$1" >>"%s/alerts"\n' "$FLEET_STATE_DIR" >"$T/v420-alert"; chmod +x "$T/v420-alert"
+  gcfg "alert_cmd = \"$T/v420-alert\""
+  "$REG" add '{"name":"fp-a/builder","team":"fp-a","tier":"Worker","status":"Failed","herdr_ref":"fp-a-builder","pane":"pa","issue":"DEV-1"}' >/dev/null
+  "$REG" add '{"name":"fp-b/lead","team":"fp-b","tier":"Lead","status":"Working","herdr_ref":"fp-b-lead","pane":"pb","issue":"DEV-2"}' >/dev/null
+  echo working >"$AS/fp-b-lead"; echo idle >"$AS/fp-a-builder"
+  FLEET_NOW=2026-10-29T10:00:00Z "$SCRIPTS/loop-tick.sh" >/dev/null 2>&1
+  FLEET_NOW=2026-10-29T10:05:00Z "$SCRIPTS/loop-tick.sh" >/dev/null 2>&1
+  eq "v420 failure: one push for the failed agent, however many ticks" "$(grep -c 'Alert: agent fp-a/builder failed. Run fleet status.' "$FLEET_STATE_DIR/alerts" 2>/dev/null || echo 0)" 1
+  eq "v420 failure: the other team is untouched" "$("$REG" get fp-b/lead | jq -r .status)" Working
+  gcfg; unset DF_GB
+}
+
+v420_quiet() { # a quiet hour of loop ticks prints nothing and wakes no one
+  v420_state quiet; export DF_GB=100
+  "$REG" add '{"name":"qh-a/lead","team":"qh-a","tier":"Lead","status":"Working","herdr_ref":"qh-a-lead","pane":"p1","issue":"DEV-1"}' >/dev/null; echo working >"$AS/qh-a-lead"
+  local out="" t
+  FLEET_NOW=2026-10-29T09:00:00Z "$SCRIPTS/loop-tick.sh" >/dev/null 2>&1
+  : >"$FLEET_STATE_DIR/wakes.log" 2>/dev/null || true
+  for t in 09:10:00 09:20:00 09:30:00 09:40:00 09:50:00 10:00:00; do out="$out$(FLEET_NOW="2026-10-29T$t""Z" "$SCRIPTS/loop-tick.sh" 2>&1)"; done
+  eq "v420 quiet: an hour of loop ticks with nothing changed prints nothing and writes no wake" "$(printf '%s' "$out" | wc -c | tr -d ' '):$(wc -l <"$FLEET_STATE_DIR/wakes.log" | tr -d ' ')" "0:0"
+  unset DF_GB
+}
+
 v420_smoke() { # the critical cases, CI
   v420_redact_gate
   v420_run_init
@@ -243,6 +328,10 @@ v420_smoke() { # the critical cases, CI
   v420_comments
   v420_heartbeat_name
   v420_overlap
+  v420_usage
+  v420_status_changes
+  v420_failure_push
+  v420_quiet
 }
 v420_full() { # every case
   v420_smoke

@@ -488,7 +488,7 @@ notify() {
   return 0
 }
 
-# api_error_detail <transcript>: "login expired" or "API error" when the newest assistant line of the
+# api_error_detail <transcript>: "usage limit", "login expired" or "API error" when the newest assistant line of the
 # transcript is an API error message (isApiErrorMessage), else nothing. Lines are parsed one at a time;
 # a bad line is skipped. UNVERIFIED: the line shape (.type == "assistant", .isApiErrorMessage, the text
 # in .message.content[].text) is what Claude Code writes today (DEV-368).
@@ -497,9 +497,14 @@ api_error_detail() {
   tail -n 40 "$1" 2>/dev/null | jq -Rr 'fromjson? // empty | select(type == "object" and .type == "assistant")
       | if .isApiErrorMessage == true then
           ([.message.content? | if type == "array" then .[] | select(type == "object") | .text? // empty elif type == "string" then . else empty end] | join(" ")) as $t
-          | (if ($t | test("login|log in|authenticat|expired|401|unauthorized"; "i")) then "login expired" else "API error" end)
+          | (if ($t | test("usage limit|limit reached|rate limit|rate_limit|hit your limit|too many requests|\\b429\\b"; "i")) then "usage limit"
+             elif ($t | test("login|log in|authenticat|expired|401|unauthorized"; "i")) then "login expired" else "API error" end)
         else "" end' 2>/dev/null | tail -n 1 || true
 }
+
+# usage_backoff_until: the epoch second until which the fleet starts no new team because agents hit the plan's usage limit
+# (tick sets usage_until in tick.state.json), 0 when it is not backing off.
+usage_backoff_until() { jq -r '.usage_until // 0' "$(tick_state_file)" 2>/dev/null || printf '0'; }
 
 # --- the event log: one append-only JSON line per thing that happened ---------------------------------
 # ev_log <type> [team=T] [name=N] [issue=I] [pr=URL] [sha=S] [detail=SHORT REASON]
@@ -1126,6 +1131,9 @@ render_notice() {
       render_decision P2 "$name" "$team runs plugin $(jq -r '.from // "an older version"' <<<"$e") and $d is installed. Switch it to $d at its next issue? A yes is kept for $d (registry.sh pref version_ok $d), then restart this Claude Code session or run /reload-plugins." \
         "yes, at its next issue" "no, retire it after this issue" ;;
     slot_free) render_line slot_free live="$(jq -r '.live // "?"' <<<"$e")" target="$(jq -r '.target // "?"' <<<"$e")" ;;
+    usage_limit) render_line event event="Usage limit" name=fleet what="agents hit the plan's usage limit" \
+      next="No team boots until $(jq -r '.until // "the backoff ends"' <<<"$e"); running teams continue" ;;
+    status_changed) jq -r 'if (.ready // "") != "" then "Ready to merge: \(.ready)." else empty end' <<<"$e" ;;
     morning_report) render_line morning_report date="$(jq -r '.date // ""' <<<"$e")" path="$(jq -r '.path // ""' <<<"$e")" ;;
     weekly_summary) "$FLEET_SCRIPTS/metrics.sh" --since 7d 2>/dev/null ;;
     escalation)
@@ -1137,7 +1145,7 @@ render_notice() {
 
 # WAKE_TYPES: the tick events that wake the Orchestrator (loop-tick.sh) and get a notice (tick.sh); each has an entry
 # in references/output.md. An escalation wakes at any severity, pr_opened only when the lead could not be told.
-WAKE_TYPES="pr_ready pr_merged pr_opened pr_conflicting input_pending dead failed stalled needs_input brief_failed claim_takeover claim_lost claim_released claim_held_pr claim_lapsed stale_version slot_free weekly_summary morning_report escalation"
+WAKE_TYPES="pr_ready pr_merged pr_opened pr_conflicting input_pending dead failed stalled needs_input brief_failed claim_takeover claim_lost claim_released claim_held_pr claim_lapsed stale_version slot_free usage_limit status_changed weekly_summary morning_report escalation"
 # WAKE_JQ: the jq filter that keeps the events that wake, with $wake bound to WAKE_TYPES (--arg wake "$WAKE_TYPES").
 WAKE_JQ='select(type == "object") | select((.type as $t | $wake | split(" ") | index($t)) and (.type != "pr_opened" or .lead_told == false))'
 

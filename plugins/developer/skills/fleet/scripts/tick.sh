@@ -57,6 +57,8 @@
 #                   The three claim_ events: once per (issue, holder, heartbeat); not with --team
 # Not an event: a new comment on a live team's issue (from the owner or another machine; the fleet's own start "[fleet]")
 #                   is told to that team's lead once, as quoted data (linear.sh comments), and the lead re-reads the issue.
+#   usage_limit     agents stopped on the plan's usage limit: no boot until usage_until, once per episode (usage_guard)
+#   status_changed  the status table or the set of PRs ready to merge changed, at most once per status_mins / merge_push_mins
 #   claims_unavailable  teams hold issues but no Linear key is configured (once)
 #   claims_readonly     teams hold issues and a key exists, but linear_writes = off (once)
 # With a key and linear_writes allowing it, every tick makes ONE heartbeat mutation (linear.sh heartbeat), first of
@@ -285,6 +287,30 @@ claims_lapsed
 comments_forward
 plan_overlap
 
+# --- usage guard ----------------------------------------------------------------------------------
+# Agents that stop on the plan's rate or usage limit (api_error_detail says "usage limit") start a backoff: usage_until in
+# the state, no new boot and no slot_free while it runs (boot.sh refuses too), running teams carry on, and the Orchestrator
+# is woken once (usage_limit) for the whole episode. Each hit after a backoff ended doubles the next one (usage_backoff_secs,
+# 15 minutes at first, 4 hours at most): no retry storm. An episode ends when no agent is limited and the backoff has run
+# out. These agents are not needs_input events: one wake covers them all.
+usage_guard() { # usage_guard <number of agents stopped by a usage limit>
+  local n="$1" until hits active secs
+  until="$(jq -r '.usage_until // 0' "$STATE_FILE")"; hits="$(jq -r '.usage_hits // 0' "$STATE_FILE")"; active="$(jq -r '.usage_active // false' "$STATE_FILE")"
+  if [ "$n" -gt 0 ]; then
+    if [ "$now_epoch" -ge "$until" ]; then
+      hits=$((hits + 1)); secs="$(const_int USAGE_BACKOFF_SECS 900)"
+      if [ "$hits" -gt 5 ]; then secs=14400; else secs=$((secs << (hits - 1))); [ "$secs" -le 14400 ] || secs=14400; fi
+      until=$((now_epoch + secs))
+      st_upd --argjson u "$until" --argjson h "$hits" '$st + {usage_until: $u, usage_hits: $h, usage_active: true}'
+      if [ "$active" != true ]; then
+        add_events "$(jq -cn --argjson u "$until" '[{type: "usage_limit", team: "", name: "", until: ($u | todate), detail: "agents hit the plan usage limit"}]')"
+      fi
+    fi
+  elif [ "$active" = true ] && [ -z "$team" ] && [ "$now_epoch" -ge "$until" ]; then
+    st_upd '$st + {usage_active: false, usage_hits: 0, usage_until: 0}'
+  fi
+}
+
 # --- stalled / dead -------------------------------------------------------------------------
 # A newly Stalled agent gets ONE nudge through tell.sh (nudged_at on its row) and no event; still
 # Stalled on a later tick: a `stalled` event, once. A Zombie on two ticks in a row is a `dead` event (once) and is
@@ -331,8 +357,10 @@ elif rows="$("$FLEET_SCRIPTS/status.sh" ${targs[@]+"${targs[@]}"} --json 2>/dev/
   add_events "$(jq -cn --slurpfile rows <(printf '%s' "$rows") --slurpfile stf "$STATE_FILE" '$rows[0] as $rows
     | [$rows[] | (.name + "|" + (.status_detail // "")) as $k
       | select(.tier != "Orchestrator" and .status == "Needs input" and (.status_detail // "") != ""
+        and .status_detail != "usage limit"
         and ((($stf[0].needs_input_emitted // []) | index($k)) == null))
       | {type: "needs_input", team, name, detail: .status_detail}]')"
+  usage_guard "$(printf '%s' "$rows" | jq '[.[] | select(.tier != "Orchestrator" and .status == "Needs input" and (.status_detail // "") == "usage limit")] | length')"
   # Only the rows this tick read are re-derived: a --team tick keeps the other teams' keys.
   st_upd --slurpfile rows <(printf '%s' "$rows") '$rows[0] as $rows | [$rows[].name] as $seen
     | $st + {needs_input_emitted: ([($st.needs_input_emitted // [])[] | select(split("|")[0] as $n | $seen | index($n) | not)]
@@ -689,7 +717,7 @@ if [ -z "$team" ]; then
   case "$tgt" in "" | *[!0-9]*) tgt="" ;; esac
   if [ -n "$tgt" ]; then
     nlive="$(live_team_count)"; cap="$(max_teams)"; sf_ok=false; sf_note=""; sf_key=""
-    if [ "$nlive" -lt "$tgt" ] && [ "$nlive" -lt "$cap" ]; then
+    if [ "$nlive" -lt "$tgt" ] && [ "$nlive" -lt "$cap" ] && [ "$now_epoch" -ge "$(jq -r '.usage_until // 0' "$STATE_FILE")" ]; then
       freerepos="$(jq -rn --argjson r "$(config_list repos)" --argjson per "$(teams_per_repo)" --argjson live "$("$registry" list --live | jq -c '[.[] | select(.tier != "Orchestrator") | {team, repo: (.repo // "")}] | unique')" '
         if ($r | length) == 0 then "any" else [$r[] | . as $x | select(([$live[] | select(.repo == $x or (.repo | split("/") | last) == ($x | split("/") | last)) | .team] | unique | length) < $per)] | join(",") end')"
       if [ -n "$freerepos" ]; then
@@ -829,6 +857,39 @@ if [ -z "$team" ] && [ "$(cfg_bool overnight false)" = true ]; then
   fi
 fi
 
+# --- what changed for the owner: the status table, and the set of PRs ready to merge ---------------------------------
+# The team table and the merge queue are the status reply. When their signature changes (a team starts, finishes or
+# fails, a PR turns ready, conflicts or merges, the merge order moves, something needs the owner) one status_changed wake
+# goes out, at most once every status_mins (the [run] profile, 10): changes in between wait for the next window. When the
+# ready set changes (to a non-empty set) the same wake carries the push text "2 ready: merge #A, then #B", at most once
+# every merge_push_mins (15). Nothing changed, nothing sent. The first look only records the signatures. A fleet-wide
+# count, so tick --team skips it.
+q_built=""
+if [ -z "$team" ]; then
+  q_built="$("$FLEET_SCRIPTS/queue.sh" 2>/dev/null)" || q_built=""
+  [ -z "$q_built" ] || {
+    tsig="$(render_table --queue "$q_built" 2>/dev/null | cksum | awk '{print $1}')"
+    rnow="$(jq -r '[(.ready // [])[] | .url] | join(" ")' <<<"$q_built")"
+    rtxt="$(jq -r '(.ready // []) as $r | ($r | map(.url | capture("^https?://[^/]+/(?<o>[^/]+)/(?<r>[^/]+)/pull/(?<n>[0-9]+)")) | map(.r) | unique | length > 1) as $multi
+      | if ($r | length) == 0 then "" else "\($r | length) ready: merge " + ([$r[] | .url | capture("^https?://[^/]+/[^/]+/(?<r>[^/]+)/pull/(?<n>[0-9]+)") | (if $multi then .r else "" end) + "#" + .n] | join(", then ")) end' <<<"$q_built")"
+    if [ "$(jq -r 'has("status_sig")' "$STATE_FILE")" != true ]; then
+      st_upd --arg s "$tsig" --arg r "$rnow" --argjson n "$now_epoch" '$st + {status_sig: $s, ready_sig: $r, status_sent_at: $n, ready_sent_at: $n}'
+    else
+      s_due=false; r_due=false
+      [ "$tsig" = "$(jq -r '.status_sig' "$STATE_FILE")" ] || [ $((now_epoch - $(jq -r '.status_sent_at // 0' "$STATE_FILE"))) -lt $(($(run_int status_mins 10) * 60)) ] || s_due=true
+      if [ "$rnow" != "$(jq -r '.ready_sig // ""' "$STATE_FILE")" ]; then
+        if [ -z "$rnow" ]; then st_upd '$st + {ready_sig: ""}'
+        elif [ $((now_epoch - $(jq -r '.ready_sent_at // 0' "$STATE_FILE"))) -ge $(($(run_int merge_push_mins 15) * 60)) ]; then r_due=true; fi
+      fi
+      if $s_due || $r_due; then
+        add_events "$(jq -cn --arg r "$([ "$r_due" = true ] && printf '%s' "$rtxt")" '[{type: "status_changed", team: "", name: "", detail: "the status table changed"} + (if $r != "" then {ready: $r} else {} end)]')"
+        st_upd --arg s "$tsig" --argjson n "$now_epoch" '$st + {status_sig: $s, status_sent_at: $n}'
+        ! $r_due || st_upd --arg r "$rnow" --argjson n "$now_epoch" '$st + {ready_sig: $r, ready_sent_at: $n}'
+      fi
+    fi
+  }
+fi
+
 # --- the event log ------------------------------------------------------------------------------------
 while IFS=$'\t' read -r etype eteam ename eurl esha eissue edetail; do
   [ -n "$etype" ] || continue
@@ -836,7 +897,7 @@ while IFS=$'\t' read -r etype eteam ename eurl esha eissue edetail; do
   [ "$eissue" != - ] || eissue=""; [ "$edetail" != - ] || edetail=""
   ev_log "$etype" team="$eteam" name="$ename" pr="$eurl" sha="$esha" issue="$eissue" detail="$edetail"
 done < <(jq -r 'def d: if . == null or . == "" then "-" else tostring end;
-  .[] | select(.type | IN("pr_opened", "pr_ready", "pr_merged", "pr_conflicting", "stalled", "dead", "failed", "needs_input", "stale_version", "slot_free",
+  .[] | select(.type | IN("pr_opened", "pr_ready", "pr_merged", "pr_conflicting", "stalled", "dead", "failed", "needs_input", "stale_version", "slot_free", "usage_limit", "status_changed",
     "claim_takeover", "claim_lost", "claim_released", "claim_held_pr", "claim_lapsed", "morning_report"))
   | [.type, (.team | d), (.name | d), (.url | d), (.sha | d), (if (.type | startswith("claim_")) then (.issue | d) else "-" end),
      (if .type == "claim_lost" then "claimed by this machine, released by another"
@@ -875,5 +936,5 @@ st_upd --argjson prs "$live_prs" --argjson esc "$live_esc" --argjson cl "$live_c
   + (if .respawns then {respawns: (.respawns | with_entries(.value |= inrecent) | with_entries(select(.value | length > 0)))} else {} end)'
 tick_state_write "$(cat "$STATE_FILE")"
 # The merge queue, built once here for every status until the next tick (common.sh fleet_queue).
-if [ -z "$team" ] && q="$("$FLEET_SCRIPTS/queue.sh" 2>/dev/null)"; then queue_write "$q"; fi
+if [ -z "$team" ] && q="${q_built:-$("$FLEET_SCRIPTS/queue.sh" 2>/dev/null)}" && [ -n "$q" ]; then queue_write "$q"; fi
 [ "$(jq length "$EVENTS_FILE")" = 0 ] || cat "$EVENTS_FILE"

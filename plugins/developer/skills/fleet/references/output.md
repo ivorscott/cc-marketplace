@@ -596,6 +596,29 @@ Slot free (<n> of <N> teams running). Pick the next issue and boot it.
 issue is unclaimed and not blocked (`linear.sh candidates`; with no Linear key that last check is skipped and the wake says
 so). UNVERIFIED: the Linear query behind `candidates`.
 
+### wake usage_limit
+
+```
+Usage limit fleet: agents hit the plan's usage limit. No team boots until <time>; running teams continue.
+```
+
+Once per episode: agents stopped on a rate or usage limit (their transcript's last line is an API error that says so) start a
+backoff, 15 minutes at first and doubling with each hit after one ran out, 4 hours at most. During it there is no `slot_free` and
+`boot` refuses (`FLEET_FORCE=1` boots anyway); running teams carry on. The wake is reported once; the episode ends when no agent
+is limited and the backoff has run out. These agents are not `needs_input` wakes. UNVERIFIED: the wording of the real limit screen.
+
+### wake status_changed
+
+```
+Ready to merge: 2 ready: merge #214, then #121.
+```
+
+The status table or the set of PRs ready to merge changed (a team starts, finishes or fails, a PR turns ready, conflicts or
+merges, the merge order moves, something needs the owner). At most once every `status_mins` (the `[run]` profile, 10); changes
+in between wait for the next window; nothing changed, nothing sent. The notice is there only when the ready set changed to a
+non-empty one, at most once every `merge_push_mins` (15): it is the text of the one batched push, in merge order. Answer the wake
+with `fleet status`, relayed as it is; with a ready notice, push it as well.
+
 ### wake morning_report
 
 ```
