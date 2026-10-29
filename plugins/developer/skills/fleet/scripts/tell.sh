@@ -132,11 +132,8 @@ if [ -z "${FLEET_ROLE:-}" ] && ! $is_brief && $confirm; then
     trow="$("$FLEET_SCRIPTS/registry.sh" get "$target" 2>/dev/null || true)"
     if [ -n "$trow" ]; then
       tstatus="$(printf '%s' "$trow" | jq -r '.status // ""')"; tteam="${target%%/*}"; revive=false
-      case "$tstatus" in Done | Parked) revive=true ;; Retired) ;; *)
-        { [ "$(agent_state)" = gone ] || { [ -n "$pane" ] && ! hd pane process-info --pane "$pane" 2>/dev/null |
-          jq -e '.result.process_info | .foreground_process_group_id != .shell_pid' >/dev/null 2>&1; }; } && revive=true ;;
-      esac
-      if $revive; then
+      case "$tstatus" in Done | Parked) revive=true ;; Retired) ;; *) revive=maybe ;; esac
+      if [ "$revive" != false ]; then
         tprs="$("$FLEET_SCRIPTS/registry.sh" list --team "$tteam" | jq -r '[.[] | (.pr // empty), (.prs // [])[] | select(. != "")] | unique[]')"
         open_pr=""; merged_pr=""
         for u in $tprs; do
@@ -144,6 +141,13 @@ if [ -z "${FLEET_ROLE:-}" ] && ! $is_brief && $confirm; then
             OPEN) open_pr="$u" ;; MERGED | CLOSED) merged_pr="$u" ;;
           esac
         done
+        # An agent that is not Done or Parked is revived only when it is gone (herdr does not know it, or its pane is back at the shell).
+        if [ "$revive" = maybe ] && [ -n "$open_pr" ]; then
+          revive=false
+          { [ "$(agent_state)" = gone ] || { [ -n "$pane" ] && ! hd pane process-info --pane "$pane" 2>/dev/null |
+            jq -e '.result.process_info | .foreground_process_group_id != .shell_pid' >/dev/null 2>&1; }; } && revive=true
+          [ "$revive" = true ] || open_pr=""
+        fi
         if [ -n "$open_pr" ]; then
           tlead="$tteam/lead"; ttext="$text"; [ "$target" = "$tlead" ] || ttext="(meant for ${target#*/}) $text"
           if "$FLEET_SCRIPTS/revive.sh" "$tteam" --text "$ttext" --why "you were sent a message while your team was not running; it has been brought back for it" --pr "$open_pr" >/dev/null 2>"$FLEET_STATE_DIR/tell-revive.err"; then

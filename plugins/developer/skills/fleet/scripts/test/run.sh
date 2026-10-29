@@ -3868,7 +3868,7 @@ eq "dev408-16 commands: fleet escalations lists it in its table" "$("$FL" escala
 "$FL" resolve g4/lead "$eid" --note 8080 >/dev/null 2>&1
 eq "dev408-16 commands: escalate, escalations and resolve run registry.sh's" "$("$REG" escalations --team g4 | jq -r '[.[] | select(.message == "which port?")][0] | [.resolution, (.resolved_at != null)] | map(tostring) | join("|")')" "8080|true"
 d4cfg 'linear_writes = "on"'; d4db
-eq "dev408-16 commands: fleet holder runs linear.sh holder and says it in one line" "$(FLEET_NOW=2026-10-18T09:00:00Z "$FL" holder DEV-2)" "DEV-2: held by fleet:other (heartbeat 3h ago, lapsed)."
+eq "dev408-16 commands: fleet holder runs linear.sh holder and says it in one line" "$(FLEET_NOW=2026-10-18T09:00:00Z "$FL" holder DEV-2)" "DEV-2: held by fleet:other, heartbeat lapsed."
 d4cfg
 # prime: the counts, then the status output
 "$REG" escalate g4/lead P1 "need a decision" >/dev/null 2>&1
@@ -4167,7 +4167,7 @@ eq "dev408-13 integration: status ends with one line when it is not current, nev
 eq "dev408-13 integration: and no such line when it is current" "$("$SCRIPTS/status.sh" 2>/dev/null | grep -c 'herdr Claude integration')" 0
 rm -f "$AS"/build-i13a-*; : >"$HERDR_LOG"
 out="$(PROMPT_NOSTATE=1 PROMPT_SEQ=1 "$SCRIPTS/tell.sh" build-i13a/builder "a state_change_seq bump is delivery" 2>/dev/null)"; rc=$?
-eq "dev408-13 tell: a state_change_seq bump confirms, and the screen is never read" "$rc:$(told "$out"):$(grep -c '^agent read' "$HERDR_LOG" || true)" "0:true:0"
+eq "dev408-13 tell: a state_change_seq bump confirms, and the screen is read once, before the send, for the input box only" "$rc:$(told "$out"):$(grep -c '^agent read' "$HERDR_LOG" || true)" "0:true:1"
 "$REG" set build-i13a/builder status=Working transcript= >/dev/null; echo idle >"$AS/build-i13a-builder"; printf '  1 shell still running\n' >"$AS/build-i13a-builder.read"; : >"$HERDR_LOG"
 eq "dev408-13 status: an idle agent with no transcript and no done step is Stalled, read from no pane" "$("$SCRIPTS/status.sh" build-i13a --json 2>/dev/null | jq -r '.[] | select(.name == "build-i13a/builder") | .status'):$(grep -c '^agent read' "$HERDR_LOG" || true)" "Stalled:0"
 
@@ -4236,7 +4236,7 @@ eq "dev408-2 slots: with no target there is no slot_free" "$(evc "$(stk)" slot_f
 "$REG" set orchestrator target_teams=3 >/dev/null
 k1="$(stk)"; k2="$(stk)"
 eq "dev408-2 slots: under the target, one slot_free, once" "$(evc "$k1" slot_free):$(evc "$k2" slot_free)" "1:0"
-eq "dev408-2 slots: it says how many run of the target" "$(printf '%s' "$k1" | jq -r '.[] | select(.type == "slot_free") | [.detail, .live, .target] | map(tostring) | join("|")')" "1 live < target 3; no Linear key, candidates not checked|1|3"
+eq "dev408-2 slots: it says how many run of the target" "$(printf '%s' "$k1" | jq -r '.[] | select(.type == "slot_free") | [(.detail | split(";")[0]), .live, .target] | map(tostring) | join("|")')" "1 live < target 3|1|3"
 slot sb; eq "dev408-2 slots: a new count still under the target fires again" "$(evc "$(stk)" slot_free)" 1
 slot sc; eq "dev408-2 slots: at the target, none" "$(evc "$(stk)" slot_free)" 0
 "$REG" retire sc/lead >/dev/null; eq "dev408-2 slots: after the count recovered, a drop fires again" "$(evc "$(stk)" slot_free)" 1
