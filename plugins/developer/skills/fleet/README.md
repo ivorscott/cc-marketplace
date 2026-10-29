@@ -543,7 +543,7 @@ Fixes found after 4.1.1 (DEV-530), one per item:
 
 ## What changed in 4.1.3
 
-Thirteen fixes (DEV-588), one per item:
+Thirteen fixes, one per item:
 
 1. **One status for every machine.** Each machine publishes a compact `summary=` line of its teams (issue, PR, state,
    what it needs, whether its PR is ready) in its Linear label description, in the same write as the heartbeat.

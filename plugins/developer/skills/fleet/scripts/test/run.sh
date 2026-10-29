@@ -3,7 +3,7 @@
 # Uses stub up/down commands and a shim herdr; never creates a kind cluster.
 #   bash scripts/test/run.sh            the full suite (local)
 #   bash scripts/test/run.sh --smoke    the critical cases only (CI, under 2 min)
-#   bash scripts/test/run.sh --d588     only the DEV-588 (4.1.3) cases, test/dev588.sh
+#   bash scripts/test/run.sh --v413     only the 4.1.3 cases, test/v413.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SCRIPTS="$(dirname "$HERE")"
@@ -179,7 +179,7 @@ case "$1 $2" in
     esac
     echo '{}' ;;
   "agent send-keys") [ -z "${ENTER_WORKS:-}" ] || [ "$4" != enter ] || echo working >"$AS/$3"
-    # SEND_KEYS_FAIL=<key>: herdr refuses that key (DEV-588 bug 9)
+    # SEND_KEYS_FAIL=<key>: herdr refuses that key (4.1.3, bug 9)
     [ "${SEND_KEYS_FAIL:-}" != "$4" ] || { echo '{"error":{"code":"invalid_key"}}' >&2; exit 1; }
     if [ -e "$AS/$3.dialog" ] && [ "$4" = enter ]; then rm -f "$AS/$3.dialog" "$AS/$3.read"; : >"$AS/exited.$3"; fi; echo '{}' ;;
   "agent read") cat "$AS/$3.read" 2>/dev/null || true ;;
@@ -319,8 +319,8 @@ gold() { # gold <entry> <reply>
   if [ -f "$GD/$1.md" ] && [ "$got" = "$(cat "$GD/$1.md")" ]; then ok "$name"
   else bad "$name"; diff <(cat "$GD/$1.md" 2>/dev/null) <(printf '%s\n' "$got") | head -n 12 | sed 's/^/      /'; fi
 }
-. "$HERE/dev588.sh" # DEV-588 (4.1.3): d588_smoke and d588_full
-if [ "${1:-}" = --d588 ]; then d588_full; printf '\n%d passed, %d failed\n' "$pass" "$failn"; [ "$failn" = 0 ]; exit; fi # only the DEV-588 cases
+. "$HERE/v413.sh" # 4.1.3: v413_smoke and v413_full
+if [ "${1:-}" = --v413 ]; then v413_full; printf '\n%d passed, %d failed\n' "$pass" "$failn"; [ "$failn" = 0 ]; exit; fi # only the 4.1.3 cases
 # ---- run.sh --smoke: the critical cases only (CI). The full suite (no flag) stays for local runs. --------------
 if [ "${1:-}" = --smoke ]; then
   SM="$T/smoke"; mkdir -p "$SM"; export FLEET_FORCE=
@@ -738,9 +738,9 @@ Merge this one first." "Do not merge until the API ships" "  hold: waiting on de
   rm -f "$FLEET_STATE_DIR/tick.state.json"; m2=$(hw5); FLEET_NOW=$N5 "$SCRIPTS/tick.sh" >/dev/null 2>&1
   eq "smoke: dev530-5 a tick with a claimed row writes the heartbeat once, not twice" "$(hb5):$(($(hw5) - m2))" "$N5:1"
   export LINEAR_DB="$SM/linear.json" LINEAR_LOG="$SM/linear.log"; rm -f "$FLEET_CONFIG_DIR/$kf"
-  # dev530-6: the README says what changed in 4.1.2 (the version itself is pinned in the DEV-588 cases)
+  # dev530-6: the README says what changed in 4.1.2 (the version itself is pinned in the 4.1.3 cases)
   eq "smoke: dev530-6 the README has its What changed in 4.1.2 section" "$(grep -c '^## What changed in 4.1.2' "$SCRIPTS/../README.md")" "1"
-  d588_smoke
+  v413_smoke
   printf '\n%d passed, %d failed\n' "$pass" "$failn"
   [ "$failn" = 0 ]; exit
 fi
@@ -1310,7 +1310,7 @@ pst() { LINEAR_STUB_KEY=KEYFIXTURE-peers LINEAR_DB="$PL/db.json" LINEAR_LOG="$PL
 printf 'KEYFIXTURE-peers\n' >"$FLEET_CONFIG_DIR/$kf"; chmod 600 "$FLEET_CONFIG_DIR/$kf"
 FLEET_NOW=2026-10-18T10:00:00Z DF_GB=100 pst >"$T/all.out" 2>"$T/all.err"
 eq "status: one line names each peer claim as a claim only, with no heartbeat age" "$(grep '^Other machines:' "$T/all.out")" "Other machines: DEV-9 on 3f9a2c1e (claim only: no summary); DEV-10 on 9b1d4e07 (claim only: no summary); DEV-11 on 5555aaaa (claim only: no summary)."
-eq "dev588 heartbeat: a lapsed or missing heartbeat gets one plain line each, a live one none, and no age" "$(grep -i 'heartbeat' "$T/all.out")" "5555aaaa: heartbeat lapsed.
+eq "v413 heartbeat: a lapsed or missing heartbeat gets one plain line each, a live one none, and no age" "$(grep -i 'heartbeat' "$T/all.out")" "5555aaaa: heartbeat lapsed.
 9b1d4e07: no heartbeat."
 eq "status --all: still accepted, and prints the same table" "$(FLEET_NOW=2026-10-18T10:00:00Z DF_GB=100 pst --all 2>/dev/null)" "$(cat "$T/all.out")"
 check "status: the local teams are in the team table" grep -q '^| build-own1 |' "$T/all.out"
@@ -4071,7 +4071,7 @@ jq '.mergeable = "CONFLICTING"' "$QGHD/app-api-51.json" >"$QD/m.json" && mv "$QD
 : >"$HERDR_LOG"; t2="$(qt)"; t3="$(qt)"
 eq "dev408-18 queue: a PR that was ready and conflicts after a merge: one pr_conflicting, once" "$(evc "$t2" pr_conflicting):$(evc "$t3" pr_conflicting)" "1:0"
 eq "dev408-18 queue: its parked team is unparked first" "$("$REG" list --team tb | jq -r '[.[].status] | map(select(. == "Parked")) | length')" 0
-eq "dev408-18 queue: and its lead is briefed exactly once to merge main into it and re-sign (dev588-7: a brief file)" "$(grep -c '^agent prompt tb-lead Read your brief' "$HERDR_LOG"):$(printf '%s' "$t2" | jq -r '.[] | select(.type == "pr_conflicting") | .lead_told'):$(grep -c 'What to do now: PR .*pull/51 conflicts with its base now (https://github.com/acme/app-api/pull/50 merged ahead of it)' "$("$REG" get tb/lead | jq -r .last_brief)"):$(sed -n '/What to do now/,/do not push a guess/p' "$("$REG" get tb/lead | jq -r .last_brief)" | grep -c 'git merge origin/main')" "1:true:1:1"
+eq "dev408-18 queue: and its lead is briefed exactly once to merge main into it and re-sign (v413-7: a brief file)" "$(grep -c '^agent prompt tb-lead Read your brief' "$HERDR_LOG"):$(printf '%s' "$t2" | jq -r '.[] | select(.type == "pr_conflicting") | .lead_told'):$(grep -c 'What to do now: PR .*pull/51 conflicts with its base now (https://github.com/acme/app-api/pull/50 merged ahead of it)' "$("$REG" get tb/lead | jq -r .last_brief)"):$(sed -n '/What to do now/,/do not push a guess/p' "$("$REG" get tb/lead | jq -r .last_brief)" | grep -c 'git merge origin/main')" "1:true:1:1"
 eq "dev408-18 queue: the conflict is in the event log for the morning report" "$(jq -r 'select(.type == "pr_conflicting") | .pr' "$FLEET_STATE_DIR/events.jsonl")" "https://github.com/acme/app-api/pull/51"
 eq "dev408-18 queue: and the PR has left the queue" "$(nr 51)" "conflicting"
 # R7: a PR merged on an earlier tick, still on its row, is never named as the cause of a later conflict. R6: a ready PR
@@ -4584,9 +4584,9 @@ printf 'the plan\n' >"$R19/.fleet/plan/build-p19.md"; printf 'the other plan\n' 
 eq "dev408-19 plan: retire removes the team's plan file, and only its own" "$([ -e "$R19/.fleet/plan/build-p19.md" ] && echo kept || echo removed):$([ -e "$R19/.fleet/plan/build-p19b.md" ] && echo kept || echo removed)" "removed:kept"
 # ---- end DEV-408 ----
 
-# ---- DEV-588 (4.1.3) ----
-d588_full
-# ---- end DEV-588 ----
+# ---- 4.1.3 ----
+v413_full
+# ---- end 4.1.3 ----
 
 printf '\n%d passed, %d failed\n' "$pass" "$failn"
 [ "$failn" = 0 ]
