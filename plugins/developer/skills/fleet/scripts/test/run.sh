@@ -555,7 +555,7 @@ EOF")" "deny:deny:deny:deny"
     issues: [{id: "I2", identifier: "DEV-2", team: {id: "T1"}, state: {id: "S0", name: "In Progress"}, labelIds: ["L2"], comments: []}]}' >"$LINEAR_DB"
   a3="$(FLEET_NOW=2026-10-18T09:00:00Z "$SCRIPTS/status.sh" --all 2>&1 | grep '^Other machines')"; rm -f "$FLEET_CONFIG_DIR/$kf"
   eq "smoke: dev512-3 status --all lists a peer's claim with no flag, and says unknown without a key" \
-    "$a3|$("$SCRIPTS/status.sh" --all 2>&1 | grep '^Other machines')" "Other machines: DEV-2 on other (heartbeat 3h ago, lapsed).|Other machines: unknown (no Linear key)."
+    "$a3|$("$SCRIPTS/status.sh" --all 2>&1 | grep '^Other machines')" "Other machines: DEV-2 on other (claim only: no summary).|Other machines: unknown (no Linear key)."
   # dev512-6: slim takes over a hand-written style: backup, the conflicting tables out, the block in; [keys] stays
   dfresh 6; H6="$FLEET_STATE_DIR/herdr.toml"
   printf '[keys]\nprefix = "ctrl-b"\n\n[ui]\nsidebar_width = 30\n\n[ui.sidebar.agents]\nrows = ["$name"]\n' >"$H6"; cp "$H6" "$SM/h6.orig"
