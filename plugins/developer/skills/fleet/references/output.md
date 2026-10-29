@@ -222,7 +222,7 @@ Retire <team>? Outcome <outcome>. Unpushed: <none|role (n commits), …>. Kept: 
 After:
 
 ```
-Retired <team> (<outcome>): PRs <PR url, …|none>. Archived to <path>. Kept: <role (why), …>. Issue → <Done|Verify|Todo>.
+Retired <team> (<outcome>): PRs <PR url, …|none>. Archived to <path>. Kept: <role (why), …>. Issue → <Done|Verify|Todo>.[ No UNVERIFIED step, so Done, not Verify.]
 ```
 
 An explicit `--outcome` is the outcome of every retired row, whatever the rows reported. An issue (or claim) another machine

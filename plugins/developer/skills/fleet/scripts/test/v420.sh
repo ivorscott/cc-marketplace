@@ -74,10 +74,49 @@ v420_run_collide() { # a [run] key never answers a top-level reader, and an allo
   gcfg
 }
 
+v420_linear() { # a fake Linear with DEV-1 In Progress (labelled fleet:test) and the extra issues given as a JSON array
+  local kf="linear_api""_key"
+  export LINEAR_STUB_KEY=KEYFIXTURE-v420 LINEAR_DB="$FLEET_STATE_DIR/linear.json" LINEAR_LOG="$FLEET_STATE_DIR/linear.log" FLEET_CURL="$HERE/linear-stub.sh"
+  : >"$LINEAR_LOG"
+  jq -n --argjson extra "${1:-[]}" '{team: "T1", states: {Done: "S3", Todo: "S2", Verify: "S4"}, next: 100, labels: [{id: "L0", name: "fleet", description: "", parent: null},
+      {id: "L2", name: "fleet:test", description: "heartbeat=2026-10-29T09:55:00Z", parent: {id: "L0", name: "fleet"}}],
+    issues: ([{id: "I1", identifier: "DEV-1", team: {id: "T1"}, state: {id: "S1", name: "In Progress"}, labelIds: ["L2"], comments: []}] + $extra)}' >"$LINEAR_DB"
+  printf 'KEYFIXTURE-v420\n' >"$FLEET_CONFIG_DIR/$kf"; chmod 600 "$FLEET_CONFIG_DIR/$kf"; gcfg 'linear_writes = "on"'
+}
+v420_nolinear() { rm -f "$FLEET_CONFIG_DIR/linear_api""_key"; unset LINEAR_STUB_KEY LINEAR_DB LINEAR_LOG FLEET_CURL; gcfg; }
+
+v420_verify() { # Verify only for a real hands-on check; the list, and the expiry
+  v420_state verify; export FLEET_NOW=2026-10-29T10:00:00Z
+  local o
+  v420_linear; "$REG" add '{"name":"vt-a/lead","team":"vt-a","tier":"Lead","status":"Done","herdr_ref":"vt-a-l","pane":"p1","issue":"DEV-1","outcome":"Shipped","summary":"all done"}' >/dev/null
+  o="$("$SCRIPTS/retire.sh" vt-a --outcome Shipped --verify 2>/dev/null | head -n 1)"
+  eq "v420 verify: --verify with no UNVERIFIED step goes to Done, and the Retired line says so" \
+    "$(jq -r '.issues[0].state.name' "$LINEAR_DB"):$(printf '%s' "$o" | grep -c 'Issue → Done. No UNVERIFIED step, so Done, not Verify.$')" "Done:1"
+  v420_linear; "$REG" add '{"name":"vt-b/lead","team":"vt-b","tier":"Lead","status":"Done","herdr_ref":"vt-b-l","pane":"p2","issue":"DEV-1","outcome":"Shipped","summary":"merged; UNVERIFIED: a live run against the vendor"}' >/dev/null
+  "$SCRIPTS/retire.sh" vt-b --outcome Shipped --verify >/dev/null 2>&1
+  eq "v420 verify: --verify with an UNVERIFIED step in a row's summary lands in Verify" "$(jq -r '.issues[0].state.name' "$LINEAR_DB")" Verify
+  # the list: ages, the line to check, and the expiry
+  v420_linear '[{"id":"I2","identifier":"DEV-2","team":{"id":"T1"},"state":{"id":"S4","name":"Verify"},"labelIds":[],"title":"old one","updatedAt":"2026-10-21T10:00:00Z"},
+    {"id":"I3","identifier":"DEV-3","team":{"id":"T1"},"state":{"id":"S4","name":"Verify"},"labelIds":[],"title":"new one","updatedAt":"2026-10-27T10:00:00Z"}]'
+  "$REG" add '{"name":"vt-c/lead","team":"vt-c","tier":"Lead","status":"Retired","herdr_ref":"vt-c-l","pane":"p3","issue":"DEV-3","summary":"ok; UNVERIFIED: walk through the form by hand"}' >/dev/null
+  o="$("$SCRIPTS/linear.sh" verify-list)"
+  eq "v420 verify: verify-list gives age, what to check and the expiry" "$(jq -r '[.[] | "\(.issue):\(.age_days):\(.expiry):\(.check)"] | join("|")' <<<"$o")" \
+    "DEV-2:8:ask:see the issue|DEV-3:2:fresh:UNVERIFIED: walk through the form by hand"
+  eq "v420 verify: verify-list writes nothing" "$(grep -c '^mutation' "$LINEAR_LOG")" 0
+  "$SCRIPTS/linear.sh" verify-sweep >/dev/null
+  eq "v420 verify: the first sweep asks once and moves nothing" "$(jq -r '.issues[1].state.name' "$LINEAR_DB"):$(jq -r 'keys | join(",")' "$FLEET_STATE_DIR/verify.asked.json")" "Verify:DEV-2"
+  eq "v420 verify: the next list says close" "$("$SCRIPTS/linear.sh" verify-list | jq -r '.[0].expiry')" close
+  "$SCRIPTS/linear.sh" verify-sweep >/dev/null
+  eq "v420 verify: the next sweep moves it to Done with a comment, and forgets it" \
+    "$(jq -r '.issues[1].state.name' "$LINEAR_DB"):$(jq -r '.issues[1].comments | length' "$LINEAR_DB"):$(jq -r 'keys | length' "$FLEET_STATE_DIR/verify.asked.json")" "Done:1:0"
+  v420_nolinear; unset FLEET_NOW
+}
+
 v420_smoke() { # the critical cases, CI
   v420_redact_gate
   v420_run_init
   v420_run_collide
+  v420_verify
 }
 v420_full() { # every case
   v420_smoke

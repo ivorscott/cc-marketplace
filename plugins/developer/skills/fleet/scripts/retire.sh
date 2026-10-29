@@ -6,7 +6,9 @@
 #   retire.sh --summary <team | team/role> [...]
 #
 # Retiring a whole team also moves its issue on Linear, once per issue and only while linear_writes allows writes (a
-# failure warns, never fails the retire): Shipped → Done, or Verify with --verify, once every PR of the issue merged (an
+# failure warns, never fails the retire): Shipped → Done, or Verify with --verify, once every PR of the issue merged. Verify
+# is only for a real hands-on check by the owner: --verify counts only when a row's done summary holds an UNVERIFIED step;
+# with none, the issue goes straight to Done and the Retired line says so (an
 # open PR leaves it as it is, with a warning); Abandoned or Failed, or no outcome reported (shown as Abandoned) → Todo,
 # and this machine's claim is released. A PR whose body says it is "Part of" another issue (any case, before an issue
 # reference) leaves the issue In Progress with its label. The Retired line then ends "Issue → <state>.". An issue
@@ -245,6 +247,10 @@ prs="$(printf '%s' "$rows" | jq -r '[.[] | (.pr // empty), (.prs // [])[] | sele
 # Retired line shows as Abandoned) → Todo, and this machine's claim is released. A PR whose body says it is "Part of"
 # another issue (PART_OF_JQ: one slice of a bigger issue) leaves the issue In Progress with its label.
 issue_state=""
+verify_note=""
+if $verify && ! printf '%s' "$rows" | jq -e '[.[] | (.summary // "") | select(test("UNVERIFIED"))] | length > 0' >/dev/null 2>&1; then
+  verify=false; verify_note="No UNVERIFIED step, so Done, not Verify."
+fi
 case "${outcomes:-Abandoned}" in Shipped) want=Done; ! $verify || want=Verify ;; Abandoned | Failed) want=Todo ;; *) want="" ;; esac
 if $whole_team && [ -n "$want" ] && [ "$(linear_writes)" != off ] && "$FLEET_SCRIPTS/linear.sh" has-key >/dev/null 2>&1; then
   lerr="$(mktemp "${TMPDIR:-/tmp}/fleet-retire.XXXXXX")"
@@ -273,4 +279,4 @@ fi
 "$registry" archive >/dev/null || warn "archive failed; retired rows stay in the live registry"
 # One agent retired: its team's panel shows the rest (a whole team's workspace is closed with it).
 $whole_team || herdr_meta "${target%%/*}"
-reply "$(render_line retired team="$target" outcome="$outcomes" prs="$prs" archived="$archived" kept="$kept" issue_state="$issue_state")" "$(render_table)"
+reply "$(render_line retired team="$target" outcome="$outcomes" prs="$prs" archived="$archived" kept="$kept" issue_state="$issue_state" note="$verify_note")" "$(render_table)"

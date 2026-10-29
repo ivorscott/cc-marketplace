@@ -181,15 +181,15 @@ An escalation stays open, even after its agent is Done, until you run `$F/fleet 
 ## F. Retire
 
 0. **Retire at once, without asking, with no `--summary` and no "Reply yes":** on `pr_merged`, run step 2 with
-   `--outcome Shipped` (add `--verify` when an item waits on the user). The user's own `/fleet retire` runs at once
+   `--outcome Shipped` (add `--verify` only when a row's done summary holds an UNVERIFIED step the owner must check by hand; every other issue goes straight to Done). The user's own `/fleet retire` runs at once
    with the outcome they named, else with no `--outcome` (the rows' reported outcomes, Abandoned when none): never
    force Shipped on it. Ask only when the retire reports a kept worktree (tracked changes or unpushed commits): name it
    and wait.
 1. Ask each live agent in the target to push work in progress (skip Zombies).
 2. `$F/fleet retire <team | team/role> [--outcome Shipped|Partial|Abandoned|Failed] [--verify]` closes only the fleet's panes,
    removes worktrees, closes open escalations ("closed at retire") and marks the rows Retired. A whole team's issue
-   follows the outcome on Linear (when writes are on): Shipped → Done (`--verify`: Verify, for an issue the user checks
-   before Done) once its PR merged (an open PR leaves it, with a warning: move it when the PR merges), Abandoned or
+   follows the outcome on Linear (when writes are on): Shipped → Done (`--verify`: Verify, only when a row's done summary or report holds an UNVERIFIED step the user must check by hand; with none
+   the retire says so and goes to Done) once its PR merged (an open PR leaves it, with a warning: move it when the PR merges), Abandoned or
    Failed (or no outcome) → Todo with this machine's claim released; a PR that says "Part of <issue>" leaves it. It **keeps** a
    worktree with unpushed, untracked or uncommitted work and names it: ask the agent to push, then retire again.
    A team name with no live rows but leftovers of an earlier boot (its `fleet/<team>/*` branches or worktrees) is

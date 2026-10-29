@@ -86,6 +86,8 @@ case "$op" in
       | {identifier, state: {name: .state.name, type: (if .state.name == "In Progress" then "started" else "unstarted" end)},
          labels: {nodes: [$i.labelIds[] as $l | $r.labels[] | select(.id == $l) | {name, description}]},
          inverseRelations: {nodes: [($i.blocked_by // [])[] | {type: "blocks", issue: {identifier: ., state: {type: "started"}}}]}}]}}')" ;;
+  VerifyItems)
+    ok "$(db '{issues: {nodes: [.issues[] | select(.state.name == "Verify") | {identifier, title: (.title // "t"), url: (.url // ""), updatedAt: (.updatedAt // "2026-01-01T00:00:00Z")}]}}')" ;;
   OpenIssues)
     mode=eq; case "$query" in *startsWith*) mode=startsWith ;; esac
     ok "$(db --argjson v "$vars" --arg mode "$mode" '

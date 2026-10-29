@@ -4403,8 +4403,8 @@ d9db() { d4db; jq '.states.Verify = "S4"' "$LINEAR_DB" >"$D4/db9" && cp "$D4/db9
 qfresh retire9; d4cfg 'linear_writes = "on"'
 d9db; r9team r9a DEV-3 91; o9="$(rt9 r9a --outcome Shipped)"
 eq "dev408-9 retire: Shipped moves the issue to Done, and the Retired line says so" "$(d4state DEV-3):$(printf '%s\n' "$o9" | head -n 1 | grep -c ' Issue → Done\.$')" "Done:1"
-d9db; r9team r9b DEV-3 91; rt9 r9b --outcome Shipped --verify >/dev/null
-eq "dev408-9 retire: Shipped with --verify moves it to Verify" "$(d4state DEV-3)" Verify
+d9db; r9team r9b DEV-3 91; "$REG" set r9b/builder "summary=done; UNVERIFIED: a live run" >/dev/null; rt9 r9b --outcome Shipped --verify >/dev/null
+eq "dev408-9 retire: Shipped with --verify and an UNVERIFIED step moves it to Verify" "$(d4state DEV-3)" Verify
 d9db; r9team r9c DEV-3 91; rt9 r9c --outcome Abandoned >/dev/null
 eq "dev408-9 retire: Abandoned moves it to Todo and releases this machine's label" "$(d4state DEV-3):$(d4labels DEV-3)" "Todo:bug"
 d9db; : >"$LINEAR_LOG"; r9team r9d DEV-3 92; rt9 r9d --outcome Shipped >/dev/null

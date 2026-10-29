@@ -26,6 +26,15 @@
 #                                             sweep passes the fleet's repos), else in the cwd's repo
 #   linear.sh state <ISSUE> <Done|Verify|Todo>   move the issue to that workflow state, labels untouched; refuses an
 #                                             issue another machine holds
+#   linear.sh verify-list                     JSON: the issues in Verify, each {issue, title, url, age_days, check, expiry}: age is
+#                                             days since the issue last changed, check the UNVERIFIED line(s) a row's done
+#                                             summary held (live or archived registry; "see the issue" when none), expiry
+#                                             fresh (7 days or less), ask (older, never asked) or close (older, asked
+#                                             by an earlier report)   (read-only; the query is UNVERIFIED against the real API)
+#   linear.sh verify-sweep                    the same list, then the expiry applied: an `ask` item is remembered as asked
+#                                             (verify.asked.json in the state dir), a `close` item moves to Done with a
+#                                             comment saying why (a write); items no longer in Verify are forgotten
+#   linear.sh comment <ISSUE> <text>          post one comment on the issue (a write)
 #   linear.sh migrate [--dry-run]             delete this machine's old `fleet-claim:` comments, and rewrite our
 #                                             label's description if it still holds a full machine id (a write;
 #                                             --dry-run reports it as would_rewrite and mutates nothing)
@@ -212,6 +221,10 @@ q_open_issues_labelled() { # q_open_issues_labelled <label name | prefix> <eq|st
 
 q_candidates() { # q_candidates → open issues with their state, fleet labels and the open issues that block them (UNVERIFIED query)
   gql_read Candidates 'query Candidates { issues(first: 100, filter: { state: { type: { in: ["backlog", "unstarted", "started"] } } }) { nodes { identifier state { name type } labels { nodes { name description } } inverseRelations(first: 20) { nodes { type issue { identifier state { type } } } } } } }' '{}' |
+    jq -c '.data.issues.nodes // error("no issues")'
+}
+q_verify_items() { # q_verify_items → the issues in the Verify state with title, url and last change (UNVERIFIED query)
+  gql_read VerifyItems 'query VerifyItems { issues(first: 100, filter: { state: { name: { eq: "Verify" } } }) { nodes { identifier title url updatedAt } } }' '{}' |
     jq -c '.data.issues.nodes // error("no issues")'
 }
 q_issue_team_key() { # q_issue_team_key <ISSUE> → the team key of the issue, empty when unknown
@@ -456,7 +469,7 @@ write_heartbeat() {
 cmd="${1:-}"; [ $# -gt 0 ] && shift
 # Every API subcommand needs the key; check it here, at the top level, so a missing key is exit 3
 # and not an error swallowed inside a command substitution.
-case "$cmd" in claim | heartbeat | holder | peers | candidates | blocks | whoami | takeover | release | state | migrate) load_key ;; esac
+case "$cmd" in claim | heartbeat | holder | peers | candidates | blocks | whoami | takeover | release | state | migrate | verify-list | verify-sweep | comment) load_key ;; esac
 case "$cmd" in
   has-key)
     has_key || no_key ;;
@@ -625,6 +638,43 @@ case "$cmd" in
     [ -n "$sid" ] || die "the team of $issue has no workflow state named $want"
     m_issue_update "$(printf '%s' "$iss" | jq -r .id)" "" "$sid"
     say --arg i "$issue" --arg s "$want" '{issue: $i, state: $s, changed: true}' ;;
+
+  verify-list | verify-sweep)
+    [ "$cmd" = verify-sweep ] || READONLY=1
+    [ "$cmd" = verify-list ] || [ "$WMODE" != off ] || writes_off
+    asked="$FLEET_STATE_DIR/verify.asked.json"; [ -f "$asked" ] && jq -e 'type == "object"' "$asked" >/dev/null 2>&1 || echo '{}' >"$asked"
+    checks="$("$FLEET_SCRIPTS/registry.sh" list --with-archived 2>/dev/null | jq -c '
+      [.[] | select((.issue // "") != "" and ((.summary // "") | test("UNVERIFIED")))
+        | {issue, lines: [(.summary | split("\n")[] | split("; ")[] | select(test("UNVERIFIED")))]}]
+      | group_by(.issue) | map({key: .[0].issue, value: ([.[].lines[]] | unique | join("; "))}) | from_entries')" || checks='{}'
+    [ -n "$checks" ] || checks='{}'
+    items="$(q_verify_items | jq -c --arg now "${FLEET_NOW:-$(now)}" --slurpfile a "$asked" --argjson c "$checks" '
+      [.[] | . as $i | ((($now | fromdateiso8601) - ($i.updatedAt | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601)) / 86400 | floor) as $d
+        | {issue: .identifier, title, url, age_days: $d, check: ($c[.identifier] // "see the issue"),
+           expiry: (if $d <= 7 then "fresh" elif ($a[0][.identifier] // null) == null then "ask" else "close" end)}]')"
+    if [ "$cmd" = verify-sweep ]; then
+      now_iso="${FLEET_NOW:-$(now)}"; tmp="$asked.tmp"
+      for iss in $(printf '%s' "$items" | jq -r '.[] | select(.expiry == "close") | .issue'); do
+        guard_issue "$iss"; iobj="$(q_issue "$iss")"
+        sid="$(q_state_id "$(printf '%s' "$iobj" | jq -r .team.id)" Done)"
+        [ -n "$sid" ] || { warn "the team of $iss has no Done state"; continue; }
+        m_issue_update "$(printf '%s' "$iobj" | jq -r .id)" "" "$sid"
+        m_comment_create "$(printf '%s' "$iobj" | jq -r .id)" "Moved from Verify to Done: it was in Verify for more than 7 days, the morning report asked once whether it was still worth checking, and nobody answered before the next report."
+      done
+      jq -c --argjson it "$items" --arg t "$now_iso" '
+        . as $a | ([$it[] | select(.expiry == "ask") | {key: .issue, value: $t}] | from_entries) as $new
+        | ([$it[] | select(.expiry == "ask" or .expiry == "fresh") | .issue]) as $keep
+        | ($a | with_entries(select(.key as $k | $keep | index($k)))) + $new' "$asked" >"$tmp" && mv "$tmp" "$asked"
+    fi
+    printf '%s\n' "$items" ;;
+
+  comment)
+    issue="${1:-}"; text="${2:-}"
+    [ -n "$issue" ] && [ -n "$text" ] && [ $# = 2 ] || die "usage: comment <ISSUE> <text>"
+    [ "$WMODE" != off ] || writes_off
+    guard_issue "$issue"
+    m_comment_create "$(q_issue "$issue" | jq -r .id)" "$text"
+    say --arg i "$issue" '{commented: true, issue: $i}' ;;
 
   migrate)
     dry=0
