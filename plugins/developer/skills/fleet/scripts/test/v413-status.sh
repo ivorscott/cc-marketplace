@@ -87,6 +87,17 @@ v413_summary_publish() {
   FLEET_NOW=2026-10-29T10:00:00Z "$SCRIPTS/linear.sh" heartbeat >/dev/null 2>&1
   eq "v413-1 heartbeat: a second heartbeat replaces both lines, never adds one" \
     "$(jq -r '.labels[] | select(.name == "fleet:test") | .description' "$LINEAR_DB" | grep -c "^summary=\|^heartbeat=")" "2"
+  # DEV-636: 21 teams' summary must not push the description over the limit, and a refused write still lands the heartbeat
+  FLEET_NOW=2026-10-29T10:01:00Z LINEAR_STUB_DESC_MAX=255 "$SCRIPTS/linear.sh" heartbeat >/dev/null 2>"$T/hb636.err"; rc=$?
+  desc="$(jq -r '.labels[] | select(.name == "fleet:test") | .description' "$LINEAR_DB")"
+  eq "v636 heartbeat: with 21 teams the description fits 255 characters, the heartbeat lands and the summary is a whole JSON array"     "$rc:$([ ${#desc} -le 255 ] && echo fits):$(printf '%s\n' "$desc" | grep -c '^heartbeat=2026-10-29T10:01:00Z$'):$(printf '%s\n' "$desc" | sed -n 's/^summary=//p' | jq -e 'type == "array" and length > 0' >/dev/null && echo array)" "0:fits:1:array"
+  FLEET_NOW=2026-10-29T10:02:00Z LINEAR_STUB_DESC_MAX=60 "$SCRIPTS/linear.sh" heartbeat >"$T/hb636.out" 2>"$T/hb636.err"; rc=$?
+  desc="$(jq -r '.labels[] | select(.name == "fleet:test") | .description' "$LINEAR_DB")"
+  eq "v636 heartbeat: a description Linear refuses is retried without the summary, with a warning on stderr and the usual stdout" \
+    "$rc:$(printf '%s\n' "$desc" | grep -c '^heartbeat=2026-10-29T10:02:00Z$'):$(printf '%s\n' "$desc" | grep -c '^summary='):$(grep -c 'without the team summary' "$T/hb636.err"):$(jq -c .heartbeat "$T/hb636.out")" "0:1:0:1:true"
+  FLEET_NOW=2026-10-29T10:03:00Z LINEAR_STUB_DESC_MAX=5 "$SCRIPTS/linear.sh" heartbeat >/dev/null 2>"$T/hb636.err"; rc=$?
+  eq "v636 heartbeat: a write refused even without the summary says 'heartbeat not written' and exits 1" \
+    "$rc:$(grep -c 'heartbeat not written' "$T/hb636.err")" "1:1"
   gcfg; v413_nolinear
 }
 

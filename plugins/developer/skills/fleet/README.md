@@ -998,6 +998,14 @@ Fixes found after 4.1.1 (DEV-530), one per item:
 5. **A fresh claim is fresh.** `claim` and `takeover` refresh the machine label's heartbeat in the same call, and tick
    refreshes it first of all, before herdr is checked and with or without claimed rows.
 
+## What changed in 4.1.4
+
+One fix: **the heartbeat no longer depends on the summary.** With about three teams the `summary=` line pushed the
+label description past what Linear accepts ("Argument Validation Error"), so every heartbeat write failed and each machine saw the
+other as lapsed. The summary is now fitted to the room left under a 255-character description (whole teams dropped,
+the line stays a valid JSON array), and a write Linear still refuses is retried without it, with a warning on stderr. A
+heartbeat that cannot be written at all says "heartbeat not written". The 255 limit is bounded, not confirmed.
+
 ## What changed in 4.1.3
 
 Thirteen fixes, one per item:
