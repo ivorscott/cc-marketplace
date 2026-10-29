@@ -95,7 +95,7 @@ d588_parked_needs() {
   d588_agent pk-c/lead Lead Parked parked_reason=park
   d588_agent pk-d/lead Lead Parked "pr=$C" parked_reason=park
   rt() { bash -c '. "$1/common.sh"; shift; render_table "$@"' _ "$SCRIPTS" "$@"; }
-  cell() { printf '%s\n' "$1" | awk -F' *\\| *' -v t="$2" '$2 == t {print $6}'; } # the Needs you cell of a team
+  cell() { printf '%s\n' "$1" | awk -F' *\\| *' -v t="$2" '$2 == t {print $7}'; } # the Needs you cell of a team
   Q1="$(jq -cn --arg a "$A" --arg b "$B" '{ready: [{n: 1, url: $a, after: "—"}, {n: 2, url: $b, after: "—"}], not_ready: [], notes: []}')"
   o="$(rt --queue "$Q1")"
   eq "dev588-4 table: a parked signed-off team says what a Done one says" "$(cell "$o" pk-a):$(cell "$o" dn-b)" "merge the PR:merge the PR"
@@ -107,15 +107,26 @@ d588_parked_needs() {
   eq "dev588-4 table: and for a Done team" "$(cell "$(rt --queue "$Q3")" dn-b)" "merge after #1"
   o="$(rt)"
   eq "dev588-4 table: with no queue a parked team shows merge the PR when it was parked at sign-off" "$(cell "$o" pk-a):$(cell "$o" pk-d)" "merge the PR:-"
-  eq "dev588-4 table: the State column still says Parked" "$(printf '%s\n' "$o" | awk -F' *\\| *' '$2 == "pk-a" {print $5}')" "Parked"
+  eq "dev588-4 table: the State column still says Parked" "$(printf '%s\n' "$o" | awk -F' *\\| *' '$2 == "pk-a" {print $6}')" "Parked"
+}
+
+. "$HERE/dev588-status.sh"
+
+d588_version() {
+  eq "dev588 version: plugin.json reads 4.1.3, and the README has its What changed section" \
+    "$(jq -r .version "$SCRIPTS/../../../.claude-plugin/plugin.json"):$(grep -c '^## What changed in 4.1.3' "$SCRIPTS/../README.md")" "4.1.3:1"
 }
 
 d588_smoke() { # the critical cases, CI
+  d588_version
   d588_escalation_ids
   d588_bare_team
   d588_notices
   d588_parked_needs
+  d588_all_machines
+  d588_conflict_catchup
 }
 d588_full() { # every case
   d588_smoke
+  d588_summary_publish
 }

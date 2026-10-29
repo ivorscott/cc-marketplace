@@ -2,20 +2,27 @@
 # Compute fleet health from herdr state + the done contract, write it back to the
 # registry, and print it.
 #
-#   status.sh [<team>] [--problems] [--json] [--all]
+#   status.sh [<team>] [--problems] [--json]
 #
 # The output is the status entry of references/output.md: the wake notices not shown yet (once, above the
-# rest), the team table (| Team | Issue | PR | State | Needs you |, one row per team with a row not yet
+# rest), the team table (| Team | Machine | Issue | PR | State | Needs you |, one row per team with a row not yet
 # Retired, parked teams included, then "Waiting on you: ..." when a P0 or P1 is open), the merge queue when any
 # PR is open (queue.sh: the ready PRs in the order to merge them, then "Not ready: ..."), and footer lines that
 # appear only when they apply: the focus, the disk (below warn_free_gb in config.toml), a loop with no
 # Orchestrator to wake, and a skill text in use older than the plugin installed (restart the session). --problems keeps only the teams that need someone. With a <team>, one row per agent of
-# that team instead: | Agent | Role | State | Model | Last action |. --json is the bare array of agents (of the
-# <team> when one is given), for tick and the tests; it shows no notice.
+# that team instead: | Agent | Role | State | Model | Last action |. --json is the bare array of this machine's agents
+# (of the <team> when one is given), for tick and the tests; it shows no notice.
 #
-# --all adds the other machines' claims, read with `linear.sh peers` (one Linear read), one line: "Other machines:
-# DEV-1 on <key> (heartbeat 3h ago, lapsed); ...", or "unknown (no Linear key)" when there is no key. Peers are never
-# probed. --all --json is a bare array whose rows have machine and source (registry | tracker).
+# Every machine in one table. Status reads the other machines' published summaries from Linear (linear.sh peers: one
+# read) and shows their teams in the same table and the same merge queue, each row with its Machine; the rows are never
+# probed and nothing is written for them. A machine on an older plugin, or one that has published no summary, shows as
+# one line, "Other machines: DEV-1 on <key> (heartbeat 3h ago, claim only: no summary)"; with no Linear key the table
+# is this machine's alone and a line says "Other machines: unknown (no Linear key)". A summary older than lease_hours
+# stays in the table, its State marked "(stale 3h)", and is never counted as ready. To show less, the Orchestrator picks
+# rows out of the table; there is no switch. --all is accepted and does nothing for the table; with --json it adds the
+# other machines' rows to the array (machine and source: registry | tracker on every row).
+# Internal: FLEET_STATUS_LOCAL=1 keeps status to this machine and skips the Linear read (tick and the done contract
+# set it, where nothing needs the others).
 #
 # Health rules (herdr's own state is necessary but not sufficient):
 #   Working      herdr says working
@@ -30,7 +37,7 @@
 #                `status_detail` on the row says "login expired" or "API error" (and the status shows it)
 #   Zombie       the agent is gone: herdr can't find it, or its pane is back at the shell
 #                (herdr can still report a dead pane as idle, so the process is checked)
-# Command: Show each team's health and what needs you · e.g. fleet status --problems
+# Command: Show every machine's teams and what needs you · e.g. fleet status
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
 require_herdr
@@ -47,12 +54,32 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-# --all: the other machines' claims, from Linear (linear.sh peers); claims_why says why they are unknown.
-claims="[]"; claims_why=""
-if $all; then
+# The other machines: their claims and summaries, from Linear (linear.sh peers, one read); claims_why says why they are
+# unknown. Not read for one team's agent table, --problems, --json without --all, or FLEET_STATUS_LOCAL=1.
+claims="[]"; claims_why=""; want_peers=true
+if [ "${FLEET_STATUS_LOCAL:-}" = 1 ]; then want_peers=false
+elif $json; then $all || want_peers=false
+elif [ -n "$team" ] || $problems; then want_peers=false; fi
+if $want_peers; then
   prc=0; claims="$("$FLEET_SCRIPTS/linear.sh" peers 2>/dev/null)" || prc=$?
   if [ "$prc" = 3 ]; then claims="[]"; claims_why="no Linear key"
   elif [ "$prc" != 0 ] || ! printf '%s' "$claims" | jq -e 'type == "array"' >/dev/null 2>&1; then claims="[]"; claims_why="Linear could not be read"; fi
+  export FLEET_PEERS_JSON="$claims" # queue.sh reuses it instead of reading Linear again
+fi
+# peer_teams: the other machines' teams out of their summaries ([] for a machine with none), one row per team with its
+# age; peer_claims: the claims of the machines that published none.
+peer_teams="[]"; peer_claims="[]"
+if $want_peers; then
+  pj="$(printf '%s' "$claims" | jq -c --arg now "${FLEET_NOW:-$(now)}" --argjson lease "$(lease_hours)" '
+    def agetxt: if . < 3600 then "\((. / 60) | floor)m" elif . < 172800 then "\((. / 3600) | floor)h" else "\((. / 86400) | floor)d" end;
+    (group_by(.machine) | map(select(any(.[]; .summary != null)) | . as $g | ($g | map(select(.summary != null)) | first) as $c
+      | (if $c.heartbeat == null then null else (($now | fromdateiso8601) - ($c.heartbeat | fromdateiso8601)) end) as $age
+      | ($age != null and $age > ($lease * 3600)) as $stale
+      | $c.summary[] | {machine: $c.machine, team: .t, issue: (.i // ""), pr: (.pr // ""), needs: (.n // ""), ready: ((.r // false) and ($stale | not)),
+          state: ((.s // "Idle") + (if $stale then " (stale \($age | agetxt))" else "" end)), heartbeat: $c.heartbeat, stale: $stale})) as $teams
+    | ([.[] | select(.machine as $m | ($teams | map(.machine) | index($m)) == null)]) as $claims
+    | {teams: $teams, claims: $claims}')"
+  peer_teams="$(printf '%s' "$pj" | jq -c .teams)"; peer_claims="$(printf '%s' "$pj" | jq -c .claims)"
 fi
 
 list_args=(--live); [ -n "$team" ] && list_args+=(--team "$team")
@@ -125,16 +152,18 @@ done 3< <(jq -r '.[] | select(.tier != "Orchestrator") | [.name, (.herdr_ref // 
 
 filter='.'; $problems && filter='[.[] | select(.status == "Stalled" or .status == "Zombie" or .status == "Needs input" or (.escalation // "") != "")]'
 out="$("$registry" list "${list_args[@]}" | jq "$filter")"
-if $all; then
-  peer_rows="$(printf '%s' "$claims" | jq -c --arg now "${FLEET_NOW:-$(now)}" --argjson lease "$(lease_hours)" '
-    [.[] | . as $c
+if $all && $want_peers; then
+  me="$(machine_key 2>/dev/null || echo local)"
+  peer_rows="$(jq -cn --arg now "${FLEET_NOW:-$(now)}" --argjson lease "$(lease_hours)" --argjson t "$peer_teams" --argjson c "$peer_claims" '
+    [$t[] | {name: .team, team: .team, tier: "-", source: "tracker", machine: .machine, status: .state, escalation: "", herdr_ref: "-", issue: .issue,
+       pr: .pr, needs: .needs, ready: .ready, heartbeat: .heartbeat, assignment: ""}]
+    + [$c[] | . as $c
       | (if $c.heartbeat == null then null else (($now | fromdateiso8601) - ($c.heartbeat | fromdateiso8601)) end) as $age
       | {name: ($c.label // $c.machine), team: "", tier: "-", source: "tracker", machine: $c.machine,
          status: (if $age == null then "Claimed (no heartbeat)" elif $age > ($lease * 3600) then "Claimed (heartbeat lapsed)" else "Claimed" end),
          escalation: "", herdr_ref: "-", issue: $c.issue, heartbeat: $c.heartbeat,
          heartbeat_age: (if $age == null then "-" else "\(($age / 60) | floor)m" end), assignment: ""}]')"
-  $problems && peer_rows="[]"
-  out="$(jq -cn --slurpfile l <(printf '%s' "$out") --argjson p "$peer_rows" '($l[0] | map(. + {source: "registry"})) + $p')"
+  out="$(jq -cn --arg me "$me" --slurpfile l <(printf '%s' "$out") --argjson p "$peer_rows" '($l[0] | map(. + {source: "registry", machine: (.machine // $me)})) + $p')"
 fi
 if $json; then printf '%s\n' "$out"; exit 0; fi
 
@@ -154,7 +183,10 @@ if $problems; then
     blocks+=("$(render_table $pteams)")
   else blocks+=("$(render_line no_problems)"); fi
 else
-  if [ -n "$q" ]; then blocks+=("$(render_table --queue "$q")" "$(render_queue "$q")"); else blocks+=("$(render_table)"); fi
+  targs=(); [ -z "$q" ] || targs+=(--queue "$q")
+  [ "$peer_teams" = "[]" ] || targs+=(--peers "$peer_teams")
+  blocks+=("$(render_table ${targs[@]+"${targs[@]}"})")
+  [ -z "$q" ] || blocks+=("$(render_queue "$q")")
 fi
 [ ! -f "$FLEET_STATE_DIR/focus" ] || blocks+=("$(render_line focus team="$(cat "$FLEET_STATE_DIR/focus")")")
 free="$(free_gb 2>/dev/null || true)"
@@ -163,14 +195,14 @@ if [ -n "$free" ] && [ "$free" -lt "$(warn_free_gb)" ]; then
   held="$(jq -r '.held_gb // empty' "$FLEET_STATE_DIR/tick.state.json" 2>/dev/null || true)"
   blocks+=("$(render_line disk free="$free" warn="$(warn_free_gb)" held="$held" reclaimed="$(jq -r '.reclaimed_gb // 0' "$FLEET_STATE_DIR/tick.state.json" 2>/dev/null || echo 0)")")
 fi
-if $all; then
+if $want_peers; then
   if [ -n "$claims_why" ]; then blocks+=("$(render_line other_machines list="unknown ($claims_why)")")
-  else
-    blocks+=("$(render_line other_machines list="$(printf '%s' "$claims" | jq -r --argjson now "$(jq -rn --arg t "${FLEET_NOW:-$(now)}" '$t | fromdateiso8601')" \
+  elif [ "$peer_claims" != "[]" ]; then
+    blocks+=("$(render_line other_machines list="$(printf '%s' "$peer_claims" | jq -r --argjson now "$(jq -rn --arg t "${FLEET_NOW:-$(now)}" '$t | fromdateiso8601')" \
       --argjson lease "$(lease_hours)" "$RENDER_DEFS"'
       [.[] | "\(issue_cell(.issue; ""; "")) on \(.machine // .label) (\(if .heartbeat == null then "no heartbeat"
-        else "heartbeat \(.heartbeat | ago($now))" + (if ($now - (.heartbeat | fromdateiso8601)) > ($lease * 3600) then ", lapsed" else "" end) end))"]
-      | if length == 0 then "none" else join("; ") end')")")
+        else "heartbeat \(.heartbeat | ago($now))" + (if ($now - (.heartbeat | fromdateiso8601)) > ($lease * 3600) then ", lapsed" else "" end) end), claim only: no summary)"]
+      | join("; ")')")")
   fi
 fi
 # The launchd loop is installed (its launcher exists) but has no Orchestrator to wake: say so in one line.

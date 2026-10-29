@@ -9,7 +9,8 @@
 #   linear.sh holder <ISSUE>                  JSON: who holds the issue, their last heartbeat and whether it lapsed
 #                                             (`lapsed`: older than lease_hours, takeover's own check; null without a
 #                                             heartbeat)   (read-only)
-#   linear.sh peers                           JSON: other machines' claims, for `status.sh --all`   (read-only)
+#   linear.sh peers                           JSON: other machines' claims {machine, label, issue, heartbeat, summary}, for
+#                                             `fleet status` (summary: the parsed `summary=` line, null when there is none)   (read-only)
 #   linear.sh blocks <ISSUE...>               JSON: {"<ISSUE>": [issues it blocks]} from Linear's `blocks` relations,
 #                                             one query for all of them   (read-only)
 #   linear.sh takeover <ISSUE> [--repo OWNER/NAME]   take an issue over from a lapsed holder; refuses while an
@@ -264,6 +265,12 @@ describe_with_hb() { # describe_with_hb <description> <ISO>: the description wit
     NF { print }
     END { if (!d) print hb }'
 }
+describe_with_summary() { # describe_with_summary <description> <summary JSON | "">: the description with its summary= line set (dropped for "")
+  printf '%s\n' "$1" | awk -v sm="${2:+summary=$2}" '
+    /^summary=/ { if (!d && sm != "") { print sm; d = 1 } ; next }
+    NF { print }
+    END { if (!d && sm != "") print sm }'
+}
 other_fleet_labels() { # other_fleet_labels <issue json> → names of fleet labels on it that are not ours
   local mine legacy; mine="$(machine_label)"; legacy="$(cfg_str machine_legacy_label '')"
   printf '%s' "$1" | jq -r --arg p "$(label_prefix)" --arg m "$mine" --arg l "$legacy" '.labels.nodes[] | select((.name | startswith($p)) and .name != $m and ($l == "" or .name != $l)) | .name'
@@ -408,7 +415,7 @@ ensure_label() {
 # write_heartbeat: rewrite the heartbeat= line of this machine's label to now (one mutation, none when the line already
 # says now). Sets HB_AT and returns 0; returns 2 when the machine has no label yet. Claim, takeover and heartbeat share it.
 write_heartbeat() {
-  local mine found lid cur
+  local mine found lid cur sm
   mine="$(machine_label)"
   found="$(q_labels_named "$mine")" || return 1
   lid="$(printf '%s' "$found" | jq -r '.[0].id // empty')"
@@ -416,8 +423,11 @@ write_heartbeat() {
   HB_AT="${FLEET_NOW:-$(now)}"; OWN_LID="$lid"
   # A description an older version wrote still holds the full machine id: hashed here too, or nothing is written.
   cur="$(legacy_ids_hashed "$(printf '%s' "$found" | jq -r '.[0].description // ""')")" || return 1
-  if [ "$(printf '%s\n' "$cur" | sed -n 's/^heartbeat=//p' | head -n 1)" != "$HB_AT" ]; then
-    m_label_describe "$lid" "$(describe_with_hb "$(describe_with_owner "$cur" "$(owner_name)")" "$HB_AT")" || return 1
+  # The summary line (fleet_summary) rides on the same write: one mutation, and none when neither line changed.
+  sm="$(fleet_summary 2>/dev/null)" || sm=""; [ "$sm" != "[]" ] || sm=""
+  if [ "$(printf '%s\n' "$cur" | sed -n 's/^heartbeat=//p' | head -n 1)" != "$HB_AT" ] ||
+    [ "$(printf '%s\n' "$cur" | sed -n 's/^summary=//p' | head -n 1)" != "$sm" ]; then
+    m_label_describe "$lid" "$(describe_with_summary "$(describe_with_hb "$(describe_with_owner "$cur" "$(owner_name)")" "$HB_AT")" "$sm")" || return 1
   fi
 }
 
@@ -458,7 +468,8 @@ case "$cmd" in
     mine="$(machine_label)"
     q_open_issues_labelled "$(label_prefix)" startsWith | jq -c --arg p "$(label_prefix)" --arg m "$mine" --arg l "$(cfg_str machine_legacy_label '')" '
       [.[] | . as $i | .labels.nodes[] | select((.name | startswith($p)) and .name != $m and ($l == "" or .name != $l))
-        | {machine: (.name | ltrimstr($p)), label: .name, issue: $i.identifier, heartbeat: ([(.description // "") | match("(^|\n)heartbeat=([^\n ]+)").captures[1].string] | first // null)}]' ;;
+        | {machine: (.name | ltrimstr($p)), label: .name, issue: $i.identifier, heartbeat: ([(.description // "") | match("(^|\n)heartbeat=([^\n ]+)").captures[1].string] | first // null),
+          summary: ([(.description // "") | match("(^|\n)summary=([^\n]*)").captures[1].string | fromjson? | select(type == "array")] | first // null)}]' ;;
 
   claim)
     dry=0; issue=""

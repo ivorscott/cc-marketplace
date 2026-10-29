@@ -268,7 +268,8 @@ cat >"$QD/gh-shim" <<'S'
 #!/usr/bin/env bash
 case "$1 $2" in
   "pr view") n="${3##*/}"; r="$(printf %s "$3" | sed -E "s#https://[^/]+/[^/]+/([^/]+)/pull/.*#\\1#")"; cat "$QGHD/$r-$n.json" ;;
-  "pr list") r="${4##*/}"; { for f in "$QGHD/$r"-[0-9]*.json; do [ ! -f "$f" ] || cat "$f"; done
+  "pr list") r="${4##*/}"; case " $* " in *" --state merged "*) cat "$QGHD/merged-$r.json" 2>/dev/null || echo '[]'; exit 0 ;; esac
+    { for f in "$QGHD/$r"-[0-9]*.json; do [ ! -f "$f" ] || cat "$f"; done
       [ ! -f "$QGHD/list-$r.json" ] || jq -c '.[]' "$QGHD/list-$r.json"; } | jq -s . ;;
 esac
 S
@@ -519,13 +520,13 @@ EOF")" "deny:deny:deny:deny"
     "$(printf '%s\n%s\n' "$st" "$sa" | grep -E '^[0-9]+ teams? ·|^\| ' | grep -c '[●○◐✗‖✓]')" 0
   eq "smoke: dev512-18 the summary line counts in words" "$(printf '%s\n' "$st" | head -n 1)" "3 teams · 1 working · 1 parked · 1 done"
   eq "smoke: dev512-19 the Issue cell is the short link, then the title without its prefix" \
-    "$(printf '%s\n' "$st" | grep '^| build-api ' | cut -d'|' -f3)" " [DEV-12](https://linear.app/acme/issue/DEV-12) export "
+    "$(printf '%s\n' "$st" | grep '^| build-api ' | cut -d'|' -f4)" " [DEV-12](https://linear.app/acme/issue/DEV-12) export "
   eq "smoke: dev512-19 a long title is cut at a word boundary within 40 characters" \
     "$(bash -c '. "$1/common.sh"; jq -rn --arg t "$2" "$RENDER_DEFS"'"'"'$t | short_title'"'"'' _ "$SCRIPTS" "Web: the creators summary and filters and billing events in the audit log")" "the creators summary and filters and"
   eq "smoke: dev512-19 in a terminal the key is an OSC 8 link to the short URL" \
-    "$(FLEET_TTY=1 "$SCRIPTS/status.sh" 2>&1 | grep '^| build-api ' | cut -d'|' -f3)" "$(printf ' \033]8;;https://linear.app/acme/issue/DEV-12\033\\DEV-12\033]8;;\033\\ export ')"
+    "$(FLEET_TTY=1 "$SCRIPTS/status.sh" 2>&1 | grep '^| build-api ' | cut -d'|' -f4)" "$(printf ' \033]8;;https://linear.app/acme/issue/DEV-12\033\\DEV-12\033]8;;\033\\ export ')"
   eq "smoke: dev512-20 the PR cell is the URL itself, in the team table and the queue" \
-    "$(printf '%s\n' "$st" | grep '^| build-api ' | cut -d'|' -f4):$(printf '%s\n' "$st" | grep '^| 1 | ' | cut -d'|' -f3)" " https://github.com/acme/app-api/pull/214 : https://github.com/acme/app-web/pull/121 "
+    "$(printf '%s\n' "$st" | grep '^| build-api ' | cut -d'|' -f5):$(printf '%s\n' "$st" | grep '^| 1 | ' | cut -d'|' -f3)" " https://github.com/acme/app-api/pull/214 : https://github.com/acme/app-web/pull/121 "
   eq "smoke: dev512-20 no golden file shows a [repo #N] label" "$(cat "$GD"/*.md | grep -c '\[app-[a-z]* #')" 0
   unset FLEET_NOW
   # dev512-2: a notice drops out once retire, next or resolve handled it; one nobody handled still shows
@@ -735,8 +736,8 @@ Merge this one first." "Do not merge until the API ships" "  hold: waiting on de
   rm -f "$FLEET_STATE_DIR/tick.state.json"; m2=$(hw5); FLEET_NOW=$N5 "$SCRIPTS/tick.sh" >/dev/null 2>&1
   eq "smoke: dev530-5 a tick with a claimed row writes the heartbeat once, not twice" "$(hb5):$(($(hw5) - m2))" "$N5:1"
   export LINEAR_DB="$SM/linear.json" LINEAR_LOG="$SM/linear.log"; rm -f "$FLEET_CONFIG_DIR/$kf"
-  # dev530-6: the version is 4.1.2 and the README says what changed in it
-  eq "smoke: dev530-6 plugin.json reads 4.1.2, and the README has its What changed section" "$(jq -r .version "$SCRIPTS/../../../.claude-plugin/plugin.json"):$(grep -c '^## What changed in 4.1.2' "$SCRIPTS/../README.md")" "4.1.2:1"
+  # dev530-6: the README says what changed in 4.1.2 (the version itself is pinned in the DEV-588 cases)
+  eq "smoke: dev530-6 the README has its What changed in 4.1.2 section" "$(grep -c '^## What changed in 4.1.2' "$SCRIPTS/../README.md")" "1"
   d588_smoke
   printf '\n%d passed, %d failed\n' "$pass" "$failn"
   [ "$failn" = 0 ]; exit
@@ -1305,16 +1306,17 @@ jq -n '{team: "T1", states: {}, next: 100, labels: [{id: "L0", name: "fleet", de
     {id: "I11", identifier: "DEV-11", team: {id: "T1"}, state: {id: "S", name: "In Progress"}, labelIds: ["L3"], comments: []}]}' >"$PL/db.json"
 pst() { LINEAR_STUB_KEY=KEYFIXTURE-peers LINEAR_DB="$PL/db.json" LINEAR_LOG="$PL/log" FLEET_CURL="$HERE/linear-stub.sh" "$SCRIPTS/status.sh" "$@"; }
 printf 'KEYFIXTURE-peers\n' >"$FLEET_CONFIG_DIR/$kf"; chmod 600 "$FLEET_CONFIG_DIR/$kf"
-FLEET_NOW=2026-10-18T10:00:00Z DF_GB=100 pst --all >"$T/all.out" 2>"$T/all.err"
-eq "status --all: one line names each peer claim, its heartbeat age and a lapsed lease" "$(grep '^Other machines:' "$T/all.out")" "Other machines: DEV-9 on 3f9a2c1e (heartbeat 10m ago); DEV-10 on 9b1d4e07 (no heartbeat); DEV-11 on 5555aaaa (heartbeat 5h ago, lapsed)."
-check "status --all: the local teams are in the team table" grep -q '^| build-own1 |' "$T/all.out"
+FLEET_NOW=2026-10-18T10:00:00Z DF_GB=100 pst >"$T/all.out" 2>"$T/all.err"
+eq "status: one line names each peer claim, its heartbeat age, a lapsed lease and that it is a claim only" "$(grep '^Other machines:' "$T/all.out")" "Other machines: DEV-9 on 3f9a2c1e (heartbeat 10m ago, claim only: no summary); DEV-10 on 9b1d4e07 (no heartbeat, claim only: no summary); DEV-11 on 5555aaaa (heartbeat 5h ago, lapsed, claim only: no summary)."
+eq "status --all: still accepted, and prints the same table" "$(FLEET_NOW=2026-10-18T10:00:00Z DF_GB=100 pst --all 2>/dev/null)" "$(cat "$T/all.out")"
+check "status: the local teams are in the team table" grep -q '^| build-own1 |' "$T/all.out"
 eq "status --all: no lease column, no SAME KEY?" "$(grep -c 'LEASE\|SAME KEY' "$T/all.out")" 0
 eq "status --all: Linear is read only (no mutation)" "$(grep -c '^mutation' "$PL/log")" 0
 eq "status --all --json: bare array with machine and source" "$(DF_GB=100 pst --all --json build-own1 2>/dev/null | jq -c '[.[] | [.source, .machine]] | unique')" '[["registry","test"],["tracker","3f9a2c1e"],["tracker","5555aaaa"],["tracker","9b1d4e07"]]'
 rm -f "$FLEET_CONFIG_DIR/$kf"
-DF_GB=100 pst --all >"$T/all3.out" 2>/dev/null; check "status --all without a Linear key says the other machines are unknown" grep -qx 'Other machines: unknown (no Linear key).' "$T/all3.out"
+DF_GB=100 pst >"$T/all3.out" 2>/dev/null; check "status without a Linear key says the other machines are unknown" grep -qx 'Other machines: unknown (no Linear key).' "$T/all3.out"
 eq "status: --claims is gone (an unknown option)" "$("$SCRIPTS/status.sh" --all --claims "$T/x.json" >/dev/null 2>&1; echo $?)" 1
-eq "status without --all has no Other machines line" "$(DF_GB=100 "$SCRIPTS/status.sh" 2>/dev/null | grep -c '^Other machines')" 0
+eq "status: FLEET_STATUS_LOCAL=1 has no Other machines line, and reads no Linear" "$(DF_GB=100 FLEET_STATUS_LOCAL=1 "$SCRIPTS/status.sh" 2>/dev/null | grep -c '^Other machines')" 0
 
 # chat.sh: settings and format only, never the network
 CH="$SCRIPTS/chat.sh"
@@ -4064,7 +4066,7 @@ jq '.mergeable = "CONFLICTING"' "$QGHD/app-api-51.json" >"$QD/m.json" && mv "$QD
 : >"$HERDR_LOG"; t2="$(qt)"; t3="$(qt)"
 eq "dev408-18 queue: a PR that was ready and conflicts after a merge: one pr_conflicting, once" "$(evc "$t2" pr_conflicting):$(evc "$t3" pr_conflicting)" "1:0"
 eq "dev408-18 queue: its parked team is unparked first" "$("$REG" list --team tb | jq -r '[.[].status] | map(select(. == "Parked")) | length')" 0
-eq "dev408-18 queue: and its lead is told exactly once to catch up and re-sign" "$(grep -c '^agent prompt tb-lead PR https://github.com/acme/app-api/pull/51 conflicts after https://github.com/acme/app-api/pull/50 merged' "$HERDR_LOG"):$(printf '%s' "$t2" | jq -r '.[] | select(.type == "pr_conflicting") | .lead_told')" "1:true"
+eq "dev408-18 queue: and its lead is briefed exactly once to merge main into it and re-sign (dev588-7: a brief file)" "$(grep -c '^agent prompt tb-lead Read your brief' "$HERDR_LOG"):$(printf '%s' "$t2" | jq -r '.[] | select(.type == "pr_conflicting") | .lead_told'):$(grep -c 'What to do now: PR .*pull/51 conflicts with its base now (https://github.com/acme/app-api/pull/50 merged ahead of it)' "$("$REG" get tb/lead | jq -r .last_brief)"):$(sed -n '/What to do now/,/do not push a guess/p' "$("$REG" get tb/lead | jq -r .last_brief)" | grep -c 'git merge origin/main')" "1:true:1:1"
 eq "dev408-18 queue: the conflict is in the event log for the morning report" "$(jq -r 'select(.type == "pr_conflicting") | .pr' "$FLEET_STATE_DIR/events.jsonl")" "https://github.com/acme/app-api/pull/51"
 eq "dev408-18 queue: and the PR has left the queue" "$(nr 51)" "conflicting"
 # R7: a PR merged on an earlier tick, still on its row, is never named as the cause of a later conflict. R6: a ready PR
@@ -4080,14 +4082,14 @@ qset() { jq --arg m "$2" '.mergeable = $m' "$QGHD/app-api-$1.json" >"$QD/m.json"
 jq '.state = "MERGED"' "$QGHD/app-api-53.json" >"$QD/m.json" && mv "$QD/m.json" "$QGHD/app-api-53.json"; qt >/dev/null # 53's merge is reported now
 qset 54 CONFLICTING; qset 55 UNKNOWN; : >"$HERDR_LOG"; c1="$(qt)"
 eq "dev408-R7 queue: a conflict on a later tick never names a PR merged long ago; it says main" \
-  "$(printf '%s' "$c1" | jq -r '[.[] | select(.type == "pr_conflicting") | .url + " " + .detail] | join(",")'):$(grep -c '^agent prompt te-lead PR https://github.com/acme/app-api/pull/54 conflicts with main now' "$HERDR_LOG")" \
-  "https://github.com/acme/app-api/pull/54 with main:1"
+  "$(printf '%s' "$c1" | jq -r '[.[] | select(.type == "pr_conflicting") | .url + " " + .detail] | join(",")'):$(grep -c '^agent prompt te-lead Read your brief' "$HERDR_LOG"):$(grep -c 'conflicts with its base now' "$("$REG" get te/lead | jq -r .last_brief)")" \
+  "https://github.com/acme/app-api/pull/54 with main:1:1"
 qset 55 CONFLICTING; c2="$(qt)"
 eq "dev408-R6 queue: a ready PR that read mergeable unknown for a tick, then conflicts, is still told" \
   "$(printf '%s' "$c2" | jq -r '[.[] | select(.type == "pr_conflicting") | .url] | join(",")')" "https://github.com/acme/app-api/pull/55"
 eq "dev408-R6 queue: a lead that could not be told is named so in the notice" \
   "$(bash -c '. "$1/common.sh"; render_notice "$2"' _ "$SCRIPTS" '{"type":"pr_conflicting","team":"te","name":"te/lead","url":"https://github.com/acme/app-api/pull/54","merged":"","lead_told":false}')" \
-  "Conflicting te/lead: https://github.com/acme/app-api/pull/54 conflicts with main. Lead not reached: tell it to bring it up to date with main and have the tester sign off again."
+  "Conflicting te/lead: https://github.com/acme/app-api/pull/54 conflicts with main. Lead not reached: tell it to merge main into the PR and have the tester sign off again."
 
 # -- dev408-5: the redact check (counts only; exit 0 clean, 1 a match, 2 cannot run)
 RR="$T/r408"; rfix "$RR"; RS="$T/rs408"; rterms "$RS"; RTF="$RS/private/redact_terms.txt"

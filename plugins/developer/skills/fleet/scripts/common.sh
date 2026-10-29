@@ -559,6 +559,30 @@ fleet_queue() {
   q="$("$FLEET_SCRIPTS/queue.sh")" || return 1
   queue_write "$q"; printf '%s\n' "$q"
 }
+# fleet_summary: this machine's teams as one compact JSON array, the line `summary=` of its Linear label description
+# (linear.sh write_heartbeat), which is how another machine's `fleet status` sees them: [{t: team, i: issue key, pr: PR
+# URL, s: state word, n: what it needs from you, r: true when the merge queue lists its PR as ready}], the 12 teams
+# changed last, and fewer when the line would pass 1500 characters (the label description has a size limit that is
+# UNVERIFIED). Built from the registry and the queue tick kept (never from GitHub); keys with no value are left out.
+SUMMARY_CAP=1500
+fleet_summary() {
+  local rows esc q='null' f; f="$(queue_file)"
+  rows="$("$FLEET_SCRIPTS/registry.sh" list)" || return 1
+  esc="$("$FLEET_SCRIPTS/registry.sh" escalations --open --not-retired 2>/dev/null)" || esc='[]'
+  [ ! -s "$f" ] || q="$(jq -c '.queue // null' "$f" 2>/dev/null)" || q='null'
+  jq -nc --slurpfile rows <(printf '%s' "$rows") --slurpfile esc <(printf '%s' "$esc") --argjson q "$q" --argjson cap "$SUMMARY_CAP" "$RENDER_DEFS"'
+    def fit: if length > 0 and (tojson | length) > $cap then .[:-1] | fit else . end;
+    [$rows[0][] | select(.tier != "Orchestrator" and .status != "Retired" and (.team // "") != "")]
+    | group_by(.team) | map(. as $g | $g[0].team as $t
+      | ([$esc[0][] | select(.team == $t)] | sort_by({"P0": 0, "P1": 1, "P2": 2}[.severity] // 3) | first) as $e
+      | team_state($g) as $state
+      | ($g | map(.pr // "") | map(select(. != "")) | first // "") as $pr
+      | (team_needs($g; $e; $state; $pr; $q) | if . == "-" then "" else .[0:60] end) as $n
+      | {u: ($g | map(.updated_at // "") | max), t: $t, i: ($g | map(.issue // "") | map(select(. != "")) | first // ""), pr: $pr, s: $state, n: $n,
+         r: (([($q.ready // [])[] | select(.url == $pr)] | length) > 0 and $pr != "")})
+    | sort_by(.u) | reverse | .[:12] | map(del(.u) | with_entries(select(.value != "" and .value != false))) | fit'
+}
+
 # PART_OF_JQ: jq `def part_of;` on a PR body: the issue a "Part of <issue>" line names (its identifier, a markdown link
 # to it, or its tracker URL), upper-cased, else null. Any case, and only before an issue reference, so prose such as
 # "part of the cleanup" is not one. retire leaves such an issue In Progress; the merge queue orders its slices.
@@ -731,6 +755,20 @@ RENDER_DEFS='def md: tostring | gsub("[\r\n\t]+"; " ") | gsub("\\|"; "\\|");
   def group: {"Working": "working", "Idle": "idle", "Waiting": "waiting", "Stalled": "blocked", "Failed": "blocked",
     "Zombie": "blocked", "Parked": "parked", "Done": "done"}[.] // "idle";
   def sev: if . == "P0" or . == "P1" then "**\(.)**" else . end;
+  def team_state($g): if any($g[]; .status == "Parked") then "Parked" else ($g | map(.status | word) | sort_by(rank) | last) end;
+  def team_needs($g; $e; $state; $pr; $q):
+    def qready($u): ([($q.ready // [])[] | select(.url == $u)] | first);
+    def merge_cell($u): (qready($u)) as $r | if $r != null and ($r.after // "—") != "—" then $r.after else "merge the PR" end;
+    if $e != null then "\($e.severity | sev): \($e.message | .[0:60])"
+    elif any($g[]; .status == "Needs input") then ($g | map(.status_detail // "") | map(select(. != "")) | first // "answer its prompt")
+    elif $state == "Zombie" then "agent gone: respawn or retire"
+    elif $state == "Stalled" then "ask for its done step"
+    elif $state == "Failed" then "brief not delivered"
+    elif $state == "Done" then (if $pr != "" then merge_cell($pr) else "retire the team" end)
+    elif $state == "Parked" and $pr != "" then
+      (if $q != null then (if qready($pr) != null then merge_cell($pr) else "-" end)
+       elif any($g[]; .parked_reason == "signed-off") then "merge the PR" else "-" end)
+    else "-" end;
   def ago($now): if (. // "") == "" then "-"
     else ([(($now - (sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601)) / 60 | floor), 0] | max) as $m
       | if $m < 60 then "\($m)m ago" elif $m < 2880 then "\($m / 60 | floor)h ago" else "\($m / 1440 | floor)d ago" end end;
@@ -747,51 +785,52 @@ roles_line() {
         elif .status == "Zombie" then "✗ (did not start)" else "✓" end)) | join(" ")'
 }
 
-# render_table [--queue <queue JSON>] [team...]: the team table of the registry as it stands (no herdr call): the summary line ("3 teams ·
-# 2 working · 1 blocked"), then one row per team that has a row not yet Retired, or only the teams named, then
-# "Waiting on you: ..." when a P0 or P1 is open, a blank line between the three (reply). "No teams." when there is
-# none. State is the worst agent state, one word (Parked when the team is parked); Needs you is the
-# team's most severe open escalation, else what its state needs, else -. A team with a PR in the queue (--queue) says
-# what the queue says ("rebase after #N") or "merge the PR": a Done team and a Parked one alike, so parking a signed-off
-# team changes its State and not its Needs you. A Parked team with no queue given says "merge the PR" when it was
-# parked at sign-off (parked_reason signed-off), else -.
+# render_table [--queue <queue JSON>] [--peers <rows JSON>] [team...]: the team table of the registry as it stands (no
+# herdr call): the summary line ("3 teams · 2 working · 1 blocked"), then one row per team that has a row not yet
+# Retired, or only the teams named, then "Waiting on you: ..." when a P0 or P1 is open, a blank line between the three
+# (reply). "No teams." when there is none. State is the worst agent state, one word (Parked when the team is parked);
+# Needs you is the team's most severe open escalation, else what its state needs, else -. A team with a PR in the
+# queue (--queue) says what the queue says ("rebase after #N") or "merge the PR": a Done team and a Parked one alike,
+# so parking a signed-off team changes its State and not its Needs you. A Parked team with no queue given says "merge
+# the PR" when it was parked at sign-off (parked_reason signed-off), else -.
+# One table for every machine: every row carries its Machine (this machine's key for the registry's teams), and
+# --peers adds the other machines' teams (status.sh builds them from their published summaries: machine, team, issue,
+# pr, state, needs, ready). The rows whose PR the queue lists go first, in the queue's order, then the rest by team.
 render_table() {
-  local rows esc only q='null'
-  if [ "${1:-}" = --queue ]; then q="$2"; shift 2; printf '%s' "$q" | jq -e 'type == "object"' >/dev/null 2>&1 || q='null'; fi
+  local rows esc only q='null' peers='[]' me
+  while [ "${1:-}" = --queue ] || [ "${1:-}" = --peers ]; do
+    if [ "$1" = --queue ]; then q="$2"; printf '%s' "$q" | jq -e 'type == "object"' >/dev/null 2>&1 || q='null'
+    else peers="$2"; printf '%s' "$peers" | jq -e 'type == "array"' >/dev/null 2>&1 || peers='[]'; fi
+    shift 2
+  done
+  me="$(machine_key 2>/dev/null || echo local)"
   rows="$("$FLEET_SCRIPTS/registry.sh" list)" || return 1
   esc="$("$FLEET_SCRIPTS/registry.sh" escalations --open --not-retired 2>/dev/null)" || esc='[]'
   only="$(printf '%s\n' "$@" | jq -Rsc 'split("\n") | map(select(. != ""))')"
-  jq -rn --slurpfile rows <(printf '%s' "$rows") --slurpfile esc <(printf '%s' "$esc") --argjson only "$only" --argjson q "$q" "$RENDER_DEFS"'
+  jq -rn --slurpfile rows <(printf '%s' "$rows") --slurpfile esc <(printf '%s' "$esc") --argjson only "$only" --argjson q "$q" --argjson peers "$peers" --arg me "$me" "$RENDER_DEFS"'
     $rows[0] as $rows | $esc[0] as $esc
     | def qready($u): ([($q.ready // [])[] | select(.url == $u)] | first);
-      def merge_cell($u): (qready($u)) as $r | if $r != null and ($r.after // "—") != "—" then $r.after else "merge the PR" end;
       def shown: ($only | length) == 0 or (. as $t | $only | index($t) != null);
     [$rows[] | select(.tier != "Orchestrator" and .status != "Retired" and (.team // "") != "" and (.team | shown))]
     | group_by(.team) | map(. as $g | $g[0].team as $t
       | ([$esc[] | select(.team == $t)] | sort_by({"P0": 0, "P1": 1, "P2": 2}[.severity] // 3) | first) as $e
-      | (if any($g[]; .status == "Parked") then "Parked" else ($g | map(.status | word) | sort_by(rank) | last) end) as $state
+      | team_state($g) as $state
       | ($g | map(.pr // "") | map(select(. != "")) | first // "") as $pr
-      | {team: $t,
+      | {team: $t, machine: $me,
          issue: issue_cell(($g | map(.issue // "") | map(select(. != "")) | first // ""); ($g | map(.issue_url // "") | map(select(. != "")) | first // "");
            ($g | map(.issue_title // "") | map(select(. != "")) | first // "")),
-         pr: pr_cell($pr), state: $state,
-         needs: (if $e != null then "\($e.severity | sev): \($e.message | .[0:60])"
-           elif any($g[]; .status == "Needs input") then ($g | map(.status_detail // "") | map(select(. != "")) | first // "answer its prompt")
-           elif $state == "Zombie" then "agent gone: respawn or retire"
-           elif $state == "Stalled" then "ask for its done step"
-           elif $state == "Failed" then "brief not delivered"
-           elif $state == "Done" then (if $pr != "" then merge_cell($pr) else "retire the team" end)
-           elif $state == "Parked" and $pr != "" then
-             (if $q != null then (if qready($pr) != null then merge_cell($pr) else "-" end)
-              elif any($g[]; .parked_reason == "signed-off") then "merge the PR" else "-" end)
-           else "-" end)}) as $t
+         pr: pr_cell($pr), pr_url: $pr, state: $state, needs: team_needs($g; $e; $state; $pr; $q)}) as $local
+    | ([$peers[] | select((.team | shown))
+        | {team: .team, machine: .machine, issue: issue_cell(.issue; ""; ""), pr: pr_cell(.pr), pr_url: (.pr // ""), state: .state,
+           needs: ((.needs // "") | if . == "" then "-" else . end)}]) as $other
+    | ($local + $other | map(. + {n: (qready(.pr_url) | .n // 1000000)}) | sort_by([.n, .team, .machine])) as $t
     | if ($t | length) == 0 then "No teams." else
         [([$t | length | "\(.) team\(if . == 1 then "" else "s" end)"]
-          + ([$t[].state] as $s | ["Working", "Idle", "Waiting", "Stalled", "Parked", "Done"]
+          + ([$t[].state | sub(" \\(stale .*$"; "")] as $s | ["Working", "Idle", "Waiting", "Stalled", "Parked", "Done"]
             | map(. as $w | group as $g | ([$s[] | select(group == $g)] | length) as $n | select($n > 0) | "\($n) \($g)"))
           | join(" · ")),
-         (["| Team | Issue | PR | State | Needs you |", "|---|---|---|---|---|",
-           ($t[] | "| \(.team | md) | \(.issue) | \(.pr) | \(.state) | \(.needs | md) |")] | join("\n")),
+         (["| Team | Machine | Issue | PR | State | Needs you |", "|---|---|---|---|---|---|",
+           ($t[] | "| \(.team | md) | \(.machine | md) | \(.issue) | \(.pr) | \(.state | md) | \(.needs | md) |")] | join("\n")),
          ([$esc[] | select((.severity | IN("P0", "P1")) and (.team | shown)) | "\(.name) \(.severity | sev): \(.message | .[0:60] | md)"]
           | if length > 0 then "Waiting on you: " + join("; ") else empty end)]
         | join("\n\n")
@@ -825,7 +864,7 @@ render_escalations() {
     end'
 }
 
-# render_queue <queue.sh JSON>: "Merge in this order:" and | # | PR | Issue | Why this order | After merge |, each
+# render_queue <queue.sh JSON>: "Merge in this order:" and | # | PR | Issue | Machine | Why this order | After merge |, each
 # PR its URL ("Merge in this order: none ready." when nothing is), then "Not ready: <url> ✗ <missing> · ✗
 # ..." per open PR that is not, then the queue's notes, a blank line between any two (reply). Nothing at all when
 # no PR is open.
@@ -833,8 +872,8 @@ render_queue() {
   jq -r 'if (.ready | length) == 0 and (.not_ready | length) == 0 then empty else
       [(if (.ready | length) == 0 then "Merge in this order: none ready." else "Merge in this order:" end),
        (if (.ready | length) == 0 then empty else
-         (["| # | PR | Issue | Why this order | After merge |", "|---|---|---|---|---|",
-           (.ready[] | "| \(.n) | \(.pr) | \(.issue) | \(.why) | \(.after) |")] | join("\n")) end),
+         (["| # | PR | Issue | Machine | Why this order | After merge |", "|---|---|---|---|---|---|",
+           (.ready[] | "| \(.n) | \(.pr) | \(.issue) | \(.machine // "-" | gsub("\\|"; "/")) | \(.why) | \(.after) |")] | join("\n")) end),
        (.not_ready[] | "Not ready: \(.pr) \(.missing | map("✗ " + .) | join(" · "))"),
        (.notes[] | "\(.).")]
       | join("\n\n")
@@ -962,12 +1001,12 @@ render_notice() {
     pr_merged) d="move $team to its next issue, or retire it"; [ -z "$(jq -r '.parks // ""' <<<"$e")" ] || d="$team parked"
       [ "$(jq -r '.parked // false' <<<"$e")" != true ] || d="unpark $team and move it to its next issue, or retire it"
       render_line pr_merged pr="$(pr_link "$url")" next="$d" ;;
-    pr_conflicting) d="$(jq -r '.unpark_refused // ""' <<<"$e")"
+    pr_conflicting) d="$(jq -r '.catchup_refused // .unpark_refused // ""' <<<"$e")"
       o="$(jq -r '.merged // ""' <<<"$e" | tr ',' '\n' | sed 's/^ *//' | while IFS= read -r u; do [ -z "$u" ] || pr_link "$u"; done | paste -sd, - | sed 's/,/, /g')"
-      if [ -n "$d" ]; then n="Unpark refused ($d): unpark it when a slot frees, then tell its lead"
-      elif [ "$(jq -r '.lead_told == false' <<<"$e")" = true ]; then n="Lead not reached: tell it to bring it up to date with main and have the tester sign off again"
-      else n="Lead told to bring it up to date with main and have the tester sign off again"; fi
-      render_line event event=Conflicting name="$name" what="$(pr_link "$url") conflicts $(if [ -n "$o" ]; then printf 'after %s' "$o"; else printf 'with main'; fi)" next="$n" ;;
+      if [ -n "$d" ]; then n="Catch-up refused ($d): bring the team back when a slot frees, then tell its lead to merge main into the PR"
+      elif [ "$(jq -r '.lead_told == false' <<<"$e")" = true ]; then n="Lead not reached: tell it to merge main into the PR and have the tester sign off again"
+      else n="Lead told to merge main into the PR and have the tester sign off again"; fi
+      render_line event event=Conflicting name="$name" what="$(pr_link "$url") conflicts $(if [ -n "$o" ]; then printf 'after %s merged' "$o"; else printf 'with main'; fi)" next="$n" ;;
     pr_opened) render_line pr_opened pr="$(pr_link "$url")" issue="$(team_issue "$team")" told="Lead not reached: tell it to start the tester" ;;
     dead) render_line event event=Dead name="$name" what="its agent is gone" next="Tick respawns it once in $(const_int RESPAWN_WINDOW_HOURS 6)h, then escalates P1" ;;
     failed) render_line event event=Failed name="$name" what="a restart or its brief did not arrive" next="Re-send its brief or re-boot the team" ;;

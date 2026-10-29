@@ -3,7 +3,7 @@
 # from GitHub and the registry on every call, never from chat or a cache. Internal: `status`, the pr_ready and
 # pr_merged wakes and the morning report print it through render_queue (references/output.md).
 #
-#   queue.sh      JSON {ready: [{n, url, pr, issue, why, after}], not_ready: [{url, pr, missing: [...]}], notes: [...]}
+#   queue.sh      JSON {ready: [{n, url, pr, issue, machine, why, after}], not_ready: [{url, pr, machine, missing: [...]}], notes: [...]}
 #
 # Inputs: the registry rows not Retired (Parked and Done rows included), one read-only `gh pr list --state open` per
 # repo (FLEET_GH; the repos of the rows' PR URLs and of their own origin remotes), and Linear's `blocks` relations of
@@ -12,8 +12,11 @@
 # or fleet/<issue key>-...), whatever local branch it came from; theirs is any other open fleet/* PR.
 # Ready is common.sh PR_DEFS, the rule tick's pr_ready uses: the tester's signed SHA is the head, CI green (or none
 # in a no_pr_ci repo), mergeable (UNKNOWN is "mergeable unknown", never conflicting), not a draft, not held. Another
-# machine's PR is never ready here (its sign-off is not ours to see): it is an order input, listed as missing
-# "other machine".
+# machine's PR is ready here only when that machine's published summary (linear.sh peers: the `summary=` line of its
+# label, `r`) says so and the summary is not older than lease_hours; its sign-off is not ours to see. Otherwise it is
+# an order input only, listed as missing "other machine" with its state when the summary has one. One queue for every
+# machine: each row has the machine that holds the PR. A ready PR whose changed files another PR, not ready yet, also
+# touches says so in its "why".
 #
 # Order, the first rule that decides:
 #   1. dependencies: a PR another needs goes first. Linear `blocks` ("blocks DEV-x"), the same "Part of <issue>"
@@ -42,6 +45,18 @@ if ! command -v "$FLEET_GH" >/dev/null 2>&1; then
   exit 0
 fi
 
+# The other machines' summaries (linear.sh peers: read-only; status passes what it already read in FLEET_PEERS_JSON):
+# pr URL -> {machine, state, issue, ready} for each PR a fresh summary lists; a stale one lists its PRs not ready.
+me="$(machine_key 2>/dev/null || echo local)"
+peers="${FLEET_PEERS_JSON:-}"
+[ -n "$peers" ] || peers="$("$FLEET_SCRIPTS/linear.sh" peers 2>/dev/null)" || peers='[]'
+printf '%s' "$peers" | jq -e 'type == "array"' >/dev/null 2>&1 || peers='[]'
+psum="$(jq -c --arg now "${FLEET_NOW:-$(now)}" --argjson lease "$(lease_hours)" '
+  [group_by(.machine)[] | map(select(.summary != null)) | select(length > 0) | first | . as $c
+    | (if $c.heartbeat == null then false else ((($now | fromdateiso8601) - ($c.heartbeat | fromdateiso8601)) <= ($lease * 3600)) end) as $fresh
+    | $c.summary[] | select((.pr // "") != "") | {key: .pr, value: {machine: $c.machine, state: (.s // ""), issue: (.i // ""), ready: ((.r // false) and $fresh)}}] | from_entries' <<<"$peers" 2>/dev/null)" || psum='{}'
+[ -n "$psum" ] || psum='{}'
+
 noci="$(config_list no_pr_ci)"; fields=number,url,state,title,headRefOid,headRefName,baseRefName,mergeable,isDraft,statusCheckRollup,body,createdAt,files,isCrossRepository
 # One read-only list of the open PRs per repo. A repo GitHub cannot list leaves its rows' PRs "GitHub unreadable".
 open='[]'
@@ -54,7 +69,7 @@ done <<<"$slugs"
 # Ours: an open PR a row names, or whose head branch a local team pushed (common.sh head_team), with that team's issue
 # and its tester's sign-off. Theirs: the other open fleet/* PRs, as order inputs only ("other machine"). A row's PR
 # missing from its repo's open list was merged or closed: it is gone. Fork PRs are never either.
-all="$(jq -cn --slurpfile rows <(printf '%s' "$rows") --slurpfile open <(printf '%s' "$open") --argjson urls "$rowurls" --argjson noci "$noci" "$PR_DEFS$HEAD_TEAM_JQ"'
+all="$(jq -cn --slurpfile rows <(printf '%s' "$rows") --slurpfile open <(printf '%s' "$open") --argjson urls "$rowurls" --argjson noci "$noci" --argjson psum "$psum" --arg me "$me" "$PR_DEFS$HEAD_TEAM_JQ"'
   $rows[0] as $rows | $open[0] as $open
   | def entry($t; $url): [$rows[] | select(.team == $t)] as $g | {url: $url, team: $t,
       repo_dir: ([$g[] | .repo // empty | select(. != "")] | first // ""),
@@ -68,12 +83,15 @@ all="$(jq -cn --slurpfile rows <(printf '%s' "$rows") --slurpfile open <(printf 
   | [$open[] | select(.ok) | .prs[]? | select(type == "object" and (.isCrossRepository // false) != true) | . as $g
       | (if ($urls | index($g.url)) != null then ([$rows[] | select(.pr == $g.url) | .team] | first) else ($g.headRefName // "" | head_team($rows)) end) as $t
       | if $t != null then entry($t; $g.url) as $p
-          | $p + ($g | gh_fields) + {other: false, missing: ($g | pr_missing($p.signoff; pr_noci_ok($noci; $p.repo_dir; $p.url)))}
-        elif ($g.headRefName // "" | startswith("fleet/")) then {url: $g.url, team: "", issue: "", issue_url: "", issue_title: ""} + ($g | gh_fields) + {other: true, missing: ["other machine"]}
+          | $p + ($g | gh_fields) + {other: false, machine: $me, missing: ($g | pr_missing($p.signoff; pr_noci_ok($noci; $p.repo_dir; $p.url)))}
+        elif ($g.headRefName // "" | startswith("fleet/")) then ($psum[$g.url]) as $ps
+          | {url: $g.url, team: "", issue: ($ps.issue // ""), issue_url: "", issue_title: ""} + ($g | gh_fields)
+            + {other: true, machine: ($ps.machine // "other machine"),
+               missing: (if $ps.ready == true then [] else ["other machine" + (if ($ps.state // "") != "" then " (\($ps.state))" else "" end)] end)}
         else empty end]
   + [$urls[] | select((capture("^https?://[^/]+/(?<s>[^/]+/[^/]+)/").s // "") as $s | ($readable | index($s)) == null) | . as $u
       | entry([$rows[] | select(.pr == $u) | .team] | first; $u)
-        + {number: (($u | capture("/(?<n>[0-9]+)$").n | tonumber) // 0), title: "", head: "", base: "", body: "", created: "", files: [], other: false, missing: ["GitHub unreadable"]}]')"
+        + {number: (($u | capture("/(?<n>[0-9]+)$").n | tonumber) // 0), title: "", head: "", base: "", body: "", created: "", files: [], other: false, machine: $me, missing: ["GitHub unreadable"]}]')"
 
 # Linear: which queued issue blocks which (one read for all of them).
 blocks='{}'; notes='[]'
@@ -115,7 +133,7 @@ jq -c --argjson notes "$notes" --slurpfile blocks <(printf '%s' "$blocks") "$REN
   | [$nodes[] | select(has($blocked; .i) | not)] as $ready
   | ($ready | map(.i)) as $rids
   # overlap degree among the ready ones: shared files or a shared migration number
-  | ($ready | map(. as $x | {key: (.i | tostring), value: [$ready[] | select(.i != $x.i and ((([.files[]] - ([.files[]] - $x.files)) | length) > 0 or (((. | migs) - ((. | migs) - ($x | migs))) | length) > 0)) | .i]}) | from_entries) as $ov
+  | ($ready | map(. as $x | {key: (.i | tostring), value: [$ready[] | select(.i != $x.i and repo == ($x | repo) and ((([.files[]] - ([.files[]] - $x.files)) | length) > 0 or (((. | migs) - ((. | migs) - ($x | migs))) | length) > 0)) | .i]}) | from_entries) as $ov
   # greedy: among the PRs whose ready dependencies are placed, the one with the fewest overlaps, then the oldest
   | (def place($left; $out): if ($left | length) == 0 then $out else
         ([$left[] | . as $n | select(([$edges[] | select(.to == $n and has($left; .from))] | length) == 0)]
@@ -128,10 +146,12 @@ jq -c --argjson notes "$notes" --slurpfile blocks <(printf '%s' "$blocks") "$REN
       | ([$before[] | . as $b | select((($x | migs) - (($x | migs) - ($nodes[$b] | migs))) | length > 0) | "#\($nodes[$b].number)"]) as $renum
       | ([$before[] | . as $b | select(($ov[$x.i | tostring] | index($b)) != null or ([$edges[] | select(.from == $b and .to == $x.i and (.why | startswith("base of")))] | length) > 0)
           | "#\($nodes[$b].number)"] - $renum) as $rebase
-      | {n: ($k + 1), url: $x.url, pr: pr_cell($x.url), issue: issue_cell($x.issue; $x.issue_url; $x.issue_title),
-         why: ($dependents // $needs // (if ($ov[$x.i | tostring] | length) > 0 then "fewest rebases" else "oldest first" end)),
+      | ([$nodes[] | select((.i | IN($rids[]) | not) and repo == ($x | repo) and ((([.files[]] - ([.files[]] - $x.files)) | length) > 0)) | ref]) as $notyet
+      | {n: ($k + 1), url: $x.url, pr: pr_cell($x.url), issue: issue_cell($x.issue; $x.issue_url; $x.issue_title), machine: $x.machine,
+         why: (($dependents // $needs // (if ($ov[$x.i | tostring] | length) > 0 then "fewest rebases" else "oldest first" end))
+               + (if ($notyet | length) > 0 then "; touches the same files as \($notyet | join(", ")) (not ready yet)" else "" end)),
          after: (if ($renum | length) > 0 then "renumber migration after \($renum | join(", "))"
                  elif ($rebase | length) > 0 then "rebase after \($rebase | join(", "))" else "—" end)}],
      not_ready: [$nodes[] | select((.missing | length) > 0 or (.waits | length) > 0 or .cycle != null)
-      | {url, pr: pr_cell(.url), missing: (.missing + (.waits | map("waits for " + .)) + (if .cycle != null then ["dependency cycle with \(.cycle)"] else [] end))}],
+      | {url, pr: pr_cell(.url), machine, missing: (.missing + (.waits | map("waits for " + .)) + (if .cycle != null then ["dependency cycle with \(.cycle)"] else [] end))}],
      notes: $notes}' <<<"$all"

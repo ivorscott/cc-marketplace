@@ -1,9 +1,11 @@
 #!/usr/bin/env bash
 # Respawn a dead agent (a Zombie row) from its registry row: same role, worktree, branch, model and
 # harness, in its own workspace. tick.sh runs this, within a budget (respawn_max = 1 per
-# respawn_window_hours = 6 per agent, config.toml); a Done or Retired row is never respawned.
+# respawn_window_hours = 6 per agent, config.toml); a Done or Retired row is never respawned, except a Done one
+# with --revive.
 #
 #   respawn.sh <team/role>
+#   respawn.sh <team/role> --revive
 #   respawn.sh <team/role> --restart [--brief-text TEXT]
 #
 # --restart (used by next.sh, between issues) restarts a live agent at a safe point: it waits for the agent to be
@@ -16,7 +18,9 @@
 # plugin_version becomes the version of these scripts. It is not a death: nothing charges the respawn budget,
 # and the event is `restarted`. A plugin installed since the row started would switch versions, which waits for
 # the user's go: --restart exits 5 naming both versions until it is recorded (registry.sh pref version_ok <version>;
-# a plain respawn of a dead agent does not ask). UNVERIFIED against real herdr: `herdr agent start` after /exit in the same pane.
+# a plain respawn of a dead agent does not ask). --revive (catchup.sh) also starts a Done row again, when its team has
+# to merge main into a PR that conflicts now: the row stops being Done (outcome, summary and done_at are cleared) and
+# comes back as a respawn does; a Retired row is still refused. UNVERIFIED against real herdr: `herdr agent start` after /exit in the same pane.
 #
 # The resume brief is `build_brief --resume`: the role brief, the assignment, the last report file,
 # `git status` and `git log` of its branch and its open escalations (no pane text). A lead also gets
@@ -34,11 +38,12 @@ set -euo pipefail
 require_herdr
 registry="$FLEET_SCRIPTS/registry.sh"
 
-name="${1:?usage: respawn.sh <team/role> [--restart [--brief-text TEXT]]}"; shift
-restart=false; extra=""
+name="${1:?usage: respawn.sh <team/role> [--restart [--brief-text TEXT] | --revive]}"; shift
+restart=false; revive=false; extra=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --restart) restart=true; shift ;;
+    --revive) revive=true; shift ;;
     --brief-text) extra="${2:?--brief-text needs text}"; shift 2 ;;
     *) die "unknown option: $1" ;;
   esac
@@ -46,7 +51,10 @@ done
 row="$("$registry" get "$name")" || exit 1
 get() { printf '%s' "$row" | jq -r ".$1 // \"\""; }
 status="$(get status)"
-case "$status" in Done | Retired) die "$name is $status; not respawning it" ;; esac
+case "$status" in
+  Retired) die "$name is $status; not respawning it" ;;
+  Done) $revive || die "$name is $status; not respawning it" ;;
+esac
 [ "$restart" != true ] || version_switch_check "[$row]" "$name"
 
 team="$(get team)"; tier="$(get tier)"; agent="$(get herdr_ref)"; pane="$(get pane)"; split_new=0
@@ -147,6 +155,7 @@ if [ -n "$transcript" ]; then
   set_args+=(transcript="$transcript")
 fi
 "$registry" set "$name" "${set_args[@]}" >/dev/null
+[ "$status" != Done ] || "$registry" set "$name" outcome= summary= done_at= >/dev/null
 if $restart; then ev_log restarted team="$team" name="$name" detail="new session"
 else ev_log respawned team="$team" name="$name" detail="new pane $pane"; fi
 

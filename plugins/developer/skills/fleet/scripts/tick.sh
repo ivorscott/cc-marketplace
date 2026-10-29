@@ -36,10 +36,12 @@
 #                   it is parked (park.sh --reason signed-off) to free its slot.
 #   pr_merged       the row's PR was merged; the Orchestrator answers with next.sh. Once per PR. A team marked
 #                   park --after-merge (or by focus) is parked by tick instead; the event says `parks`.
-#   pr_conflicting  a PR that was ready (the tick before, or since while mergeable read unknown) is CONFLICTING: it
-#                   leaves the merge queue, its team is unparked if parked, and its lead is told to bring it up to date
-#                   with main and have the tester sign off again, naming the PRs merged since the last tick (merged),
-#                   or main when none was. Once per (PR, head); `unpark_refused` when a cap kept it parked.
+#   pr_conflicting  a PR that was ready (the tick before, or since while mergeable read unknown), or has a sign-off, is
+#                   CONFLICTING: it leaves the merge queue and its lead is told to bring it up to date by merging
+#                   main into it (a merge commit) and have the tester sign off again, naming the PRs merged since the
+#                   last tick that share files with it (merged), or main when none. A team that is Parked, or has a
+#                   Done or Zombie agent, is brought back first (catchup.sh), twice at most per PR, then a P1
+#                   escalation. Once per (PR, head); `catchup_refused` when a cap kept it from coming back.
 #   repo_without_team  a repo in config.toml `repos` with no live team, when it becomes so
 #   disk, disk_ok   free disk crossed below warn_free_gb, and recovered
 #   slot_free       fewer live teams than target_teams (orchestrator row) and max_teams: the Orchestrator picks and
@@ -494,7 +496,7 @@ if [ "$(printf '%s' "$prs" | jq length)" != 0 ]; then
       [ "$pready" != true ] || ready_now+=("$url")
       # GitHub still computing (mergeable unknown, e.g. right after a merge): a ready PR keeps its place in ready_prev.
       [ "$pst" != OPEN ] || [ "$pmerge" = MERGEABLE ] || [ "$pmerge" = CONFLICTING ] || unknown_now+=("$url")
-      [ "$pst" != OPEN ] || [ "$pmerge" != CONFLICTING ] || conflicting+=("$url"$'\x1f'"$phead"$'\x1f'"$(printf '%s' "$p" | jq -r .team)"$'\x1f'"$(printf '%s' "$p" | jq -r .parked)")
+      [ "$pst" != OPEN ] || [ "$pmerge" != CONFLICTING ] || conflicting+=("$url"$'\x1f'"$phead"$'\x1f'"$(printf '%s' "$p" | jq -r .team)"$'\x1f'"$(printf '%s' "$p" | jq -r .parked)"$'\x1f'"$(printf '%s' "$p" | jq -r '(.signoff // "") != ""')")
       # Merged since the last tick (its pr_merged fires now), never a PR merged long ago that is still on a row.
       [ "$(printf '%s' "$ev" | jq -r '.type // ""' 2>/dev/null)" != pr_merged ] || merged_now+=("$url")
       # A head the tester has not signed while the builder is Done or Idle: the lead may have missed that the builder
@@ -542,31 +544,62 @@ if [ "$(printf '%s' "$prs" | jq length)" != 0 ]; then
     rm -f "$ghtmp"; ghtmp=""
   fi
 fi
-# A PR that was ready (in ready_prev: on the tick before, or since then while GitHub said mergeable unknown) and
-# conflicts now leaves the merge queue. Its lead is told once per (PR, head) to bring it up to date with main (as the
-# house rules say: a merge commit in overnight mode) and have the tester sign off again, naming the PRs merged since
-# the last tick, or main when this tick saw none (a push to main, or a merge next.sh took off the rows first). A parked
-# team is unparked first, and when that is refused (a cap is full) nobody is told and the notice says so. The queue's
-# own rebuild does the rest.
+# A PR that was ready (in ready_prev: on the tick before, or since then while GitHub said mergeable unknown) or that
+# has a recorded sign-off, and conflicts now, leaves the merge queue. Its lead is told once per (PR, head) to bring it
+# up to date by merging the base into it (a merge commit, never a rewrite of history) and have the tester sign off
+# again. The cause is read from GitHub: the PRs merged into its base since the previous tick that changed files it also
+# changes (read-only), else the PRs merged this tick, else "main". A team that is Parked, or has an agent Done or
+# Zombie, is brought back first by catchup.sh (builder and tester in their worktrees, the lead briefed), at most twice
+# per PR; the third time a P1 escalation asks the user instead. When that is refused (a cap is full) nobody is told and
+# the notice says so. A team whose agents are live is only told. The queue's own rebuild does the rest.
 mlist=""; [ "${#merged_now[@]}" = 0 ] || mlist="$(printf '%s\n' "${merged_now[@]}" | paste -sd, - | sed 's/,/, /g')"
+since="$(jq -r '.last_tick_at // ""' "$STATE_FILE")"
 for c in ${conflicting[@]+"${conflicting[@]}"}; do
-  IFS=$'\x1f' read -r curl chead cteam cparked <<<"$c"
-  jq -e --arg u "$curl" '(.ready_prev // []) | index($u) != null' "$STATE_FILE" >/dev/null || continue
+  IFS=$'\x1f' read -r curl chead cteam cparked csigned <<<"$c"
+  jq -e --arg u "$curl" '(.ready_prev // []) | index($u) != null' "$STATE_FILE" >/dev/null || [ "$csigned" = true ] || continue
   [ "$(jq --arg k "$curl@$chead" '(.conflict_told // []) | index($k) == null' "$STATE_FILE")" = true ] || continue
-  told=false; refused=""
-  if [ "$cparked" = true ] && ! "$FLEET_SCRIPTS/unpark.sh" "$cteam" >/dev/null 2>"$FLEET_STATE_DIR/unpark.err"; then
-    refused="$(grep -v '^fleet: warning:' "$FLEET_STATE_DIR/unpark.err" | head -n 1 | sed 's/^fleet: //')"; refused="${refused:-unpark failed}"
+  # the cause: PRs merged into its base since the last tick that share files with it
+  cmerged="$mlist"
+  if [ -n "$since" ] && command -v "$FLEET_GH" >/dev/null 2>&1; then
+    cj="$("$FLEET_GH" pr view "$curl" --json baseRefName,files 2>/dev/null || true)"
+    cbase="$(printf '%s' "$cj" | jq -r '.baseRefName // ""' 2>/dev/null || true)"
+    crepo="$(printf '%s' "$curl" | sed -E 's#^https?://[^/]+/([^/]+/[^/]+)/pull/.*#\1#')"
+    if [ -n "$cbase" ] && [ -n "$crepo" ]; then
+      lj="$("$FLEET_GH" pr list --repo "$crepo" --state merged --base "$cbase" --limit 30 --json number,url,mergedAt,files 2>/dev/null || true)"
+      cm="$(jq -rn --slurpfile m <(printf '%s' "${lj:-[]}") --slurpfile c <(printf '%s' "${cj:-{}}") --arg since "$since" --arg u "$curl" '
+        ([($c[0].files // [])[] | .path // empty]) as $mine
+        | [($m[0] // [])[]? | select(.url != $u and (($since == "") or ((.mergedAt // "") >= $since))
+            and ([(.files // [])[] | .path // empty] | any(. as $f | $mine | index($f) != null)))
+          | .url] | join(", ")' 2>/dev/null || true)"
+      [ -z "$cm" ] || cmerged="$cm"
+    fi
   fi
-  rm -f "$FLEET_STATE_DIR/unpark.err"
-  if [ -z "$refused" ]; then
-    if [ -n "$mlist" ]; then cwhy="conflicts after $mlist merged"; else cwhy="conflicts with main now"; fi
-    "$FLEET_SCRIPTS/tell.sh" "$cteam/lead" "PR $curl $cwhy; bring it up to date with main (as the house rules say) and have the tester sign off again" >/dev/null 2>&1 && told=true
+  told=false; refused=""; cby="${cmerged:-}"
+  cneed=false
+  if [ "$cparked" = true ]; then cneed=true
+  elif [ "$("$registry" list --team "$cteam" | jq '[.[] | select(.status != "Retired" and .tier != "Orchestrator") | .status] | any(. == "Done" or . == "Zombie" or . == "Parked")')" = true ]; then cneed=true; fi
+  if $cneed; then
+    ncatch="$(jq -r --arg k "$curl" '(.catchup_count // {})[$k] // 0' "$STATE_FILE")"
+    if [ "$ncatch" -ge 2 ]; then
+      refused="$curl was caught up $ncatch times and conflicts again"
+      "$registry" escalate "$cteam/lead" P1 "$curl conflicts again after $ncatch catch-ups; merging the base into it did not hold. Look at it yourself or retire $cteam" \
+        "look at it myself" "retire $cteam" >/dev/null 2>&1 || true
+    elif "$FLEET_SCRIPTS/catchup.sh" "$cteam" "$curl" "$cby" >/dev/null 2>"$FLEET_STATE_DIR/catchup.err"; then
+      told=true; st_upd --arg k "$curl" '$st + {catchup_count: (($st.catchup_count // {}) + {($k): ((($st.catchup_count // {})[$k] // 0) + 1)})}'
+    else
+      refused="$(grep -v '^fleet: warning:' "$FLEET_STATE_DIR/catchup.err" | head -n 1 | sed 's/^fleet: //')"; refused="${refused:-the catch-up failed}"
+    fi
+    rm -f "$FLEET_STATE_DIR/catchup.err"
+  else
+    if [ -n "$cby" ]; then cwhy="conflicts after $cby merged"; else cwhy="conflicts with main now"; fi
+    "$FLEET_SCRIPTS/tell.sh" "$cteam/lead" "PR $curl $cwhy; bring it up to date by merging origin/main into it (a merge commit, plain git push) and have the tester sign off again" >/dev/null 2>&1 && told=true
   fi
-  add_events "$(jq -cn --arg t "$cteam" --arg u "$curl" --arg m "$mlist" --argjson told "$told" --arg r "$refused" \
+  add_events "$(jq -cn --arg t "$cteam" --arg u "$curl" --arg m "$cby" --argjson told "$told" --arg r "$refused" \
     '[{type: "pr_conflicting", team: $t, name: ($t + "/lead"), url: $u, detail: (if $m != "" then "after " + $m else "with main" end), merged: $m,
-       lead_told: $told} + (if $r != "" then {unpark_refused: $r} else {} end)]')"
+       lead_told: $told} + (if $r != "" then {catchup_refused: $r} else {} end)]')"
   st_upd --arg k "$curl@$chead" '$st + {conflict_told: ((($st.conflict_told // []) + [$k]) | unique)}'
 done
+st_upd --arg at "${FLEET_NOW:-$(now)}" '$st + {last_tick_at: $at}'
 # The ready set of the PRs read now replaces theirs; a PR not read this tick (--team) keeps its entry, and so does a
 # ready one whose mergeable reads unknown now.
 st_upd --argjson read "$(printf '%s\n' ${read_now[@]+"${read_now[@]}"} | jq -Rsc 'split("\n") | map(select(. != ""))')" \

@@ -1,1 +1,1 @@
-Conflicting build-api/lead: https://github.com/acme/app-api/pull/214 conflicts after https://github.com/acme/app-web/pull/121. Lead told to bring it up to date with main and have the tester sign off again.
+Conflicting build-api/lead: https://github.com/acme/app-api/pull/214 conflicts after https://github.com/acme/app-web/pull/121 merged. Lead told to merge main into the PR and have the tester sign off again.
