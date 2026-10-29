@@ -83,13 +83,16 @@ It replaces your own [ui] lines in herdr's config and keeps a backup. (yes/no)".
 
 ## B. Status
 
-`$F/fleet status [<team>] [--problems] [--json] [--all]` recomputes health, writes it back and prints the status
-reply of `references/output.md`: the wake notices not shown yet, then the team table (a summary line, then Team,
-Issue as the key and a short title, PR as its full URL, State as one word, Needs you), then the merge queue when a PR
-is open (every ready PR in the order to merge them, as tick built it in the last minute, then `Not ready: …`), then the
-focus, the disk line (below `warn_free_gb`), the loop line and the skill line when they apply. When the user asks what
-is ready to merge, the queue is the answer. `status <team>` prints one row per agent; `--all` adds a line for other
-machines' claims (it reads Linear itself); `--json` is the bare agent array. Relay it verbatim.
+`$F/fleet status [<team>] [--problems] [--json]` recomputes health, writes it back and prints the status reply of
+`references/output.md`: the wake notices not shown yet, then the team table (a summary line, then Team, Machine, Issue
+as the key and a short title, PR as its full URL, State as one word, Needs you), then the merge queue when a PR is open
+(every ready PR in the order to merge them, as tick built it in the last minute, then `Not ready: …`), then the focus,
+the disk line (below `warn_free_gb`), the loop line and the skill line when they apply. Status shows every machine by
+default: one table with a Machine column and one queue, the other machines' teams read from the summaries they publish
+on Linear (a machine with no summary is one `Other machines:` line; with no Linear key the line says they are unknown).
+To narrow it ("just this machine", "only <machine>", "only DEV-1"), pick those rows out of the table you relay: there is
+no flag for it. When the user asks what is ready to merge, the queue is the answer. `status <team>` prints one row per
+agent; `--json` is the bare array of this machine's agents. Relay it verbatim.
 
 One `$F/fleet status` call per request and per wake, relayed as it is: no extra reads (wakes.log, panes, PR bodies)
 unless the output itself names a problem to act on. When it says `Skill <v> is running and <v> is installed`, tell the

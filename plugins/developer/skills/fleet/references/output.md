@@ -42,9 +42,9 @@ A severity is `**P0**` or `**P1**` in bold (they wait on you) and `P2` plain, wh
 ```
 <n> teams · <n> working · <n> idle · <n> waiting · <n> blocked · <n> parked · <n> done
 
-| Team | Issue | PR | State | Needs you |
-|---|---|---|---|---|
-| <team> | [DEV-1](url) <title> | <PR url> | <state> | <needs you> |
+| Team | Machine | Issue | PR | State | Needs you |
+|---|---|---|---|---|---|
+| <team> | <machine> | [DEV-1](url) <title> | <PR url> | <state> | <needs you> |
 
 Waiting on you: <team/role> **<P0|P1>**: <question>; …
 ```
@@ -54,17 +54,23 @@ working`; blocked is Stalled, Failed and Zombie together). One row per team that
 teams included. State is the worst agent state as one word: `Working`, `Idle`, `Waiting` (an agent that needs input;
 the Needs you cell says why), `Stalled`, `Failed`, `Zombie`, `Parked` or `Done`. Needs you is the team's most severe open escalation (`**P1**:
 <question>`), else what its state needs (`answer its prompt`, `ask for its done step`, `agent gone: respawn or
-retire`, `brief not delivered`, `merge the PR`, `retire the team`), else `-`. `Waiting on you` appears only while a P0
-or P1 is open. With no team: `No teams.`
+retire`, `brief not delivered`, `merge the PR` or the queue's `rebase after #N`, `retire the team`), else `-`. A
+parked team with an open PR the queue lists says what a Done team says; with no PR in the queue it is `-`. `Waiting on
+you` appears only while a P0 or P1 is open (this machine's escalations). With no team: `No teams.`
+
+One table for every machine: Machine is this machine's key on its own rows and the other machine's key on the rows read
+from its published summary (State then reads `Done`, or `Working (stale 3h)` when the summary is older than
+`lease_hours`). The rows whose PR is in the merge queue come first, in the queue's order, then the rest by team; there
+is no heading per machine.
 
 ### merge queue
 
 ```
 Merge in this order:
 
-| # | PR | Issue | Why this order | After merge |
-|---|---|---|---|---|
-| 1 | <PR url> | [DEV-1](url) <title> | <why> | <after merge> |
+| # | PR | Issue | Machine | Why this order | After merge |
+|---|---|---|---|---|---|
+| 1 | <PR url> | [DEV-1](url) <title> | <machine> | <why> | <after merge> |
 
 Not ready: <PR url> ✗ <what is missing> · ✗ <what else is missing>
 
@@ -77,10 +83,13 @@ local team pushed is ours even when no row names it yet. Ready means the tester'
 the PR is mergeable, not a draft and not held (a line that starts with `Do not merge` or `Hold:`). Why this order
 is the first rule that decides: a dependency (`blocks DEV-x`, `Part of DEV-x, slice n`, `base of #N`, `<repo> #N uses
 its contract`, `<repo> #N merges after it` for a `Merge after #N` line; the dependent says `needs <repo> #N`), then `fewest rebases` (shared files or migration numbers), then
-`oldest first`. After merge is `rebase after #N`, `renumber migration after #N` or `—`. With nothing ready the first
+`oldest first`; a ready PR whose files a not-ready PR also changes adds `; touches the same files as <repo> #N (not
+ready yet)`. One queue for every machine: another machine's PR is ready here when that machine's published summary says
+so and is not older than `lease_hours`, and its Machine says whose it is. After merge is `rebase after #N`, `renumber migration after #N` or `—`. With nothing ready the first
 line is `Merge in this order: none ready.` Not ready gives each missing check its own `✗`: `no sign-off`, `signed <sha7> ≠ head`,
 `CI pending`, `CI red`, `no CI checks`, `conflicting`, `mergeable unknown`, `draft`, `held`, `waits for <repo> #N`,
-`dependency cycle with #N`, `GitHub unreadable`, or `other machine` for another machine's fleet PR. The note appears
+`dependency cycle with #N`, `GitHub unreadable`, or `other machine (<its state>)` for another machine's fleet PR that is
+not ready. The note appears
 when two or more PRs are open and Linear could not be read.
 
 ### error
@@ -124,9 +133,12 @@ herdr Claude integration: not current (run herdr integration install claude).
 Skill <running> is running and <installed> is installed: restart this Claude Code session (or run /reload-plugins).
 ```
 
-`Other machines` (`--all`) comes from `linear.sh peers`; with no Linear key it is `Other machines: unknown (no Linear
-key).` The skill line appears when the plugin installed is newer than the scripts (and skill text) this session runs.
-A wake notice something already handled is not shown: its team retired, its PR or issue no longer the team's (next),
+`Other machines` comes from `linear.sh peers` and appears only for a machine that published no summary (an older plugin):
+`Other machines: DEV-1 on <machine> (heartbeat 3h ago, lapsed, claim only: no summary).` With no Linear key it is one line,
+`Other machines: unknown (no Linear key).`, and this machine's rows still print. The skill line appears when the plugin installed is newer than the scripts (and skill text) this session runs.
+A `Ready to merge` notice a later notice of the same PR overtook is not shown either (the PR conflicts or merged since,
+or its head moved to another sha), nor a `Conflicting` one that a later `Ready to merge` follows. A wake notice something
+already handled is not shown: its team retired, its PR or issue no longer the team's (next),
 its escalation closed (resolve), its version switch approved (`version_ok`), its row no longer Failed.
 
 `--problems` keeps only the teams that need someone (`No problems.` when none does). `status <team>`:
@@ -179,8 +191,10 @@ Told <team/role>: "<first 60 characters>" (delivered)
 ```
 
 `(sent)` with `--no-confirm`; `(queued)` when the agent was working at the send and still is (Claude Code holds the
-text until its turn ends; no enter is pressed). Not delivered: the error form, `tell: not delivered to <target>: <why>.
-<next step>.`
+text until its turn ends; no enter is pressed). A team name with no `/` is its lead: `tell build-x "..."` is `tell
+build-x/lead "..."`. Not delivered: the error form, `tell: not delivered to <target>: <why>. <next step>.`; the next step
+is `Respawn it (fleet respawn <target>) or retire it` only for an agent the registry has, and `No such agent in the
+registry or herdr; run fleet status` for any other.
 
 ### next
 
@@ -261,7 +275,9 @@ Oldest first; a resolved one ends `(resolved)`. With none: `No escalations.`
 Resolved <id> for <team/role>: <decision>.
 ```
 
-`no note` when `--note` was not given.
+`no note` when `--note` was not given. `<team/role>` may be a team name: the escalation `<id>` is closed on the team's
+agent that has it open (the lead first); an id open on more than one agent is an error that names them. An id is
+`<timestamp>-<n>`, n counted over every escalation of that second in the registry, so it is unique.
 
 ### prime
 
@@ -396,13 +412,16 @@ Merged <PR url>. Next: <move <team> to its next issue, or retire it|<team> parke
 ### wake pr_conflicting
 
 ```
-Conflicting <team>/lead: <PR url> conflicts after <PR url>. Lead told to bring it up to date with main and have the tester sign off again.
+Conflicting <team>/lead: <PR url> conflicts after <PR url> merged. Lead told to merge main into the PR and have the tester sign off again.
 ```
 
-A PR that was ready and conflicts now: it leaves the queue, its team is unparked first when parked, and its lead is
-told once per (PR, head). With no merge seen since the last tick it says `conflicts with main`. When the unpark is
-refused: `Unpark refused (<why>): unpark it when a slot frees, then tell its lead.` When the lead could not be told:
-`Lead not reached: tell it to bring it up to date with main and have the tester sign off again.`
+A PR that was ready (or signed off) and conflicts now: it leaves the queue. A team that is parked, or has a Done or exited
+agent, is brought back first (`catchup.sh`); its lead is told once per (PR, head) to merge `origin/main` into the PR (a
+merge commit, a plain push) and have the tester sign off again. The PRs named are those merged into its base since the
+last tick that changed files it also changes; with none it says `conflicts with main`. When the team cannot come back (a
+cap is full): `Catch-up refused (<why>): bring the team back when a slot frees, then tell its lead to merge main into the
+PR.` When the lead could not be told: `Lead not reached: tell it to merge main into the PR and have the tester sign off
+again.` After two catch-ups of one PR a P1 escalation is raised instead.
 
 ### wake pr_opened
 
