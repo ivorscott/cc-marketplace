@@ -475,7 +475,7 @@ case "$cmd" in
   orchestrator)
     # The Orchestrator registers its own pane, once per session: the loop then knows someone follows wakes.log, and
     # reads its transcript for the no-reply alert. The row is replaced whole, so an older session's pane and
-    # transcript never linger; only the standing goal `target_teams` ("keep N teams running") carries over, so a
+    # transcript never linger; only the standing goal `target_teams` ("keep N teams running") and `run_active` (fleet run) carry over, so a
     # new session or a compaction keeps it. `cwd` is where the session runs: the morning report goes to its
     # reports/. It prints the row plus `wakes`, the wakes.log to follow (created mode 600 when missing).
     [ "${1:-}" = here ] || die "usage: orchestrator here [--transcript PATH]"; shift
@@ -493,10 +493,10 @@ case "$cmd" in
     # newest file is this session's when one Claude Code session runs in the directory).
     if [ -z "$otr" ]; then otr="$(ls -t "$(transcript_dir_for "$PWD")"/*.jsonl 2>/dev/null | head -n 1 || true)"; fi
     update --arg r "$oref" --arg p "$opane" --arg tr "$otr" --arg m "$(machine_key 2>/dev/null || true)" --arg cwd "$PWD" --arg t "$(now)" \
-      '(.agents.orchestrator.target_teams // null) as $goal
+      '(.agents.orchestrator.target_teams // null) as $goal | (.agents.orchestrator.run_active // null) as $ra
        | .agents.orchestrator = {name: "orchestrator", team: "orchestrator", tier: "Orchestrator", status: "Working", herdr_ref: $r, pane: $p,
          machine: $m, cwd: $cwd, at: $t, started: $t, updated_at: $t, discovered: [], escalations: []} + (if $tr != "" then {transcript: $tr} else {} end)
-         + (if $goal != null then {target_teams: $goal} else {} end)'
+         + (if $goal != null then {target_teams: $goal} else {} end) + (if $ra != null then {run_active: $ra} else {} end)'
     (umask 077; touch "$FLEET_STATE_DIR/wakes.log")
     "$0" get orchestrator | jq --arg w "$FLEET_STATE_DIR/wakes.log" '. + {wakes: $w}'
     ;;

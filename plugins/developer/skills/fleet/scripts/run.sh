@@ -4,12 +4,19 @@
 #
 #   run.sh init     ask the profile questions, one at a time, each with a recommended answer; save the answers
 #   run.sh show     print the saved profile, with the defaults for what is not saved
+#   run.sh start    read the profile and start the loop, asking nothing: register this pane as the Orchestrator, set
+#                   target_teams to the profile's teams, install the launchd loop when it is not installed (not in a
+#                   sandbox or a test), and print the loop's rules, made from the profile, for the Orchestrator to follow
+#   run.sh stop     stop keeping teams running (target_teams 0); running teams, their PRs and the loop's ticks carry on
+#   run.sh status   one line: whether the loop runs, the target, the teams live now
 #
 # init is the only interactive command. Enter keeps the recommended answer (the saved one on a re-run). Without a
 # terminal on stdin it refuses and prints the questions rather than guess; FLEET_RUN_ANSWERS=<file> reads one answer
 # per line from a file instead (an empty line keeps the default), for scripts and tests. It writes only the [run] table
 # and two top-level keys, max_teams (to match the team count) and installs; everything else in config.toml, comments
-# included, stays as it is. References: references/output.md, config.example.toml.
+# included, stays as it is. The rules live in the profile, never in the Orchestrator's memory: after a context compaction
+# or in a fresh session, `fleet run show` (or `run.sh start` again) gives them back. References: references/output.md,
+# config.example.toml.
 # Command: Set up the self-driving loop once, then run it with no questions · e.g. fleet run init
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
@@ -114,8 +121,58 @@ cmd_show() {
   printf 'human-only: %s\n' "$HUMAN_ONLY"
 }
 
+# have_profile: init has been run (the [run] table holds teams)
+have_profile() { [ -n "$(run_val teams)" ]; }
+
+cmd_start() {
+  have_profile || die "no run profile saved" "Run fleet run init once"
+  local teams work order fill pol margin mpush spush rep stop reg sched
+  teams="$(run_int teams 3)"; work="$(shown work "$(run_str work anything)")"; order="$(run_str order critical-path)"; fill="$(run_str fill whole-first)"
+  pol="$(run_str install_policy allow)"; margin="$(run_int usage_margin 10)"; mpush="$(run_int merge_push_mins 15)"; spush="$(run_int status_mins 10)"
+  rep="$(run_str report_at 08:00)"; stop="$(run_str stop never)"
+  reg="$FLEET_SCRIPTS/registry.sh"
+  if [ -n "${HERDR_PANE_ID:-}" ]; then "$reg" orchestrator here >/dev/null || die "could not register this pane as the Orchestrator"
+  elif [ -z "$("$reg" get orchestrator 2>/dev/null | jq -r '.herdr_ref // ""')" ]; then
+    die "no Orchestrator is registered and this is not a herdr pane" "Run fleet run start in the Orchestrator's herdr pane"
+  fi
+  "$reg" set orchestrator target_teams="$teams" run_active=true >/dev/null
+  # The launchd loop runs tick with no model; install it when it is not there (never in a sandbox or a test).
+  sched="$("$FLEET_SCRIPTS/schedule.sh" status 2>/dev/null | head -n 1)"
+  case "$sched" in
+    *"not installed"*) if [ -n "${FLEET_SANDBOX:-}" ] || [ "${FLEET_TEST:-}" = 1 ]; then sched="not installed (not touched here)"
+      else "$FLEET_SCRIPTS/schedule.sh" install >/dev/null 2>&1 && sched="installed" || sched="not installed: run fleet schedule install"; fi ;;
+  esac
+  render_line run_started teams="$teams" work="$work" order="$order" loop="${sched:-unknown}"
+  cat <<EOF
+Follow this until fleet run stop. After a context compaction, or in a fresh session, run fleet run show and follow it again.
+- Keep $teams teams running. On a slot_free wake, pick the next issue (work: $work; order: $order; fill: $fill) and boot it. Never ask which one.
+- Retire a team at once when its PR merges (pr_merged). Bump a client after an API merge where the repo's rules say so, without asking.
+- Installs: $pol. The human keeps $HUMAN_ONLY: never approve them; park that part, push once, list it in the morning report.
+- A lead's escalation is decided by you: take the recommended option, tell the lead, resolve it with a note, comment the decision on the issue, record it.
+- Open no question box. The only wait is a PR waiting to merge. Keep one wake monitor armed and re-arm it silently.
+- Say only what the owner can act on: a status table when it changes (every $spush minutes at most), the ready-to-merge push (every $mpush minutes at most), a failure, a usage limit, the morning report at $rep. Never your own housekeeping.
+- Usage guard: leave $margin% of the plan's limit unused where it can be read; on a usage_limit wake boot nothing until the backoff ends.
+- Stop: $stop.
+EOF
+}
+cmd_stop() {
+  "$FLEET_SCRIPTS/registry.sh" get orchestrator >/dev/null 2>&1 || die "no Orchestrator is registered"
+  "$FLEET_SCRIPTS/registry.sh" set orchestrator target_teams=0 run_active= >/dev/null
+  render_line run_stopped
+}
+cmd_status() {
+  local o act tgt live
+  o="$("$FLEET_SCRIPTS/registry.sh" get orchestrator 2>/dev/null || echo '{}')"
+  act="$(jq -r 'if (.run_active // "") == "true" then "running" else "not running" end' <<<"$o")"
+  tgt="$(jq -r '.target_teams // 0' <<<"$o")"; live="$(live_team_count)"
+  render_line run_status state="$act" target="$tgt" live="$live" profile="$(have_profile && echo saved || echo none)"
+}
+
 case "${1:-}" in
   init) cmd_init ;;
+  start) cmd_start ;;
+  stop) cmd_stop ;;
+  status) cmd_status ;;
   show) cmd_show ;;
   "" | -h | --help | help) usage; [ -n "${1:-}" ] ;;
   *) die "unknown run command: $1" "Run fleet help run" ;;

@@ -391,9 +391,61 @@ Done."
   v420_nolinear; unset FLEET_GH DF_GB TZ
 }
 
+v420_run_start() { # fleet run start reads the profile and asks nothing; the stop condition ends it; the rules come back from the profile
+  v420_state runstart; export TZ=UTC DF_GB=100; unset HERDR_PANE_ID
+  local C="$FLEET_CONFIG_DIR/config.toml" out rc
+  "$REG" add '{"name":"orchestrator","team":"orchestrator","tier":"Orchestrator","status":"Working","herdr_ref":"om","pane":"pom"}' >/dev/null
+  out="$("$SCRIPTS/run.sh" start </dev/null 2>&1)"; rc=$?
+  eq "v420 run start: without a profile it says to run init, and starts nothing" "$rc:$(printf '%s' "$out" | grep -c 'Run fleet run init once'):$("$REG" get orchestrator | jq -r '.run_active // "none"')" "1:1:none"
+  printf '2\nparent DEV-9\n\n\nallow\n\n20\n\n07:30\n10:00\n' >"$T/v420-answers"
+  FLEET_RUN_ANSWERS="$T/v420-answers" "$SCRIPTS/run.sh" init >/dev/null 2>&1
+  out="$("$SCRIPTS/run.sh" start </dev/null 2>&1)"; rc=$?
+  eq "v420 run start: with a profile it asks nothing and says what it keeps running" "$rc:$(printf '%s' "$out" | head -n 1):$(printf '%s' "$out" | grep -c '?')" "0:Run started: keeping 2 teams on parent DEV-9 work, critical-path order. Loop: not installed (not touched here).:0"
+  eq "v420 run start: the Orchestrator row holds the target and the active mark" "$("$REG" get orchestrator | jq -r '[.target_teams, .run_active] | join(",")')" "2,true"
+  eq "v420 run start: the rules it prints come from the profile (teams, work, intervals, report time, stop)" \
+    "$(printf '%s' "$out" | grep -c 'Keep 2 teams running.*work: parent DEV-9\|every 10 minutes at most\|every 20 minutes at most\|morning report at 07:30\|^- Stop: 10:00')" 3
+  eq "v420 run start: and the human-only list is in them" "$(printf '%s' "$out" | grep -c 'merging, production, infrastructure applies, secrets and branch protection')" 1
+  eq "v420 run status: running, with the target" "$("$SCRIPTS/run.sh" status)" "Run: running. Target 2 teams, 0 live. Profile: saved."
+  (cd "$T" && HERDR_PANE_ID=pt "$REG" orchestrator here >/dev/null 2>&1) || true
+  eq "v420 run start: after a context compaction run show gives the rules back, and the mark survives a re-registration" "$("$SCRIPTS/run.sh" show | head -n 1):$("$REG" get orchestrator | jq -r .run_active)" "teams: 2:true"
+  FLEET_NOW=2026-10-29T09:59:00Z "$SCRIPTS/tick.sh" >/dev/null 2>&1
+  eq "v420 run start: before the stop time it keeps going" "$("$REG" get orchestrator | jq -r '[.target_teams, .run_active] | join(",")')" "2,true"
+  FLEET_NOW=2026-10-29T10:00:00Z "$SCRIPTS/tick.sh" >/dev/null 2>&1
+  eq "v420 run start: at the stop time it ends quietly: target 0, no longer active" "$("$REG" get orchestrator | jq -r '[.target_teams, (.run_active // "")] | join(",")')" "0,"
+  "$SCRIPTS/run.sh" start >/dev/null 2>&1; out="$("$SCRIPTS/run.sh" stop 2>&1)"
+  eq "v420 run stop: no new teams, and it says so" "$out:$("$REG" get orchestrator | jq -r .target_teams)" "Run stopped: no new teams start; running teams carry on.:0"
+  unset TZ DF_GB
+}
+
+v420_decide() { # a lead's escalation is decided, recorded and reported without a human; the human's own is parked
+  v420_state decide; export FLEET_NOW=2026-10-29T10:00:00Z
+  v420_linear
+  jq '.issues[0].identifier = "DEV-1"' "$LINEAR_DB" >/dev/null
+  "$REG" add '{"name":"dc-a/lead","team":"dc-a","tier":"Lead","status":"Working","herdr_ref":"dc-a-lead","pane":"p1","issue":"DEV-1"}' >/dev/null; echo working >"$AS/dc-a-lead"
+  "$REG" escalate dc-a/lead P1 "which database?" "use postgres" sqlite >/dev/null 2>&1
+  local id out; id="$("$REG" escalations --open | jq -r '.[0].id')"; : >"$HERDR_LOG"
+  out="$("$SCRIPTS/decide.sh" dc-a "$id" 2>&1)"
+  eq "v420 decide: the recommended option is taken and said" "$out" "Decided dc-a/lead: which database? → use postgres."
+  gold decide "$out"
+  eq "v420 decide: the lead is told, the escalation resolved with the decision, the note kept" \
+    "$(grep -c 'Decision (taken for the owner, who can overrule it on the issue): use postgres' "$HERDR_LOG"):$("$REG" escalations --open | jq length):$("$REG" escalations | jq -r '.[0].resolution'):$("$REG" get dc-a/lead | jq -r '[.notes[] | select(.kind == "decision") | .message] | join("|")')" "1:0:use postgres:which database? → use postgres"
+  eq "v420 decide: it is commented on the issue, marked as the fleet's" "$(jq -r '.issues[0].comments[0].body' "$LINEAR_DB" | grep -c '^\[fleet\] Decision taken on the owner.s behalf: which database? → use postgres')" 1
+  eq "v420 decide: and the morning report lists it under Decisions taken" "$(TZ=UTC "$SCRIPTS/metrics.sh" --morning 2>/dev/null | awk '/^## Decisions taken/ {on = 1; next} /^## / {on = 0} on' | grep -c 'dc-a/lead: which database? → use postgres')" 1
+  "$REG" escalate dc-a/lead P1 "may I merge the PR to main myself?" yes no >/dev/null 2>&1
+  id="$("$REG" escalations --open | jq -r '.[0].id')"; : >"$HERDR_LOG"
+  out="$("$SCRIPTS/decide.sh" dc-a/lead "$id" 2>&1)"
+  eq "v420 decide: merging is the human's: parked, not approved, with one push" \
+    "$(printf '%s' "$out" | grep -c '^Parked dc-a/lead: .* Left for the owner.$'):$(grep -c '^notification show' "$HERDR_LOG"):$(grep -c 'yes' "$HERDR_LOG"):$("$REG" get dc-a/lead | jq -r '[.notes[] | select(.kind == "parked")] | length')" "1:1:0:1"
+  eq "v420 decide: the escalation is closed so nothing waits" "$("$REG" escalations --open | jq length)" 0
+  "$REG" escalate dc-a/lead P0 "something is on fire" >/dev/null 2>&1; id="$("$REG" escalations --open | jq -r '.[0].id')"
+  eq "v420 decide: a P0 is parked too" "$("$SCRIPTS/decide.sh" dc-a "$id" 2>&1 | grep -c '^Parked ')" 1
+  eq "v420 decide: the report lists what was parked under Needs your eyes" "$(TZ=UTC "$SCRIPTS/metrics.sh" --morning 2>/dev/null | awk '/^## Needs your eyes/ {on = 1; next} /^## / {on = 0} on' | grep -c '^- parked for you (dc-a/lead)')" 2
+  v420_nolinear; unset FLEET_NOW
+}
+
 v420_smoke() { # the critical cases, CI (V420_ONLY="name name" runs just those, to debug one)
   local f
-  for f in v420_redact_gate v420_run_init v420_run_collide v420_verify v420_claims v420_comments v420_heartbeat_name v420_overlap v420_usage v420_status_changes v420_failure_push v420_quiet v420_fix v420_report; do
+  for f in v420_redact_gate v420_run_init v420_run_collide v420_verify v420_claims v420_comments v420_heartbeat_name v420_overlap v420_usage v420_status_changes v420_failure_push v420_quiet v420_fix v420_report v420_run_start v420_decide; do
     case " ${V420_ONLY:-$f} " in *" $f "*) "$f" ;; esac
   done
 }

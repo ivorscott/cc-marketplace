@@ -78,7 +78,7 @@ chmod +x "$root/bin/herdr" "$root/bin/gh" "$root/bin/curl"
 [ $# -gt 0 ] || set -- "${SHELL:-/bin/bash}"
 rc=0
 unsets=(); for v in $(env | sed -n 's/^\(AWS_[A-Za-z0-9_]*\)=.*/\1/p'); do unsets+=(-u "$v"); done
-env -u HERDR_ENV -u FLEET_SESSION -u LINEAR_API_KEY -u FLEET_ROLE -u FLEET_NAME -u FLEET_TEAM -u FLEET_WORKTREE \
+env -u HERDR_ENV -u HERDR_PANE_ID -u FLEET_SESSION -u LINEAR_API_KEY -u FLEET_ROLE -u FLEET_NAME -u FLEET_TEAM -u FLEET_WORKTREE \
   -u FLEET_REGISTRY -u FLEET_INBOX -u FLEET_WORKTREES -u FLEET_GH -u KUBECONFIG ${unsets[@]+"${unsets[@]}"} \
   FLEET_SANDBOX="$root" FLEET_STATE_DIR="$state_dir" FLEET_CONFIG_DIR="$config_dir" FLEET_SESSION=fleet-sandbox HOME="$root/home" \
   F="$here" PATH="$root/bin:$PATH" "$@" || rc=$?

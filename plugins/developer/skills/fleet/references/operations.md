@@ -288,3 +288,21 @@ choice (Claude's trust dialog defaults to "No, exit").
 
 If `~/.config/fleet/sink.md` exists, follow it after every route that changed the registry: push only
 `$F/registry.sh unsynced`, then `$F/registry.sh synced <names…>`. A sink failure is a one-line warning.
+
+## Fleet run
+
+`fleet run` (SKILL.md, R) is the self-driving loop. `run init` writes the `[run]` profile (and `max_teams`, `installs`) to
+`config.toml`; `run start` registers the Orchestrator, sets `target_teams` and `run_active` on its row and prints the rules; tick does
+the deterministic parts so they survive a compaction:
+
+- `slot_free` wakes while fewer teams run than the target, and not during a usage backoff; the Orchestrator picks and boots.
+- Escalations: `fleet decide` (recommended option, recorded, commented; what is the human's is parked with one push).
+- `status_changed`: the status table or the ready-to-merge set changed, at most every `status_mins`; the ready push at most every
+  `merge_push_mins`, in merge order. A quiet tick prints nothing and wakes no one.
+- `usage_limit`: agents hit the plan's rate or usage limit; backoff 15 minutes doubling to 4 hours; no boot, no `slot_free`;
+  once per episode. The profile's `usage_margin` is kept for when a usage reading exists; today the loop reacts to the limit errors.
+- Overlap: when a planner is Done, `overlap.sh` compares its `Files:` list with the open PRs and live teams of the same repo and
+  tick tells the lead. Comments on a live team's issue reach its lead. Deferred items in a PR body become linked issues.
+- The morning report at `report_at`; the Verify expiry is applied after it. The profile's `stop` ends the run quietly.
+- A fix on an open PR (conflict, red CI, an unsigned head) goes over `max_teams` and `teams_per_repo` and is counted apart.
+- `overnight` is the older switch; `fleet run` supersedes it and both keep working.

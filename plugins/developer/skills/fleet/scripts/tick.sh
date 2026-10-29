@@ -755,6 +755,28 @@ if [ -z "$team" ]; then
   fi
 fi
 
+# --- fleet run: when to stop ---------------------------------------------------------------------------------------
+# While fleet run is active (run_active on the orchestrator row) the profile's `stop` ends it quietly: at an HH:MM time, or
+# "no-work" once no team is live and no unblocked issue is left (the last candidates read). Ending it sets target_teams 0
+# and clears run_active; running teams and their PRs carry on, and the morning report still comes.
+if [ -z "$team" ] && [ "$("$registry" get orchestrator 2>/dev/null | jq -r '.run_active // ""' 2>/dev/null || true)" = true ]; then
+  rstop="$(run_str stop never)"; rdo=false
+  case "$rstop" in
+    [0-2][0-9]:[0-5][0-9])
+      [ $((10#$(local_time "$now_epoch" %H) * 60 + 10#$(local_time "$now_epoch" %M))) -lt $((10#${rstop%%:*} * 60 + 10#${rstop##*:})) ] || rdo=true ;;
+    no-work)
+      if [ "$(live_team_count)" = 0 ]; then
+        rleft="$(jq -r --argjson held "$("$registry" list | jq -c '[.[] | select(.status != "Retired" and (.issue // "") != "") | .issue] | unique')" \
+          '(.cand_cache // null) | if . == null then "?" else ([.ids[] | select(. as $i | $held | index($i) | not)] | length | tostring) end' "$STATE_FILE")"
+        [ "$rleft" != 0 ] || rdo=true
+      fi ;;
+  esac
+  if $rdo; then
+    "$registry" set orchestrator target_teams=0 run_active= >/dev/null 2>&1 || warn "could not end fleet run"
+    st_upd --argjson n "$now_epoch" '$st + {run_stopped_at: $n}'
+  fi
+fi
+
 # --- repos without a team ---------------------------------------------------------------------
 # A parked team still covers its repo.
 live="$("$registry" list | jq -c '[.[] | select(.tier != "Orchestrator" and (.status | IN("Done", "Retired") | not)) | .repo // ""]')"

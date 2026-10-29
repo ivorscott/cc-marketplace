@@ -4,7 +4,9 @@
 # (registry.sh note <team>/lead deferred ...), which is where the morning report's "Needs your eyes" reads it.
 #
 #   defer.sh <team> [--pr URL]          read the PR body and file each item not filed yet
-#   defer.sh <team> --item TEXT [--pr URL]   file one item the Orchestrator found elsewhere (a review comment, a report)
+#   defer.sh <team> --item TEXT [--pr URL] [--from ISSUE]   file one item the Orchestrator found elsewhere (a review comment, a
+#                                       report); --from files it in the Linear team of that issue, for a gap in something another
+#                                       repo owns
 #
 # The PR body lists them under a line `Deferred:`, `Left for the owner:`, `For the owner:` or `Needs the owner:` (a heading or
 # bold is fine), as list lines (`- text`) up to the first line that is not one. Each is filed once: an item whose text a
@@ -18,13 +20,14 @@ set -euo pipefail
 [ -z "${FLEET_ROLE:-}" ] || die "defer is the Orchestrator's; an agent (FLEET_ROLE=$FLEET_ROLE) may not run it"
 registry="$FLEET_SCRIPTS/registry.sh"
 
-usage="usage: defer.sh <team> [--pr URL] [--item TEXT]"
+usage="usage: defer.sh <team> [--pr URL] [--item TEXT] [--from ISSUE]"
 team="${1:?$usage}"; shift
-pr=""; item=""
+pr=""; item=""; from=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --pr) pr="${2:?--pr needs a URL}"; shift 2 ;;
     --item) item="${2:?--item needs text}"; shift 2 ;;
+    --from) from="${2:?--from needs an issue}"; shift 2 ;;
     *) die "unknown option: $1" "$usage" ;;
   esac
 done
@@ -47,9 +50,10 @@ else
 fi
 [ "${#items[@]}" -gt 0 ] || exit 0
 
+src="${from:-$issue}"
 have_key=false; why="no Linear key"
 if "$FLEET_SCRIPTS/linear.sh" has-key >/dev/null 2>&1; then
-  if [ "$(linear_writes)" != off ] && [ -n "$issue" ]; then have_key=true; else why="Linear writes are off or the team has no issue"; fi
+  if [ "$(linear_writes)" != off ] && [ -n "$src" ]; then have_key=true; else why="Linear writes are off or the team has no issue"; fi
 fi
 for it in "${items[@]}"; do
   key="${it:0:80}"
@@ -59,7 +63,7 @@ for it in "${items[@]}"; do
     case "$prev" in *"not filed:"*) $have_key || continue ;; *) continue ;; esac
   fi
   if $have_key; then
-    if out="$("$FLEET_SCRIPTS/linear.sh" create-issue "$issue" "Follow-up from $issue: ${it:0:70}" "$it
+    if out="$("$FLEET_SCRIPTS/linear.sh" create-issue "$src" "Follow-up from $issue: ${it:0:70}" "$it
 
 Left for the owner by the team on $issue.${pr:+ PR: $pr}" ${pr:+--link "$pr"} 2>"$FLEET_STATE_DIR/defer.err")"; then
       id="$(jq -r .identifier <<<"$out")"; url="$(jq -r .url <<<"$out")"

@@ -402,6 +402,30 @@ Run profile saved: <n> teams (<k> can run), installs <allow|ask>. Written to <co
 `<k>` is how many can really run: one team per repo per machine, so at most `teams_per_repo` per repo in `repos`. `fleet run show`
 prints the saved profile, one `key: value` line per answer (the defaults for what is not saved), then `human-only: <list>`.
 
+`fleet run start` prints, and then the rules to follow, made from the profile:
+
+```
+Run started: keeping <n> teams on <work> work, <order> order. Loop: <installed|not installed ...|healthy line>.
+Follow this until fleet run stop. After a context compaction, or in a fresh session, run fleet run show and follow it again.
+- Keep <n> teams running. ...
+```
+
+`fleet run stop` prints `Run stopped: no new teams start; running teams carry on.` and `fleet run status` prints
+`Run: <running|not running>. Target <n> teams, <k> live. Profile: <saved|none>.`
+
+### decide
+
+```
+Decided <team/lead>: <question> → <option>.
+Parked <team/lead>: <question>. Left for the owner.
+```
+
+`fleet decide <team> <id>` is how the Orchestrator answers an escalation under `fleet run`: the first (recommended) option is taken,
+the lead is told, the escalation resolved with it, the decision noted (the morning report lists it under Decisions taken) and
+commented on the issue as `[fleet] Decision taken on the owner's behalf: ... Reply on this issue to overrule it.` A P0, and a
+question about merging, production, infrastructure applies, secrets or branch protection, is parked instead: the lead is told to
+set it aside and carry on, one push goes out, and the morning report lists it under Needs your eyes. Nothing human-only is approved.
+
 ### overlap
 
 ```
