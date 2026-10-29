@@ -128,8 +128,8 @@ v413_installs() {
 }
 
 v413_version() {
-  eq "v413 version: plugin.json reads 4.1.3, and the README has its What changed section" \
-    "$(jq -r .version "$SCRIPTS/../../../.claude-plugin/plugin.json"):$(grep -c '^## What changed in 4.1.3' "$SCRIPTS/../README.md")" "4.1.3:1"
+  eq "v413 version: plugin.json reads 4.1.4, and the README has its What changed section" \
+    "$(jq -r .version "$SCRIPTS/../../../.claude-plugin/plugin.json"):$(grep -c '^## What changed in 4.1.4' "$SCRIPTS/../README.md")" "4.1.4:1"
 }
 
 v413_smoke() { # the critical cases, CI

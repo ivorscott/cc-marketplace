@@ -423,7 +423,7 @@ ensure_label() {
 # write_heartbeat: rewrite the heartbeat= line of this machine's label to now (one mutation, none when the line already
 # says now). Sets HB_AT and returns 0; returns 2 when the machine has no label yet. Claim, takeover and heartbeat share it.
 write_heartbeat() {
-  local mine found lid cur sm
+  local mine found lid cur sm base room err
   mine="$(machine_label)"
   found="$(q_labels_named "$mine")" || return 1
   lid="$(printf '%s' "$found" | jq -r '.[0].id // empty')"
@@ -431,11 +431,24 @@ write_heartbeat() {
   HB_AT="${FLEET_NOW:-$(now)}"; OWN_LID="$lid"
   # A description an older version wrote still holds the full machine id: hashed here too, or nothing is written.
   cur="$(legacy_ids_hashed "$(printf '%s' "$found" | jq -r '.[0].description // ""')")" || return 1
-  # The summary line (fleet_summary) rides on the same write: one mutation, and none when neither line changed.
-  sm="$(fleet_summary 2>/dev/null)" || sm=""; [ "$sm" != "[]" ] || sm=""
+  # The summary line (fleet_summary) rides on the same write: one mutation, and none when neither line changed. It is fitted
+  # to what is left under DESC_CAP once the other lines are in (whole teams dropped, never a cut line).
+  base="$(describe_with_summary "$(describe_with_hb "$(describe_with_owner "$cur" "$(owner_name)")" "$HB_AT")" "")"
+  room=$((DESC_CAP - ${#base} - 10)); [ "$room" -gt 2 ] || room=2
+  sm="$(fleet_summary "$room" 2>/dev/null)" || sm=""; [ "$sm" != "[]" ] || sm=""
   if [ "$(printf '%s\n' "$cur" | sed -n 's/^heartbeat=//p' | head -n 1)" != "$HB_AT" ] ||
     [ "$(printf '%s\n' "$cur" | sed -n 's/^summary=//p' | head -n 1)" != "$sm" ]; then
-    m_label_describe "$lid" "$(describe_with_summary "$(describe_with_hb "$(describe_with_owner "$cur" "$(owner_name)")" "$HB_AT")" "$sm")" || return 1
+    # Linear can refuse a long label description ("Argument Validation Error"). A refused write is tried again without the
+    # summary, and says so on stderr: the heartbeat always lands, whatever the limit is.
+    err="${TMPDIR:-/tmp}/fleet-hb.$$"
+    if ! (m_label_describe "$lid" "$(describe_with_summary "$base" "$sm")") 2>"$err"; then
+      if [ -n "$sm" ] && grep -q 'Argument Validation Error' "$err"; then
+        rm -f "$err"
+        warn "heartbeat written without the team summary: Linear refused the label description with it"
+        (m_label_describe "$lid" "$base") || { warn "heartbeat not written: Linear refused the label description"; return 1; }
+      else cat "$err" >&2; rm -f "$err"; warn "heartbeat not written: Linear refused the write"; return 1; fi
+    fi
+    rm -f "$err"
   fi
 }
 

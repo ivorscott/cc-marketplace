@@ -60,6 +60,10 @@ case "$op" in
     save "$new"
     ok "$(printf '%s' "$new" | jq -c '{issueLabelCreate: {success: true, issueLabel: {id: .labels[-1].id}}}')" ;;
   IssueLabelUpdate)
+    # LINEAR_STUB_DESC_MAX=<n>: a description longer than n characters is refused, as Linear can
+    if [ -n "${LINEAR_STUB_DESC_MAX:-}" ] && [ "$(printf '%s' "$vars" | jq -r '.input.description | length')" -gt "$LINEAR_STUB_DESC_MAX" ]; then
+      echo '{"errors":[{"message":"Argument Validation Error"}]}'; exit 0
+    fi
     save "$(db --argjson v "$vars" '.labels |= map(if .id == $v.id then .description = $v.input.description else . end)')"
     ok '{"issueLabelUpdate": {"success": true}}' ;;
   IssueUpdate)

@@ -569,15 +569,19 @@ fleet_queue() {
 # fleet_summary: this machine's teams as one compact JSON array, the line `summary=` of its Linear label description
 # (linear.sh write_heartbeat), which is how another machine's `fleet status` sees them: [{t: team, i: issue key, pr: PR
 # URL, s: state word, n: what it needs from you, r: true when the merge queue lists its PR as ready}], the 12 teams
-# changed last, and fewer when the line would pass 1500 characters (the label description has a size limit that is
-# UNVERIFIED). Built from the registry and the queue tick kept (never from GitHub); keys with no value are left out.
+# changed last, and fewer when the line would pass the cap: $1 characters, else SUMMARY_CAP. Whole entries are dropped,
+# never shortened, so the line stays a valid JSON array that 4.1.3 machines parse. linear.sh write_heartbeat gives the
+# room left under DESC_CAP, the label description limit (bounded, not confirmed). Built from the registry and the queue tick kept (never from GitHub); keys with no value are left out.
 SUMMARY_CAP=1500
+# shellcheck disable=SC2034  # read by linear.sh write_heartbeat
+DESC_CAP="${FLEET_DESC_CAP:-255}"
 fleet_summary() {
+  local cap="${1:-$SUMMARY_CAP}"
   local rows esc q='null' f; f="$(queue_file)"
   rows="$("$FLEET_SCRIPTS/registry.sh" list)" || return 1
   esc="$("$FLEET_SCRIPTS/registry.sh" escalations --open --not-retired 2>/dev/null)" || esc='[]'
   [ ! -s "$f" ] || q="$(jq -c '.queue // null' "$f" 2>/dev/null)" || q='null'
-  jq -nc --slurpfile rows <(printf '%s' "$rows") --slurpfile esc <(printf '%s' "$esc") --argjson q "$q" --argjson cap "$SUMMARY_CAP" "$RENDER_DEFS"'
+  jq -nc --slurpfile rows <(printf '%s' "$rows") --slurpfile esc <(printf '%s' "$esc") --argjson q "$q" --argjson cap "$cap" "$RENDER_DEFS"'
     def fit: if length > 0 and (tojson | length) > $cap then .[:-1] | fit else . end;
     [$rows[0][] | select(.tier != "Orchestrator" and .status != "Retired" and (.team // "") != "")]
     | group_by(.team) | map(. as $g | $g[0].team as $t
