@@ -326,62 +326,102 @@ directory as the input file.
 
 ### `/fleet` — Agent Fleet Orchestrator
 
-Turns the session you're in into an **Orchestrator** that commands teams of coding agents
-running in [herdr](https://herdr.dev). One command boots a whole team: a lead plus
-workers in split panes, with a git worktree per writer. Every agent stays visible, and a
-registry tracks who is doing what. Stalled or dead agents get flagged, and each finished
-team turns into lessons for the next one.
+`/fleet` turns a Claude Code session into an **Orchestrator** that boots teams of coding agents (a lead, a planner, a
+builder and a tester) in [herdr](https://herdr.dev) panes, each writer on its own git worktree. In the `build` template every team ends in a pull
+request that a tester has checked at an exact commit; `review` (read-only reviewers) and `research` (a researcher, ending
+in one study guide) are smaller teams that open no PR. You are needed at the merge, and when an agent escalates a decision.
 
-herdr does the terminal mechanics. `/fleet` adds what an orchestrator needs on top: tiers,
-team templates, a registry, health beyond `idle`, escalation, a concurrency cap and debriefs.
+**For you if** you want several agents working in parallel on one or more repos, through a tracker and PRs.
+**Not for you if** you run one-off tasks in a single session, or your work doesn't go through PRs.
 
-**Usage:**
+**Requirements:**
+
+- [herdr](https://herdr.dev) 0.9+ and Claude Code (other agent CLIs herdr supports, such as Codex, can be workers)
+- `git`, `jq`, and your code host's CLI (`gh`, `glab`, …)
+- a tracker for issue-bound work (Linear, Jira, …); Linear only for more than one machine
+- the scheduled loop uses launchd, so it runs on macOS only (on Linux, a systemd timer you write)
+
+#### Simple example: one machine, one repo, one task
+
+No tracker, no claims, no schedule. Install the `developer` plugin once, as the [Installation](#installation) section above shows.
+
+Start herdr from your own terminal (the herdr server has to be started there) and open a pane. In that pane, once, run
+`herdr integration install claude`, then start the Orchestrator and give it a task:
 
 ```
-/fleet boot review auth ~/code/api "review the auth refactor on this branch"
+claude --agent developer:orchestrator
+```
+
+```
+/fleet boot build export ~/code/api "add CSV invoice export"
+```
+
+You get one line and the team table (names are examples):
+
+```
+Booted build-export in api: lead ✓ planner ✓ builder ✓ tester ✓
+
+1 team · 1 working
+
+| Team | Machine | Issue | PR | State | Needs you |
+|---|---|---|---|---|---|
+| build-export | 3f9a2c1e | - | - | Working | - |
+```
+
+The planner writes a plan, the builder implements it and opens a PR, and the tester verifies the PR's exact commit and
+signs off. Check in whenever you like:
+
+```
 /fleet status
-/fleet tell review-auth "focus on token expiry"
-/fleet retire review-auth
-/fleet debrief
 ```
 
-**Commands:**
+When the PR is ready, `status` lists it under `Merge in this order:`; a PR that isn't ready is listed under `Not ready:`
+with what is missing (`✗ no sign-off`, `✗ CI pending`). Review it and merge it yourself, on your code host: the fleet
+never merges. Then clean up:
 
-| Command | What it does |
-|---|---|
-| `/fleet boot <template> <focus> <dir> [task]` | Creates the herdr workspace `<template>-<focus>` (the team name), starts a lead and its workers in split panes, gives every writer its own git worktree on branch `fleet/<team>/<role>`, sends each agent its brief and registers it. `<template>` is `build`, `review`, `research` or a path to your own template JSON |
-| `/fleet status [--problems] [--team T] [--json]` | Shows each live agent's health (see below) and its team's test cluster. `--problems` lists only agents that need you, `--team` limits it to one team, `--json` gives machine-readable output |
-| `/fleet tell <team\|agent> <msg>` | Sends a message to the team's lead, or to one agent if you name it, then quotes a line of its reply so you know it arrived |
-| `/fleet escalate <P0\|P1\|P2> <msg>` | Raises a question by severity. The Orchestrator answers P2 itself, brings P1 to you with a recommendation, and stops for P0 and brings it to you immediately |
-| `/fleet retire <team\|team/role> [--outcome O]` | Shuts down a whole team or a single agent. Live agents are asked to push their work first, then only the fleet's own panes are closed, clean worktrees are removed (dirty ones are kept and reported), and the team's test cluster is deleted. `O` is `Shipped`, `Partial`, `Abandoned` or `Failed` |
-| `/fleet prime` | Rebuilds the Orchestrator's picture of the fleet from the registry (which teams exist, who is doing what, what needs attention). Use it after a context compaction or in a new session |
-| `/fleet debrief` | For each retired team: records one or two lessons per agent and *proposes* (never applies) diffs to `.claude/experts/<role>.md` and to the template, plus a list of discovered follow-up work |
+```
+/fleet retire build-export --outcome Shipped
+```
 
-**Templates:**
+That asks the agents to push, closes the team's panes, archives its reports and removes its worktrees.
 
-| Template | Team | Use it for | Example |
-|---|---|---|---|
-| `build` | lead + planner, builder, tester | Planning, building and testing one piece of work | `/fleet boot build export ~/code/api "add CSV invoice export"` |
-| `review` | lead + security and correctness reviewers (read-only) | Independent reviews of one change from different angles | `/fleet boot review auth ~/code/api "review the auth refactor"` |
-| `research` | lead + researcher | Learning a tool or topic problem-first, ending in one study guide | `/fleet boot research herdr ~/notes "how herdr restores sessions"` |
+#### Advanced example: two repos, two machines, running overnight
 
-**Several machines (Linear only):** each machine claims a Linear issue with the label `<label_prefix><machine key>` (default `fleet:3f9a2c1e`, the first 8 hex characters of the machine id), an In Progress status and a claim comment, so two fleets never work the same issue. `boot` refuses an issue another machine holds, and warns when a new claim's declared file scope overlaps a live one. Set `machine_name = "Mac 1"` in `~/.config/fleet/config.toml` for a display name (shown in the `status` footer); `label_prefix` is configurable too. With Jira or another tracker, run the fleet on one machine. Leases, a `#fleet` Slack channel and `status --all` are not built yet.
+Install on both Macs. Each machine gets `~/.config/fleet/config.toml` (every other key keeps its default):
 
-**Health states** shown by `status`: **Working**, **Idle** (waiting on purpose),
-**Needs input** (blocked on a dialog or escalated), **Stalled** (idle without finishing),
-**Zombie** (the agent process is gone) and **Done** (ran its done step).
+```toml
+max_teams = 4                                    # two repos, up to four live teams
+repos = ["/Users/you/code/api", "/Users/you/code/web"]
+linear_writes = "on"                             # claims, heartbeat and state moves on Linear
+machine_name = "Mac 1"                           # "Mac 2" on the other machine
+overnight = true                                 # leads decide inside an issue's scope; a morning report after 07:00
+tracker_allow = ["mcp__claude_ai_Linear__get_issue", "mcp__claude_ai_Linear__list_comments"]
+forge_allow = ["Bash(gh pr view:*)", "Bash(gh pr checks:*)", "Bash(gh pr create:*)"]
+```
 
-**Team environments:** a repo that declares `.claude/fleet-env.json` gives each team its own
-disposable test cluster, created on demand by `env.sh up <team>` and removed by `retire`. Every
-agent starts with `KUBECONFIG` pointing at that team's file, so none reaches your own clusters.
-`max_envs` in `~/.config/fleet/config.toml` (default 3) caps how many run at once.
+On each machine, put a Linear API key in `~/.config/fleet/linear_api_key` (mode 600), allow the Orchestrator's own
+Claude Code settings to use Linear's label, issue and comment write tools, run `fleet schedule install` (the launchd
+loop) and keep the Mac awake. Then ask the Orchestrator to boot teams on issues instead of task text, for example
+"boot a build team on PROJ-12 in ~/code/api".
 
-**Private integrations stay private:** an optional `~/.config/fleet/sink.md`, outside any repo,
-tells the Orchestrator where to mirror the registry, such as a tracker or wiki.
+What changes from the simple example:
 
-> **NOTE:** Requires herdr 0.9+, `jq` and `git`. Run Claude Code inside a herdr pane, and
-> start the herdr server from your own terminal. The plugin also ships `developer:lead`
-> and `developer:orchestrator` agents and two hooks, which do nothing outside fleet panes.
+- **Claims.** Each machine claims an issue with its own Linear label before it boots, so two machines never work the same
+  issue. `status` shows both machines' teams in one table, with one merge order.
+- **No typing from you.** The loop ticks every five minutes with no model, and each event (a PR ready, a stalled agent,
+  an escalation) wakes the Orchestrator. When a team's PR merges it retires the team and picks the next issue.
+- **Overnight.** Leads take their own recommendation for a decision inside an issue's scope and note it; installs, cloud and
+  production stay questions for you. At the first tick after 07:00 the Orchestrator writes `reports/fleet-morning-<date>.md`:
+  what is ready to merge, the decisions taken, what is UNVERIFIED.
+
+Merge the ready PRs in the order `status` gives. A merge can make another PR conflict; its team is restarted to merge main
+into it.
+
+**Everything else** (the concepts, step-by-step walkthroughs with output, benefits and tradeoffs, other trackers and agent
+CLIs, troubleshooting, every command and config key) is in the [fleet guide](plugins/developer/skills/fleet/README.md).
+
+> **NOTE:** Run Claude Code inside a herdr pane. The plugin also ships `developer:lead` and `developer:orchestrator`
+> agents and two hooks, which do nothing outside fleet panes.
 
 ---
 
