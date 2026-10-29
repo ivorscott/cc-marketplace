@@ -87,10 +87,34 @@ d588_notices() {
   eq "dev588-5 notices: the head sha is kept in the log" "$(grep -c '"sha":"ccc3333"' "$FLEET_STATE_DIR/notices.log" | sed 's/^[1-9][0-9]*$/kept/')" kept
 }
 
+d588_parked_needs() {
+  d588_state park
+  local A=https://github.com/o/r/pull/1 B=https://github.com/o/r/pull/2 C=https://github.com/o/r/pull/3
+  d588_agent pk-a/lead Lead Parked "pr=$A" parked_reason=signed-off; d588_agent pk-a/builder Worker Parked "pr=$A" parked_reason=signed-off
+  d588_agent dn-b/lead Lead Done "pr=$B"; d588_agent dn-b/builder Worker Done "pr=$B"
+  d588_agent pk-c/lead Lead Parked parked_reason=park
+  d588_agent pk-d/lead Lead Parked "pr=$C" parked_reason=park
+  rt() { bash -c '. "$1/common.sh"; shift; render_table "$@"' _ "$SCRIPTS" "$@"; }
+  cell() { printf '%s\n' "$1" | awk -F' *\\| *' -v t="$2" '$2 == t {print $6}'; } # the Needs you cell of a team
+  Q1="$(jq -cn --arg a "$A" --arg b "$B" '{ready: [{n: 1, url: $a, after: "—"}, {n: 2, url: $b, after: "—"}], not_ready: [], notes: []}')"
+  o="$(rt --queue "$Q1")"
+  eq "dev588-4 table: a parked signed-off team says what a Done one says" "$(cell "$o" pk-a):$(cell "$o" dn-b)" "merge the PR:merge the PR"
+  eq "dev588-4 table: a parked team with no PR stays -, and so does one whose PR is not in the queue" "$(cell "$o" pk-c):$(cell "$o" pk-d)" "-:-"
+  Q2="$(jq -cn --arg a "$A" --arg b "$B" '{ready: [{n: 1, url: $b, after: "—"}, {n: 2, url: $a, after: "rebase after #2"}], not_ready: [], notes: []}')"
+  o="$(rt --queue "$Q2")"
+  eq "dev588-4 table: the queue's after text shows for a parked team" "$(cell "$o" pk-a)" "rebase after #2"
+  Q3="$(jq -cn --arg a "$A" --arg b "$B" '{ready: [{n: 1, url: $a, after: "—"}, {n: 2, url: $b, after: "merge after #1"}], not_ready: [], notes: []}')"
+  eq "dev588-4 table: and for a Done team" "$(cell "$(rt --queue "$Q3")" dn-b)" "merge after #1"
+  o="$(rt)"
+  eq "dev588-4 table: with no queue a parked team shows merge the PR when it was parked at sign-off" "$(cell "$o" pk-a):$(cell "$o" pk-d)" "merge the PR:-"
+  eq "dev588-4 table: the State column still says Parked" "$(printf '%s\n' "$o" | awk -F' *\\| *' '$2 == "pk-a" {print $5}')" "Parked"
+}
+
 d588_smoke() { # the critical cases, CI
   d588_escalation_ids
   d588_bare_team
   d588_notices
+  d588_parked_needs
 }
 d588_full() { # every case
   d588_smoke

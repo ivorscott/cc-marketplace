@@ -144,6 +144,9 @@ if [ -n "$team" ]; then render_agent_table "$team" || die "no team $team" "Run f
 # The fleet: the notices not shown yet, the team table (with --problems, only the teams that need someone),
 # then the footer lines that apply, each a block of the reply.
 blocks=("$(notices_show)")
+# The merge queue (queue.sh) when any PR is open: the one tick built, while it is fresh (common.sh fleet_queue). Built
+# before the table, which says "rebase after #N" in the Needs you cell of a team whose PR waits behind another.
+q=""; $problems || q="$(fleet_queue 2>/dev/null)" || { q=""; warn "the merge queue could not be built"; }
 if $problems; then
   pteams="$(printf '%s' "$out" | jq -r '[.[] | select(.tier != "Orchestrator") | .team] | unique[]')"
   if [ -n "$pteams" ]; then
@@ -151,9 +154,7 @@ if $problems; then
     blocks+=("$(render_table $pteams)")
   else blocks+=("$(render_line no_problems)"); fi
 else
-  blocks+=("$(render_table)")
-  # The merge queue (queue.sh) when any PR is open: the one tick built, while it is fresh (common.sh fleet_queue).
-  if q="$(fleet_queue 2>/dev/null)"; then blocks+=("$(render_queue "$q")"); else warn "the merge queue could not be built"; fi
+  if [ -n "$q" ]; then blocks+=("$(render_table --queue "$q")" "$(render_queue "$q")"); else blocks+=("$(render_table)"); fi
 fi
 [ ! -f "$FLEET_STATE_DIR/focus" ] || blocks+=("$(render_line focus team="$(cat "$FLEET_STATE_DIR/focus")")")
 free="$(free_gb 2>/dev/null || true)"

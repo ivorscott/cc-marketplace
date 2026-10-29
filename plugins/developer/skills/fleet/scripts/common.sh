@@ -747,19 +747,25 @@ roles_line() {
         elif .status == "Zombie" then "✗ (did not start)" else "✓" end)) | join(" ")'
 }
 
-# render_table [team...]: the team table of the registry as it stands (no herdr call): the summary line ("3 teams ·
+# render_table [--queue <queue JSON>] [team...]: the team table of the registry as it stands (no herdr call): the summary line ("3 teams ·
 # 2 working · 1 blocked"), then one row per team that has a row not yet Retired, or only the teams named, then
 # "Waiting on you: ..." when a P0 or P1 is open, a blank line between the three (reply). "No teams." when there is
 # none. State is the worst agent state, one word (Parked when the team is parked); Needs you is the
-# team's most severe open escalation, else what its state needs, else -.
+# team's most severe open escalation, else what its state needs, else -. A team with a PR in the queue (--queue) says
+# what the queue says ("rebase after #N") or "merge the PR": a Done team and a Parked one alike, so parking a signed-off
+# team changes its State and not its Needs you. A Parked team with no queue given says "merge the PR" when it was
+# parked at sign-off (parked_reason signed-off), else -.
 render_table() {
-  local rows esc only
+  local rows esc only q='null'
+  if [ "${1:-}" = --queue ]; then q="$2"; shift 2; printf '%s' "$q" | jq -e 'type == "object"' >/dev/null 2>&1 || q='null'; fi
   rows="$("$FLEET_SCRIPTS/registry.sh" list)" || return 1
   esc="$("$FLEET_SCRIPTS/registry.sh" escalations --open --not-retired 2>/dev/null)" || esc='[]'
   only="$(printf '%s\n' "$@" | jq -Rsc 'split("\n") | map(select(. != ""))')"
-  jq -rn --slurpfile rows <(printf '%s' "$rows") --slurpfile esc <(printf '%s' "$esc") --argjson only "$only" "$RENDER_DEFS"'
+  jq -rn --slurpfile rows <(printf '%s' "$rows") --slurpfile esc <(printf '%s' "$esc") --argjson only "$only" --argjson q "$q" "$RENDER_DEFS"'
     $rows[0] as $rows | $esc[0] as $esc
-    | def shown: ($only | length) == 0 or (. as $t | $only | index($t) != null);
+    | def qready($u): ([($q.ready // [])[] | select(.url == $u)] | first);
+      def merge_cell($u): (qready($u)) as $r | if $r != null and ($r.after // "—") != "—" then $r.after else "merge the PR" end;
+      def shown: ($only | length) == 0 or (. as $t | $only | index($t) != null);
     [$rows[] | select(.tier != "Orchestrator" and .status != "Retired" and (.team // "") != "" and (.team | shown))]
     | group_by(.team) | map(. as $g | $g[0].team as $t
       | ([$esc[] | select(.team == $t)] | sort_by({"P0": 0, "P1": 1, "P2": 2}[.severity] // 3) | first) as $e
@@ -774,7 +780,10 @@ render_table() {
            elif $state == "Zombie" then "agent gone: respawn or retire"
            elif $state == "Stalled" then "ask for its done step"
            elif $state == "Failed" then "brief not delivered"
-           elif $state == "Done" then (if $pr != "" then "merge the PR" else "retire the team" end)
+           elif $state == "Done" then (if $pr != "" then merge_cell($pr) else "retire the team" end)
+           elif $state == "Parked" and $pr != "" then
+             (if $q != null then (if qready($pr) != null then merge_cell($pr) else "-" end)
+              elif any($g[]; .parked_reason == "signed-off") then "merge the PR" else "-" end)
            else "-" end)}) as $t
     | if ($t | length) == 0 then "No teams." else
         [([$t | length | "\(.) team\(if . == 1 then "" else "s" end)"]
