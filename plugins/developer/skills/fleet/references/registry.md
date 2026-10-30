@@ -193,7 +193,8 @@ no summary are rows with `status` `Claimed` (`Claimed (heartbeat lapsed)`, `Clai
 **`summary=` line.** The label description of a machine holds, next to `heartbeat=`, one `summary=<compact JSON array>`
 line, rewritten in the same label update: `[{"t": team, "i": issue key, "pr": PR url, "s": state word, "n": needs you,
 "r": true when its PR is ready}]`, keys with no value left out, the 12 teams changed last, and fewer when the line would
-pass 1500 characters. `linear.sh peers` returns it as `summary` (null when the label has none). UNVERIFIED: Linear's own
+pass 1500 characters or the room left under the 255-character description cap. When the full rows do not fit, thinner
+ones are used (no `pr`/`n`/`f`, then `i` and `s`, then `i` alone): the tier that keeps the most teams. `linear.sh peers` returns it as `summary` (null when the label has none). UNVERIFIED: Linear's own
 limit on a label description.
 
 **Cloned machine id.** A cloned VM or restored disk copies the machine id, and two machines then
