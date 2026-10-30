@@ -1006,6 +1006,18 @@ Fixes found after 4.1.1 (DEV-530), one per item:
 5. **A fresh claim is fresh.** `claim` and `takeover` refresh the machine label's heartbeat in the same call, and tick
    refreshes it first of all, before herdr is checked and with or without claimed rows.
 
+## What changed in 4.2.1
+
+DEV-648: the status summary was never written when a `claimed=` line left little room under the 255-character
+description cap.
+
+1. **Thinner summary rows.** When the full rows do not fit, `summary=` falls back to rows without `pr`/`n`/`f`, then to
+   `i` and `s`, then to `i` alone, whichever keeps the most teams. A 4.2.0 reader shows such rows with a blank team, no
+   PR and nothing ready; 4.2.1 shows the issue as the team.
+2. **The heartbeat always lands.** A summary that cannot be built, or teams that exist but none fit, is a warning; the
+   heartbeat is written without it.
+3. **Tick logs the heartbeat's reason** with a time (`fleet: <time> heartbeat: <reason>`) instead of discarding it.
+
 ## What changed in 4.2.0
 
 `fleet run`: set the loop up once, then it runs itself. One PR, the items of DEV-622 and its comments:

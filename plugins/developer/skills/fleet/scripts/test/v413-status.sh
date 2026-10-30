@@ -206,8 +206,8 @@ v648_summary_fits() {
   LINEAR_STUB_DESC_MAX=255 "$SCRIPTS/linear.sh" heartbeat >/dev/null 2>"$T/hb648.err"; local rc=$?
   desc="$(jq -r '.labels[] | select(.name == "fleet:test") | .description' "$LINEAR_DB")"
   sm="$(printf '%s\n' "$desc" | sed -n 's/^summary=//p')"
-  eq "v648 heartbeat: 6 teams and a claimed= line: the description is at most 255, with heartbeat, claim and a non-empty summary" \
-    "$rc:$([ ${#desc} -le 255 ] && echo fits):$(printf '%s\n' "$desc" | grep -c '^heartbeat=2026-10-30T10:00:00Z$'):$(printf '%s\n' "$desc" | grep -c '^claimed=DEV-641@'):$(printf '%s' "$sm" | jq -e 'type == "array" and length > 0' >/dev/null && echo array)" "0:fits:1:1:array"
+  eq "v648 heartbeat: 6 teams and a claimed= line: the description is at most 255, with heartbeat, claim and a summary of all 6 teams" \
+    "$rc:$([ ${#desc} -le 255 ] && echo fits):$(printf '%s\n' "$desc" | grep -c '^heartbeat=2026-10-30T10:00:00Z$'):$(printf '%s\n' "$desc" | grep -c '^claimed=DEV-641@'):$(printf '%s' "$sm" | jq -c 'if type == "array" then length else -1 end')" "0:fits:1:1:6"
   eq "v648 peers: the other machine reads the same summary back" \
     "$([ -n "$sm" ] && [ "$(FLEET_MACHINE=other "$SCRIPTS/linear.sh" peers | jq -c '[.[] | select(.machine == "test")] | first | .summary')" = "$(printf '%s' "$sm" | jq -c .)" ] && echo same)" "same"
   # teams exist but none fits: the heartbeat still lands, and a warning says why
