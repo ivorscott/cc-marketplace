@@ -150,4 +150,5 @@ v413_full() { # every case
   v413_smoke
   v413_summary_publish
   v413_summary_escape
+  v648_summary_fits
 }

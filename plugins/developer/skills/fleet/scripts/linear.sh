@@ -466,7 +466,7 @@ ensure_label() {
 # write_heartbeat: rewrite the heartbeat= line of this machine's label to now (one mutation, none when the line already
 # says now). Sets HB_AT and returns 0; returns 2 when the machine has no label yet. Claim, takeover and heartbeat share it.
 write_heartbeat() {
-  local mine found lid cur sm base room err
+  local mine found lid cur sm base room err nteams
   mine="$(machine_label)"
   found="$(q_labels_named "$mine")" || return 1
   lid="$(printf '%s' "$found" | jq -r '.[0].id // empty')"
@@ -477,8 +477,16 @@ write_heartbeat() {
   # The summary line (fleet_summary) rides on the same write: one mutation, and none when neither line changed. It is fitted
   # to what is left under DESC_CAP once the other lines are in (whole teams dropped, never a cut line).
   base="$(describe_with_summary "$(describe_with_claim "$(describe_with_hb "$(describe_with_owner "$cur" "$(owner_name)")" "$HB_AT")" "${CLAIM_LINE:-}")" "")"
-  room=$((DESC_CAP - ${#base} - 10)); [ "$room" -gt 2 ] || room=2
-  sm="$(fleet_summary "$room" 2>/dev/null)" || sm=""; [ "$sm" != "[]" ] || sm=""
+  room=$((DESC_CAP - ${#base} - 4)); [ "$room" -gt 2 ] || room=2
+  # A summary that cannot be built never stops the heartbeat; and teams with no summary that fits are said, not dropped silently.
+  if sm="$(fleet_summary "$room" 2>/dev/null)"; then
+    if [ "$sm" = "[]" ]; then
+      sm=""; nteams="$(fleet_summary 100000 2>/dev/null | jq 'length' 2>/dev/null || echo 0)"
+      [ "${nteams:-0}" = 0 ] || warn "no team summary fits: $nteams team(s) live, $room characters left under $DESC_CAP; the heartbeat is written without it"
+    fi
+  else
+    sm=""; warn "team summary not built; the heartbeat is written without it"
+  fi
   if [ "$(printf '%s\n' "$cur" | sed -n 's/^heartbeat=//p' | head -n 1)" != "$HB_AT" ] ||
     { [ -n "${CLAIM_LINE:-}" ] && [ "$(printf '%s\n' "$cur" | sed -n 's/^claimed=//p' | head -n 1)" != "${CLAIM_LINE#claimed=}" ]; } ||
     [ "$(printf '%s\n' "$cur" | sed -n 's/^summary=//p' | head -n 1)" != "$sm" ]; then

@@ -478,8 +478,8 @@ v420_decide() { # a lead's escalation is decided, recorded and reported without 
 }
 
 v420_version() { # the version, the changelog, the commands and the config example in step with the code
-  eq "v420 version: plugin.json and the marketplace read 4.2.0, and the README has its What changed section" \
-    "$(jq -r .version "$SCRIPTS/../../../.claude-plugin/plugin.json"):$(jq -r '.plugins[] | select(.name == "developer") | .version' "$SCRIPTS/../../../../../.claude-plugin/marketplace.json"):$(grep -c '^## What changed in 4.2.0' "$SCRIPTS/../README.md")" "4.2.0:4.2.0:1"
+  eq "v420 version: plugin.json and the marketplace read 4.2.1, and the README has the What changed sections of 4.2.1 and 4.2.0" \
+    "$(jq -r .version "$SCRIPTS/../../../.claude-plugin/plugin.json"):$(jq -r '.plugins[] | select(.name == "developer") | .version' "$SCRIPTS/../../../../../.claude-plugin/marketplace.json"):$(grep -c '^## What changed in 4.2.[01]$' "$SCRIPTS/../README.md")" "4.2.1:4.2.1:2"
   eq "v420 help: fleet help run names the subcommands" "$("$SCRIPTS/fleet" help run | grep -o 'run.sh \(init\|start\|stop\|status\|show\)' | sort -u | wc -l | tr -d ' ')" 5
   eq "v420 help: and the new commands are listed" "$("$SCRIPTS/fleet" help | grep -c '^| `\(run\|decide\|defer\|overlap\)` ')" 4
   eq "v420 config: every key of [run] that init writes is in config.example.toml" \

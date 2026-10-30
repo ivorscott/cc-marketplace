@@ -77,9 +77,15 @@ set -euo pipefail
 # refreshed, so a claim made while the loop was off never reads as lapsed to another machine. Rows are not needed,
 # and a failure only warns.
 HB_DONE=0
+# hb_run: one heartbeat; its stderr (the reason a summary or the write was dropped) is logged with the time, not discarded.
+hb_run() {
+  local err rc=0 l; err="$("$FLEET_SCRIPTS/linear.sh" heartbeat 2>&1 >/dev/null)" || rc=$?
+  while IFS= read -r l; do l="${l#fleet: warning: }"; [ -z "$l" ] || printf 'fleet: %s heartbeat: %s\n' "${FLEET_NOW:-$(now)}" "$l" >&2; done <<<"$err"
+  [ "$rc" = 0 ] || warn "linear.sh heartbeat failed"
+}
 if "$FLEET_SCRIPTS/linear.sh" has-key >/dev/null 2>&1 && [ "$(linear_writes)" != off ]; then
   HB_DONE=1
-  "$FLEET_SCRIPTS/linear.sh" heartbeat >/dev/null 2>&1 || warn "linear.sh heartbeat failed"
+  hb_run
 fi
 require_herdr
 registry="$FLEET_SCRIPTS/registry.sh"
@@ -161,7 +167,7 @@ heartbeat() {
       fi
     else
       [ "$rows_n" = 0 ] || [ "$HB_DONE" = 1 ] ||
-        "$FLEET_SCRIPTS/linear.sh" heartbeat >/dev/null 2>&1 || warn "linear.sh heartbeat failed"
+        hb_run
     fi
   elif [ "$rows_n" != 0 ] && [ "$(jq -r '.claims_unavailable_emitted // false' "$STATE_FILE")" != true ]; then
     add_events '[{"type": "claims_unavailable", "team": "", "name": "", "detail": "no Linear key; heartbeat and takeover checks are off"}]'
