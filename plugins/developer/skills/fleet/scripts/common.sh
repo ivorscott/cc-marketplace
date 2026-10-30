@@ -685,6 +685,10 @@ fleet_summary() {
   pfm="$(plan_file_map "$rows" 2>/dev/null)" || pfm='{}'
   jq -nc --slurpfile rows <(printf '%s' "$rows") --slurpfile esc <(printf '%s' "$esc") --argjson q "$q" --argjson cap "$cap" --argjson pfm "$pfm" "$RENDER_DEFS"'
     def fit: if length > 0 and (tojson | length) > $cap then .[:-1] | fit else . end;
+    # Thinner rows when the full ones leave too little room (a claimed= line leaves ~90 characters): the tier that keeps the
+    # most teams wins, the richer one on a tie. Every tier is an array of objects, so an older reader still parses it.
+    def tiers: [., map(del(.pr, .n, .f)), map({i, s} | with_entries(select(.value != null))), map({i} | with_entries(select(.value != null)))] | map(fit);
+    def best: tiers | reduce .[] as $x (null; if . == null or ($x | length) > length then $x else . end);
     [$rows[0][] | select(.tier != "Orchestrator" and .status != "Retired" and (.team // "") != "")]
     | group_by(.team) | map(. as $g | $g[0].team as $t
       | ([$esc[0][] | select(.team == $t)] | sort_by({"P0": 0, "P1": 1, "P2": 2}[.severity] // 3) | first) as $e
@@ -693,7 +697,7 @@ fleet_summary() {
       | (team_needs($g; $e; $state; $pr; $q) | if . == "-" then "" else .[0:60] end) as $n
       | {u: ($g | map(.updated_at // "") | max), t: $t, i: ($g | map(.issue // "") | map(select(. != "")) | first // ""), pr: $pr, s: $state, n: $n,
          r: (([($q.ready // [])[] | select(.url == $pr)] | length) > 0 and $pr != ""), f: ($pfm[$t] // [])})
-    | sort_by(.u) | reverse | .[:12] | map(del(.u) | with_entries(select(.value != "" and .value != false and .value != []))) | fit'
+    | sort_by(.u) | reverse | .[:12] | map(del(.u) | with_entries(select(.value != "" and .value != false and .value != []))) | best'
 }
 
 # PART_OF_JQ: jq `def part_of;` on a PR body: the issue a "Part of <issue>" line names (its identifier, a markdown link

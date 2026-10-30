@@ -190,3 +190,36 @@ v413_summary_escape() {
   eq "v413-1 heartbeat: a second heartbeat with nothing changed makes no mutation" "$(grep -c '^mutation' "$LINEAR_LOG")" 0
   gcfg; v413_nolinear; unset FLEET_NOW
 }
+
+# DEV-648: six live teams and a claimed= line leave ~90 characters; the summary must still be written and read back.
+v648_summary_fits() {
+  qfresh v648; export FLEET_STATE_DIR="$QD/state.v648" FLEET_REGISTRY="$QD/state.v648/fleet.json" FLEET_INBOX="$QD/state.v648/escalations.jsonl"
+  rm -rf "$FLEET_STATE_DIR"; mkdir -p "$FLEET_STATE_DIR"; export FLEET_NOW=2026-10-30T10:00:00Z
+  local n desc sm
+  for n in 1 2 3 4 5 6; do
+    v413_agent "build-fit-$n/lead" Lead Working "pr=https://github.com/acme/app-api/pull/$((200 + n))" "issue=DEV-$((640 + n))"
+  done
+  v413_linear
+  jq '.labels += [{id: "L9", name: "fleet:test", description: "owner=Fixture\nclaimed=DEV-641@2026-10-30T09:00:00Z", parent: {id: "L0", name: "fleet"}}]
+      | .issues += [{id: "I1", identifier: "DEV-641", team: {id: "T1"}, state: {id: "S", name: "In Progress"}, labelIds: ["L9"], comments: []}]' "$LINEAR_DB" >"$LINEAR_DB.t" && mv "$LINEAR_DB.t" "$LINEAR_DB"
+  gcfg 'linear_writes = "on"'
+  LINEAR_STUB_DESC_MAX=255 "$SCRIPTS/linear.sh" heartbeat >/dev/null 2>"$T/hb648.err"; local rc=$?
+  desc="$(jq -r '.labels[] | select(.name == "fleet:test") | .description' "$LINEAR_DB")"
+  sm="$(printf '%s\n' "$desc" | sed -n 's/^summary=//p')"
+  eq "v648 heartbeat: 6 teams and a claimed= line: the description is at most 255, with heartbeat, claim and a non-empty summary" \
+    "$rc:$([ ${#desc} -le 255 ] && echo fits):$(printf '%s\n' "$desc" | grep -c '^heartbeat=2026-10-30T10:00:00Z$'):$(printf '%s\n' "$desc" | grep -c '^claimed=DEV-641@'):$(printf '%s' "$sm" | jq -e 'type == "array" and length > 0' >/dev/null && echo array)" "0:fits:1:1:array"
+  eq "v648 peers: the other machine reads the same summary back" \
+    "$([ -n "$sm" ] && [ "$(FLEET_MACHINE=other "$SCRIPTS/linear.sh" peers | jq -c '[.[] | select(.machine == "test")] | first | .summary')" = "$(printf '%s' "$sm" | jq -c .)" ] && echo same)" "same"
+  # teams exist but none fits: the heartbeat still lands, and a warning says why
+  FLEET_NOW=2026-10-30T10:01:00Z FLEET_DESC_CAP=80 "$SCRIPTS/linear.sh" heartbeat >/dev/null 2>"$T/hb648.err"; rc=$?
+  desc="$(jq -r '.labels[] | select(.name == "fleet:test") | .description' "$LINEAR_DB")"
+  eq "v648 heartbeat: teams with no summary that fits warn, and the heartbeat still lands" \
+    "$rc:$(grep -c 'no team summary fits' "$T/hb648.err"):$(printf '%s\n' "$desc" | grep -c '^heartbeat=2026-10-30T10:01:00Z$'):$(printf '%s\n' "$desc" | grep -c '^summary=')" "0:1:1:0"
+  # fleet_summary itself failing (no registry readable) never stops the heartbeat
+  printf 'not json' >"$FLEET_STATE_DIR/bad.json"
+  FLEET_NOW=2026-10-30T10:02:00Z FLEET_REGISTRY="$FLEET_STATE_DIR/bad.json" "$SCRIPTS/linear.sh" heartbeat >/dev/null 2>"$T/hb648.err"; rc=$?
+  desc="$(jq -r '.labels[] | select(.name == "fleet:test") | .description' "$LINEAR_DB")"
+  eq "v648 heartbeat: a failing fleet_summary is a warning, and the heartbeat lands" \
+    "$rc:$(printf '%s\n' "$desc" | grep -c '^heartbeat=2026-10-30T10:02:00Z$')" "0:1"
+  gcfg; v413_nolinear; unset FLEET_NOW
+}

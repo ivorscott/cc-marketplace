@@ -75,8 +75,8 @@ if $want_peers; then
     (group_by(.machine) | map(select(any(.[]; .summary != null)) | . as $g | ($g | map(select(.summary != null)) | first) as $c
       | (if $c.heartbeat == null then null else (($now | fromdateiso8601) - ($c.heartbeat | fromdateiso8601)) end) as $age
       | ($age != null and $age > ($lease * 3600)) as $stale
-      | $c.summary[] | {machine: $c.machine, team: .t, issue: (.i // ""), pr: (.pr // ""), needs: (.n // ""), ready: ((.r // false) and ($stale | not)),
-          state: (.s // "Idle"), heartbeat: $c.heartbeat, stale: $stale})) as $teams
+      | $c.summary[] | {machine: $c.machine, team: (.t // .i // ""), issue: (.i // ""), pr: (.pr // ""), needs: (.n // ""), ready: ((.r // false) and ($stale | not)),
+          state: (.s // (if .t == null then "-" else "Idle" end)), heartbeat: $c.heartbeat, stale: $stale})) as $teams
     | ([.[] | select(.machine as $m | ($teams | map(.machine) | index($m)) == null)]) as $claims
     | {teams: $teams, claims: $claims}')"
   peer_teams="$(printf '%s' "$pj" | jq -c .teams)"; peer_claims="$(printf '%s' "$pj" | jq -c .claims)"
