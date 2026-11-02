@@ -43,6 +43,8 @@ case "$op" in
     ok "$(db --argjson v "$vars" '{issue: ((.issues[] | select(.identifier == $v.id)) | {identifier, team: {key: (.team.key // "ENG")}})}')" ;;
   IssueBranch)
     ok "$(db --argjson v "$vars" '{issue: ((.issues[] | select(.identifier == $v.id)) | {identifier, branchName: (.branchName // "")})}')" ;;
+  IssueSources)
+    ok "$(db --argjson v "$vars" '{issue: ((.issues[] | select(.identifier == $v.id)) | {identifier, branchName: (.branchName // ""), attachments: {nodes: [(.attachmentUrls // [])[] | {url: .}]}})}')" ;;
   Blocks)
     ok "$(db --argjson v "$vars" '. as $r | $v | with_entries(.value as $id
       | .value = ([$r.issues[] | select(.identifier == $id)] | first

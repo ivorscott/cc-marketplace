@@ -1006,6 +1006,19 @@ Fixes found after 4.1.1 (DEV-530), one per item:
 5. **A fresh claim is fresh.** `claim` and `takeover` refresh the machine label's heartbeat in the same call, and tick
    refreshes it first of all, before herdr is checked and with or without claimed rows.
 
+## What changed in 4.2.2
+
+DEV-649: tick released a lapsed claim whose open PR was in a repo this machine has no team in.
+
+1. **The PR is found from the issue itself.** `release --lapsed` and `takeover` (one shared check) look at the issue's
+   GitHub PR attachments, then at open PRs whose head is the issue's `fleet/<slug>` branch, then at `gh search prs
+   <KEY>` per owner (the owners of the repos given, of the attachment URLs and of the optional config key
+   `repo_owners`). The fleet's repos stay as an extra source, now with the repos of the PRs in the other machines'
+   summaries.
+2. **It fails closed.** A lookup that errors, or an issue with no attachment, branch or owner to look in, refuses the
+   release (`cannot look up open PRs`); tick then says `claim_lapsed` and never `claim_released`.
+3. `takeover` is stricter for the same reason: it refuses while an open PR exists anywhere the check can see.
+
 ## What changed in 4.2.1
 
 DEV-648: the status summary was never written when a `claimed=` line left little room under the 255-character

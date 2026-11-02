@@ -85,8 +85,8 @@ Tick frees a crashed machine's issues on its own, so they can be picked again. W
 - **no open PR, writes allowed:** `linear.sh release <ISSUE> --lapsed` removes that machine's label (it checks the
   heartbeat and the PR again; the PR is looked up in every repo the fleet works in: the registry rows' repos and
   `repos` in `config.toml`), and tick reports `claim_released`;
-- **an open PR:** never touched; `claim_held_pr`, so the user sees it;
-- **writes off, test mode outside its team, or no repo to look in:** `claim_lapsed`, read-only.
+- **an open PR** (found from the issue: its PR attachments, its `fleet/<slug>` branch, a search by owner; no team in its repo is needed): never touched; `claim_held_pr`, so the user sees it;
+- **writes off, test mode outside its team, or a PR lookup that cannot be made:** `claim_lapsed`, read-only.
 
 A claim with no heartbeat is not proven lapsed: `claim_lapsed` only. Each event comes once per (issue, holder,
 heartbeat), and all three wake the Orchestrator.
