@@ -202,10 +202,11 @@ claims_taken_over() {
   done < <(printf '%s' "$claim_rows" | jq -r 'group_by(.team + "|" + .issue) | .[] | [.[0].team, .[0].issue, ([.[].claimed_by // empty | select(. != "")] | first // "")] | @tsv')
 }
 # Another machine's lapsed claim (linear.sh peers, read once; a fleet-wide check, so tick --team skips it). Only a
-# heartbeat older than lease_hours is lapsed. With writes allowed and no open PR in any repo the fleet works in (the
-# registry rows' repos and config.toml `repos`, by their origin remotes), linear.sh release --lapsed frees the
-# issue (it checks both again): claim_released. An open PR is never touched: claim_held_pr. Writes off, test mode
-# outside its team, or no repo to look in: claim_lapsed, read-only. A claim with no heartbeat is not proven lapsed:
+# heartbeat older than lease_hours is lapsed. With writes allowed and no open PR, linear.sh release --lapsed frees the
+# issue (it checks both again): claim_released. It finds the PR from the issue itself (attachments, branch, search by
+# owner), so it needs no team in the PR's repo; the fleet's repos (registry rows, config.toml `repos`, peer summaries'
+# PR repos, by their origin remotes) are an extra source. An open PR is never touched: claim_held_pr. Writes off, test
+# mode outside its team, or a PR lookup that cannot be made: claim_lapsed, read-only. A claim with no heartbeat is not proven lapsed:
 # claim_lapsed only. Each once per (issue, holder, heartbeat); keys of claims no longer listed are dropped.
 claims_lapsed() {
   [ -z "$team" ] || return 0
@@ -214,6 +215,8 @@ claims_lapsed() {
   peers="$("$FLEET_SCRIPTS/linear.sh" peers 2>/dev/null)" || { warn "could not read other machines' claims"; return 0; }
   repos="$({ "$registry" list | jq -r '.[] | .repo // empty'; config_list repos | jq -r '.[]'; } | sort -u | while IFS= read -r d; do
       [ ! -d "$d" ] || repo_slug "$d"; done | sort -u | paste -sd' ' -)" || repos=""
+  # the repos of the PRs in the other machines' summaries (owner/repo/pull/N, or a full URL), an offline extra source
+  repos="$({ printf '%s\n' $repos; printf '%s' "$peers" | jq -r '.[] | (.summary // [])[]? | (.pr // "") | capture("^(https://github\\.com/)?(?<r>[^/]+/[^/]+)/pull/[0-9]+") | .r'; } | sort -u | paste -sd' ' -)" || true
   now_t="${FLEET_NOW:-$(now)}"; err="$(mktemp "${TMPDIR:-/tmp}/fleet-tick-release.XXXXXX")"
   while IFS=$'\t' read -r i m hb; do
     [ -n "$i" ] || continue
@@ -227,13 +230,13 @@ claims_lapsed() {
     ev=claim_lapsed; url=""; why=""
     if [ "$proven" = 0 ]; then why="no heartbeat, so it is not proven lapsed"
     elif [ "$(linear_writes)" = off ]; then why="its heartbeat is older than lease_hours, and linear_writes is off"
-    elif [ -z "$repos" ]; then why="its heartbeat is older than lease_hours, and the fleet has no repo to look for its PR in"
     else
       # shellcheck disable=SC2046,SC2086
-      if "$FLEET_SCRIPTS/linear.sh" release "$i" --lapsed $(printf -- '--repo %s ' $repos) >/dev/null 2>"$err"; then ev=claim_released
+      if "$FLEET_SCRIPTS/linear.sh" release "$i" --lapsed ${repos:+$(printf -- '--repo %s ' $repos)} >/dev/null 2>"$err"; then ev=claim_released
       else
         case "$(cat "$err")" in
           *"has an open PR ("*) ev=claim_held_pr; url="$(sed -n 's/.*has an open PR (\([^)]*\)).*/\1/p' "$err" | head -n 1)" ;;
+          *"cannot look up open PRs"*) why="its heartbeat is older than lease_hours, and its open PRs cannot be looked up" ;;
           *"test mode"*) why="its heartbeat is older than lease_hours, and linear_writes is in test mode" ;;
           *) warn "could not release the lapsed claim of $m on $i: $(tail -n 1 "$err")"; continue ;;
         esac

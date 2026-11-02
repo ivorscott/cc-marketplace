@@ -5,6 +5,7 @@
 #   bash scripts/test/run.sh --smoke    the critical cases only (CI, under 2 min)
 #   bash scripts/test/run.sh --v413     only the 4.1.3 cases, test/v413.sh
 #   bash scripts/test/run.sh --v420     only the 4.2.0 cases, test/v420.sh
+#   bash scripts/test/run.sh --v42x     only the 4.2.x patch cases, test/v42x.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SCRIPTS="$(dirname "$HERE")"
@@ -323,6 +324,8 @@ gold() { # gold <entry> <reply>
 . "$HERE/v413.sh" # 4.1.3: v413_smoke and v413_full
 if [ "${1:-}" = --v413 ]; then v413_full; printf '\n%d passed, %d failed\n' "$pass" "$failn"; [ "$failn" = 0 ]; exit; fi # only the 4.1.3 cases
 . "$HERE/v420.sh" # 4.2.0: v420_smoke and v420_full
+. "$HERE/v42x.sh" # 4.2.x patches: v42x_smoke and v42x_full
+if [ "${1:-}" = --v42x ]; then v42x_full; printf '\n%d passed, %d failed\n' "$pass" "$failn"; [ "$failn" = 0 ]; exit; fi # only the 4.2.x patch cases
 if [ "${1:-}" = --v420 ]; then v420_full; printf '\n%d passed, %d failed\n' "$pass" "$failn"; [ "$failn" = 0 ]; exit; fi # only the 4.2.0 cases
 # ---- run.sh --smoke: the critical cases only (CI). The full suite (no flag) stays for local runs. --------------
 if [ "${1:-}" = --smoke ]; then
@@ -718,7 +721,7 @@ Merge this one first." "Do not merge until the API ships" "  hold: waiting on de
   export LINEAR_DB="$SM/linear530e.json" LINEAR_LOG="$SM/linear530e.log"; : >"$LINEAR_LOG"
   jq -n '{team: "T1", states: {"In Progress": "S1"}, next: 100, labels: [{id: "L1", name: "fleet", description: "", parent: null},
       {id: "L2", name: "fleet:other", description: "other host\nheartbeat=2026-10-18T06:00:00Z", parent: {id: "L1", name: "fleet"}}],
-    issues: [range(1; 4) | {id: "I\(.)", identifier: "DEV-\(.)", team: {id: "T1"}, state: {id: "S0", name: "Todo"}, labelIds: (if . == 3 then ["L2"] else [] end), comments: []}]}' >"$LINEAR_DB"
+    issues: [range(1; 4) | {id: "I\(.)", identifier: "DEV-\(.)", team: {id: "T1"}, state: {id: "S0", name: "Todo"}, labelIds: (if . == 3 then ["L2"] else [] end), comments: [], branchName: "u/dev-\(.)-x"}]}' >"$LINEAR_DB"
   hb5() { jq -r '[.labels[] | select(.parent != null and .name != "fleet:other") | .description | capture("heartbeat=(?<h>[^\n ]+)").h] | first // "none"' "$LINEAR_DB"; }
   old5() { jq '(.labels[] | select(.parent != null and .name != "fleet:other") | .description) |= sub("heartbeat=[^\n ]+"; "heartbeat=2026-10-26T06:00:00Z")' "$LINEAR_DB" >"$LINEAR_DB.t" && mv "$LINEAR_DB.t" "$LINEAR_DB"; }
   hw5() { grep -c 'IssueLabelUpdate' "$LINEAR_LOG"; }
@@ -745,6 +748,7 @@ Merge this one first." "Do not merge until the API ships" "  hold: waiting on de
   eq "smoke: dev530-6 the README has its What changed in 4.1.2 section" "$(grep -c '^## What changed in 4.1.2' "$SCRIPTS/../README.md")" "1"
   v413_smoke
   v420_smoke
+  v42x_smoke
   printf '\n%d passed, %d failed\n' "$pass" "$failn"
   [ "$failn" = 0 ]; exit
 fi
@@ -3683,7 +3687,7 @@ d4db() { # issues: DEV-1 free; DEV-2 another machine's (heartbeat 06:00); DEV-3 
             {"id": "L5", "name": "fleet:nohb", "description": "no heartbeat line", "parent": {"id": "L1", "name": "fleet"}},
             {"id": "L6", "name": "fleet:old", "description": "", "parent": {"id": "L1", "name": "fleet"}}],
  "issues": [{"id": "I1", "identifier": "DEV-1", "team": {"id": "T1"}, "state": {"id": "S3", "name": "Todo"}, "labelIds": ["L3"], "comments": []},
-            {"id": "I2", "identifier": "DEV-2", "team": {"id": "T1"}, "state": {"id": "S1", "name": "In Progress"}, "labelIds": ["L2", "L3"], "comments": []},
+            {"id": "I2", "identifier": "DEV-2", "team": {"id": "T1"}, "state": {"id": "S1", "name": "In Progress"}, "labelIds": ["L2", "L3"], "comments": [], "branchName": "u/dev-2-x"},
             {"id": "I3", "identifier": "DEV-3", "team": {"id": "T1"}, "state": {"id": "S1", "name": "In Progress"}, "labelIds": ["L4", "L3"], "comments": [], "blocks": ["DEV-1", "DEV-4"], "related": ["DEV-2"]},
             {"id": "I4", "identifier": "DEV-4", "team": {"id": "T1"}, "state": {"id": "S1", "name": "In Progress"}, "labelIds": ["L5"], "comments": []},
             {"id": "I5", "identifier": "DEV-5", "team": {"id": "T1", "key": "FT"}, "state": {"id": "S1", "name": "In Progress"}, "labelIds": ["L6", "L3"], "comments": []}]}
@@ -3693,13 +3697,13 @@ J
 d4labels() { jq -r --arg i "$1" '. as $r | .issues[] | select(.identifier == $i) | [.labelIds[] as $l | $r.labels[] | select(.id == $l) | .name] | sort | join(",")' "$LINEAR_DB"; }
 d4state() { jq -r --arg i "$1" '.issues[] | select(.identifier == $i) | .state.name' "$LINEAR_DB"; }
 d4mut() { grep -c '^mutation' "$LINEAR_LOG"; }
-# gh: `pr view <url>` answers $D4/gh/<N>.json; `pr list` answers D4GH_LIST (the --search form: D4GH_SEARCH), else []
+# gh: `search prs` answers []; `pr view <url>` answers $D4/gh/<N>.json; `pr list` answers D4GH_LIST (the --search form: D4GH_SEARCH), else []
 mkdir -p "$D4/gh"; printf '[]' >"$D4/gh-none.json"; export D4GH_LOG="$D4/gh.log" D4GH_DIR="$D4/gh" D4GH_NONE="$D4/gh-none.json"; : >"$D4GH_LOG"
 cat >"$D4/gh-shim" <<'S'
 #!/usr/bin/env bash
 echo "$*" >>"$D4GH_LOG"
 [ -z "${D4GH_FAIL:-}" ] || exit 1
-case "$1 $2" in "pr view") cat "$D4GH_DIR/${3##*/}.json"; exit ;; esac
+case "$1 $2" in "pr view") cat "$D4GH_DIR/${3##*/}.json"; exit ;; "search prs") cat "$D4GH_NONE"; exit ;; esac
 case " $* " in *" --search "*) cat "${D4GH_SEARCH:-$D4GH_NONE}"; exit 0 ;; esac
 cat "${D4GH_LIST:-$D4GH_NONE}"
 S
@@ -4597,6 +4601,7 @@ v413_full
 # ---- end 4.1.3 ----
 # ---- 4.2.0 ----
 v420_full
+v42x_full
 # ---- end 4.2.0 ----
 
 printf '\n%d passed, %d failed\n' "$pass" "$failn"

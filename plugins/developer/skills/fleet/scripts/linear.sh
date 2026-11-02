@@ -24,7 +24,9 @@
 #                                             --lapsed removes another machine's label instead, only with takeover's
 #                                             guards (heartbeat older than lease_hours, no open PR); nothing is posted.
 #                                             --repo may repeat: the open PR is looked up in every one given (tick's
-#                                             sweep passes the fleet's repos), else in the cwd's repo
+#                                             sweep passes the fleet's repos), else in the cwd's repo; it is also
+#                                             found from the issue itself (PR attachments, branch, search by owner),
+#                                             so a PR in a repo no one listed still holds the claim
 #   linear.sh state <ISSUE> <Done|Verify|Todo>   move the issue to that workflow state, labels untouched; refuses an
 #                                             issue another machine holds
 #   linear.sh create-issue <FROM-ISSUE> <title> <description> [--link URL]   create an issue in FROM-ISSUE's team, link the URL
@@ -247,6 +249,11 @@ q_issue_branch() { # q_issue_branch <ISSUE> → Linear's suggested git branch fo
   gql_read IssueBranch 'query IssueBranch($id: String!) { issue(id: $id) { identifier branchName } }' \
     "$(jq -nc --arg id "$1" '{id: $id}')" | jq -r '.data.issue.branchName // empty'
 }
+q_issue_sources() { # q_issue_sources <ISSUE> → {branch, urls[]}: the issue's suggested branch and its GitHub PR attachments
+  gql_read IssueSources 'query IssueSources($id: String!) { issue(id: $id) { identifier branchName attachments { nodes { url } } } }' \
+    "$(jq -nc --arg id "$1" '{id: $id}')" | jq -c '.data.issue // error("no such issue") | {branch: (.branchName // ""),
+      urls: [(.attachments.nodes // [])[] | (.url // "") | capture("^(?<u>https://github\\.com/[^/]+/[^/]+/pull/[0-9]+)") | .u] | unique}' 2>/dev/null
+}
 q_viewer() { # the Linear user behind the key
   gql_read Viewer 'query Viewer { viewer { id name } }' '{}' | jq -c '.data.viewer // error("no viewer")' 2>/dev/null || die "cannot read the Linear viewer"
 }
@@ -364,6 +371,41 @@ open_pr() {
   printf '%s' "$hit"
 }
 
+# issue_prs <ISSUE> <repos | ""> → the URL of an open same-repo PR for the issue, found from the issue itself rather
+# than a repo list; nothing when there is none. Returns 2 when a lookup fails (gh missing or erroring, Linear
+# unreadable) and 3 when there is nothing to look in. In order: a) the issue's GitHub PR attachments (`gh pr view`
+# each: OPEN and not cross-repo); b) the PRs whose head is the issue's branch as fleet/<slug> (Linear's branch
+# without its user prefix), kept when the title or body names the issue key; c) `gh search prs <KEY>` per owner
+# (the owners of <repos>, of the attachment URLs and of config `repo_owners`).
+issue_prs() {
+  local issue="$1" repos="$2" src b urls u o owners="" slug js hit r keyre
+  command -v "$FLEET_GH" >/dev/null 2>&1 || return 2
+  src="$(q_issue_sources "$issue")" || return 2
+  b="$(printf '%s' "$src" | jq -r .branch)"; urls="$(printf '%s' "$src" | jq -r '.urls[]')"
+  for r in $repos; do owners="$owners ${r%%/*}"; done
+  for o in $(config_list repo_owners | jq -r '.[]'); do owners="$owners $o"; done
+  for u in $urls; do o="${u#https://github.com/}"; owners="$owners ${o%%/*}"; done
+  owners="$(printf '%s\n' $owners | sort -u | paste -sd' ' -)"
+  [ -n "$urls" ] || [ -n "$b" ] || [ -n "$owners" ] || return 3
+  keyre="(^|[^A-Za-z0-9-])$issue([^0-9]|\$)"
+  for u in $urls; do
+    js="$("$FLEET_GH" pr view "$u" --json url,state,isCrossRepository 2>/dev/null)" || return 2
+    hit="$(printf '%s' "$js" | jq -r 'select(.state == "OPEN" and ((.isCrossRepository // false) | not)) | .url')" || return 2
+    [ -z "$hit" ] || { printf '%s' "$hit"; return 0; }
+  done
+  if [ -n "$b" ]; then
+    slug="fleet/${b#*/}"
+    js="$("$FLEET_GH" search prs --head "$slug" --state open --limit 50 --json url,title,body 2>/dev/null)" || return 2
+    hit="$(printf '%s' "$js" | jq -r --arg k "$keyre" '[.[]? | select(((.title // "") + " " + (.body // "")) | test($k))][0].url // empty')" || return 2
+    [ -z "$hit" ] || { printf '%s' "$hit"; return 0; }
+  fi
+  for o in $owners; do
+    js="$("$FLEET_GH" search prs "$issue" --owner "$o" --match title,body --state open --limit 50 --json url,title,body 2>/dev/null)" || return 2
+    hit="$(printf '%s' "$js" | jq -r --arg k "$keyre" '[.[]? | select(((.title // "") + " " + (.body // "")) | test($k))][0].url // empty')" || return 2
+    [ -z "$hit" ] || { printf '%s' "$hit"; return 0; }
+  done
+}
+
 # claim_lapsed <heartbeat ISO>: exit 0 when the heartbeat is older than lease_hours (the claim lapsed); exit 1 while
 # the lease is live, claim.sh saying why on stderr, or when the heartbeat is not a time (never proven lapsed).
 claim_lapsed() {
@@ -374,8 +416,9 @@ claim_lapsed() {
 
 # lapsed_claim <ISSUE> <issue json> <repos | ""> <refusal>: prints "<holder label><TAB><heartbeat>" when another
 # machine's claim on the issue may be taken from it: its heartbeat is older than lease_hours AND no PR is open for
-# the issue in any of the space-separated OWNER/NAME repos (the cwd's repo when there are none; a PR waiting on a
-# merge is not quiet). Otherwise it dies naming why, ending with <refusal> ("Not taking over"), before anything is
+# the issue in any of the space-separated OWNER/NAME repos (the cwd's repo when there are none) and none is found
+# from the issue itself (issue_prs: its PR attachments, its branch, a search by owner), even in a repo this machine
+# has no team in; a PR waiting on a merge is not quiet. Otherwise it dies naming why, ending with <refusal> ("Not taking over"), before anything is
 # written. takeover and release --lapsed share it; FLEET_FORCE never bypasses it.
 lapsed_claim() {
   local issue="$1" iss="$2" repos="$3" no="$4" holder hb why pr="" rc=0 r
@@ -390,6 +433,9 @@ lapsed_claim() {
     [ "$rc" = 0 ] || die "cannot look up open PRs for $issue${r:+ in $r} (gh failed or is missing). $no"
     [ -z "$pr" ] || die "$issue has an open PR ($pr). $no while it is open"
   done
+  rc=0; pr="$(issue_prs "$issue" "$repos")" || rc=$?
+  [ "$rc" = 0 ] || die "cannot look up open PRs for $issue (gh failed or is missing, or there is no attachment, branch or owner to look in). $no"
+  [ -z "$pr" ] || die "$issue has an open PR ($pr). $no while it is open"
   printf '%s\t%s\n' "$holder" "$hb"
 }
 
