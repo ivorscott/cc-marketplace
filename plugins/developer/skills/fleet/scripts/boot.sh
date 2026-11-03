@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Boot one team: workspace → worktrees → panes → registry rows (Idle) → agents → briefs.
 #
-#   boot.sh [--issue ID --claimed-by KEY --labels a,b --scope 'repo: p1, p2' --peer-claim ...]
+#   boot.sh [--issue ID --issue-url URL --issue-title TEXT --claimed-by KEY --labels a,b --scope 'repo: p1, p2'
+#            --branch-slug SLUG --no-issue]
 #           <template> <focus> <repo-dir> [task text...]
 #
 # <template> is a name from ../templates (build, review, research) or a path to a
@@ -36,10 +37,18 @@
 #   --labels a,b,c       the issue's labels, as just re-read; any <label_prefix>* label that
 #                        is not this machine's is another machine's claim
 #   --scope 'repo: p1, p2'  declared file scope (repo defaults to the repo-dir name; no paths = whole repo)
+#   --branch-slug SLUG   the rest of the team's push branch (the tracker's branch name without its user prefix and key); the
+#                        branch is fleet/<issue key>-<machine key>[-SLUG], so two machines never push one branch
+#   --no-issue           this build has no issue; allowed on a fleet of several machines (see below)
+# Options go BEFORE the template. An option after the repo dir is task text, which would silently drop the claim, the
+# brief URL or the scope, so boot refuses a task that contains one of these option names.
+# With machines > 1 in config.toml a build boot with no --issue (and no --no-issue) is refused: nothing would be claimed.
 # Boot refuses an issue claimed by another machine (FLEET_FORCE=1 does not bypass it), and warns
 # when the declared scope overlaps a live team on this machine in the same repo. (Scope of other
 # machines' claims is no longer known: the label plus the heartbeat is the lock.) A takeover is
-# done with linear.sh takeover before boot; afterwards the label on the issue is this machine's.
+# done with linear.sh takeover before boot; afterwards the label on the issue is this machine's. With a Linear key and
+# writes on, boot also re-reads the issue once (linear.sh holds) and refuses unless this machine's label is on it and
+# no other machine's is.
 # With --issue and no Linear key boot proceeds with a warning, unless config.toml says
 # machines > 1, where it refuses: claims cannot be checked.
 #
@@ -59,7 +68,7 @@ have_key=0; "$FLEET_SCRIPTS/linear.sh" has-key >/dev/null 2>&1 && have_key=1
 claims_why="no Linear key"; if [ "$have_key" = 1 ] && [ "$(linear_writes)" = off ]; then have_key=0; claims_why="linear_writes = off"; fi
 unset LINEAR_API_KEY
 
-issue=""; claimed_by=""; labels=""; scope_arg=""; issue_url=""; issue_title=""
+issue=""; claimed_by=""; labels=""; scope_arg=""; issue_url=""; issue_title=""; branch_slug=""; no_issue=0
 while [ $# -gt 0 ]; do
   case "$1" in
     --issue) issue="${2:?--issue needs a value}"; shift 2 ;;
@@ -68,6 +77,8 @@ while [ $# -gt 0 ]; do
     --claimed-by) claimed_by="${2:?--claimed-by needs a value}"; shift 2 ;;
     --labels) labels="${2:?--labels needs a value}"; shift 2 ;;
     --scope) scope_arg="${2:?--scope needs a value}"; shift 2 ;;
+    --branch-slug) branch_slug="${2:?--branch-slug needs a value}"; shift 2 ;;
+    --no-issue) no_issue=1; shift ;;
     -*) die "unknown option: $1" ;;
     *) break ;;
   esac
@@ -76,18 +87,33 @@ done
 tpl="${1:?usage: boot.sh [options] <template> <focus> <repo-dir> [task...]}"
 focus="${2:?usage: boot.sh [options] <template> <focus> <repo-dir> [task...]}"
 repo="${3:?usage: boot.sh [options] <template> <focus> <repo-dir> [task...]}"
+repo_arg="$3"
 shift 3
 task="${*:-$focus}"
+# A boot option after the repo dir is task text: the issue (claim, brief URL) or the scope would be dropped without a
+# word. Nothing has been created yet.
+if printf '%s' "$*" | grep -Eq '(^|[[:space:]])--(issue|issue-url|issue-title|claimed-by|labels|scope|branch-slug|no-issue)([=[:space:]]|$)'; then
+  opt="$(printf '%s' "$*" | grep -Eo '(^|[[:space:]])--(issue|issue-url|issue-title|claimed-by|labels|scope|branch-slug|no-issue)([=[:space:]]|$)' | head -n 1 | tr -d '[:space:]=')"
+  die "$opt is in the task text, so it was read as part of the task. Boot options go before the template: boot.sh [options] <template> <focus> <repo-dir> [task]" "Reword the task if it only quotes the option name"
+fi
+case "$branch_slug" in *[!a-z0-9-]*) die "--branch-slug takes lowercase letters, digits and dashes only: $branch_slug" ;; esac
 
 [ -f "$tpl" ] || tpl="$FLEET_SKILL_DIR/templates/$tpl.json"
 [ -f "$tpl" ] || die "no template '$1' (have: $(cd "$FLEET_SKILL_DIR/templates" && ls | sed 's/\.json$//' | tr '\n' ' '))"
-repo="$(cd "$repo" && pwd -P)" || die "no such directory: $3"
+repo="$(cd "$repo" && pwd -P)" || die "no such directory: $repo_arg"
 
 template="$(jq -r .name "$tpl")"
 team="$(agent_name "$template-$focus")"
 registry="$FLEET_SCRIPTS/registry.sh"
 machine="$(machine_key)"
 nworkers="$(jq '.workers | length' "$tpl")"
+# A build boot on a fleet of several machines needs a claim, or the other machines cannot see the work.
+if [ -z "$issue" ] && [ "$no_issue" != 1 ] && [ "$template" = build ] && [ "$(cfg_int machines 1)" -gt 1 ]; then
+  die "build boot with no --issue on a fleet of $(cfg_int machines 1) machines: nothing is claimed. Pass --issue (after fleet claim), or --no-issue if this work has no issue"
+fi
+# The branch the team pushes: the issue key first (every PR matcher reads it), then this machine's key.
+if [ -n "$issue" ]; then push_branch="fleet/$(printf '%s' "$issue" | tr '[:upper:]' '[:lower:]')-$machine${branch_slug:+-$branch_slug}"
+else push_branch="fleet/$team-$machine"; fi
 
 # One team name, one live team.
 [ "$("$registry" list --team "$team" --live | jq length)" = "0" ] || die "team $team is already live; retire it first"
@@ -123,6 +149,9 @@ if [ -n "$issue" ]; then
   if [ "$have_key" != 1 ]; then
     if [ "$(cfg_int machines 1)" -gt 1 ]; then die "$issue: $claims_why and machines > 1 in config.toml, so claims cannot be checked. Not booting"; fi
     warn "$claims_why; booting $issue without checking claims (machines = 1)"
+  else
+    # One read of the issue: this machine's label is on it and no other machine's is. Nothing exists yet to undo.
+    holds_err="$("$FLEET_SCRIPTS/linear.sh" holds "$issue" 2>&1 >/dev/null)" || die "${holds_err#fleet: }"
   fi
 fi
 scope_json=null
@@ -265,10 +294,10 @@ row() { # row <name> <tier> <agent> <pane> <kind> <model> <status> <cwd> <worktr
     --arg status "$7" --arg cwd "$8" --arg wt "$9" --arg br "${10}" --arg ex "${11}" \
     --arg team "$team" --arg tpl "$template" --arg repo "$repo" --arg task "$task" --arg m "$machine" --arg ws "$workspace" \
     --arg tr "${row_transcript:-}" --arg issue "$issue" --arg cb "$claimed_by" --argjson scope "$scope_json" \
-    --arg pv "$plugin_ver" --arg iu "$issue_url" --arg it "$issue_title" \
+    --arg pv "$plugin_ver" --arg iu "$issue_url" --arg it "$issue_title" --arg pb "$push_branch" \
     '{name: $name, team: $team, tier: $tier, template: $tpl, harness: $harness, model: $model, repo: $repo,
       machine: $m, status: $status, assignment: $task, herdr_ref: $ref, pane: $pane, workspace: $ws,
-      cwd: $cwd, worktree: $wt, branch: $br, expertise_file: $ex}
+      cwd: $cwd, worktree: $wt, branch: $br, expertise_file: $ex, push_branch: $pb}
     + (if $tr != "" then {transcript: $tr} else {} end)
     + (if $pv != "" then {plugin_version: $pv} else {} end)
     + (if $iu != "" then {issue_url: $iu} else {} end)

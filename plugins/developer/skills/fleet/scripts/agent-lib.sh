@@ -9,6 +9,7 @@ render() { # render <text> <name> <worktree> <workers>
   s="${s//\{\{team\}\}/$team}"; s="${s//\{\{task\}\}/$task}"; s="${s//\{\{repo\}\}/$repo}"
   s="${s//\{\{name\}\}/$2}"; s="${s//\{\{name_slug\}\}/${2//\//-}}"; s="${s//\{\{worktree\}\}/$3}"
   s="${s//\{\{workers\}\}/$4}"; s="${s//\{\{registry\}\}/$registry}"; s="${s//\{\{scripts\}\}/$FLEET_SCRIPTS}"
+  s="${s//\{\{push_branch\}\}/${push_branch:-fleet/<slug>}}"
   s="${s//\{\{issue_url\}\}/${issue_url:-<the full URL of the issue>}}"
   case "$s" in *'{{catch_up}}'*) s="${s//\{\{catch_up\}\}/$(catch_up)}" ;; esac # rebase or, overnight, merge (common.sh)
   printf '%s' "$s"

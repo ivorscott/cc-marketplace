@@ -218,7 +218,7 @@ check_git_push() { # check_git_push <words after "git push">
     refs=1; ref="${a#+}"
     [ "$ref" = "$a" ] || deny "fleet bash guard: a +refspec forces the push; use --force-with-lease."
     ref="${ref##*:}"; ref="${ref#refs/heads/}"
-    if is_default_branch "$ref"; then deny "fleet bash guard: agents never push to the default branch ($ref); push your fleet/<slug> branch."; fi
+    if is_default_branch "$ref"; then deny "fleet bash guard: agents never push to the default branch ($ref); push the fleet/ branch your brief names."; fi
     [ "$ref" != HEAD ] || { cur="$(git symbolic-ref -q --short HEAD 2>/dev/null || true)"; [ -z "$cur" ] || ! is_default_branch "$cur" || deny "fleet bash guard: HEAD is the default branch ($cur); agents never push to it."; }
   done
   if [ "$refs" = 0 ]; then # a bare `git push`: pushes the current branch

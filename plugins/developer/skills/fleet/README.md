@@ -195,7 +195,7 @@ you now, see [Troubleshooting](#troubleshooting). Otherwise leave it alone.
 ```
 
 A normal team's life: the planner reads the repo and writes the plan, and is done. The builder implements it, pushes
-`fleet/<slug>` and opens the PR. The tester takes the pushed commit, reviews the diff while CI runs, runs only what CI
+its `fleet/<key>-<machine key>-...` branch and opens the PR. The tester takes the pushed commit, reviews the diff while CI runs, runs only what CI
 cannot, and signs off at that commit. The lead checks that the signed SHA is the PR head and that CI is green, and runs its
 done step. If an agent needs a decision it escalates through the lead, and you see it in the table:
 
@@ -580,7 +580,7 @@ The Orchestrator and agents call these directly (from `scripts/`). You can call 
 
 | Script | Commands |
 |---|---|
-| `boot.sh` | `boot.sh [--issue ID --issue-url URL --issue-title TEXT --claimed-by KEY --labels a,b --scope 'repo: paths'] <template> <focus> <dir> [task…]` boots a team (`FLEET_FORCE=1` goes over the team caps (`max_teams`, `teams_per_repo`) and the `min_free_gb` disk floor, never over another machine's claim). A takeover is done with `linear.sh takeover` before boot. It writes every row (Idle) before any agent starts; a boot that fails or is interrupted closes its workspace, removes the worktrees and branches it made and retires its rows (Abandoned), and a name with leftovers of an earlier boot is refused until `retire.sh <team>` tidies them |
+| `boot.sh` | `boot.sh [--issue ID --issue-url URL --issue-title TEXT --claimed-by KEY --labels a,b --scope 'repo: paths' --branch-slug SLUG --no-issue] <template> <focus> <dir> [task…]` boots a team (`FLEET_FORCE=1` goes over the team caps (`max_teams`, `teams_per_repo`) and the `min_free_gb` disk floor, never over another machine's claim). Options go before the template; one after the repo dir is refused. A takeover is done with `linear.sh takeover` before boot. It writes every row (Idle) before any agent starts; a boot that fails or is interrupted closes its workspace, removes the worktrees and branches it made and retires its rows (Abandoned), and a name with leftovers of an earlier boot is refused until `retire.sh <team>` tidies them |
 | `claim.sh` | `lease` prints now + `lease_hours` · `hb` reads the `heartbeat=` line of a label description (stdin) · `expired --lease ISO` says whether a lease has lapsed (the open-PR check is `linear.sh takeover`'s). Pure: it never calls a tracker |
 | `redact-check.sh` | `redact-check.sh --range <base>..<head>` counts the private terms in the lines a branch adds and its commit messages; prints counts only, never a term; exit 0 clean, 1 a match, 2 cannot run (no terms file, no terms, bad range). The terms live in `$FLEET_STATE_DIR/private/redact_terms.txt` (default `~/.local/state/fleet/private/redact_terms.txt`), outside every repo: one per line, blank lines and `#` lines ignored, mode 600 (it warns when the file is group- or world-readable). It gates public repos only: a repo in `private_repos` (config.toml) or one `gh repo view` reports as private or internal prints `skipped (private repo)` and exits 0; a visibility it cannot read counts as public. Every agent may run it: the house rules require it before sign-off and every push |
 | `slim.sh` | `slim.sh on\|off\|status` the slim panel style for herdr (`styles/slim.toml`), written between markers in herdr's config (replacing a hand-written `[ui]` style there), with a backup, the Claude integration and a reload; the choice is a registry pref, so the offer is made once. The Orchestrator's only |
@@ -1005,6 +1005,22 @@ Fixes found after 4.1.1 (DEV-530), one per item:
    filed and a requested split is done. `retire --summary` stays as a read-only view.
 5. **A fresh claim is fresh.** `claim` and `takeover` refresh the machine label's heartbeat in the same call, and tick
    refreshes it first of all, before herdr is checked and with or without claimed rows.
+
+## What changed in 4.2.3
+
+DEV-660: two machines booted one issue. The cause was not a claim race: boot options (`--issue`, ...) placed after the
+repo dir were read as task text, so the boot claimed nothing and recorded no issue.
+
+1. **Misplaced options are refused.** A task text containing `--issue`, `--issue-url`, `--issue-title`, `--claimed-by`,
+   `--labels`, `--scope`, `--branch-slug` or `--no-issue` (bare or `--opt=value`) stops the boot before anything is
+   created. Options go before the template.
+2. **No silent unclaimed build.** With `machines > 1` in config.toml, a `build` boot with no `--issue` is refused unless
+   `--no-issue` is given. Review and research templates, and `machines = 1`, are unchanged.
+3. **The claim is checked at boot.** With a Linear key and writes on, boot calls `linear.sh holds <ISSUE>` (one read) and
+   refuses unless this machine's label is on the issue and no other machine's is.
+4. **Machine-specific branches.** A team pushes `fleet/<issue key>-<machine key>[-<rest>]` (`--branch-slug` gives the
+   rest); the brief and the row (`push_branch`) carry the exact name. The issue key stays first, so the PR matchers
+   still find it, and old `fleet/<slug>` branches still match.
 
 ## What changed in 4.2.2
 

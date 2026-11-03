@@ -122,9 +122,79 @@ v42x_peer_repos() { # the repos of the PRs in the other machines' summaries are 
   eq "v42x peers: gh was asked about the repo of the PR in the peer's summary" "$(grep -c -- '^pr list.*--repo acme/summary-app' "$V42X_GH_LOG" | sed 's/^[1-9].*/some/')" some
 }
 
+
+# 4.2.3 (DEV-660): boot options after the repo dir are task text, so the issue was never claimed. Boot refuses them, a
+# build boot on a fleet of several machines needs an issue, boot checks the claim once, and branches name the machine.
+v42x_boot_state() { # a fresh state, DEV-7 labelled with the given label ids; the herdr shim log emptied
+  v42x_state "$1" "${@:3}"
+  jq -n --arg l "$2" '{team: "T1", states: {"In Progress": "S1"}, next: 100,
+    labels: [{id: "L0", name: "fleet", description: "", parent: null},
+      {id: "L2", name: "fleet:test", description: "heartbeat=2026-10-29T09:55:00Z", parent: {id: "L0", name: "fleet"}},
+      {id: "L3", name: "fleet:other", description: "heartbeat=2026-10-29T09:55:00Z", parent: {id: "L0", name: "fleet"}}],
+    issues: [{id: "I7", identifier: "DEV-7", team: {id: "T1"}, state: {id: "S1", name: "In Progress"}, labelIds: ($l | split(",") | map(select(. != ""))), comments: []}]}' >"$LINEAR_DB"
+  : >"$HERDR_LOG"
+  V42X_REPO="$FLEET_STATE_DIR/repo"; git init -q -b main "$V42X_REPO"; git -C "$V42X_REPO" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
+}
+v42x_boot() { # the exit code; V42X_DEBUG=1 shows boot's stderr
+  FLEET_FORCE=1 FLEET_MACHINE=test "$SCRIPTS/boot.sh" "$@" >"$FLEET_STATE_DIR/boot.out" 2>"$FLEET_STATE_DIR/boot.err"; local rc=$?
+  [ -z "${V42X_DEBUG:-}" ] || cat "$FLEET_STATE_DIR/boot.err" >&2
+  echo "$rc"
+}
+v42x_rows() { "$REG" list 2>/dev/null | jq length; }
+
+v42x_misplaced() { # an option in the task text is refused before anything is created
+  v42x_boot_state misplaced L2 'machines = 1'
+  local o rc res=""
+  for o in --issue --issue-url --issue-title --claimed-by --labels --scope --branch-slug --no-issue; do
+    rc="$(v42x_boot build mp "$V42X_REPO" "do it" "$o" x)"
+    res="$res $rc:$(grep -c "^fleet: $o is in the task text" "$FLEET_STATE_DIR/boot.err"):$(grep -c . "$HERDR_LOG"):$(v42x_rows)"
+  done
+  eq "v42x misplaced: each boot option after the repo dir is refused, named, with no herdr call and no row" "$res" \
+    " 1:1:0:0 1:1:0:0 1:1:0:0 1:1:0:0 1:1:0:0 1:1:0:0 1:1:0:0 1:1:0:0"
+  rc="$(v42x_boot build mp "$V42X_REPO" "do it --issue=DEV-7")"
+  eq "v42x misplaced: --opt=value inside one quoted task string is refused too" "$rc:$(v42x_rows)" "1:0"
+  rc="$(v42x_boot build mp "$V42X_REPO" fix the issue tracker --fixed-width)"
+  eq "v42x misplaced: a task that only mentions issue or --fixed-width boots" "$rc" 0
+}
+
+v42x_no_issue() { # machines > 1: a build boot with no claim is refused, unless --no-issue
+  v42x_boot_state noissue L2 'machines = 2'
+  local rc
+  rc="$(v42x_boot build ni "$V42X_REPO" task)"
+  eq "v42x no-issue: machines = 2, build, no --issue: refused, nothing created" "$rc:$(grep -c 'build boot with no --issue on a fleet of 2 machines' "$FLEET_STATE_DIR/boot.err"):$(grep -c . "$HERDR_LOG"):$(v42x_rows)" "1:1:0:0"
+  rc="$(v42x_boot --no-issue build ni "$V42X_REPO" task)"
+  eq "v42x no-issue: --no-issue boots" "$rc" 0
+  v42x_boot_state noissue2 L2 'machines = 2'
+  eq "v42x no-issue: a research template is not affected" "$(v42x_boot research ni2 "$V42X_REPO" task)" 0
+  v42x_boot_state noissue3 L2 'machines = 1'
+  eq "v42x no-issue: machines = 1 is not affected" "$(v42x_boot build ni3 "$V42X_REPO" task)" 0
+}
+
+v42x_gate() { # boot reads the issue once: this machine's label and no other
+  local rc
+  v42x_boot_state gate1 L3 'linear_writes = "on"'
+  rc="$(v42x_boot --issue DEV-7 build g1 "$V42X_REPO" task)"
+  eq "v42x gate: another machine's label refuses, naming it, nothing created" "$rc:$(grep -c 'DEV-7 is claimed by fleet:other' "$FLEET_STATE_DIR/boot.err"):$(grep -c . "$HERDR_LOG"):$(v42x_rows)" "1:1:0:0"
+  v42x_boot_state gate2 "" 'linear_writes = "on"'
+  rc="$(v42x_boot --issue DEV-7 build g2 "$V42X_REPO" task)"
+  eq "v42x gate: no label refuses, saying to claim first" "$rc:$(grep -c 'has no claim by' "$FLEET_STATE_DIR/boot.err"):$(v42x_rows)" "1:1:0"
+  v42x_boot_state gate3 L2 'linear_writes = "on"'
+  rc="$(v42x_boot --issue DEV-7 build g3 "$V42X_REPO" task)"
+  eq "v42x gate: this machine's label boots, one issue read" "$rc:$(grep -c '^query Issue' "$LINEAR_LOG")" "0:1"
+}
+
+v42x_pushbranch() { # the team pushes fleet/<key>-<machine key>-<rest>; the brief and the row carry it
+  v42x_boot_state branch L2 'linear_writes = "on"'
+  local rc
+  rc="$(v42x_boot --issue DEV-7 --branch-slug fix-login build br "$V42X_REPO" task)"
+  eq "v42x branch: the row records the machine-specific branch" "$rc:$("$REG" get build-br/builder | jq -r .push_branch)" "0:fleet/dev-7-test-fix-login"
+  check "v42x branch: the brief names the exact branch" grep -q 'Your branch is `fleet/dev-7-test-fix-login`' "$("$REG" get build-br/builder | jq -r .last_brief)"
+  check "v42x branch: and pushes with --force-with-lease to it" grep -q 'force-with-lease origin fleet/dev-7-test-fix-login' "$("$REG" get build-br/builder | jq -r .last_brief)"
+}
+
 v42x_smoke() { # the critical cases, CI
   local f
-  for f in v42x_attachment v42x_listed_other_repo v42x_branch v42x_search v42x_closed v42x_takeover v42x_peer_repos; do
+  for f in v42x_attachment v42x_listed_other_repo v42x_branch v42x_search v42x_closed v42x_takeover v42x_peer_repos v42x_misplaced v42x_no_issue v42x_gate v42x_pushbranch; do
     case " ${V42X_ONLY:-$f} " in *" $f "*) "$f" ;; esac
   done
 }

@@ -7,6 +7,8 @@
 #   linear.sh claim <ISSUE> [--dry-run]       label the issue with this machine's label, set In Progress; exit 1 when the
 #                                             claim was lost, 4 when it stood down to an earlier claim (nothing to start)
 #   linear.sh heartbeat                       rewrite the heartbeat line of this machine's label (ONE mutation)
+#   linear.sh holds <ISSUE>                   exit 0 only when this machine's label is on the issue and no other fleet label is
+#                                             (one read); else exit 1 saying who holds it. boot's gate
 #   linear.sh holder <ISSUE>                  JSON: who holds the issue, their last heartbeat and whether it lapsed
 #                                             (`lapsed`: older than lease_hours, takeover's own check; null without a
 #                                             heartbeat)   (read-only)
@@ -351,7 +353,7 @@ legacy_ids_hashed() {
 }
 
 # open_pr <ISSUE> <repo | ""> → the URL of an open same-repo PR for the issue; nothing when there is none. Returns 2
-# when gh cannot answer. A PR counts when its branch is fleet/<slug>[-/...] (slug = the lowercase issue key) or the
+# when gh cannot answer. A PR counts when its branch is fleet/<slug>[-/...] (slug = the lowercase issue key; boot's fleet/<key>-<machine key>-... too) or the
 # issue's Linear branch, or when its title or body names the issue key, whatever the branch (boot's
 # fleet/<team>/<role>, say): a second, search-based `gh pr list`.
 open_pr() {
@@ -375,7 +377,7 @@ open_pr() {
 # than a repo list; nothing when there is none. Returns 2 when a lookup fails (gh missing or erroring, Linear
 # unreadable) and 3 when there is nothing to look in. In order: a) the issue's GitHub PR attachments (`gh pr view`
 # each: OPEN and not cross-repo); b) the PRs whose head is the issue's branch as fleet/<slug> (Linear's branch
-# without its user prefix), kept when the title or body names the issue key; c) `gh search prs <KEY>` per owner
+# without its user prefix; an exact head, so boot's machine-specific branches are found by c), kept when the title or body names the issue key; c) `gh search prs <KEY>` per owner
 # (the owners of <repos>, of the attachment URLs and of config `repo_owners`).
 issue_prs() {
   local issue="$1" repos="$2" src b urls u o owners="" slug js hit r keyre
@@ -558,6 +560,16 @@ case "$cmd" in claim | heartbeat | holder | peers | candidates | blocks | whoami
 case "$cmd" in
   has-key)
     has_key || no_key ;;
+
+  holds)
+    READONLY=1
+    issue="${1:?usage: holds <ISSUE>}"
+    iss="$(q_issue "$issue")"; mine="$(machine_label)"; legacy="$(cfg_str machine_legacy_label '')"
+    other="$(other_fleet_labels "$iss" | head -n 1)"
+    [ -z "$other" ] || die "$issue is claimed by $other; this machine is $mine. Not booting"
+    printf '%s' "$iss" | jq -e --arg m "$mine" --arg l "$legacy" 'any(.labels.nodes[]; .name == $m or ($l != "" and .name == $l))' >/dev/null ||
+      die "$issue has no claim by $mine; run fleet claim $issue first. Not booting"
+    say --arg i "$issue" --arg m "$mine" '{holds: true, issue: $i, label: $m}' ;;
 
   holder)
     READONLY=1
