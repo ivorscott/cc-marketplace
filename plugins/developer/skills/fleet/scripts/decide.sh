@@ -34,10 +34,17 @@ short="${msg:0:120}"
 # (`registry.sh escalate ... --human`); (2) it is a P0; (3) a broader backstop over its words, word-bounded, used only because a
 # filer can forget the mark. "production-ready" and "tokenizer" are not hits; "merge", "key", "apply", "kubectl" are. A question
 # that is not clearly something else is parked when the backstop hits, so a hit is never overruled by an option's wording.
-human=false
+human=false; pushfix=false
 [ "$(jq -r '.human // false' <<<"$esc")" != true ] || human=true
 [ "$sev" != P0 ] || human=true
 text="$(printf '%s %s' "$msg" "$(jq -r '(.options // []) | join(" ")' <<<"$esc")" | sed -E 's/[Pp]roduction[- ](ready|grade|quality)//g')"
+# A denied plain push of a fleet/ branch is not a human-only item: the words "force push" in it only name what to avoid, so they
+# are dropped before the backstop. It needs fleet/ + push + a denial word, no --human mark and no P0; anything else keeps parking.
+if ! $human && printf '%s' "$text" | grep -qiE 'fleet/' && printf '%s' "$text" | grep -qiE '\bpush(es|ed|ing)?\b' &&
+  printf '%s' "$text" | grep -qiE '\b(denied|denies|denial|blocked|refused)\b' && ! printf '%s' "$text" | grep -qiE '\b(main|master)\b'; then
+  pushfix=true
+  text="$(printf '%s' "$text" | sed -E 's/[Ff]orce[- ][Pp]ush(es|ed)?//g; s/--force(-with-lease)?//g')"
+fi
 printf '%s' "$text" | grep -qiE '\b(merg(e|es|ed|ing)|prod|production|deploy(ing|ment)?s?|release to|infra|infrastructure|terraform|tofu|kubectl|helm|pulumi|ansible|cloudformation|apply|applies|secrets?|credentials?|passwords?|passphrase|tokens?|api[ _-]?keys?|keys?|certs?|certificates?|iam|vault|rotate|rotation|branch[ -]protection|protected branch|force[ -]push|required (checks|reviews)|gh pr ready|close the (pr|issue))\b' && human=true
 
 if $human; then
@@ -54,6 +61,9 @@ rec="$(jq -r '(.options // [])[0] // ""' <<<"$esc")"
 if [ -n "$rec" ]; then
   text="Decision (taken for the owner, who can overrule it on the issue): $rec. Question was: $short. Carry on."
   note="$short → $rec"
+elif $pushfix; then
+  text="Decision (taken for the owner): push without force (plain \`git push -u origin <branch>\`), or merge origin/main and push plainly; do not retry the denied push another way. Question was: $short. Carry on."
+  rec="push without force, or merge origin/main and push plainly"; note="$short → $rec"
 else
   text="Decision (taken for the owner): no option was given, so decide inside the issue's scope, note the choice in your summary, and carry on. Question was: $short."
   rec="decide inside the issue's scope"; note="$short → $rec"

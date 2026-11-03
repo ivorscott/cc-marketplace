@@ -814,7 +814,7 @@ tracker runs the fleet on one machine, and those parts are skipped.
   `KUBECONFIG` is `/dev/null` unless the team has its own. It is always on. The Bash guard also denies
   package installers (`brew|npm|pip|go|gem|cargo|apt|yarn|pnpm install/add <package>`, unless
   config.toml has `installs = "allow"`; lockfile installs such as `npm ci` pass), `gh pr merge`, a
-  force push without `--force-with-lease`, and any push to the default branch. These guards catch
+  force push, and any push to the default branch. These guards catch
   mistakes; they are not a security boundary (see above). Agents run with permission checks on:
   `bypassPermissions` is refused. UNVERIFIED: that a real pane's shell passes the scrubbed
   environment to `claude`.
@@ -1005,6 +1005,19 @@ Fixes found after 4.1.1 (DEV-530), one per item:
    filed and a requested split is done. `retire --summary` stays as a read-only view.
 5. **A fresh claim is fresh.** `claim` and `takeover` refresh the machine label's heartbeat in the same call, and tick
    refreshes it first of all, before herdr is checked and with or without claimed rows.
+
+## What changed in 4.2.5
+
+DEV-686: the build template told builders to push with `--force-with-lease`, and Claude Code's auto mode denies it as a
+destructive git command, so every new team's first push stalled on a P1.
+
+1. **Plain pushes in every mode.** The first push is `git push -u origin <branch>`. A branch catches up with the default
+   branch by a merge commit (`git fetch origin`, `git merge origin/main`) and a plain `git push`, never a rebase or a
+   force-push; this was overnight mode's rule and is now the only one. The brief, the fleet rules and the house rules say so.
+2. **A denied push is not parked.** `fleet decide` no longer parks a denied push of a `fleet/` branch only because it names
+   a force-push. It still parks a P0, a `--human` question, a push of the default branch, and anything else the backstop hits.
+3. **Guard messages.** The Bash guard still denies a bare force push and a `+refspec`, but its messages now say to merge
+   `origin/main` and push plainly. `--force-with-lease` is not denied by the guard; nothing in the fleet asks for it.
 
 ## What changed in 4.2.4
 

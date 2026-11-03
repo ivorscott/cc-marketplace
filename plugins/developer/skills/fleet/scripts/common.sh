@@ -406,18 +406,14 @@ contract() {
 Fleet rules for $name.$x Stay on this one task. If you notice unrelated work, run \`$registry note $name discovered \"<what>\"\` instead of doing it. If you need a decision you cannot make, run \`$registry escalate $name P1 \"<question>\" \"<recommended option>\" \"<other option>\"\` (options optional, your recommendation first) and wait. P1 is only for a decision the user must make; \"PR ready\" goes through done, not an escalation. If you stop to wait for instructions, first run \`$registry set $name status=Idle\`. When your part is finished: push your \`${push_branch:-fleet/<slug>}\` branch if you have one ($(push_how), never to the default branch), then run \`$registry done $name --outcome <Shipped|Partial|Failed> --summary \"<one line>\"\`, then stop. Going idle without that command marks you Stalled."
 }
 
-# catch_up: how an agent brings its branch up to date with the default branch and pushes it, in the words a brief
-# uses ({{catch_up}} in a template, and the fleet rules above): a rebase and --force-with-lease, or, while overnight
-# mode is on (house rule 4 and the overnight block), a merge commit and a plain push, never a force-push. One mode, one
-# instruction: a brief never says both.
+# catch_up: how an agent pushes and brings its branch up to date with the default branch, in the words a brief uses
+# ({{catch_up}} in a template, and the fleet rules above): the first push is a plain `git push -u`, a catch-up is a merge
+# commit and a plain push, never a rebase or a force-push, in every mode. Auto mode denies a force-push, so none is asked.
 catch_up() {
-  if [ "$(cfg_bool overnight false)" = true ]; then
-    printf 'merge the default branch into yours (overnight mode: never rebase), tell the lead which files the default branch touched, and push with `git push origin %s` (never a force-push)' "${push_branch:-fleet/<slug>}"
-  else
-    printf 'rebase onto the default branch (never merge it into yours), tell the lead which files the default branch touched, and push with `git push --force-with-lease origin %s`' "${push_branch:-fleet/<slug>}"
-  fi
+  local b="${push_branch:-fleet/<slug>}"
+  printf 'push the first time with `git push -u origin %s`; to catch up with the default branch, run `git fetch origin` and `git merge origin/main` (never rebase), resolve, run the repo'"'"'s verify, tell the lead which files the default branch touched, and push with a plain `git push origin %s` (never a force-push). If a push is denied, do not retry it another way: tell the lead' "$b" "$b"
 }
-push_how() { if [ "$(cfg_bool overnight false)" = true ]; then printf '%s' 'a plain push, never a force-push while overnight mode is on'; else printf '%s' "with \`--force-with-lease\`"; fi; }
+push_how() { printf '%s' 'a plain `git push`, never a force-push'; }
 
 # build_brief <name> <expertise-file> <text>: a brief plus the fleet rules and the house rules.
 # build_brief --resume <name> <expertise-file> <role brief>: the brief for a respawned agent.
