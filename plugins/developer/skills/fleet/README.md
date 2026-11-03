@@ -1006,6 +1006,15 @@ Fixes found after 4.1.1 (DEV-530), one per item:
 5. **A fresh claim is fresh.** `claim` and `takeover` refresh the machine label's heartbeat in the same call, and tick
    refreshes it first of all, before herdr is checked and with or without claimed rows.
 
+## What changed in 4.2.3
+
+DEV-661: a peer's teams with no issue showed as blank rows in `fleet status`.
+
+1. **Thin summary rows keep a name.** When `summary=` falls back to `i` and `s`, or to `i` alone, a team with no issue
+   keeps `t` (cut to 12 characters in those tiers only; full rows are unchanged). A row with neither keeps only `s`.
+2. **No blank rows.** `fleet status` names a peer row by `t`, else `i`, and never prints a row with neither: it says
+   `<machine>: N teams (names didn't fit)` instead.
+
 ## What changed in 4.2.2
 
 DEV-649: tick released a lapsed claim whose open PR was in a repo this machine has no team in.
