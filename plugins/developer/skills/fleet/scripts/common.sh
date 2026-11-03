@@ -1267,3 +1267,32 @@ notices_show() {
   printf '%s\n' "$n" >"$f.shown"
   notices_unlock
 }
+
+# fleet_base_ref <repo>: the ref a team's worktrees branch from, printed on stdout. It fetches origin first (only
+# remote-tracking refs change; the user's checkout is never touched, moved or merged), then resolves the default branch
+# (origin/HEAD, else main, else master) and prints origin/<branch>. When origin cannot be fetched, or has no such
+# branch, it warns and prints the local default branch, else HEAD, which may be stale. FLEET_FETCH_SECS bounds the fetch.
+fleet_base_ref() {
+  local repo="$1" br="" t="" fetched=false
+  command -v timeout >/dev/null 2>&1 && t="timeout ${FLEET_FETCH_SECS:-60}"
+  # shellcheck disable=SC2086
+  GIT_TERMINAL_PROMPT=0 $t git -C "$repo" fetch -q origin >/dev/null 2>&1 && fetched=true
+  br="$(git -C "$repo" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##' || true)"
+  if [ -z "$br" ] && $fetched; then # origin/HEAD is not set in this clone: ask origin (this only writes a remote-tracking ref)
+    git -C "$repo" remote set-head origin -a >/dev/null 2>&1 || true
+    br="$(git -C "$repo" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##' || true)"
+  fi
+  if [ -z "$br" ]; then
+    for br in main master; do git -C "$repo" rev-parse -q --verify "refs/remotes/origin/$br^{commit}" >/dev/null 2>&1 && break; br=""; done
+  fi
+  if [ -n "$br" ] && git -C "$repo" rev-parse -q --verify "refs/remotes/origin/$br^{commit}" >/dev/null 2>&1; then
+    $fetched || warn "could not fetch origin; branching from the last fetched origin/$br, which may be stale"
+    printf 'origin/%s\n' "$br"; return 0
+  fi
+  if [ -z "$br" ]; then
+    for br in main master; do git -C "$repo" rev-parse -q --verify "refs/heads/$br^{commit}" >/dev/null 2>&1 && break; br=""; done
+  fi
+  if $fetched; then warn "origin has no default branch; branching from local ${br:-HEAD}, which may be stale"
+  else warn "could not fetch origin; branching from local ${br:-HEAD}, which may be stale"; fi
+  printf '%s\n' "${br:-HEAD}"
+}
