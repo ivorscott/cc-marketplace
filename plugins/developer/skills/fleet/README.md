@@ -1006,6 +1006,18 @@ Fixes found after 4.1.1 (DEV-530), one per item:
 5. **A fresh claim is fresh.** `claim` and `takeover` refresh the machine label's heartbeat in the same call, and tick
    refreshes it first of all, before herdr is checked and with or without claimed rows.
 
+## What changed in 4.2.6
+
+DEV-691: a team's worktrees started from the repo's local HEAD, which can be days stale, so a team could see errors
+that were already fixed upstream.
+
+1. **Fresh base.** `boot` (and so `next`) fetches origin once and branches every role's worktree from
+   `origin/<default branch>` (origin's HEAD, else `main`, else `master`).
+2. **Offline fallback.** If the fetch fails or origin has no default branch, the worktrees start from the local HEAD
+   and boot warns.
+3. **Your checkout is untouched.** Only remote-tracking refs are updated; nothing is checked out or moved. `respawn`
+   reuses the existing worktree, so it needs no change.
+
 ## What changed in 4.2.4
 
 DEV-660: two machines booted one issue. The cause was not a claim race: boot options (`--issue`, ...) placed after the

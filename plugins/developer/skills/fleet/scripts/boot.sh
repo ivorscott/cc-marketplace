@@ -259,6 +259,18 @@ lead_pane="$(printf '%s' "$ws_json" | jq -r '.result.root_pane.pane_id // empty'
 made_ws="$workspace"
 
 # 2. Worker panes (first to the right of the lead, the rest stacked below it), worktrees.
+# Every worktree branches from the fresh default branch on origin, never from the repo's local HEAD, which can be days
+# stale. The fetch only updates remote-tracking refs, so the user's own checkout is untouched. Offline or no origin:
+# fall back to the local HEAD, with a warning.
+start_point=""
+if $is_git; then
+  dbr="$(git -C "$repo" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##' || true)"
+  if [ -z "$dbr" ]; then for dbr in main master; do git -C "$repo" rev-parse -q --verify "refs/remotes/origin/$dbr" >/dev/null && break; dbr=""; done; fi
+  if [ -z "$dbr" ]; then warn "no default branch found on origin; the worktrees start from the local HEAD, which may be stale"
+  elif git -C "$repo" fetch -q origin "$dbr" >/dev/null 2>&1 && git -C "$repo" rev-parse -q --verify "refs/remotes/origin/$dbr^{commit}" >/dev/null; then
+    start_point="refs/remotes/origin/$dbr"
+  else warn "could not fetch origin/$dbr (offline?); the worktrees start from the local HEAD, which may be stale"; fi
+fi
 workers_json="[]"; prev=""
 for i in $(seq 0 $((nworkers - 1))); do
   w="$(jq -c ".workers[$i]" "$tpl")"
@@ -268,7 +280,7 @@ for i in $(seq 0 $((nworkers - 1))); do
   if [ "$(printf '%s' "$w" | jq -r '.worktree // false')" = "true" ] && $is_git; then
     worktree="$FLEET_WORKTREES/$team/$role"; branch="fleet/$team/$role"
     mkdir -p "$(dirname "$worktree")"
-    git -C "$repo" worktree add -q -b "$branch" "$worktree" >/dev/null 2>&1 || die "git worktree add failed for $worktree"
+    git -C "$repo" worktree add -q -b "$branch" "$worktree" ${start_point:+"$start_point"} >/dev/null 2>&1 || die "git worktree add failed for $worktree"
     made_wts+=("$worktree"); made_brs+=("$branch")
     # A force push with lease also has to include what the remote had when we last fetched (push.useForceIfIncludes).
     git -C "$worktree" config push.useForceIfIncludes true >/dev/null 2>&1 || warn "could not set push.useForceIfIncludes in $worktree"
