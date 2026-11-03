@@ -371,8 +371,7 @@ overnight = true
 ```
 
 Leads then decide inside the issue's scope on their own recommendation and note each decision; installs, cloud,
-production, branch protection, `gh pr ready` and closing stay P1 for you; branches catch up with merge commits instead of
-rebases; an agent blocked on a permission prompt for two ticks gets a P1. At the first tick after 07:00 local time the
+production, branch protection, `gh pr ready` and closing stay P1 for you; an agent blocked on a permission prompt for two ticks gets a P1. At the first tick after 07:00 local time the
 Orchestrator writes `reports/fleet-morning-<date>.md` and relays it:
 
 ```
@@ -894,8 +893,7 @@ in 4.1. Anything that newly exposes the key is a blocker; the items that touch t
 10. **A plugin version switch waits for the user.** `stale_version` is a decision; `next` and `respawn --restart`
     refuse with exit 5 until `FLEET_VERSION_OK=1`.
 11. **Overnight mode.** `overnight = true`: a lead takes its own recommendation for a decision inside the issue's scope
-    and notes it; installs, production and the other gated actions stay P1 for the user; branches catch up with merge
-    commits; and the morning report (`metrics.sh --morning`) is written after 07:00. A prompt-blocked agent gets a P1
+    and notes it; installs, production and the other gated actions stay P1 for the user; and the morning report (`metrics.sh --morning`) is written after 07:00. A prompt-blocked agent gets a P1
     after two ticks, always.
 12. **Clean up as you go.** A team cluster's anonymous volumes go with it, panes share a Terraform plugin cache, tick
     prunes the Go cache and docker's dangling volumes, build cache and images (at most hourly, once one passes
@@ -1014,7 +1012,8 @@ destructive git command, so every new team's first push stalled on a P1.
 1. **Plain pushes in every mode.** The first push is `git push -u origin <branch>`. A branch catches up with the default
    branch by a merge commit (`git fetch origin`, `git merge origin/main`) and a plain `git push`, never a rebase or a
    force-push; this was overnight mode's rule and is now the only one. The brief, the fleet rules and the house rules say so.
-2. **A denied push is not parked.** `fleet decide` no longer parks a denied push of a `fleet/` branch only because it names
+2. **A denied push is not parked.** `fleet decide` takes the first option that names no force push (and, with none, says to
+   push plainly or merge `origin/main` first), and no longer parks a denied push of a `fleet/` branch only because it names
    a force-push. It still parks a P0, a `--human` question, a push of the default branch, and anything else the backstop hits.
 3. **Guard messages.** The Bash guard still denies a bare force push and a `+refspec`, but its messages now say to merge
    `origin/main` and push plainly. `--force-with-lease` is not denied by the guard; nothing in the fleet asks for it.

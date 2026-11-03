@@ -182,7 +182,7 @@ A repo whose PRs have no CI is listed in `no_pr_ci = ["repo"]` in config.toml. U
   so each agent's session holds the grant: a lead applies its own recommended option for a decision inside the
   issue's scope, notes it in the PR body and runs `registry.sh note <name> decision "<choice>"`; installs, IAM, AWS
   or production, branch protection, `gh pr ready` and closing a PR or issue stay with the user as a P1; a P0 still
-  stops the team; branches catch up with a merge commit, never a force-push (the house rules say the same).
+  stops the team; branches catch up with a merge commit, never a force-push, in every mode (the house rules say the same).
 - The first tick on or after 07:00 local time each day writes the morning report (`metrics.sh --morning`) to
   `reports/fleet-morning-<date>.md` under your cwd (the orchestrator row's), and wakes you with `morning_report`.
 
