@@ -192,9 +192,35 @@ v42x_pushbranch() { # the team pushes fleet/<key>-<machine key>-<rest>; the brie
   check "v42x branch: and pushes with --force-with-lease to it" grep -q 'force-with-lease origin fleet/dev-7-test-fix-login' "$("$REG" get build-br/builder | jq -r .last_brief)"
 }
 
+v42x_nameless_peer() { # DEV-661: a thin summary tier keeps a name for a team with no issue; the reader never prints a blank row
+  qfresh v42xn; export FLEET_STATE_DIR="$QD/state.v42xn" FLEET_REGISTRY="$QD/state.v42xn/fleet.json" FLEET_INBOX="$QD/state.v42xn/escalations.jsonl"
+  rm -rf "$FLEET_STATE_DIR"; mkdir -p "$FLEET_STATE_DIR"
+  local n s out
+  for n in 1 2 3 4 5 6; do
+    if [ $((n % 2)) = 1 ]; then v413_agent "build-nameless-long-$n/lead" Lead Working "issue=DEV-$((660 + n))"
+    else v413_agent "build-nameless-long-$n/lead" Lead Working; fi
+  done
+  s="$(bash -c '. "$1/common.sh"; fleet_summary 90' _ "$SCRIPTS")"
+  eq "v42x nameless: at 90 characters the thin tier keeps rows and names each (the issue, else a short team name)" \
+    "$(printf '%s' "$s" | jq -r 'length > 0 and ((tojson | length) <= 90) and all(.[]; has("i") or has("t"))')" true
+  eq "v42x nameless: a team name in the thin tier is cut to 12 characters" \
+    "$(printf '%s' "$s" | jq -r '[.[] | select(has("t")) | .t | length] | max <= 12')" true
+  eq "v42x nameless: the full rows keep the whole team name" \
+    "$(bash -c '. "$1/common.sh"; fleet_summary 1500' _ "$SCRIPTS" | jq -r '[.[].t | length] | min')" 21
+  # the reader: a row with only t shows its team; rows with neither print no row and one line with the count
+  v413_linear
+  jq '.labels |= map(if .name == "fleet:peera" then .description = "owner=Fixture\nheartbeat=2026-10-29T09:55:00Z\nsummary=[{\"t\":\"only-team\",\"s\":\"Working\"}]"
+        elif .name == "fleet:peerb" then .description = "heartbeat=2026-10-29T09:50:00Z\nsummary=[{\"s\":\"Working\"},{\"s\":\"Parked\"},{\"s\":\"Parked\"}]" else . end)' "$LINEAR_DB" >"$LINEAR_DB.t" && mv "$LINEAR_DB.t" "$LINEAR_DB"
+  out="$(FLEET_NOW=2026-10-29T10:00:00Z "$SCRIPTS/status.sh" 2>/dev/null)"
+  eq "v42x nameless reader: a peer row with only t is named by it" "$(printf '%s\n' "$out" | grep -c '^| only-team | peera ')" 1
+  eq "v42x nameless reader: rows with neither print no blank row, one line gives the count" \
+    "$(printf '%s\n' "$out" | grep -c '^| *| peerb '):$(printf '%s\n' "$out" | grep -c "^peerb: 3 teams (names didn't fit)$")" "0:1"
+  v413_nolinear
+}
+
 v42x_smoke() { # the critical cases, CI
   local f
-  for f in v42x_attachment v42x_listed_other_repo v42x_branch v42x_search v42x_closed v42x_takeover v42x_peer_repos v42x_misplaced v42x_no_issue v42x_gate v42x_pushbranch; do
+  for f in v42x_attachment v42x_listed_other_repo v42x_branch v42x_search v42x_closed v42x_takeover v42x_peer_repos v42x_nameless_peer v42x_misplaced v42x_no_issue v42x_gate v42x_pushbranch; do
     case " ${V42X_ONLY:-$f} " in *" $f "*) "$f" ;; esac
   done
 }

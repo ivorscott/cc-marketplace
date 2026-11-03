@@ -1006,7 +1006,7 @@ Fixes found after 4.1.1 (DEV-530), one per item:
 5. **A fresh claim is fresh.** `claim` and `takeover` refresh the machine label's heartbeat in the same call, and tick
    refreshes it first of all, before herdr is checked and with or without claimed rows.
 
-## What changed in 4.2.3
+## What changed in 4.2.4
 
 DEV-660: two machines booted one issue. The cause was not a claim race: boot options (`--issue`, ...) placed after the
 repo dir were read as task text, so the boot claimed nothing and recorded no issue.
@@ -1021,6 +1021,15 @@ repo dir were read as task text, so the boot claimed nothing and recorded no iss
 4. **Machine-specific branches.** A team pushes `fleet/<issue key>-<machine key>[-<rest>]` (`--branch-slug` gives the
    rest); the brief and the row (`push_branch`) carry the exact name. The issue key stays first, so the PR matchers
    still find it, and old `fleet/<slug>` branches still match.
+
+## What changed in 4.2.3
+
+DEV-661: a peer's teams with no issue showed as blank rows in `fleet status`.
+
+1. **Thin summary rows keep a name.** When `summary=` falls back to `i` and `s`, or to `i` alone, a team with no issue
+   keeps `t` (cut to 12 characters in those tiers only; full rows are unchanged). A row with neither keeps only `s`.
+2. **No blank rows.** `fleet status` names a peer row by `t`, else `i`, and never prints a row with neither: it says
+   `<machine>: N teams (names didn't fit)` instead.
 
 ## What changed in 4.2.2
 

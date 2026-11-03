@@ -75,11 +75,15 @@ if $want_peers; then
     (group_by(.machine) | map(select(any(.[]; .summary != null)) | . as $g | ($g | map(select(.summary != null)) | first) as $c
       | (if $c.heartbeat == null then null else (($now | fromdateiso8601) - ($c.heartbeat | fromdateiso8601)) end) as $age
       | ($age != null and $age > ($lease * 3600)) as $stale
-      | $c.summary[] | {machine: $c.machine, team: (.t // .i // ""), issue: (.i // ""), pr: (.pr // ""), needs: (.n // ""), ready: ((.r // false) and ($stale | not)),
+      | $c.summary[] | {machine: $c.machine, team: (if (.t // "") != "" then .t else (.i // "") end), issue: (.i // ""), pr: (.pr // ""), needs: (.n // ""), ready: ((.r // false) and ($stale | not)),
           state: (.s // (if .t == null then "-" else "Idle" end)), heartbeat: $c.heartbeat, stale: $stale})) as $teams
     | ([.[] | select(.machine as $m | ($teams | map(.machine) | index($m)) == null)]) as $claims
-    | {teams: $teams, claims: $claims}')"
+    | {teams: ($teams | map(select(.team != ""))), claims: $claims,
+       nameless: ($teams | map(select(.team == "")) | group_by(.machine) | map({machine: .[0].machine, n: length}))}')"
+  # A summary row with neither a team nor an issue (a thin tier dropped both) has nothing to name it: it is never a table row,
+  # and peer_nameless says how many of the machine's teams there are.
   peer_teams="$(printf '%s' "$pj" | jq -c .teams)"; peer_claims="$(printf '%s' "$pj" | jq -c .claims)"
+  peer_nameless="$(printf '%s' "$pj" | jq -r '.nameless[] | "\(.machine): \(.n) \(if .n == 1 then "team" else "teams" end) (names didn'"'"'t fit)"')"
 fi
 
 list_args=(--live); [ -n "$team" ] && list_args+=(--team "$team")
@@ -198,6 +202,7 @@ fi
 if $want_peers; then
   if [ -n "$claims_why" ]; then blocks+=("$(render_line other_machines list="unknown ($claims_why)")")
   else
+    while IFS= read -r nl; do [ -z "$nl" ] || blocks+=("$nl"); done <<<"$peer_nameless"
     # A machine that published no summary: its claims, one line. No heartbeat age anywhere in what status prints.
     if [ "$peer_claims" != "[]" ]; then
       blocks+=("$(render_line other_machines list="$(printf '%s' "$peer_claims" | jq -r "$RENDER_DEFS"'

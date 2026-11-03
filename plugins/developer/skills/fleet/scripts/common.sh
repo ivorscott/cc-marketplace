@@ -687,7 +687,10 @@ fleet_summary() {
     def fit: if length > 0 and (tojson | length) > $cap then .[:-1] | fit else . end;
     # Thinner rows when the full ones leave too little room (a claimed= line leaves ~90 characters): the tier that keeps the
     # most teams wins, the richer one on a tie. Every tier is an array of objects, so an older reader still parses it.
-    def tiers: [., map(del(.pr, .n, .f)), map({i, s} | with_entries(select(.value != null))), map({i} | with_entries(select(.value != null)))] | map(fit);
+    # A row is named by its issue, or by a short prefix of its team name when it has no issue (only in these thin tiers, the full rows keep t whole);
+    # a row with neither keeps only s. An empty string is truthy in jq, so the test is on the value, not the key.
+    def idt: if ((.i // "") != "") then {i} elif ((.t // "") != "") then {t: .t[0:12]} else {} end;
+    def tiers: [., map(del(.pr, .n, .f)), map(idt + {s} | with_entries(select(.value != null))), map(idt)] | map(fit);
     def best: tiers | reduce .[] as $x (null; if . == null or ($x | length) > length then $x else . end);
     [$rows[0][] | select(.tier != "Orchestrator" and .status != "Retired" and (.team // "") != "")]
     | group_by(.team) | map(. as $g | $g[0].team as $t
