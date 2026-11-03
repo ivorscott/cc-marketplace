@@ -470,6 +470,12 @@ v420_decide() { # a lead's escalation is decided, recorded and reported without 
   eq "v420 decide: a denied push of a fleet/ branch is decided" "$("$SCRIPTS/decide.sh" dc-a "$id" 2>&1 | grep -c '^Decided ')" 1
   "$REG" escalate dc-a/lead P1 "push of fleet/dev-9-x denied" >/dev/null 2>&1; id="$("$REG" escalations --open | jq -r '.[0].id')"
   eq "v420 decide: and with no options the lead is told to push without force" "$("$SCRIPTS/decide.sh" dc-a "$id" 2>&1 | grep -c '^Decided .*push without force')" 1
+  "$REG" escalate dc-a/lead P1 "push of fleet/dev-9-x denied" "retry with --force-with-lease" "plain push" >/dev/null 2>&1; id="$("$REG" escalations --open | jq -r '.[0].id')"
+  out="$("$SCRIPTS/decide.sh" dc-a "$id" 2>&1)"
+  eq "v420 decide: a denied push takes the first option that names no force: plain push, never force" "$(printf '%s' "$out" | grep -c '→ plain push\.$'):$(printf '%s' "$out" | grep -ci 'force')" "1:0"
+  "$REG" escalate dc-a/lead P1 "push of fleet/dev-9-x denied" "retry with --force-with-lease" >/dev/null 2>&1; id="$("$REG" escalations --open | jq -r '.[0].id')"
+  out="$("$SCRIPTS/decide.sh" dc-a "$id" 2>&1)"
+  eq "v420 decide: and with only a force option it is the push-without-force text" "$(printf '%s' "$out" | grep -c '→ push without force, or merge origin/main and push plainly\.$'):$(printf '%s' "$out" | grep -c 'with-lease')" "1:0"
   for q in "push of fleet/dev-9-x denied, may I merge the PR" "push of fleet/dev-9-x denied, deploy to production" "push of main denied, force push it"; do
     "$REG" escalate dc-a/lead P1 "$q" yes no >/dev/null 2>&1; id="$("$REG" escalations --open | jq -r '.[0].id')"
     eq "v420 decide: '$q' is parked" "$("$SCRIPTS/decide.sh" dc-a "$id" 2>&1 | grep -c '^Parked ')" 1

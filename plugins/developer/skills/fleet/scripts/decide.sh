@@ -58,6 +58,9 @@ if $human; then
 fi
 
 rec="$(jq -r '(.options // [])[0] // ""' <<<"$esc")"
+if $pushfix; then # never take an option that forces a push (--force, -f, force-with-lease, force push, +refspec): the first one that does not
+  rec="$(jq -r '[(.options // [])[] | select(test("(^|[[:space:]])-f([[:space:]]|$)|--force|force[- ]?(with[- ]?lease|push)|(^|[[:space:]])\\+[A-Za-z]"; "i") | not)][0] // ""' <<<"$esc")"
+fi
 if [ -n "$rec" ]; then
   text="Decision (taken for the owner, who can overrule it on the issue): $rec. Question was: $short. Carry on."
   note="$short → $rec"
