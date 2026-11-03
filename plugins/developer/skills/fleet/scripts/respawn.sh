@@ -59,7 +59,7 @@ esac
 
 team="$(get team)"; tier="$(get tier)"; agent="$(get herdr_ref)"; pane="$(get pane)"; split_new=0
 new_ws=""; cwd="$(get cwd)"; worktree="$(get worktree)"; model="$(get model)"; kind="$(get harness)"; kind="${kind:-claude}"
-template="$(get template)"; repo="$(get repo)"; task="$(get assignment)"; ex="$(get expertise_file)"; issue_url="$(get issue_url)"
+template="$(get template)"; repo="$(get repo)"; task="$(get assignment)"; ex="$(get expertise_file)"; issue_url="$(get issue_url)"; push_branch="$(get push_branch)"
 role="${name#*/}"
 tpl="$FLEET_SKILL_DIR/templates/$template.json"
 [ -f "$tpl" ] || die "no template '$template' for $name"

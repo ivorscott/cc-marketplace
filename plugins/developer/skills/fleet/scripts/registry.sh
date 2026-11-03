@@ -406,6 +406,7 @@ case "$cmd" in
             | derive | .issue = $i | .assignment = $a
             | (if $u != "" then .issue_url = $u else del(.issue_url) end)
             | (if $it != "" then .issue_title = $it else del(.issue_title) end)
+            | del(.push_branch)
             | (if $cb != "" then .claimed_by = $cb else del(.claimed_by) end)
             | .status = (if .tier == "Lead" then "Working" else "Idle" end) | .updated_at = $now)
         else . end)'
