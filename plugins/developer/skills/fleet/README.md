@@ -156,7 +156,7 @@ The first run prompts you twice:
 ```
 
 `build` is the template, `export` the focus (the team becomes `build-export`), `~/code/api` the repo, and the rest is the
-task. Boot creates the workspace, a worktree for the builder and for the tester (branches `fleet/build-export/builder`
+task. Boot creates the workspace, a worktree for the builder and for the tester (both branched from a freshly fetched `origin/<default branch>`) (branches `fleet/build-export/builder`
 and `fleet/build-export/tester`), starts the four agents, sends each its brief (with the done contract and the house rules
 in `rules/house.md` appended) and writes the registry rows. It prints one line and the team table:
 
@@ -579,7 +579,7 @@ The Orchestrator and agents call these directly (from `scripts/`). You can call 
 
 | Script | Commands |
 |---|---|
-| `boot.sh` | `boot.sh [--issue ID --issue-url URL --issue-title TEXT --claimed-by KEY --labels a,b --scope 'repo: paths' --branch-slug SLUG --no-issue] <template> <focus> <dir> [task…]` boots a team (`FLEET_FORCE=1` goes over the team caps (`max_teams`, `teams_per_repo`) and the `min_free_gb` disk floor, never over another machine's claim). Options go before the template; one after the repo dir is refused. A takeover is done with `linear.sh takeover` before boot. It writes every row (Idle) before any agent starts; a boot that fails or is interrupted closes its workspace, removes the worktrees and branches it made and retires its rows (Abandoned), and a name with leftovers of an earlier boot is refused until `retire.sh <team>` tidies them |
+| `boot.sh` | `boot.sh [--issue ID --issue-url URL --issue-title TEXT --claimed-by KEY --labels a,b --scope 'repo: paths' --branch-slug SLUG --no-issue] <template> <focus> <dir> [task…]` boots a team (`FLEET_FORCE=1` goes over the team caps (`max_teams`, `teams_per_repo`) and the `min_free_gb` disk floor, never over another machine's claim). Options go before the template; one after the repo dir is refused. A takeover is done with `linear.sh takeover` before boot. Worktrees branch from a freshly fetched `origin/<default branch>` (offline: a warning, then the last fetched or local branch). It writes every row (Idle) before any agent starts; a boot that fails or is interrupted closes its workspace, removes the worktrees and branches it made and retires its rows (Abandoned), and a name with leftovers of an earlier boot is refused until `retire.sh <team>` tidies them |
 | `claim.sh` | `lease` prints now + `lease_hours` · `hb` reads the `heartbeat=` line of a label description (stdin) · `expired --lease ISO` says whether a lease has lapsed (the open-PR check is `linear.sh takeover`'s). Pure: it never calls a tracker |
 | `redact-check.sh` | `redact-check.sh --range <base>..<head>` counts the private terms in the lines a branch adds and its commit messages; prints counts only, never a term; exit 0 clean, 1 a match, 2 cannot run (no terms file, no terms, bad range). The terms live in `$FLEET_STATE_DIR/private/redact_terms.txt` (default `~/.local/state/fleet/private/redact_terms.txt`), outside every repo: one per line, blank lines and `#` lines ignored, mode 600 (it warns when the file is group- or world-readable). It gates public repos only: a repo in `private_repos` (config.toml) or one `gh repo view` reports as private or internal prints `skipped (private repo)` and exits 0; a visibility it cannot read counts as public. Every agent may run it: the house rules require it before sign-off and every push |
 | `slim.sh` | `slim.sh on\|off\|status` the slim panel style for herdr (`styles/slim.toml`), written between markers in herdr's config (replacing a hand-written `[ui]` style there), with a backup, the Claude integration and a reload; the choice is a registry pref, so the offer is made once. The Orchestrator's only |
@@ -592,9 +592,9 @@ The Orchestrator and agents call these directly (from `scripts/`). You can call 
 | `tick.sh` | `tick.sh [--team T]` one JSON array of what changed since the last tick (stalled, dead, escalation, pr_ready, pr_merged, pr_conflicting, repo_without_team, disk), or nothing, and each wake's reply in `notices.log` · reads PRs with read-only `gh pr view` and `gh pr list` through `FLEET_GH`, and builds the merge queue once for status |
 | `queue.sh` | the merge queue as JSON: the open PRs the fleet holds (one read-only `gh pr list` per repo; a PR whose head branch a local team pushed is ours even when no row names it yet), the ready ones in the order to merge them (dependencies first, then fewest rebases, then oldest), the rest with what is missing. `status` reuses the one tick built in the last minute; the pr_ready/pr_merged wakes print it |
 | `tell.sh` | `tell.sh <team/role> <text> [--no-confirm]` sends and checks delivery, then prints `Told <team/role>: "…" (delivered)`, or `(queued)` for an agent busy in a turn; exit 1 not delivered, 2 pane at the shell |
-| `next.sh` | `next.sh <team> <issue> [--brief TEXT] [--assignment TEXT] [--issue-url URL] [--issue-title TEXT]` after a merge, at a safe point (every agent idle, no background task): log `issue_done`, reassign, then restart every agent (`/exit`, a fresh session, its full brief as a file) |
+| `next.sh` | `next.sh <team> <issue> [--brief TEXT] [--assignment TEXT] [--issue-url URL] [--issue-title TEXT]` after a merge, at a safe point (clean worktrees then move to the fresh default branch; dirty or unpushed ones stay, with a warning) (every agent idle, no background task): log `issue_done`, reassign, then restart every agent (`/exit`, a fresh session, its full brief as a file) |
 | `sandbox.sh` | `sandbox.sh [--keep] [--] [cmd...]` runs a reproduction with a temporary state and config root, shims for herdr, gh and curl, and no session, key or `FLEET_ROLE`; refuses the live roots |
-| `respawn.sh` | `respawn.sh <team/role>` starts a Zombie row again from the row (same role, worktree, branch, model; new session id) and sends a resume brief; `tick.sh` calls it within the budget `respawn_max` (1) per `respawn_window_hours` (6). `--restart` (next's) waits for the agent to be idle, never types into a busy one, and confirms Claude's exit dialog |
+| `respawn.sh` | `respawn.sh <team/role>` starts a Zombie row again from the row (same role, worktree, branch, model; new session id; an existing worktree is kept as it is, a missing one recreated) and sends a resume brief; `tick.sh` calls it within the budget `respawn_max` (1) per `respawn_window_hours` (6). `--restart` (next's) waits for the agent to be idle, never types into a busy one, and confirms Claude's exit dialog |
 | `metrics.sh` | `metrics.sh [--since 7d] [--json]` the weekly table (issues shipped, PRs, rework, median cycle) and a report file with one row per PR: minutes to ready, rework rounds, stalls, missed messages, tokens (from `events.jsonl` and the agents' transcripts) |
 | `retire.sh` | `retire.sh <team\|team/role> [--outcome O] [--verify]` safe teardown; `--summary <target...>` a read-only view of what a retire would keep (a retire never waits on it). A whole team's issue follows the outcome on Linear when writes are on (Shipped → Done, or Verify with `--verify`, once its PR merged; Abandoned, Failed or no outcome → Todo, claim released; a PR that says "Part of <issue>", in any case, leaves it); reports are archived to the team repo's `reports/fleet-archive/`, and build output (`node_modules`, `.terraform`, `bin`, `test-results`, ...) never keeps a worktree. A team name with no live rows but leftovers of an earlier boot (`fleet/<team>/*` branches, worktrees) is tidied: what would lose nothing is removed, the rest kept and named |
 | `env.sh` | `up [--branch B] <team>` creates the team's cluster (exit 75 = queued at `max_envs`) · `down <team>` removes it, with its images and builder · `status` lists every env |
@@ -1003,6 +1003,20 @@ Fixes found after 4.1.1 (DEV-530), one per item:
    filed and a requested split is done. `retire --summary` stays as a read-only view.
 5. **A fresh claim is fresh.** `claim` and `takeover` refresh the machine label's heartbeat in the same call, and tick
    refreshes it first of all, before herdr is checked and with or without claimed rows.
+
+## What changed in 4.2.6
+
+DEV-691: a team's worktrees started from the repo's local HEAD, which can be days stale, so a team could see errors
+that were already fixed upstream.
+
+1. **Fresh base.** `boot` fetches origin once, then branches every role's worktree from `origin/<default branch>`
+   (origin's HEAD, else `main`, else `master`), with no upstream tracking. Its reply names the base and its short SHA.
+2. **Offline fallback.** If the fetch fails, boot warns and uses the last fetched `origin/<branch>`, else the local
+   default branch, else HEAD.
+3. **Your checkout is untouched.** Only remote-tracking refs are updated; nothing is checked out, merged or reset.
+4. **`next`** moves a team's clean worktrees to the fresh base before the next issue. A worktree with uncommitted
+   changes or commits on no remote is left as it is, and named in a warning.
+5. **`respawn`** keeps an existing worktree as it is (resume needs the work); only a missing one is recreated.
 
 ## What changed in 4.2.5
 

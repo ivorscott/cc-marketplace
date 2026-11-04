@@ -100,6 +100,21 @@ if true; then
   esac
 fi
 
+# 2b. Fresh base. A worktree of the team that is clean and has no commit missing from origin moves to a new branch tip
+# at the fresh default branch, so the next issue does not start from the last one's code. A dirty worktree, or one with
+# commits on no remote, is left as it is (never discarded) and named. Offline: fleet_base_ref warns and falls back.
+kept=()
+for repo_ in $(printf '%s' "$rows" | jq -r '[.[] | select((.worktree // "") != "") | .repo] | unique[]'); do
+  base_="$(fleet_base_ref "$repo_")"
+  while IFS=$'\t' read -r wn wt wb; do
+    [ -d "$wt" ] || continue
+    if [ -n "$(git -C "$wt" status --porcelain 2>/dev/null)" ]; then kept+=("$wn (uncommitted changes)"); continue; fi
+    if [ "$(git -C "$wt" rev-list --count HEAD --not --remotes=origin 2>/dev/null || echo 1)" != 0 ]; then kept+=("$wn (commits on no remote)"); continue; fi
+    git -C "$wt" checkout -q --no-track -B "$wb" "$base_" >/dev/null 2>&1 || kept+=("$wn (could not move to $base_)")
+  done < <(printf '%s' "$rows" | jq -r --arg r "$repo_" '.[] | select(.repo == $r and (.worktree // "") != "" and (.branch // "") != "") | [.name, .worktree, .branch] | @tsv')
+done
+[ "${#kept[@]}" = 0 ] || warn "left on their old base: ${kept[*]}"
+
 # 3. Reassign.
 ra=(reassign "$team" "$issue"); [ -z "$assignment" ] || ra+=(--assignment "$assignment"); [ -z "$issue_url" ] || ra+=(--issue-url "$issue_url"); [ -z "$issue_title" ] || ra+=(--issue-title "$issue_title")
 [ "$rc" != 0 ] || ra+=(--claimed-by "$(machine_key)") # the rows record the claim, as boot's --claimed-by does

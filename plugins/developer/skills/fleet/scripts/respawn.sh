@@ -61,6 +61,15 @@ team="$(get team)"; tier="$(get tier)"; agent="$(get herdr_ref)"; pane="$(get pa
 new_ws=""; cwd="$(get cwd)"; worktree="$(get worktree)"; model="$(get model)"; kind="$(get harness)"; kind="${kind:-claude}"
 template="$(get template)"; repo="$(get repo)"; task="$(get assignment)"; ex="$(get expertise_file)"; issue_url="$(get issue_url)"; push_branch="$(get push_branch)"
 role="${name#*/}"
+# A worktree that is gone is recreated (from the fresh base when its branch is gone too); one that exists is kept as it is.
+if [ -n "$worktree" ] && [ ! -d "$worktree" ] && [ -n "$repo" ]; then
+  wbr="$(get branch)"; git -C "$repo" worktree prune >/dev/null 2>&1 || true
+  if [ -n "$wbr" ] && git -C "$repo" rev-parse -q --verify "refs/heads/$wbr" >/dev/null 2>&1; then
+    git -C "$repo" worktree add -q "$worktree" "$wbr" >/dev/null 2>&1 || warn "could not recreate $worktree"
+  elif [ -n "$wbr" ]; then
+    git -C "$repo" worktree add -q --no-track -b "$wbr" "$worktree" "$(fleet_base_ref "$repo")" >/dev/null 2>&1 || warn "could not recreate $worktree"
+  fi
+fi
 tpl="$FLEET_SKILL_DIR/templates/$template.json"
 [ -f "$tpl" ] || die "no template '$template' for $name"
 tool_allow="$(jq -cn --argjson t "$(config_list tracker_allow)" --argjson f "$(config_list forge_allow)" '$t + $f | unique')"

@@ -259,6 +259,10 @@ lead_pane="$(printf '%s' "$ws_json" | jq -r '.result.root_pane.pane_id // empty'
 made_ws="$workspace"
 
 # 2. Worker panes (first to the right of the lead, the rest stacked below it), worktrees.
+# Every worktree branches from the fresh default branch on origin, never from the repo's local HEAD, which can be days
+# stale (fleet_base_ref fetches once; offline it warns and falls back). The user's own checkout is untouched.
+base_ref=""; base_sha=""
+if $is_git; then base_ref="$(fleet_base_ref "$repo")"; base_sha="$(git -C "$repo" rev-parse --short "$base_ref" 2>/dev/null || true)"; fi
 workers_json="[]"; prev=""
 for i in $(seq 0 $((nworkers - 1))); do
   w="$(jq -c ".workers[$i]" "$tpl")"
@@ -268,7 +272,7 @@ for i in $(seq 0 $((nworkers - 1))); do
   if [ "$(printf '%s' "$w" | jq -r '.worktree // false')" = "true" ] && $is_git; then
     worktree="$FLEET_WORKTREES/$team/$role"; branch="fleet/$team/$role"
     mkdir -p "$(dirname "$worktree")"
-    git -C "$repo" worktree add -q -b "$branch" "$worktree" >/dev/null 2>&1 || die "git worktree add failed for $worktree"
+    git -C "$repo" worktree add -q --no-track -b "$branch" "$worktree" "$base_ref" >/dev/null 2>&1 || die "git worktree add failed for $worktree"
     made_wts+=("$worktree"); made_brs+=("$branch")
     # A force push with lease also has to include what the remote had when we last fetched (push.useForceIfIncludes).
     git -C "$worktree" config push.useForceIfIncludes true >/dev/null 2>&1 || warn "could not set push.useForceIfIncludes in $worktree"
@@ -363,7 +367,7 @@ fi
 
 ev_log boot team="$team" issue="$issue" detail="template $template"
 herdr_meta "$team" # the team on herdr's panel (best effort)
-reply "$(render_line booted team="$team" issue="$(issue_link "$issue" "$issue_url" "$issue_title")" repo="$(basename "$repo")" agents="$(roles_line "$team")")" "$(render_table)"
+reply "$(render_line booted team="$team" issue="$(issue_link "$issue" "$issue_url" "$issue_title")" repo="$(basename "$repo")" agents="$(roles_line "$team")")" "${base_ref:+Worktrees branched from $base_ref at $base_sha.}" "$(render_table)"
 armed=0 # booted: from here on a failed brief marks its row Failed, and nothing is rolled back
 if [ "${#failed_agents[@]}" -gt 0 ]; then
   warn "brief not delivered to: ${failed_agents[*]} (rows set to Failed)"
