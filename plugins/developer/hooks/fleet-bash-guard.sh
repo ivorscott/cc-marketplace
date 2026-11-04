@@ -18,7 +18,7 @@
 #   Every fleet agent also: package installers are denied (brew/npm/pnpm/yarn/pip/go/gem/cargo/apt install of
 #   a named package) unless config.toml has installs = "allow"; installs from a lockfile pass (npm ci, bundle
 #   install, go mod download, pip install -r). `gh pr merge` is denied, a git push with --force or -f (or a
-#   +refspec) is denied (--force-with-lease is the way), and so is a push to the default branch.
+#   +refspec) is denied (merge origin/main and push plainly instead), and so is a push to the default branch.
 #
 # Command names are matched without regard to case (APFS: /opt/homebrew/bin/HERDR runs herdr, GREP runs grep).
 # Deliberate evasion of a lexical guard (eval, variables, aliases, encodings, an interpreter such as python -c)
@@ -210,13 +210,13 @@ check_git_push() { # check_git_push <words after "git push">
       -*) ;;
     esac
   done
-  [ "$force" = 0 ] || deny "fleet bash guard: a bare force push can overwrite work; use git push --force-with-lease origin <branch>."
+  [ "$force" = 0 ] || deny "fleet bash guard: a bare force push can overwrite work; merge origin/main into the branch and push plainly: git push origin <branch>."
   local pos=0
   for a in "$@"; do
     case "$a" in -*) continue ;; esac
     pos=$((pos + 1)); [ "$pos" -ge 2 ] || continue
     refs=1; ref="${a#+}"
-    [ "$ref" = "$a" ] || deny "fleet bash guard: a +refspec forces the push; use --force-with-lease."
+    [ "$ref" = "$a" ] || deny "fleet bash guard: a +refspec forces the push; merge origin/main and push plainly."
     ref="${ref##*:}"; ref="${ref#refs/heads/}"
     if is_default_branch "$ref"; then deny "fleet bash guard: agents never push to the default branch ($ref); push the fleet/ branch your brief names."; fi
     [ "$ref" != HEAD ] || { cur="$(git symbolic-ref -q --short HEAD 2>/dev/null || true)"; [ -z "$cur" ] || ! is_default_branch "$cur" || deny "fleet bash guard: HEAD is the default branch ($cur); agents never push to it."; }

@@ -35,7 +35,7 @@ permission_mode = "auto"   # the Claude Code permission mode every agent starts 
 # private_repos = ["owner/name"]   # never checked: it prints "skipped (private repo)"
 
 # Overnight mode: leads decide inside the issue's scope (installs, cloud, prod, branch protection, `gh pr ready` and
-# closing stay P1), branches catch up with merge commits, and the first tick after 07:00 writes the morning report
+# closing stay P1; branches catch up with merge commits in every mode), and the first tick after 07:00 writes the morning report
 overnight = false
 
 # Registry
