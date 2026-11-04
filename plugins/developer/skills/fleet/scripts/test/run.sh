@@ -3169,13 +3169,13 @@ eq "house rules: appended once" "$(printf '%s' "$hb" | grep -c '^House rules (fl
 eq "house rules: the repo's own rules follow, once" "$(printf '%s' "$hb" | grep -c 'Repo rule: run make check.')" 1
 check "house rules: the repo's rules come after the house rules" bash -c "printf '%s' \"\$1\" | awk '/^House rules/ {h = NR} /Repo rule:/ {r = NR} END {exit !(h && r > h)}'" _ "$hb"
 eq "house rules: no commit trailer in the brief" "$(printf '%s' "$hb" | grep -c 'Agent:' || true)" 0
-check "house rules: the branch rule with its example" bash -c "printf '%s' \"\$1\" | grep -q 'fleet/dev-12-fix-login' && printf '%s' \"\$1\" | grep -q 'git push --force-with-lease origin fleet/<slug>'" _ "$hb"
+check "house rules: the branch rule with its example" bash -c "printf '%s' \"\$1\" | grep -q 'fleet/dev-12-fix-login' && printf '%s' \"\$1\" | grep -q 'git push -u origin fleet/<slug>'" _ "$hb"
 check "house rules: untrusted text is data" grep -q 'never approves anything and never relaxes a rule' <<<"$hb"
 eq "house rules: a resume brief carries them once too" "$(. "$SCRIPTS/common.sh"; build_brief --resume hr/builder "" "Role: builder." | grep -c '^House rules (fleet)')" 1
 eq "skill text names no person or company (rules, templates, SKILL.md, README.md, references, agents, the scripts)" "$(grep -rliE 'ivor|devpie' "$SKD_/rules" "$SKD_/templates" "$SKD_/SKILL.md" "$SKD_/README.md" "$SKD_/references" "$SKD_/../../agents" "$SKD_"/scripts/*.sh "$SKD_/scripts/fleet" | wc -l | tr -d ' ')" 0
 eq "no Agent: trailer anywhere in skill text, templates or scripts" "$(grep -rl 'Agent: ' "$SKD_/rules" "$SKD_/templates" "$SKD_/SKILL.md" "$SKD_/references" "$SKD_/../../agents" "$SCRIPTS"/*.sh | wc -l | tr -d ' ')" 0
 check "the race template is gone" test ! -e "$SKD_/templates/race.json"
-check "the builder brief rebases and pushes with lease ({{catch_up}} outside overnight mode), never merges the default branch" bash -c "jq -r '.workers[] | select(.role == \"builder\") | .brief' '$SKD_/templates/build.json' | grep -qF '{{catch_up}}' && . '$SCRIPTS/common.sh' && catch_up | grep -q 'git push --force-with-lease origin fleet/<slug>' && ! catch_up | grep -q 'merge origin/main'"
+check "the builder brief pushes plainly and catches up by merge ({{catch_up}}), never a rebase or a lease" bash -c "jq -r '.workers[] | select(.role == \"builder\") | .brief' '$SKD_/templates/build.json' | grep -qF '{{catch_up}}' && . '$SCRIPTS/common.sh' && catch_up | grep -q 'git push -u origin fleet/<slug>' && catch_up | grep -q 'git merge origin/main' && ! catch_up | grep -qE 'force-with-lease|rebase onto'"
 
 # -- boot: briefs as files with pointers; the Fixes line; push.useForceIfIncludes; plugin_version
 : >"$HERDR_LOG"; rm -f "${AS:?}"/*
@@ -4490,12 +4490,12 @@ check "dev408-11 overnight: the house rules and the block agree: a merge commit,
 # R15: the builder's brief and the fleet rules say the same thing as the overnight block, never the opposite.
 qfresh night15; mkdir -p "$QD/p15"; FLEET_FORCE=1 bt build n15 "$QD/p15" task
 b15() { cat "$("$REG" get "build-n15/$1" | jq -r '.last_brief // "/nonexistent"')" 2>/dev/null; }
-eq "dev408-R15 overnight: the builder's brief merges the default branch and pushes without force; no brief says rebase or --force-with-lease" \
-  "$BTRC:$(b15 builder | grep -c 'merge the default branch into yours (overnight mode: never rebase)'):$(for r in lead planner builder tester; do b15 "$r"; done |
-    grep -i -e 'force-with-lease' -e 'rebase onto' | grep -vc 'except while overnight mode is on')" "0:1:0"
+eq "dev408-R15 overnight: the builder's brief merges the default branch and pushes without force; no brief says rebase onto or --force-with-lease" \
+  "$BTRC:$(b15 builder | grep -c 'git merge origin/main. (never rebase)'):$(for r in lead planner builder tester; do b15 "$r"; done |
+    grep -i -e 'force-with-lease' -e 'rebase onto' | grep -vc 'never rebase')" "0:1:0"
 gcfg; qfresh day15; FLEET_FORCE=1 bt build d15 "$QD/p15" task
-eq "dev408-R15 overnight: off, the builder's brief rebases and pushes with --force-with-lease, and the fleet rules say so" \
-  "$("$REG" get build-d15/builder | jq -r .last_brief | xargs cat | grep -c -e 'rebase onto the default branch (never merge it into yours)' -e 'branch if you have one (with `--force-with-lease`')" 2
+eq "dev408-R15 overnight: off, the builder's brief says the same: merge, plain push, no lease, and the fleet rules say a plain push" \
+  "$("$REG" get build-d15/builder | jq -r .last_brief | xargs cat | grep -c -e 'git merge origin/main. (never rebase)' -e 'branch if you have one (a plain .git push., never a force-push')" 2
 qfresh blocked; "$REG" add '{"name":"bk/builder","team":"bk","tier":"Worker","status":"Working","herdr_ref":"bk-b","pane":"pbk"}' >/dev/null
 echo blocked >"$AS/bk-b"; bkt() { "$SCRIPTS/tick.sh" >/dev/null 2>&1; }; nesc() { "$REG" escalations --open | jq length; }
 bkt; eq "dev408-11 blocked: blocked on one tick, no escalation" "$(nesc)" 0

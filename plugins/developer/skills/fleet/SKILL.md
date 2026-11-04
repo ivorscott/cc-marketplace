@@ -184,7 +184,7 @@ question box (AskUserQuestion): the wakes queue behind it. Ask in plain text and
 - `weekly_summary`: its notice is the metrics table and the report it wrote (`reports/fleet-metrics-<date>.md`).
 - `morning_report` (the `report_at` time of the `[run]` profile, or overnight mode's 07:00): read the report it names and relay it
   as it is. Overnight (`overnight = true`, the older switch `fleet run` supersedes), leads decide inside the issue's scope (they note each decision), installs, cloud, production, branch
-  protection, `gh pr ready` and closing stay P1 for the user, and branches catch up with merge commits.
+  protection, `gh pr ready` and closing stay P1 for the user (branches catch up with merge commits in every mode, not only overnight).
 - An agent blocked on a permission prompt for two ticks gets a P1 escalation ("blocked on a permission prompt"),
   overnight or not: look at its pane and apply the blocked-prompt policy.
 - `claim_takeover`: stop or hand off the team (F), tell the user, escalate P1; never fight back (operations.md).

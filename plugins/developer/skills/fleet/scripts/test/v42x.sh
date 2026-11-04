@@ -189,7 +189,8 @@ v42x_pushbranch() { # the team pushes fleet/<key>-<machine key>-<rest>; the brie
   rc="$(v42x_boot --issue DEV-7 --branch-slug fix-login build br "$V42X_REPO" task)"
   eq "v42x branch: the row records the machine-specific branch" "$rc:$("$REG" get build-br/builder | jq -r .push_branch)" "0:fleet/dev-7-test-fix-login"
   check "v42x branch: the brief names the exact branch" grep -q 'Your branch is `fleet/dev-7-test-fix-login`' "$("$REG" get build-br/builder | jq -r .last_brief)"
-  check "v42x branch: and pushes with --force-with-lease to it" grep -q 'force-with-lease origin fleet/dev-7-test-fix-login' "$("$REG" get build-br/builder | jq -r .last_brief)"
+  check "v42x branch: and its first push is a plain git push -u to it" grep -q 'git push -u origin fleet/dev-7-test-fix-login' "$("$REG" get build-br/builder | jq -r .last_brief)"
+  check "v42x branch: and no force-with-lease in the brief" bash -c '! grep -q force-with-lease "$1"' _ "$("$REG" get build-br/builder | jq -r .last_brief)"
 }
 
 v42x_nameless_peer() { # DEV-661: a thin summary tier keeps a name for a team with no issue; the reader never prints a blank row
