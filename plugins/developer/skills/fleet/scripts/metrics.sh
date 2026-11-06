@@ -65,10 +65,28 @@ if $morning; then
   # check, and what was parked because it is the human's (merging, production, infrastructure, secrets, branch protection).
   verify="$("$FLEET_SCRIPTS/linear.sh" verify-list 2>/dev/null)" || verify='[]'
   printf '%s' "$verify" | jq -e 'type == "array"' >/dev/null 2>&1 || verify='[]'
+  # A deferred item still `not filed` is reconciled first: a deferred-filed note of the lead (`registry.sh note <lead>
+  # deferred-filed <ISSUE> [item text]`, with no text it covers the lead's unfiled items) or, with a Linear key, an issue
+  # whose title or description holds the item's text, turns it into one "- filed: ISSUE" line.
+  deferred=""
+  while IFS=$'\t' read -r dkind dn dtext dmsg; do
+    [ -n "$dkind" ] || continue
+    if [ "$dkind" = open ]; then
+      di="$(jq -r --arg n "$dn" --arg k "${dtext:0:80}" '[.[] | select(.name == $n) | (.notes // [])[] | select(.kind == "deferred-filed")
+        | (.message | split(" ")) as $w | select(($w | length) == 1 or (.message | contains($k)))
+        | $w[0]] | last // ""' <<<"$rows")"
+      if [ -z "$di" ] && "$FLEET_SCRIPTS/linear.sh" has-key >/dev/null 2>&1; then di="$("$FLEET_SCRIPTS/linear.sh" find-text "${dtext:0:80}" 2>/dev/null)" || di=""; fi
+      if [ -n "$di" ]; then deferred+="- filed: $di"$'\n'; else deferred+="- deferred ($dn): $dmsg"$'\n'; fi
+    else deferred+="- deferred ($dn): $dmsg"$'\n'; fi
+  done < <(jq -r --arg c "$cutoff" '.[] | .name as $n | [(.notes // [])[] | select(.kind == "deferred")] | group_by(.message | split(" → ")[0])[] | last
+      | select(.at >= $c or (.message | contains("not filed")))
+      | [(if (.message | contains("→ not filed")) then "open" else "shown" end), $n, (.message | split(" → ")[0]), .message] | @tsv' <<<"$rows")
   opt_section "Needs your eyes" "$( {
-    jq -r --arg c "$cutoff" '.[] | .name as $n | [(.notes // [])[] | select(.kind == "deferred")] | group_by(.message | split(" → ")[0])[] | last
-      | select(.at >= $c or (.message | contains("not filed"))) | "- deferred (\($n)): \(.message)"' <<<"$rows"
-    jq -r --arg c "$cutoff" '.[] | .name as $n | (.notes // [])[] | select(.kind == "parked" and .at >= $c) | "- parked for you (\($n)): \(.message)"' <<<"$rows"
+    printf '%s' "$deferred" | awk '!seen[$0]++'
+    jq -r --arg c "$cutoff" "$ESC_DEFS"'.[] | . as $row | .name as $n | (.notes // [])[] | select(.kind == "parked" and .at >= $c)
+      | (.message | capture("^\\[esc (?<id>[^\\]]+)\\] (?<m>.*)$")? // {id: "", m: .}) as $p
+      | select($p.id == "" or ([$row | escs[] | select(.id == $p.id and .resolved_at != null and ((.resolution // "") | startswith("parked for the human:") | not))] | length) == 0)
+      | "- parked for you (\($n)): \($p.m)"' <<<"$rows"
     jq -r '.[] | "- Verify \(.issue) (\(.age_days) days old): check \(.check)\(if .expiry == "ask" then ". Still worth checking? With no answer by the next report it moves to Done" elif .expiry == "close" then ". No answer since the last report: moved to Done with a comment" else "" end)"' <<<"$verify"
   } )"
   opt_section "Failures" "$(jq -r '.[] | select(.type == "failed" or .type == "dead") | "- \(.name // .team): \(.type)\(if (.detail // "") != "" then " (" + .detail + ")" else "" end)"' <<<"$events" | sort -u)"

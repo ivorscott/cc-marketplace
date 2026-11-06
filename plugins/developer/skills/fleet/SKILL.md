@@ -74,7 +74,7 @@ machines and a fresh session read the same ones.
   - **Keep one wake monitor armed** (Tick) and re-arm it silently when it expires.
   - **Usage guard:** on `usage_limit` boot nothing until the backoff ends (`boot` refuses); running teams finish. Report it once.
 - **Output rules.** A reply holds only what the owner can act on or asked for. Never report your own housekeeping: re-arming
-  or restarting the wake monitor, scheduling the next check, "nothing bootable", a heartbeat age, an expired monitor, a
+  or restarting the wake monitor, scheduling the next check, "nothing bootable", a heartbeat age, an expired monitor (re-arm it with `$F/fleet watch` and end the turn with no text), a
   `slot_free` that changes nothing, a quiet tick. A tick with nothing for the owner gets no reply at all. What does reach the
   owner: the status table when `status_changed` wakes you (relayed verbatim, no commentary; the ready-to-merge push only when its
   notice is there), a failure, a usage limit, a decision parked for the human, and the morning report when it is written.
@@ -86,10 +86,10 @@ Before the first boot of a session, run `$F/fleet slim status`. When it says `Of
 It replaces your own [ui] lines in herdr's config and keeps a backup. (yes/no)". Yes → `$F/fleet slim on`; no →
 `$F/fleet slim off`. Either records the answer, so it is never asked again.
 
-0. **Pick** the issue yourself when the user names none (or a slot frees, Tick): never ask which one. Search the
-   tracker (Todo, Backlog, and In Progress that is unclaimed or lapsed, across the repos in `repos`); skip a live
-   claim (`$F/fleet holder <ISSUE>` not lapsed, or with no heartbeat) and any issue whose blocked-by issues are not
-   all Done; order the rest by priority, then by series order (its place in its "Part of" or parent sequence, then its
+0. **Pick** the issue yourself when the user names none (or a slot frees, Tick): never ask which one. Run
+   `$F/fleet candidates` and trust it: it lists only bootable work (Todo, Backlog, and In Progress that is unclaimed or
+   lapsed; no Verify, Done or Duplicate issue, no other tracker team, no live claim, nothing blocked, no issue without a
+   `role:` label) with a `skipped:` line and each reason. Keep no exclude list of your own. Order what it lists by priority, then by series order (its place in its "Part of" or parent sequence, then its
    identifier). A lapsed claim with no open PR is free: take it with `$F/fleet takeover <ISSUE>`. Ask the user only
    to override a cap, or for a P0/P1. Never hand the user a menu: an issue with a "Decide first" section takes its
    acceptance default, stated in the PR body; follow-ups it names are filed (Linear, with blocked-by relations as
@@ -150,7 +150,8 @@ timer and appends a line `fleet tick: <type> <team> <name> <issue> <PR url> <esc
 state dir for every event someone must act on (P2 escalations, `stalled` and `weekly_summary` included; low disk and a
 repo with no team go to the user as alerts). Nothing is typed into your pane. Once per session, in your own pane: run
 `$F/registry.sh orchestrator here` (it prints your row and `wakes`, the log's path), then start `Monitor` in the
-background on `tail -n 0 -F <wakes>`, so each new line wakes you. Unregistered, nobody follows the log: wakes go to
+background on `tail -n 0 -F <wakes>`, so each new line wakes you. When a Monitor expires, run `$F/fleet watch`, start
+Monitor with its first line and end the turn with no text. Unregistered, nobody follows the log: wakes go to
 desktop notifications only, and `status` says so (under `fleet run`, keep it armed and re-arm it without a word). No reply within 15 minutes of a wake alerts the user; that check
 reads your transcript, so register with it (`--transcript`): while the row has none that exists, every wake also goes
 to a desktop notification. A wake line is
@@ -162,7 +163,8 @@ question box (AskUserQuestion): the wakes queue behind it. Ask in plain text and
 
 - `pr_ready`: no push of its own (the batched `status_changed` push says what is ready, in merge order). A team whose agents
   are all Done or Idle is parked (signed off), then or on a later tick, so its slot is free while the PR waits for its merge.
-- `status_changed`: the status table or the set of PRs ready to merge changed. Answer with `$F/fleet status`, relayed verbatim.
+- `status_changed`: something changed for the owner (the merge queue, an open escalation, a failed agent, a usage limit; not a
+  team starting or flipping Working and Idle). Answer with `$F/fleet status`, relayed verbatim.
   When the wake's notice says `Ready to merge: 2 ready: merge #A, then #B.`, send ONE `PushNotification` with that text.
 - `usage_limit`: agents hit the plan's usage limit; no team boots until the time it names. Relay it once.
 - `slot_free`: fewer teams run than the user's target (`$F/registry.sh set orchestrator target_teams=N` when the user

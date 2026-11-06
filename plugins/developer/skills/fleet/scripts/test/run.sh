@@ -326,6 +326,8 @@ if [ "${1:-}" = --v413 ]; then v413_full; printf '\n%d passed, %d failed\n' "$pa
 . "$HERE/v420.sh" # 4.2.0: v420_smoke and v420_full
 . "$HERE/v42x.sh" # 4.2.x patches: v42x_smoke and v42x_full
 . "$HERE/v426.sh" # 4.2.6: v426_smoke and v426_full
+. "$HERE/v427.sh" # 4.2.7: v427_smoke and v427_full
+if [ "${1:-}" = --v427 ]; then v427_full; printf '\n%d passed, %d failed\n' "$pass" "$failn"; [ "$failn" = 0 ]; exit; fi
 if [ "${1:-}" = --v426 ]; then v426_full; printf '\n%d passed, %d failed\n' "$pass" "$failn"; [ "$failn" = 0 ]; exit; fi
 if [ "${1:-}" = --v42x ]; then v42x_full; printf '\n%d passed, %d failed\n' "$pass" "$failn"; [ "$failn" = 0 ]; exit; fi # only the 4.2.x patch cases
 if [ "${1:-}" = --v420 ]; then v420_full; printf '\n%d passed, %d failed\n' "$pass" "$failn"; [ "$failn" = 0 ]; exit; fi # only the 4.2.0 cases
@@ -752,6 +754,7 @@ Merge this one first." "Do not merge until the API ships" "  hold: waiting on de
   v420_smoke
   v42x_smoke
   v426_smoke
+  v427_smoke
   printf '\n%d passed, %d failed\n' "$pass" "$failn"
   [ "$failn" = 0 ]; exit
 fi
@@ -4606,6 +4609,7 @@ v413_full
 v420_full
 v42x_full
 v426_full
+v427_full
 # ---- end 4.2.0 ----
 
 printf '\n%d passed, %d failed\n' "$pass" "$failn"

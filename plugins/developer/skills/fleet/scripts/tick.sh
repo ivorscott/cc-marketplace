@@ -811,12 +811,28 @@ if [ -z "$team" ]; then
       fi
     fi
     if $sf_ok; then
-      if [ "$(jq -r '.slot_free_emitted // ""' "$STATE_FILE")" != "$sf_key" ]; then
+      sf_emit=false
+      if $ckeyless; then
+        # No candidate set to compare: a new count or repo set announces again (the key), as before.
+        [ "$(jq -r '.slot_free_emitted // ""' "$STATE_FILE")" = "$sf_key" ] || sf_emit=true
+      else
+        # With a candidate set (the bootable work, held issues out) it announces once for it: again only for an
+        # issue not in the announced set, or when more slots are free than at the announcement. A shrinking or unchanged
+        # set is silent, and so is a team that starts and stops on the same candidates.
+        sf_slots=$(( (tgt < cap ? tgt : cap) - nlive ))
+        if [ "$(jq -r 'has("slot_free_set")' "$STATE_FILE")" != true ]; then sf_emit=true
+        else
+          [ "$(jq -rn --argjson s "$(jq -c '.slot_free_set' "$STATE_FILE")" --arg c "$cand" '[$c | split(",")[] | select(. != "") | . as $i | select($s | index($i) | not)] | length')" = 0 ] || sf_emit=true
+          [ "$sf_slots" -le "$(jq -r '.slot_free_slots // 0' "$STATE_FILE")" ] || sf_emit=true
+        fi
+      fi
+      if $sf_emit; then
         add_events "$(jq -cn --argjson n "$nlive" --argjson t "$tgt" --argjson fx "$("$registry" list --live | jq '[.[] | select(.fixing == "true") | .team] | unique | length')" --arg note "$sf_note" '[{type: "slot_free", team: "", name: "", live: $n, target: $t, fixing: $fx, detail: "\($n) live < target \($t)\($note)"}]')"
-        st_upd --arg k "$sf_key" '$st + {slot_free_emitted: $k}'
+        if $ckeyless; then st_upd --arg k "$sf_key" '$st + {slot_free_emitted: $k}'
+        else st_upd --arg c "$cand" --argjson sl "$sf_slots" '$st + {slot_free_set: ($c | split(",") | map(select(. != "")) | sort), slot_free_slots: $sl}'; fi
       fi
     else
-      st_upd '$st | del(.slot_free_emitted)'
+      st_upd '$st | del(.slot_free_emitted, .slot_free_set, .slot_free_slots)'
     fi
   fi
 fi
@@ -968,33 +984,42 @@ if [ -z "$team" ] && { [ "$(cfg_bool overnight false)" = true ] || [ -n "$(run_v
   fi
 fi
 
-# --- what changed for the owner: the status table, and the set of PRs ready to merge ---------------------------------
-# The team table and the merge queue are the status reply. When their signature changes (a team starts, finishes or
-# fails, a PR turns ready, conflicts or merges, the merge order moves, something needs the owner) one status_changed wake
-# goes out, at most once every status_mins (the [run] profile, 10): changes in between wait for the next window. When the
-# ready set changes (to a non-empty set) the same wake carries the push text "2 ready: merge #A, then #B", at most once
-# every merge_push_mins (15). Nothing changed, nothing sent. The first look only records the signatures. A fleet-wide
-# count, so tick --team skips it.
+# --- what changed for the owner: the merge queue, what needs the owner, what failed -----------------------------------------
+# One status_changed wake goes out when the owner-facing signature changes: the merge queue (the ready PRs in their order,
+# the not-ready ones and what each misses), the open escalations, the failed or dead rows and the usage backoff. A team
+# starting, finishing or flipping Working/Idle/Stalled, or another machine's claim line, are not the owner's: the status
+# table changing alone goes to the event log (state_flip) and wakes nobody. At most once every status_mins (the [run]
+# profile, 10): changes in between wait for the next window. When the ready set changes (to a non-empty set) the same wake
+# carries the push text "2 ready: merge #A, then #B", at most once every merge_push_mins (15). Nothing changed, nothing sent.
+# The first look only records the signatures. A fleet-wide count, so tick --team skips it.
 q_built=""
 if [ -z "$team" ]; then
   q_built="$("$FLEET_SCRIPTS/queue.sh" 2>/dev/null)" || q_built=""
   [ -z "$q_built" ] || {
-    tsig="$(render_table --queue "$q_built" 2>/dev/null | cksum | awk '{print $1}')"
+    tfull="$(render_table --queue "$q_built" 2>/dev/null | cksum | awk '{print $1}')"
+    tsig="$(jq -cn --argjson q "$q_built" --argjson esc "$("$registry" escalations --open | jq -c '[.[] | .name + "|" + .id]')" \
+      --argjson bad "$("$registry" list | jq -c '[.[] | select(.status == "Failed" or .status == "Dead" or .status == "Zombie") | .name + "|" + .status]')" \
+      --argjson usage "$(jq -c '(if (.usage_active // false) then (.usage_until // 0) else 0 end)' "$STATE_FILE")" \
+      '{ready: [($q.ready // [])[] | .url], not_ready: [($q.not_ready // [])[] | [.url, (.missing // [])]], esc: ($esc | sort), bad: ($bad | sort), usage: $usage}' | cksum | awk '{print $1}')"
     rnow="$(jq -r '[(.ready // [])[] | .url] | join(" ")' <<<"$q_built")"
     rtxt="$(jq -r '(.ready // []) as $r | ($r | map(.url | capture("^https?://[^/]+/(?<o>[^/]+)/(?<r>[^/]+)/pull/(?<n>[0-9]+)")) | map(.r) | unique | length > 1) as $multi
       | if ($r | length) == 0 then "" else "\($r | length) ready: merge " + ([$r[] | .url | capture("^https?://[^/]+/[^/]+/(?<r>[^/]+)/pull/(?<n>[0-9]+)") | (if $multi then .r else "" end) + "#" + .n] | join(", then ")) end' <<<"$q_built")"
-    if [ "$(jq -r 'has("status_sig")' "$STATE_FILE")" != true ]; then
-      st_upd --arg s "$tsig" --arg r "$rnow" --argjson n "$now_epoch" '$st + {status_sig: $s, ready_sig: $r, status_sent_at: $n, ready_sent_at: $n}'
+    if [ "$(jq -r 'has("owner_sig")' "$STATE_FILE")" != true ]; then
+      st_upd --arg s "$tsig" --arg f "$tfull" --arg r "$rnow" --argjson n "$now_epoch" '$st + {owner_sig: $s, table_sig: $f, ready_sig: $r, status_sent_at: $n, ready_sent_at: $n}'
     else
+      if [ "$tfull" != "$(jq -r '.table_sig // ""' "$STATE_FILE")" ]; then
+        [ "$tsig" != "$(jq -r '.owner_sig' "$STATE_FILE")" ] || ev_log state_flip detail="the status table changed; nothing for the owner"
+        st_upd --arg f "$tfull" '$st + {table_sig: $f}'
+      fi
       s_due=false; r_due=false
-      [ "$tsig" = "$(jq -r '.status_sig' "$STATE_FILE")" ] || [ $((now_epoch - $(jq -r '.status_sent_at // 0' "$STATE_FILE"))) -lt $(($(run_int status_mins 10) * 60)) ] || s_due=true
+      [ "$tsig" = "$(jq -r '.owner_sig' "$STATE_FILE")" ] || [ $((now_epoch - $(jq -r '.status_sent_at // 0' "$STATE_FILE"))) -lt $(($(run_int status_mins 10) * 60)) ] || s_due=true
       if [ "$rnow" != "$(jq -r '.ready_sig // ""' "$STATE_FILE")" ]; then
         if [ -z "$rnow" ]; then st_upd '$st + {ready_sig: ""}'
         elif [ $((now_epoch - $(jq -r '.ready_sent_at // 0' "$STATE_FILE"))) -ge $(($(run_int merge_push_mins 15) * 60)) ]; then r_due=true; fi
       fi
       if $s_due || $r_due; then
-        add_events "$(jq -cn --arg r "$([ "$r_due" = true ] && printf '%s' "$rtxt")" '[{type: "status_changed", team: "", name: "", detail: "the status table changed"} + (if $r != "" then {ready: $r} else {} end)]')"
-        st_upd --arg s "$tsig" --argjson n "$now_epoch" '$st + {status_sig: $s, status_sent_at: $n}'
+        add_events "$(jq -cn --arg r "$([ "$r_due" = true ] && printf '%s' "$rtxt")" '[{type: "status_changed", team: "", name: "", detail: "something changed for the owner"} + (if $r != "" then {ready: $r} else {} end)]')"
+        st_upd --arg s "$tsig" --argjson n "$now_epoch" '$st + {owner_sig: $s, status_sent_at: $n}'
         ! $r_due || st_upd --arg r "$rnow" --argjson n "$now_epoch" '$st + {ready_sig: $r, ready_sent_at: $n}'
       fi
     fi

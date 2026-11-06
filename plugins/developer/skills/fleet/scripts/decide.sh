@@ -48,7 +48,7 @@ fi
 printf '%s' "$text" | grep -qiE '\b(merg(e|es|ed|ing)|prod|production|deploy(ing|ment)?s?|release to|infra|infrastructure|terraform|tofu|kubectl|helm|pulumi|ansible|cloudformation|apply|applies|secrets?|credentials?|passwords?|passphrase|tokens?|api[ _-]?keys?|keys?|certs?|certificates?|iam|vault|rotate|rotation|branch[ -]protection|protected branch|force[ -]push|required (checks|reviews)|gh pr ready|close the (pr|issue))\b' && human=true
 
 if $human; then
-  "$registry" note "$lead" parked "$short" >/dev/null
+  "$registry" note "$lead" parked "[esc $id] $short" >/dev/null # the id lets the morning report drop it once someone else resolves the escalation
   "$FLEET_SCRIPTS/tell.sh" "$lead" "Decision (taken for the owner, who keeps this one): set that part aside and carry on with the rest of the work; do not wait. It is listed for the owner. Question was: $short" >/dev/null 2>&1 ||
     warn "could not tell $lead; the escalation is parked anyway"
   "$registry" resolve "$name" "$id" --note "parked for the human: $short" >/dev/null

@@ -1231,7 +1231,8 @@ notice_add() { # notice_add <text> [tick event JSON]: one notice (it may span li
 # issue (next); its escalation is closed (resolve, or the close at retire and next); a pr_ready that a later unshown
 # notice of the same PR supersedes (the PR conflicts, merged, or its head moved to another sha: a newer pr_ready) and a
 # pr_conflicting that a later pr_ready follows (the fix landed), so one `fleet status` never says "Ready" about a PR
-# a later line has overtaken (no network: only the notices themselves); a stale_version whose version
+# a later line has overtaken (no network: only the notices themselves); a slot_free that a later unshown one follows;
+# a text that is already in this print (each notice once); a stale_version whose version
 # has the user's go (version_ok); a failed or brief_failed whose row is no longer Failed. A line with no type (from
 # 4.1.0) is shown as it is.
 notices_show() {
@@ -1251,17 +1252,31 @@ notices_show() {
           or (($x.esc // "") != "" and ($open | index($x.esc)) == null)
           or ($x.type == "stale_version" and ($x.to // "") != "" and $ok == $x.to)
           or (($x.type == "failed" or $x.type == "brief_failed") and ([$rows[] | select(.name == $x.name and .status == "Failed")] | length) == 0);
-      def newer($x; $y): $y.url == $x.url and ($x.url // "") != "" and (
+      def newer($x; $y): ($x.type == "slot_free" and $y.type == "slot_free") or ($y.url == $x.url and ($x.url // "") != "" and (
         (($x.type == "pr_ready") and ($y.type == "pr_conflicting" or $y.type == "pr_merged"
           or ($y.type == "pr_ready" and ($y.sha // "") != "" and $y.sha != ($x.sha // ""))))
-        or ($x.type == "pr_conflicting" and $y.type == "pr_ready"));
+        or ($x.type == "pr_conflicting" and $y.type == "pr_ready")));
       [inputs | fromjson? | select(type == "object" and (.text | type) == "string" and .text != "")] as $all
       | [$all | to_entries[] | .key as $k | .value as $v | select(($v | handled | not) and ([$all[$k + 1:][] | select(newer($v; .))] | length) == 0) | $v.text]
+      | reduce .[] as $t ([]; if any(.[]; . == $t) then . else . + [$t] end)
       | join("\n\n")' 2>/dev/null
   # Once everything is shown, a long log starts over (nothing unshown is lost).
   if [ "$n" -gt 200 ]; then : >"$f"; n=0; fi
   printf '%s\n' "$n" >"$f.shown"
   notices_unlock
+}
+
+# render_candidates <detail JSON from linear.sh candidates --detail> <held issues JSON array>: the bootable work, one line
+# each by priority (urgent first, none last) then identifier, then the skipped list; an issue a registry row holds moves to
+# skipped as `held`.
+render_candidates() {
+  jq -r --argjson held "${2:-[]}" '
+    def p: if . == 0 or . == null then "-" else "P\(.)" end;
+    ([.bootable[] | select(.id as $i | $held | index($i) | not)]) as $b
+    | (.skipped + [.bootable[] | select(.id as $i | $held | index($i)) | {id, reason: "held"}]) as $s
+    | (if ($b | length) == 0 then "Nothing bootable."
+       else ($b | sort_by([(if .priority == 0 then 9 else .priority end), (.id | sub("^.*-"; "") | tonumber? // 0)])[] | "- \(.id) · \(.priority | p) · \(.title) · \(.reason)") end),
+      "skipped: " + (if ($s | length) == 0 then "none" else ($s | sort_by(.id | sub("^.*-"; "") | tonumber? // 0) | map("\(.id) \(.reason)") | join(", ")) end)' <<<"$1"
 }
 
 # fleet_base_ref <repo>: the ref a team's worktrees branch from, printed on stdout. It fetches origin first (only

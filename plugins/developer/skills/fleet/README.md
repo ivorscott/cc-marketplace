@@ -1004,6 +1004,26 @@ Fixes found after 4.1.1 (DEV-530), one per item:
 5. **A fresh claim is fresh.** `claim` and `takeover` refresh the machine label's heartbeat in the same call, and tick
    refreshes it first of all, before herdr is checked and with or without claimed rows.
 
+## What changed in 4.2.7
+
+DEV-720: the Orchestrator was woken, and replied, for things that were not news: a Monitor expiring, the same `Slot free`
+twice, a team flipping Working and Idle, work it could not boot.
+
+1. **Quiet re-arm.** `fleet watch` prints the Monitor command (`tail -n 0 -F <wakes.log>`). When a Monitor expires the
+   Orchestrator re-arms it and ends the turn with no text.
+2. **One `slot_free` per set of work.** The wake names the bootable set once; it comes again only for an issue not in the
+   announced set, or when more slots are free. A shrinking set, or a team starting and stopping on the same work, is silent.
+3. **`fleet candidates`** lists only what a team could boot now, with a `skipped:` line and one reason per issue (verify,
+   done, canceled, duplicate, other-team, no-role, claimed, blocked, held). Issues of teams outside `tracker_teams` (default:
+   the team keys on registry rows) and issues with no `role:` label are skipped unless `candidates_allow_unlabelled = true`.
+   tick's `slot_free` uses the same filters.
+4. **`status_changed` is for the owner.** It fires for the merge queue, an open escalation, a Failed or Dead row or the
+   usage backoff, not for Working/Idle/Stalled flips or another machine's claim line (those go to the event log). One print
+   of `fleet status` shows each notice once.
+5. **Morning report.** A deferred item that was filed by hand (a `deferred-filed` note, or an issue holding its text) shows
+   as `- filed: <ISSUE>`; a parked escalation someone resolved by hand is no longer "parked for you". `fleet defer` works for
+   a retired team (its lead row, archived or not).
+
 ## What changed in 4.2.6
 
 DEV-691: a team's worktrees started from the repo's local HEAD, which can be days stale, so a team could see errors

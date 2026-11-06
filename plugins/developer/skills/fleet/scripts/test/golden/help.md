@@ -1,6 +1,7 @@
 | Command | What it does | Example |
 |---|---|---|
 | `boot` | Boot a team on a task or an issue | `fleet boot build export ~/code/api "add CSV invoice export"` |
+| `candidates` | List the work a team could boot now, and what was skipped and why | `fleet candidates` |
 | `catchup` | Bring a finished team back to merge main into its conflicting PR | `fleet catchup build-api https://github.com/acme/app-api/pull/12` |
 | `claim` | Claim an issue on Linear for this machine | `fleet claim DEV-123` |
 | `debrief` | List the retired teams and their lessons, the ones still due marked | `fleet debrief` |
@@ -30,3 +31,4 @@
 | `takeover` | Take an issue over from a machine whose claim lapsed | `fleet takeover DEV-123` |
 | `tell` | Send a team's lead (or one agent) a message and check it arrived | `fleet tell build-api/lead "focus on token expiry"` |
 | `unpark` | Bring a parked team back | `fleet unpark build-api` |
+| `watch` | Print the wake Monitor command to (re)arm | `fleet watch` |

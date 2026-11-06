@@ -17,7 +17,7 @@
 #   registry.sh resolve <name> <id|at> [--note TEXT]       close one escalation (the Orchestrator does this; <id> is unique across the registry, <at> is the legacy form;
 #                                                          a team name for <name> means the team's agent that has the open <id>, the lead first);
 #                                                          prints "Resolved <id> for <name>: <note>."
-#   registry.sh note <name> discovered|decision|picked TEXT   discovered: work filed instead of done (the row's
+#   registry.sh note [--archived] <name> discovered|decision|picked|deferred-filed TEXT   discovered: work filed instead of done (the row's
 #                                                          `discovered`); decision: the option an agent took on its own
 #                                                          (overnight mode); picked: the search behind a boot (the
 #                                                          Orchestrator, on the lead's row). The last two go to `notes`
@@ -278,9 +278,20 @@ case "$cmd" in
     render_line resolved id="$ref" name="$name" decision="$note"
     ;;
   note)
-    name="${1:?usage: note <name> discovered|decision|picked|deferred|parked TEXT}"; kind="${2:?usage: note <name> discovered|decision|picked|deferred|parked TEXT}"
+    arch=false; [ "${1:-}" != --archived ] || { arch=true; shift; }
+    name="${1:?usage: note [--archived] <name> discovered|decision|picked|deferred|parked|deferred-filed TEXT}"; kind="${2:?usage: note <name> discovered|decision|picked|deferred|parked TEXT}"
     msg="${3:?usage: note <name> discovered|decision|picked|deferred|parked TEXT}"
-    case "$kind" in discovered | decision | picked | deferred | parked) ;; *) die "a note is discovered, decision, picked, deferred or parked, not '$kind'" ;; esac
+    case "$kind" in discovered | decision | picked | deferred | deferred-filed | parked) ;; *) die "a note is discovered, decision, picked, deferred, deferred-filed or parked, not '$kind'" ;; esac
+    if $arch; then
+      # A retired team's row is in the archive; the note goes there, in place (the morning report reads the archive too).
+      [ -f "$ARCHIVE" ] && jq -e --arg n "$name" '.agents[$n] != null' "$ARCHIVE" >/dev/null || die "no archived agent '$name'"
+      tmp="$(mktemp "$ARCHIVE.XXXXXX")"
+      if jq --arg n "$name" --arg k "$kind" --arg m "$msg" --arg t "$(now)" \
+        '.agents[$n] |= (if $k == "discovered" then .discovered += [{message: $m, at: $t}] else .notes = ((.notes // []) + [{kind: $k, message: $m, at: $t}]) end | .updated_at = $t)' "$ARCHIVE" >"$tmp"; then
+        mv "$tmp" "$ARCHIVE"
+      else rm -f "$tmp"; die "archive note failed; $ARCHIVE left unchanged"; fi
+      exit 0
+    fi
     exists "$name"
     if [ "$kind" = discovered ]; then
       update --arg n "$name" --arg m "$msg" --arg t "$(now)" '.agents[$n] |= (.discovered += [{message: $m, at: $t}] | .updated_at = $t)'

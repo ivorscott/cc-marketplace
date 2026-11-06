@@ -13,7 +13,7 @@
 # deferred note of the lead already holds is skipped. The issue is made in the team's issue's Linear team, linked to the PR,
 # and the note is `<item> → <ISSUE> <url>`. With no Linear key, or writes off, the item is still noted
 # (`<item> → not filed: <why>`) so the report lists it, and filed by a later run once writes are on. Prints one line per item:
-# `Deferred <ISSUE>: <item>`. tick runs the first form once when a PR becomes ready. Orchestrator only.
+# `Deferred <ISSUE>: <item>`. A retired team works too (its lead row, archived or not). tick runs the first form once when a PR becomes ready. Orchestrator only.
 # Command: File what a PR defers to the owner as linked issues · e.g. fleet defer build-api
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
@@ -32,8 +32,14 @@ while [ $# -gt 0 ]; do
   esac
 done
 rows="$("$registry" list --team "$team" | jq -c '[.[] | select(.status != "Retired" and .tier != "Orchestrator")]')"
+# A retired team (its rows still in the registry, or already archived) can still be deferred for: its lead row gives the
+# issue and the PR, and the note goes on that row, in the archive when it is there.
+if [ "$(jq length <<<"$rows")" = 0 ]; then
+  rows="$("$registry" list --team "$team" --with-archived | jq -c '[.[] | select(.tier != "Orchestrator")]')"
+fi
 lead="$(jq -r '[.[] | select(.tier == "Lead") | .name] | first // ""' <<<"$rows")"
-[ -n "$lead" ] || die "no live team '$team'" "Run fleet status"
+[ -n "$lead" ] || die "no team '$team'" "Run fleet status"
+note_args=(); "$registry" get "$lead" >/dev/null 2>&1 || note_args=(--archived)
 issue="$(jq -r '[.[].issue // empty | select(. != "")] | first // ""' <<<"$rows")"
 [ -n "$pr" ] || pr="$(jq -r '[.[].pr // empty | select(. != "")] | first // ""' <<<"$rows")"
 
@@ -67,13 +73,13 @@ for it in "${items[@]}"; do
 
 Left for the owner by the team on $issue.${pr:+ PR: $pr}" ${pr:+--link "$pr"} 2>"$FLEET_STATE_DIR/defer.err")"; then
       id="$(jq -r .identifier <<<"$out")"; url="$(jq -r .url <<<"$out")"
-      "$registry" note "$lead" deferred "$it → $id $url" >/dev/null
+      "$registry" note ${note_args[@]+"${note_args[@]}"} "$lead" deferred "$it → $id $url" >/dev/null
       printf 'Deferred %s: %s\n' "$id" "$it"
       continue
     fi
     why="could not file it: $(tail -n 1 "$FLEET_STATE_DIR/defer.err" | sed 's/^fleet: //')"
   fi
-  "$registry" note "$lead" deferred "$it → not filed: $why" >/dev/null
+  "$registry" note ${note_args[@]+"${note_args[@]}"} "$lead" deferred "$it → not filed: $why" >/dev/null
   printf 'Deferred (not filed: %s): %s\n' "$why" "$it"
 done
 rm -f "$FLEET_STATE_DIR/defer.err"
