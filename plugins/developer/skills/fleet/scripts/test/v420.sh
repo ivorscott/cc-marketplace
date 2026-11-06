@@ -276,7 +276,7 @@ v420_status_changes() { # one table per window, one batched ready push in merge 
   ev="$(v420_tick 2026-10-29T10:30:00Z)"
   eq "v420 status: a quiet stretch produces no status_changed at all" "$(v420_evn "$ev" status_changed)" 0
   for t in 10:31:00 10:32:00 10:33:00; do
-    "$REG" add "$(jq -cn --arg n "st-$t" '{name:($n + "/lead"),team:$n,tier:"Lead",status:"Working",herdr_ref:("l" + $n),pane:("p" + $n),issue:"DEV-9"}')" >/dev/null; echo working >"$AS/lst-$t"
+    "$REG" add "$(jq -cn --arg n "st-$t" '{name:($n + "/lead"),team:$n,tier:"Lead",status:"Working",herdr_ref:("l" + $n),pane:("p" + $n),issue:"DEV-9"}')" >/dev/null; echo working >"$AS/lst-$t"; "$REG" escalate "st-$t/lead" P2 "question $t" >/dev/null # a team starting is not news; its question is
     ev="$(v420_tick "2026-10-29T$t""Z")"
     eq "v420 status: the first change after a quiet stretch is sent at once, the ones inside the window wait ($t)" "$(v420_evn "$ev" status_changed)" "$([ "$t" = 10:31:00 ] && echo 1 || echo 0)"
   done
@@ -292,6 +292,7 @@ v420_status_changes() { # one table per window, one batched ready push in merge 
     "$(v420_evn "$ev" status_changed):$(printf '%s' "$ev" | jq -r '[.[] | select(.type == "status_changed") | .ready] | first')" "1:2 ready: merge #20, then #21"
   eq "v420 status: the notice is the push text" "$(grep -c 'Ready to merge: 2 ready: merge #20, then #21.' "$FLEET_STATE_DIR/notices.log")" 1
   "$REG" add '{"name":"st-z/lead","team":"st-z","tier":"Lead","status":"Working","herdr_ref":"st-z-lead","pane":"pz","issue":"DEV-30"}' >/dev/null
+  "$REG" escalate st-z/lead P2 "question z" >/dev/null
   ev="$(v420_tick 2026-10-29T11:12:00Z)"
   eq "v420 status: a table change with the same ready set pushes no ready text" "$(printf '%s' "$ev" | jq -r '[.[] | select(.type == "status_changed") | .ready // ""] | first // "none"')" ""
   unset DF_GB FLEET_GH
@@ -497,8 +498,8 @@ v420_decide() { # a lead's escalation is decided, recorded and reported without 
 }
 
 v420_version() { # the version, the changelog, the commands and the config example in step with the code
-  eq "v420 version: plugin.json and the marketplace read 4.2.6, and the README has the What changed sections of 4.2.6, 4.2.5, 4.2.4, 4.2.3, 4.2.2, 4.2.1 and 4.2.0" \
-    "$(jq -r .version "$SCRIPTS/../../../.claude-plugin/plugin.json"):$(jq -r '.plugins[] | select(.name == "developer") | .version' "$SCRIPTS/../../../../../.claude-plugin/marketplace.json"):$(grep -c '^## What changed in 4.2.[0123456]$' "$SCRIPTS/../README.md")" "4.2.6:4.2.6:7"
+  eq "v420 version: plugin.json and the marketplace read 4.2.7, and the README has the What changed sections of 4.2.7, 4.2.6, 4.2.5, 4.2.4, 4.2.3, 4.2.2, 4.2.1 and 4.2.0" \
+    "$(jq -r .version "$SCRIPTS/../../../.claude-plugin/plugin.json"):$(jq -r '.plugins[] | select(.name == "developer") | .version' "$SCRIPTS/../../../../../.claude-plugin/marketplace.json"):$(grep -c '^## What changed in 4.2.[01234567]$' "$SCRIPTS/../README.md")" "4.2.7:4.2.7:8"
   eq "v420 help: fleet help run names the subcommands" "$("$SCRIPTS/fleet" help run | grep -o 'run.sh \(init\|start\|stop\|status\|show\)' | sort -u | wc -l | tr -d ' ')" 5
   eq "v420 help: and the new commands are listed" "$("$SCRIPTS/fleet" help | grep -c '^| `\(run\|decide\|defer\|overlap\)` ')" 4
   eq "v420 config: every key of [run] that init writes is in config.example.toml" \

@@ -380,6 +380,29 @@ DEV-1: held by <machine|this machine (<machine>)>[, heartbeat lapsed|, no heartb
 
 `DEV-1: held by nobody.` for an unclaimed issue.
 
+### candidates
+
+```
+- <ISSUE> · P<n> · <title> · ready
+- <ISSUE> · - · <title> · in-progress-lapsed
+skipped: <ISSUE> <reason>, <ISSUE> <reason>
+```
+
+Only the work a team could boot now, one line per issue, by priority (urgent first, none last) then identifier. A reason is one word:
+`ready` (Todo or Backlog) or `in-progress-lapsed` for the bootable ones; `verify`, `done`, `canceled`, `duplicate`, `other-team`,
+`no-role`, `claimed`, `blocked`, `other-state` or `held` (a registry row works on it) for the skipped. With nothing bootable the first
+line is `Nothing bootable.`; the `skipped:` line stays. The Orchestrator trusts the list and keeps no exclude list of its own.
+
+### watch
+
+```
+tail -n 0 -F <state dir>/wakes.log
+# Monitor stops after at most 30 minutes (timeout_ms 1800000): run fleet watch again when it expires.
+```
+
+The command that follows the wakes: start Monitor with the first line and end the turn with no text (a re-arm is not news).
+`fleet watch --here` registers the pane as the Orchestrator first.
+
 ### defer
 
 ```
@@ -628,8 +651,9 @@ Slot free (<n> of <N> teams running). Pick the next issue and boot it.
 
 `<N>` is `target_teams` on the orchestrator row; it comes once per change while fewer teams run than the target and than
 `max_teams` (Parked teams do not count), a configured repo has fewer live teams than `teams_per_repo`, and at least one open
-issue is unclaimed and not blocked (`linear.sh candidates`; with no Linear key that last check is skipped and the wake says
-so). UNVERIFIED: the Linear query behind `candidates`.
+issue is bootable (`fleet candidates`: unclaimed, not blocked, in a `tracker_teams` team, with a `role:` label; with no Linear key
+that last check is skipped and the wake says so). It comes once for a set of bootable work, again only for an issue not in the
+announced set or when more slots are free; a shrinking set is silent, and one print shows a repeated `Slot free` once. UNVERIFIED: the Linear query behind `candidates`.
 
 ### fixes
 
@@ -659,8 +683,9 @@ offline, so without that file only the limit errors start it. UNVERIFIED: the wo
 Ready to merge: 2 ready: merge #214, then #121.
 ```
 
-The status table or the set of PRs ready to merge changed (a team starts, finishes or fails, a PR turns ready, conflicts or
-merges, the merge order moves, something needs the owner). At most once every `status_mins` (the `[run]` profile, 10); changes
+Something changed for the owner: the merge queue (a PR turns ready, conflicts or merges, the merge order moves), an escalation
+opens or closes, an agent fails or dies, or the usage backoff starts. A team starting, finishing or flipping Working, Idle and
+Stalled, or another machine's claim line, is not the owner's: it goes to the event log only. At most once every `status_mins` (the `[run]` profile, 10); changes
 in between wait for the next window; nothing changed, nothing sent. The notice is there only when the ready set changed to a
 non-empty one, at most once every `merge_push_mins` (15): it is the text of the one batched push, in merge order. Answer the wake
 with `fleet status`, relayed as it is; with a ready notice, push it as well.

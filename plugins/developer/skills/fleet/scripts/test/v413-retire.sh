@@ -98,7 +98,7 @@ v413_slots() {
   "$REG" set orchestrator target_teams=3 >/dev/null
   "$REG" add "$(jq -cn --arg r "$ra" '{name: "sl-a/lead", team: "sl-a", tier: "Lead", status: "Working", herdr_ref: "sl-a-lead", pane: "psla", repo: $r, issue: "DEV-1"}')" >/dev/null
   v413_retire_db none
-  gcfg 'linear_writes = "on"' "repos = [\"$ra\"]" "teams_per_repo = 1" "max_teams = 9"
+  gcfg 'linear_writes = "on"' "repos = [\"$ra\"]" "teams_per_repo = 1" "max_teams = 9" "candidates_allow_unlabelled = true"
   jq '.issues += [{id: "I2", identifier: "DEV-2", team: {id: "T1"}, state: {id: "S0", name: "Todo"}, labelIds: [], comments: []}]' "$LINEAR_DB" >"$LINEAR_DB.t" && mv "$LINEAR_DB.t" "$LINEAR_DB"
   tk() { FLEET_NOW="$1" "$SCRIPTS/tick.sh" 2>/dev/null; }
   eq "v413-12 slots: every repo busy (teams_per_repo 1), several ticks, no slot_free" "$(evc_ "$(tk 2026-10-29T10:00:00Z)")$(evc_ "$(tk 2026-10-29T10:01:00Z)")" "00"

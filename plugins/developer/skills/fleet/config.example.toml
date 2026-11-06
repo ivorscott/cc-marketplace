@@ -25,6 +25,9 @@ linear_writes = "off"   # off | "test:FT" (only issues of Linear team FT) | "on"
 # Agents
 permission_mode = "auto"   # the Claude Code permission mode every agent starts in (FLEET_PERMISSION_MODE for one boot)
 # Permissions added to every Claude agent at boot (Claude Code permission rules). Templates name no tracker or code host.
+# tracker_teams = ["DEV"]     # the tracker teams whose issues a team may boot (default: the team keys on registry rows; none known = no filter)
+# role_label_prefix = "role:" # an issue needs a label with this prefix to be bootable ...
+# candidates_allow_unlabelled = false   # ... unless this is true
 # tracker_allow = ["mcp__claude_ai_Linear__get_issue", "mcp__claude_ai_Linear__list_comments"]
 # forge_allow = ["Bash(gh pr view:*)", "Bash(gh pr checks:*)", "Bash(gh pr create:*)"]
 # no_pr_ci = ["repo-without-ci"]   # repos whose PRs have no CI: no checks counts as green
