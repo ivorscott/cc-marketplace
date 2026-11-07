@@ -305,6 +305,7 @@ plan_overlap() {
 # as done, so the next tick tries again; the warning is given once a day per repo.
 branches_sweep() {
   [ -z "$team" ] || return 0
+  [ "$(run_str branch_delete yes)" != no ] || return 0 # the owner answered no in fleet run init
   local today repo err
   today="${FLEET_NOW:-$(now)}"; today="${today:0:10}"
   while IFS= read -r repo; do

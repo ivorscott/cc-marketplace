@@ -195,7 +195,7 @@ leftovers() {
 # from its own "team is live" rule) and set branches_note to "deleted N, kept M (<branch>: <why>, ...)" when N+M > 0. Every
 # failure is a warning; a retire never fails because of a branch.
 retire_branches() {
-  local team="$1" rr="$2" repo def b v nd=0 nk=0 list="" cand allowed=true announced=false u tab=$'\t'
+  local team="$1" rr="$2" repo def b v nd=0 nk=0 list="" cand allowed announced=false u why_off tab=$'\t'
   while IFS= read -r repo; do
     [ -d "$repo" ] && [ -n "$(git -C "$repo" remote get-url origin 2>/dev/null)" ] || continue
     git -C "$repo" fetch --prune origin >/dev/null 2>&1 || { warn "branches of $team in $repo not checked: git fetch failed"; continue; }
@@ -207,15 +207,17 @@ retire_branches() {
       done
       git -C "$repo" for-each-ref --format='%(refname:strip=3)' "refs/remotes/origin/fleet/$team/" 2>/dev/null
     } | grep . | sort -u || true)"
-    branch_delete_allowed "$repo" || allowed=false
+    allowed=true; why_off=""
+    if [ "$(run_str branch_delete yes)" = no ]; then allowed=false; why_off="branch deletes are off (fleet run init answer: no)"
+    elif ! branch_delete_allowed "$repo"; then allowed=false; why_off="delete skipped, deletes are off"; fi
     while IFS= read -r b; do
       [ -n "$b" ] || continue
       git -C "$repo" rev-parse -q --verify "refs/remotes/origin/$b" >/dev/null 2>&1 || continue # not on the remote (any more)
       v="$(branch_verdict "$repo" "$b" "$def" "$team")"
       if [ "${v%%"$tab"*}" = delete ]; then
         if ! $allowed; then
-          $announced || { warn "$BRANCH_OFF_LINE"; announced=true; }
-          nk=$((nk + 1)); list="$list${list:+, }$b: delete skipped, deletes are off"
+          $announced || { warn "$([ "$why_off" = "delete skipped, deletes are off" ] && printf %s "$BRANCH_OFF_LINE" || printf %s "$why_off")"; announced=true; }
+          nk=$((nk + 1)); list="$list${list:+, }$b: $why_off"
         elif branch_delete "$repo" "$b" "$def"; then
           nd=$((nd + 1)); ev_log branches_deleted team="$team" name="$(repo_slug "$repo" | grep . || basename "$repo")" detail="$b ($(printf '%s' "${v#*"$tab"}" | sed 's/ http.*//'))"
         else warn "could not delete $b"; nk=$((nk + 1)); list="$list${list:+, }$b: delete failed"; fi

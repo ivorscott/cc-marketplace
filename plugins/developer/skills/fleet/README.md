@@ -1026,6 +1026,10 @@ DEV-739, DEV-736 and DEV-740 in one release.
    reordered, a symlink stays a symlink, the file mode stays), and leaves a file that is not valid JSON untouched with a
    warning. An answers file's default, EOF or a no never edits it. `fleet run start` only checks, and prints one line with the
    fix when the rule is missing. `retire`, `branches` and `tick` never edit it.
+   **Your no stands:** with `branch_delete = "no"` in `[run]` the daily sweep does nothing and `retire` deletes nothing (it names
+   the branches as kept: `branch deletes are off (fleet run init answer: no)`); only a `fleet branches` you run by hand still
+   goes by the permission rule alone. With no `[run]` profile the default is yes. A branch whose PR closed also stays when
+   commits were added after it closed that are not in the default branch.
 2. **Every PR body has `## In plain English`** ([DEV-736](https://linear.app/devpies/issue/DEV-736)). House rule: right after
    the `Fixes` line and any other issue URLs, before the technical summary: the problem, what the PR does, how it works, what
    still fails, what to review. The lead posts the section on the issue when the PR opens.

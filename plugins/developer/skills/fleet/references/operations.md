@@ -98,7 +98,7 @@ heartbeat), and all three wake the Orchestrator.
 the PRs of; a branch with an open PR; another machine's branch (`fleet/<issue>-<machine key>…`) while its claim is live or its
 holder cannot be read; a branch a non-Retired row of another team on this machine names as `branch` or `push_branch` (unless
 its PR merged; the retiring team is exempt); a branch with no PR and commits that are not in the default branch. **Deleted:**
-the latest PR of the head is merged (kept if commits were added after it merged and are not in the default branch) or closed;
+the latest PR of the head is merged or closed (kept if commits were added after it merged or closed and are not in the default branch);
 or no PR and every commit is in the default branch. Deletes are `git push origin --delete <branch>`, one at a time, never
 forced, never the default branch; a failed delete is a warning and the branch is listed as kept. A retire never fails because
 of a branch.
@@ -108,7 +108,7 @@ or `settings.local.json`); without it they are skipped and `Branch deletes are o
 the rule. Only `fleet run init` adds the rule, after the owner's explicit yes (a typed yes or y, or Enter at a real terminal
 when the shown default is yes), with a dated backup first, a merge that never replaces or reorders the array, writing through
 a symlink and keeping the mode; invalid JSON is left untouched. `fleet run start` only checks and prints the fix line; no other
-script edits permission settings. Tick sweeps each repo in `config.toml` `repos` once a day (state `branches_swept`), logs each
+script edits permission settings. When `[run]` `branch_delete = "no"` (the owner's answer in `fleet run init`; default yes with no profile), the daily sweep skips silently and `retire` deletes nothing, listing the branches as kept with "branch deletes are off (fleet run init answer: no)"; `fleet branches` run by hand is gated on the rule alone. The rule is decided per repo. Tick sweeps each repo in `config.toml` `repos` once a day (state `branches_swept`), logs each
 deletion as a `branches_deleted` event (no wake) and the morning report lists them. Tests use local bare repos as `origin`, a
 gh shim and `FLEET_CLAUDE_SETTINGS=<temp file>`.
 

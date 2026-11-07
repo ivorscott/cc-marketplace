@@ -69,8 +69,9 @@ v428_gh_shim() { # v428_gh_shim <table file>: a gh that answers pr list --head <
 [ "$1 $2" = "pr list" ] || exit 1
 b=""; while [ $# -gt 0 ]; do [ "$1" != --head ] || b="$2"; shift; done
 [ "${V428_GH_FAIL:-}" != "$b" ] || exit 1
-tip="$(git --git-dir="$V428_ORIGIN" rev-parse -q --verify "refs/heads/$b" 2>/dev/null || true)"
-awk -v b="$b" -v tip="$tip" '$1 == b { printf "%s{\"number\":%s,\"state\":\"%s\",\"url\":\"https://github.com/acme/app/pull/%s\",\"headRefOid\":\"%s\"}", (n++ ? "," : "["), $3, $2, $3, tip } END { printf "%s\n", (n ? "]" : "[]") }' "$V428_PRS"
+origin="$(git remote get-url origin)"
+tip="$(git --git-dir="$origin" rev-parse -q --verify "refs/heads/$b" 2>/dev/null || true)"
+awk -v b="$b" -v tip="$tip" '$1 == b { printf "%s{\"number\":%s,\"state\":\"%s\",\"url\":\"https://github.com/acme/app/pull/%s\",\"headRefOid\":\"%s\"}", (n++ ? "," : "["), $3, $2, $3, ($4 != "" ? $4 : tip) } END { printf "%s\n", (n ? "]" : "[]") }' "$(dirname "$origin")/prs.txt"
 EOF
   chmod +x "$sh"; export FLEET_GH="$sh"
 }
@@ -266,5 +267,42 @@ v428_house() { # DEV-736: the rule is in house.md and in the build briefs
   eq "v428 house: the lead and builder briefs name the section" "$(jq -r '[.lead.brief, (.workers[] | select(.role == "builder") | .brief)] | map(select(contains("## In plain English"))) | length' "$t")" 2
 }
 
-v428_smoke() { v428_takeover; v428_morning; v428_branches; v428_retire; v428_tick_sweep; v428_run; v428_house; }
+v428_fixround() { # review round: F1 closed PR with later commits, F2 the owner's no, F3 the rule per repo
+  local out R1 O1 R2 O2 S1
+  # F1: a CLOSED PR whose head is not the branch tip keeps the branch (commits added after it closed); tip == head still goes
+  v420_state fr; v428_fixture fr; v428_other_machine
+  git -C "$V428_R" push -q origin "main:refs/heads/fleet/dev-24-closed" 2>/dev/null
+  git -C "$V428_R" checkout -q -b fleet/dev-25-closed main; echo x >"$V428_R/x25.txt"; git -C "$V428_R" add -A; v428_g -C "$V428_R" commit -q -m later; git -C "$V428_R" push -q origin fleet/dev-25-closed 2>/dev/null; git -C "$V428_R" checkout -q main
+  printf 'fleet/dev-24-closed CLOSED 24\nfleet/dev-25-closed CLOSED 25 0000000000000000000000000000000000000001\n' >>"$V428_PRS"; git -C "$V428_R" fetch -q origin
+  out="$("$SCRIPTS/branches.sh" "$V428_R" --dry-run 2>/dev/null)"
+  eq "v428 fix F1: a closed PR's branch with commits added after it closed is kept, with the reason" "$(printf '%s\n' "$out" | grep -c '| fleet/dev-25-closed | 1 commit(s) added after its PR closed |')" 1
+  eq "v428 fix F1: and a closed PR whose head is the branch tip is still deleted" "$(printf '%s\n' "$out" | sed -n '/^### Delete/,/^### Keep/p' | grep -c 'fleet/dev-2[1234]-closed')" 4
+  # F2: [run] branch_delete = "no": the tick sweep is silent, retire keeps with the reason, a hand-run fleet branches still deletes
+  v420_state fn; v428_fixture fn; v428_other_machine; gcfg 'linear_writes = "on"' "repos = [\"$V428_R\"]" '[run]' 'branch_delete = "no"'
+  local before; before="$(v428_heads)"; : >"$T/v428-fn.err"
+  V420_ERR="$T/v428-fn.err" v420_tick 2026-10-29T10:00:00Z >/dev/null
+  eq "v428 fix F2: with branch_delete = no the tick sweep deletes nothing, warns nothing, records nothing" \
+    "$([ "$(v428_heads)" = "$before" ] && echo same):$(grep -c 'branch sweep' "$T/v428-fn.err"):$(jq -r '.branches_swept // {} | length' "$FLEET_STATE_DIR/tick.state.json")" "same:0:0"
+  export FLEET_NOW=2026-10-29T10:00:00Z
+  "$REG" add "$(jq -cn --arg r "$V428_R" '{name: "fn1/lead", team: "fn1", tier: "Lead", status: "Done", herdr_ref: "fn1-l", pane: "pfn1", repo: $r, branch: "fleet/dev-21-closed", outcome: "Shipped"}')" >/dev/null
+  out="$("$SCRIPTS/retire.sh" fn1 2>/dev/null | head -n 1)"
+  eq "v428 fix F2: retire deletes nothing and lists the branch as kept with the owner's no" \
+    "$(v428_heads | tr ',' '\n' | grep -c 'dev-21-closed'):$(printf '%s\n' "$out" | grep -c 'Branches: deleted 0, kept 1 (fleet/dev-21-closed: branch deletes are off (fleet run init answer: no))')" "1:1"
+  "$SCRIPTS/branches.sh" "$V428_R" >/dev/null 2>&1
+  eq "v428 fix F2: fleet branches run by hand stays gated on the rule alone and deletes" "$(v428_heads | tr ',' '\n' | grep -c 'dev-21-closed')" 0
+  unset FLEET_NOW
+  # F3: one team over two repos: the rule is decided per repo (repo 2 has it in its own .claude/settings.json, repo 1 has none)
+  v420_state f3; v428_fixture f3a; R1="$V428_R"; O1="$V428_ORIGIN"; S1="$V428_SETTINGS"; v428_fixture f3b; R2="$V428_R"; O2="$V428_ORIGIN"
+  jq -n '{permissions: {allow: []}}' >"$S1"; mkdir -p "$R2/.claude"; jq -n --arg r "$DELETE_RULE_T" '{permissions: {allow: [$r]}}' >"$R2/.claude/settings.json"
+  export FLEET_CLAUDE_SETTINGS="$S1" FLEET_NOW=2026-10-29T10:00:00Z; v428_other_machine
+  local n
+  for n in 1 2; do eval "R=\$R$n"
+    "$REG" add "$(jq -cn --arg r "$R" --arg n "$n" '{name: ("f3/w" + $n), team: "f3", tier: "Worker", status: "Done", herdr_ref: ("f3-w" + $n), pane: ("pf3" + $n), repo: $r, branch: "fleet/dev-21-closed", outcome: "Shipped"}')" >/dev/null; done
+  "$SCRIPTS/retire.sh" f3 >/dev/null 2>&1
+  eq "v428 fix F3: repo 1 (no rule) keeps its branch, repo 2 (rule in its own settings) loses it" \
+    "$(git --git-dir="$O1" rev-parse -q --verify refs/heads/fleet/dev-21-closed >/dev/null && echo kept):$(git --git-dir="$O2" rev-parse -q --verify refs/heads/fleet/dev-21-closed >/dev/null && echo kept || echo gone)" "kept:gone"
+  unset FLEET_NOW; v420_nolinear
+}
+
+v428_smoke() { v428_takeover; v428_morning; v428_branches; v428_retire; v428_tick_sweep; v428_run; v428_house; v428_fixround; }
 v428_full() { v428_smoke; }

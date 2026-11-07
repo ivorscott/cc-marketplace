@@ -829,7 +829,11 @@ branch_verdict() {
         printf 'keep\t%s commit(s) added after its PR merged\n' "$n_un"; return 0
       fi
       printf 'delete\tPR merged %s\n' "$url" ;;
-    CLOSED) printf 'delete\tPR closed %s\n' "$url" ;;
+    CLOSED)
+      if [ "$(jq -r '.headRefOid // ""' <<<"$last")" != "$tip" ] && [ "${n_un:-0}" != 0 ]; then
+        printf 'keep\t%s commit(s) added after its PR closed\n' "$n_un"; return 0
+      fi
+      printf 'delete\tPR closed %s\n' "$url" ;;
     *)
       if [ -z "$tip" ]; then printf 'keep\tcould not read the branch\n'
       elif [ "${n_un:-0}" = 0 ]; then printf 'delete\tno PR, every commit is in %s\n' "$def"
