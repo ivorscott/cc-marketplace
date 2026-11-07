@@ -74,3 +74,4 @@ merge_push_mins = 15      # at most one batched "ready to merge" push every N mi
 status_mins = 10          # at most one status table every N minutes, and only when something changed
 report_at = "08:00"       # morning report time, local HH:MM
 stop = "never"            # never | HH:MM | no-work
+branch_delete = "yes"     # yes | no; yes lets fleet run init add Bash(git push origin --delete:*) to ~/.claude/settings.json (after a backup, on your yes) so stale remote branches are deleted

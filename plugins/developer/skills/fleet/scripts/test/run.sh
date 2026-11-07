@@ -4,6 +4,7 @@
 #   bash scripts/test/run.sh            the full suite (local)
 #   bash scripts/test/run.sh --smoke    the critical cases only (CI, under 2 min)
 #   bash scripts/test/run.sh --v413     only the 4.1.3 cases, test/v413.sh
+#   bash scripts/test/run.sh --v428     only the 4.2.8 cases, test/v428.sh
 #   bash scripts/test/run.sh --v420     only the 4.2.0 cases, test/v420.sh
 #   bash scripts/test/run.sh --v42x     only the 4.2.x patch cases, test/v42x.sh
 set -uo pipefail
@@ -327,6 +328,8 @@ if [ "${1:-}" = --v413 ]; then v413_full; printf '\n%d passed, %d failed\n' "$pa
 . "$HERE/v42x.sh" # 4.2.x patches: v42x_smoke and v42x_full
 . "$HERE/v426.sh" # 4.2.6: v426_smoke and v426_full
 . "$HERE/v427.sh" # 4.2.7: v427_smoke and v427_full
+. "$HERE/v428.sh" # 4.2.8: v428_smoke and v428_full
+if [ "${1:-}" = --v428 ]; then v428_full; printf '\n%d passed, %d failed\n' "$pass" "$failn"; [ "$failn" = 0 ]; exit; fi
 if [ "${1:-}" = --v427 ]; then v427_full; printf '\n%d passed, %d failed\n' "$pass" "$failn"; [ "$failn" = 0 ]; exit; fi
 if [ "${1:-}" = --v426 ]; then v426_full; printf '\n%d passed, %d failed\n' "$pass" "$failn"; [ "$failn" = 0 ]; exit; fi
 if [ "${1:-}" = --v42x ]; then v42x_full; printf '\n%d passed, %d failed\n' "$pass" "$failn"; [ "$failn" = 0 ]; exit; fi # only the 4.2.x patch cases
@@ -755,6 +758,7 @@ Merge this one first." "Do not merge until the API ships" "  hold: waiting on de
   v42x_smoke
   v426_smoke
   v427_smoke
+  v428_smoke
   printf '\n%d passed, %d failed\n' "$pass" "$failn"
   [ "$failn" = 0 ]; exit
 fi
@@ -3848,7 +3852,7 @@ bad=""; while IFS= read -r row; do
 done < <(sed -n '3,$p' "$D4/help.out")
 eq "dev408-16 commands: every row has an example that runs that command" "$bad" ""
 eq "dev408-16 commands: no internal script is listed" "$(printf '%s\n' "$cmds" | grep -cxE 'common|agent-lib|loop-tick|registry|tick|linear|machine-id|chat|fleet')" 0
-eq "dev408-16 commands: the commands (scripts with a Command line, the aliases, help)" "$(printf '%s\n' "$cmds" | paste -sd' ' -)" "boot catchup claim debrief decide defer env escalate escalations focus help holder metrics next overlap park prime redact-check resolve respawn retire revive run sandbox schedule slim status takeover tell unpark"
+eq "dev408-16 commands: the commands (scripts with a Command line, the aliases, help)" "$(printf '%s\n' "$cmds" | paste -sd' ' -)" "boot branches candidates catchup claim debrief decide defer env escalate escalations focus help holder metrics next overlap park prime redact-check resolve respawn retire revive run sandbox schedule slim status takeover tell unpark watch"
 bad=""; for f in "$SCRIPTS"/*.sh; do
   grep -q '^# Command: ' "$f" || continue; n="$(basename "$f" .sh)"
   awk 'NR == 1 { next } !/^#/ { exit } { print }' "$f" | grep -qE "^#   $n\.sh( |$)" || bad="$bad $n:usage"
@@ -4610,6 +4614,7 @@ v420_full
 v42x_full
 v426_full
 v427_full
+v428_full
 # ---- end 4.2.0 ----
 
 printf '\n%d passed, %d failed\n' "$pass" "$failn"
