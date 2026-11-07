@@ -26,6 +26,12 @@
 # A team name with no live rows but leftovers of an earlier boot (worktrees under $FLEET_WORKTREES/<team>, fleet/<team>/*
 # branches: an interrupted boot, or a retire that kept work) is tidied instead of refused: what would lose nothing is
 # removed, the rest kept and named (boot refuses a name with leftovers and names this).
+# Retiring a whole team also deletes its stale remote branches (the rows' branch and push_branch, the heads of their PRs and
+# the fleet/<team>/ branches on origin) by the rules of branches.sh (common.sh branch_verdict): a merged or closed PR's
+# branch, or one with no PR whose every commit is in the default branch, goes; one with an open PR, unmerged work and no
+# PR, another machine's live claim or a live team is kept and named. The Retired line then adds "Branches: deleted N, kept
+# M (<branch>: <why>)." (only when there is something to report). It needs Bash(git push origin --delete:*) in
+# permissions.allow, else the deletes are skipped and the line says so. A retire never fails because of a branch.
 # Never closes panes or workspaces the registry doesn't record as fleet-created. Worktrees
 # are big (node_modules, build output), so a retire removes them, but only after looking:
 #   - build outputs (node_modules/, *.tsbuildinfo, dist/, .next/, coverage/, .terraform/, test-results/, bin/) are
@@ -146,7 +152,7 @@ while [ $# -gt 0 ]; do
   esac
 done
 
-kept=""; archived=""
+kept=""; archived=""; branches_note=""
 keep() { kept="$kept${kept:+, }$1 ($2)"; } # keep <what> <why>: named on the Retired line
 
 # leftovers <team>: no live rows, but an earlier boot of the name left worktrees under $FLEET_WORKTREES/<team> or
@@ -183,6 +189,43 @@ leftovers() {
   done <<<"$repos"
   rmdir "$FLEET_WORKTREES/$team" 2>/dev/null || true
   [ "$found" = 1 ]
+}
+
+# retire_branches <team> <rows json>: delete the team's stale remote branches by branch_verdict (the team itself is exempt
+# from its own "team is live" rule) and set branches_note to "deleted N, kept M (<branch>: <why>, ...)" when N+M > 0. Every
+# failure is a warning; a retire never fails because of a branch.
+retire_branches() {
+  local team="$1" rr="$2" repo def b v nd=0 nk=0 list="" cand allowed=true announced=false u tab=$'\t'
+  while IFS= read -r repo; do
+    [ -d "$repo" ] && [ -n "$(git -C "$repo" remote get-url origin 2>/dev/null)" ] || continue
+    git -C "$repo" fetch --prune origin >/dev/null 2>&1 || { warn "branches of $team in $repo not checked: git fetch failed"; continue; }
+    def="$(default_branch "$repo")"; [ -n "$def" ] || continue
+    cand="$({
+      printf '%s' "$rr" | jq -r --arg r "$repo" '.[] | select(.repo == $r) | (.branch // empty), (.push_branch // empty)'
+      for u in $(printf '%s' "$rr" | jq -r --arg r "$repo" '[.[] | select(.repo == $r) | (.pr // empty), (.prs // [])[] | select(. != "")] | unique[]'); do
+        "$FLEET_GH" pr view "$u" --json headRefName -q .headRefName 2>/dev/null || true
+      done
+      git -C "$repo" for-each-ref --format='%(refname:strip=3)' "refs/remotes/origin/fleet/$team/" 2>/dev/null
+    } | grep . | sort -u || true)"
+    branch_delete_allowed "$repo" || allowed=false
+    while IFS= read -r b; do
+      [ -n "$b" ] || continue
+      git -C "$repo" rev-parse -q --verify "refs/remotes/origin/$b" >/dev/null 2>&1 || continue # not on the remote (any more)
+      v="$(branch_verdict "$repo" "$b" "$def" "$team")"
+      if [ "${v%%"$tab"*}" = delete ]; then
+        if ! $allowed; then
+          $announced || { warn "$BRANCH_OFF_LINE"; announced=true; }
+          nk=$((nk + 1)); list="$list${list:+, }$b: delete skipped, deletes are off"
+        elif branch_delete "$repo" "$b" "$def"; then
+          nd=$((nd + 1)); ev_log branches_deleted team="$team" name="$(repo_slug "$repo" | grep . || basename "$repo")" detail="$b ($(printf '%s' "${v#*"$tab"}" | sed 's/ http.*//'))"
+        else warn "could not delete $b"; nk=$((nk + 1)); list="$list${list:+, }$b: delete failed"; fi
+      else
+        nk=$((nk + 1)); list="$list${list:+, }$b: ${v#*"$tab"}"; warn "kept branch $b: ${v#*"$tab"}"
+      fi
+    done <<<"$cand"
+  done < <(printf '%s' "$rr" | jq -r '[.[].repo // empty | select(. != "")] | unique[]')
+  if [ $((nd + nk)) -gt 0 ]; then branches_note="deleted $nd, kept $nk${list:+ ($list)}"; fi
+  return 0
 }
 
 rows="$("$registry" list | jq --arg x "$target" '[.[] | select((.name == $x or .team == $x) and .status != "Retired")]')"
@@ -236,6 +279,7 @@ if $whole_team; then
   done < <(printf '%s' "$rows" | jq -r '[.[].repo // empty | select(. != "")] | unique[]')
 fi
 
+! $whole_team || retire_branches "$target" "$rows" || true
 if [ -n "$outcome" ]; then "$registry" retire "$target" --outcome "$outcome"; else "$registry" retire "$target"; fi
 for n in $(printf '%s' "$rows" | jq -r '.[].name'); do ev_log retired team="$(printf '%s' "$rows" | jq -r --arg n "$n" '.[] | select(.name == $n) | .team')" name="$n"; done
 outcomes="$("$registry" list | jq -r --argjson names "$(printf '%s' "$rows" | jq -c '[.[].name]')" '[.[] | select(.name as $n | $names | index($n)) | .outcome // empty] | unique | join("/")')"
@@ -279,4 +323,4 @@ fi
 "$registry" archive >/dev/null || warn "archive failed; retired rows stay in the live registry"
 # One agent retired: its team's panel shows the rest (a whole team's workspace is closed with it).
 $whole_team || herdr_meta "${target%%/*}"
-reply "$(render_line retired team="$target" outcome="$outcomes" prs="$prs" archived="$archived" kept="$kept" issue_state="$issue_state" note="$verify_note")" "$(render_table)"
+reply "$(render_line retired team="$target" outcome="$outcomes" prs="$prs" archived="$archived" kept="$kept" branches="$branches_note" issue_state="$issue_state" note="$verify_note")" "$(render_table)"

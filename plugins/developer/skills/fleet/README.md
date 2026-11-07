@@ -518,6 +518,7 @@ Each command works the same from Claude Code (`/fleet <command>`) and from a she
 | Command | What it does | Example |
 |---|---|---|
 | `boot` | Boot a team on a task or an issue | `fleet boot build export ~/code/api "add CSV invoice export"` |
+| `branches` | Delete a repo's stale remote branches that are safe to delete | `fleet branches --dry-run` |
 | `catchup` | Bring a finished team back to merge main into its conflicting PR | `fleet catchup build-api https://github.com/acme/app-api/pull/12` |
 | `claim` | Claim an issue on Linear for this machine | `fleet claim DEV-123` |
 | `debrief` | List the retired teams and their lessons, the ones still due marked | `fleet debrief` |
@@ -618,7 +619,7 @@ The Orchestrator and agents call these directly (from `scripts/`). You can call 
 
 `~/.config/fleet/config.toml` holds machine-wide settings. Every key is optional, and [`config.example.toml`](config.example.toml) is the only list of them: it has every key with its default and a line of what it does (a test keeps the scripts and that file in step). A key that is not in it, or whose value is the wrong kind, is ignored with one warning per key. The caps are `max_teams` (live teams, default 3; Parked teams do not count), `teams_per_repo` (default 1) and `repos` (repos that should always have a team; with it set, only teams on a listed repo take a slot); `min_free_gb` and `warn_free_gb` guard the disk, and `prune_cap_gb` (default 20) is the size of the Go cache or docker's reclaimable at which tick prunes them (at most hourly, and also whenever the disk is below `warn_free_gb`; a named docker volume is never removed); `overnight` (default false) turns on overnight mode: leads decide inside the issue's scope and note each decision, the rest stays P1 for you, branches catch up with merge commits, and the first tick after 07:00 local time writes `reports/fleet-morning-<date>.md` (`metrics.sh --morning`) and wakes the Orchestrator with it; `lease_hours`, `label_prefix`, `machines` and `linear_writes` (off | `test:<TEAM>` | on, default off), `machine_name` and `machine_legacy_label` (only while migrating an older label) are the claim settings; `tracker_allow`, `forge_allow`, `chat_channel`, `chat_allow` and `permission_mode` are the agents' permissions. Internal timings (the tell confirm wait, the claim settle wait, the respawn budget, the background-task age, the compact threshold) are constants; the tests change them with `FLEET_TELL_CONFIRM_SECS`, `FLEET_CLAIM_SETTLE_SECS`, `FLEET_RESPAWN_MAX`, `FLEET_RESPAWN_WINDOW_HOURS`, `FLEET_BG_TASK_MAX_HOURS` and `FLEET_COMPACT_ABOVE_PCT`. Hard rules are not settings: the credential scrub always runs.
 
-`fleet run init` writes the self-driving loop's profile as a `[run]` table in the same file, so both machines read the same rules: `teams` (also written to `max_teams`), `work` (`anything`, `parent:<issue>` or `label:<name>`), `order`, `fill`, `install_policy` (`allow` also writes the top-level `installs = "allow"` that the bash guard reads), `usage_margin`, `merge_push_mins`, `status_mins`, `report_at` and `stop`. It changes only that table and those two keys. The top-level readers never read inside a table, so a key of the same name in `[run]` cannot be mistaken for a top-level one; `public_repos` and `private_repos` (lists of `owner/name`) tell the redact check which repos it gates.
+`fleet run init` writes the self-driving loop's profile as a `[run]` table in the same file, so both machines read the same rules: `teams` (also written to `max_teams`), `work` (`anything`, `parent:<issue>` or `label:<name>`), `order`, `fill`, `install_policy` (`allow` also writes the top-level `installs = "allow"` that the bash guard reads), `usage_margin`, `merge_push_mins`, `status_mins`, `report_at`, `stop` and `branch_delete` (`yes` lets init add the branch-delete permission rule after your yes, see below). It changes only that table and those two keys, plus `~/.claude/settings.json` on a yes to `branch_delete`. The top-level readers never read inside a table, so a key of the same name in `[run]` cannot be mistaken for a top-level one; `public_repos` and `private_repos` (lists of `owner/name`) tell the redact check which repos it gates.
 
 Claims need Linear. With another tracker, run the fleet on one machine and leave the claim keys unset. Permissions in `tracker_allow` and `forge_allow` are added to every Claude agent at boot (Claude Code permission rules); templates name no tracker or code host.
 
@@ -977,6 +978,7 @@ Fixes from the first day of 4.1 (DEV-512), one per item:
 | `scripts/slim.sh`, `styles/slim.toml` | the slim panel style for herdr, between markers in herdr's config |
 | `rules/house.md` | the house rules every brief ends with (a repo's `.claude/fleet-rules.md` follows them); with `installs = "allow"` in config.toml, the install rule says agents install what the work needs themselves and list each install |
 | `scripts/retire.sh` | safe teardown: archives reports to `reports/fleet-archive/`, removes worktrees, removes the team's test cluster |
+| `scripts/branches.sh` | `fleet branches [<repo>] [--dry-run]`: deletes a repo's stale remote branches by `common.sh branch_verdict` (merged or closed PR, or no PR and every commit in the default branch; never the default branch, `release/*`, `renovate/*`, an open PR, another machine's live claim or a live team); `tick` runs it once a day per repo in `repos`, `retire` runs the same rules on a retired team's branches |
 | `scripts/env.sh` | per-team disposable test cluster, declared by the repo's `.claude/fleet-env.json` |
 | `scripts/test/run.sh` | offline tests (stub `up`/`down`, docker, df and herdr; no kind, no live fleet) |
 | `scripts/registry.sh` | registry CLI used by every agent |
@@ -1003,6 +1005,36 @@ Fixes found after 4.1.1 (DEV-530), one per item:
    filed and a requested split is done. `retire --summary` stays as a read-only view.
 5. **A fresh claim is fresh.** `claim` and `takeover` refresh the machine label's heartbeat in the same call, and tick
    refreshes it first of all, before herdr is checked and with or without claimed rows.
+
+## What changed in 4.2.8
+
+DEV-739, DEV-736 and DEV-740 in one release.
+
+1. **Stale remote branches are deleted** ([DEV-739](https://linear.app/devpies/issue/DEV-739)). `fleet retire` deletes a
+   retired team's remote branches that are safe to delete and names the ones it kept (`Branches: deleted N, kept M (<branch>:
+   <why>).`). `fleet branches [<repo>] [--dry-run]` sweeps one repo with the same rules, and `tick` sweeps each repo in
+   `repos` once a day; the morning report lists them under `Branches deleted`. A branch goes when its latest PR is merged or
+   closed, or it has no PR and every commit is already in the default branch. It stays when it is the default branch,
+   `release/*`, `renovate/*`, has an open PR, is another machine's branch while that claim is live (or the holder cannot be
+   read), is named by a live team on this machine, has unmerged commits and no PR, or gh cannot read its PR state. Deletes are
+   `git push origin --delete <branch>`, one at a time, never forced. They need `Bash(git push origin --delete:*)` in
+   `permissions.allow` (the user settings or the repo's `.claude/settings*.json`); without it nothing is deleted and one line
+   says how to add it.
+   **Who may edit permission settings:** only `fleet run init`, and only after your explicit yes to the new `branch_delete`
+   question (a typed yes or y, or Enter at a real terminal when the shown default is yes). It backs up
+   `~/.claude/settings.json` to `settings.json.bak-<date>`, merges the rule into `permissions.allow` (nothing replaced or
+   reordered, a symlink stays a symlink, the file mode stays), and leaves a file that is not valid JSON untouched with a
+   warning. An answers file's default, EOF or a no never edits it. `fleet run start` only checks, and prints one line with the
+   fix when the rule is missing. `retire`, `branches` and `tick` never edit it.
+2. **Every PR body has `## In plain English`** ([DEV-736](https://linear.app/devpies/issue/DEV-736)). House rule: right after
+   the `Fixes` line and any other issue URLs, before the technical summary: the problem, what the PR does, how it works, what
+   still fails, what to review. The lead posts the section on the issue when the PR opens.
+3. **One takeover, one report line** ([DEV-740](https://linear.app/devpies/issue/DEV-740)). A team whose PR had merged
+   (its row Done, not yet retired) was reported as taken over on every tick, 100+ times in one morning report. The tick
+   pruned its dedupe key against the live rows only, which leave out Done and Parked ones; it now prunes against the rows it
+   scans, so the event is logged once. The morning report also reads a repeated takeover, release or lost claim as one line
+   with the time it was first seen (older event logs too), and a takeover after the PR merged is marked `merged` and is a
+   note, not a P1.
 
 ## What changed in 4.2.7
 

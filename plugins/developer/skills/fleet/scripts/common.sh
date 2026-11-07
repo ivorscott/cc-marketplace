@@ -722,6 +722,128 @@ repo_slug() {
   git -C "$1" remote get-url origin 2>/dev/null | sed -E 's#^(git@[^:]+:|[a-z]+://([^@/]+@)?[^/]+/)##; s#\.git$##' | grep -E '^[^/[:space:]]+/[^/[:space:]]+$' || true
 }
 
+# --- remote branch cleanup (DEV-739) --------------------------------------------------------------------------
+# DELETE_RULE: the permission rule a branch delete needs in permissions.allow. Only `fleet run init` (after the owner's
+# explicit yes) ever adds it; retire, branches and tick only read for it and skip the deletes without it.
+DELETE_RULE='Bash(git push origin --delete:*)'
+# claude_settings: the user-level Claude Code settings file (FLEET_CLAUDE_SETTINGS replaces it; tests always set it).
+claude_settings() { printf '%s\n' "${FLEET_CLAUDE_SETTINGS:-$HOME/.claude/settings.json}"; }
+# branch_delete_allowed [repo]: is DELETE_RULE in permissions.allow of the user settings, or the repo's
+# .claude/settings.json or settings.local.json. Read only; an unreadable or invalid file counts as "no".
+branch_delete_allowed() {
+  local f
+  for f in "$(claude_settings)" ${1:+"$1/.claude/settings.json" "$1/.claude/settings.local.json"}; do
+    [ -f "$f" ] || continue
+    jq -e --arg r "$DELETE_RULE" '(.permissions.allow // []) | if type == "array" then index($r) != null else false end' "$f" >/dev/null 2>&1 && return 0
+  done
+  return 1
+}
+BRANCH_OFF_LINE="Branch deletes are off: add $DELETE_RULE to permissions.allow (fleet run init does it after your yes)"
+# settings_add_rule: add DELETE_RULE to permissions.allow of the user settings file. The caller has the owner's explicit
+# yes; nothing else calls this. The file is backed up first (settings.json.bak-YYYYMMDD, -N when that exists); the rule
+# is merged with jq (never replacing the array, no reordering) into a temp file that must parse before it is written
+# back with cat > file, so a symlink stays a symlink and the file keeps its mode. A missing file is created. Invalid
+# JSON (or a permissions block of the wrong shape) is left untouched with a warning, return 1.
+settings_add_rule() {
+  local f tmp bak day n
+  f="$(claude_settings)"
+  tmp="$(mktemp "${TMPDIR:-/tmp}/fleet-settings.XXXXXX")" || { warn "cannot make a temp file"; return 1; }
+  if [ ! -e "$f" ] && [ ! -L "$f" ]; then
+    mkdir -p "$(dirname "$f")" 2>/dev/null || { rm -f "$tmp"; warn "cannot create $(dirname "$f")"; return 1; }
+    jq -n --arg r "$DELETE_RULE" '{permissions: {allow: [$r]}}' >"$tmp"
+    if cat "$tmp" >"$f" 2>/dev/null; then rm -f "$tmp"; printf 'Added %s to %s. No backup: the file did not exist.\n' "$DELETE_RULE" "$f"; return 0; fi
+    rm -f "$tmp"; warn "cannot write $f"; return 1
+  fi
+  if ! jq -e 'type == "object" and ((.permissions // {}) | type == "object") and ((.permissions.allow // []) | type == "array")' "$f" >/dev/null 2>&1; then
+    rm -f "$tmp"; warn "$f is not valid settings JSON (or its permissions block has an unexpected shape); left untouched. Add $DELETE_RULE to permissions.allow by hand"; return 1
+  fi
+  if jq -e --arg r "$DELETE_RULE" '(.permissions.allow // []) | index($r) != null' "$f" >/dev/null 2>&1; then
+    rm -f "$tmp"; printf 'Already allowed: %s is in %s.\n' "$DELETE_RULE" "$f"; return 0
+  fi
+  day="${FLEET_NOW:-$(now)}"; day="${day:0:10}"; day="${day//-/}"
+  bak="$f.bak-$day"; n=1; while [ -e "$bak" ]; do n=$((n + 1)); bak="$f.bak-$day-$n"; done
+  cp -p "$f" "$bak" 2>/dev/null || { rm -f "$tmp"; warn "cannot back up $f; left untouched"; return 1; }
+  if ! jq --arg r "$DELETE_RULE" '.permissions.allow = ((.permissions.allow // []) + [$r])' "$f" >"$tmp" 2>/dev/null || ! jq -e . "$tmp" >/dev/null 2>&1; then
+    rm -f "$tmp"; warn "could not merge the rule into $f; left untouched (backup at $bak)"; return 1
+  fi
+  if ! cat "$tmp" >"$f" 2>/dev/null || ! jq -e . "$f" >/dev/null 2>&1; then
+    cat "$bak" >"$f" 2>/dev/null; rm -f "$tmp"; warn "writing $f failed; restored it from $bak"; return 1
+  fi
+  rm -f "$tmp"; printf 'Added %s to %s. Backup: %s.\n' "$DELETE_RULE" "$f" "$bak"
+}
+
+# default_branch <repo>: the repo's default branch as origin says (origin/HEAD, else main, else master); empty when unknown.
+default_branch() {
+  local br
+  br="$(git -C "$1" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##' || true)"
+  if [ -z "$br" ]; then
+    for br in main master; do git -C "$1" rev-parse -q --verify "refs/remotes/origin/$br" >/dev/null 2>&1 && { printf '%s\n' "$br"; return 0; }; done
+    br=""
+  fi
+  printf '%s\n' "$br"
+}
+
+# branch_verdict <repo> <branch> <default> [<team being retired>]: whether a remote branch is safe to delete, as one line
+# "delete<TAB>reason" or "keep<TAB>reason". Rules, first match wins:
+#   keep    the default branch or HEAD; release/*; renovate/*; a branch gh cannot read the PRs of; a branch with an open PR;
+#           another machine's branch (fleet/<issue>-<machine key>...) while its claim is live or its holder cannot be read
+#           (unless its PR merged); a branch a non-Retired registry row of another team on this machine names as branch or
+#           push_branch ("team <t> is live", unless its PR merged; the team being retired is exempt)
+#   delete  the latest PR of the head is MERGED (when the branch moved on after it, only if every commit is in the default
+#           branch) or CLOSED; no PR and every commit already in the default branch
+#   keep    otherwise: "no PR, N commit(s) not in <default>".
+# Never writes anything; every gh call is a read.
+branch_verdict() {
+  local repo="$1" b="$2" def="$3" exempt="${4:-}" pj last state url tip live n_un key m issue hj re='^fleet/([a-z]+-[0-9]+)-([0-9a-f]{8})(-|$)'
+  case "$b" in "" | -*) printf 'keep\tnot a branch name\n'; return 0 ;; esac
+  if [ "$b" = "$def" ] || [ "$b" = HEAD ]; then printf 'keep\tdefault branch\n'; return 0; fi
+  case "$b" in release/*) printf 'keep\trelease branch\n'; return 0 ;; renovate/*) printf 'keep\trenovate branch\n'; return 0 ;; esac
+  if ! pj="$(cd "$repo" && "$FLEET_GH" pr list --head "$b" --state all --limit 30 --json number,state,url,headRefOid 2>/dev/null)" ||
+     ! jq -e 'type == "array"' >/dev/null 2>&1 <<<"$pj"; then printf 'keep\tcould not read PR state\n'; return 0; fi
+  last="$(jq -c 'sort_by(.number) | last // null' <<<"$pj")"
+  state="$(jq -r '.state // ""' <<<"$last")"; url="$(jq -r '.url // ""' <<<"$last")"
+  if jq -e 'any(.[]; .state == "OPEN")' >/dev/null 2>&1 <<<"$pj"; then
+    printf 'keep\topen PR %s\n' "$(jq -r '[.[] | select(.state == "OPEN")][0].url' <<<"$pj")"; return 0
+  fi
+  if [ "$state" != MERGED ]; then
+    # another machine's branch while its claim is live (an unreadable holder counts as live)
+    if [[ "$b" =~ $re ]]; then
+      issue="$(printf '%s' "${BASH_REMATCH[1]}" | tr '[:lower:]' '[:upper:]')"; key="${BASH_REMATCH[2]}"
+      m="$("$FLEET_SCRIPTS/machine-id.sh" key 2>/dev/null || true)"
+      if [ "$key" != "$m" ]; then
+        if hj="$("$FLEET_SCRIPTS/linear.sh" holder "$issue" 2>/dev/null)" && jq -e 'type == "object"' >/dev/null 2>&1 <<<"$hj"; then
+          if [ "$(jq -r '(.holder != null) and (.ours | not)' <<<"$hj")" = true ]; then printf 'keep\t%s holds %s\n' "$(jq -r .holder <<<"$hj")" "$issue"; return 0; fi
+        else printf 'keep\tanother machine'"'"'s branch and its holder could not be read\n'; return 0; fi
+      fi
+    fi
+    # a live team on this machine that names the branch (the team being retired is exempt)
+    live="$("$FLEET_SCRIPTS/registry.sh" list 2>/dev/null | jq -r --arg b "$b" --arg x "$exempt" \
+      '[.[] | select(.status != "Retired" and .tier != "Orchestrator" and (.team // "") != $x and (.branch == $b or .push_branch == $b)) | .team] | first // ""' 2>/dev/null || true)"
+    if [ -n "$live" ]; then printf 'keep\tteam %s is live\n' "$live"; return 0; fi
+  fi
+  tip="$(git -C "$repo" rev-parse -q --verify "refs/remotes/origin/$b" 2>/dev/null || true)"
+  n_un="$(git -C "$repo" cherry "origin/$def" "refs/remotes/origin/$b" 2>/dev/null | grep -c '^+' || true)"
+  case "$state" in
+    MERGED)
+      if [ "$(jq -r '.headRefOid // ""' <<<"$last")" != "$tip" ] && [ "${n_un:-0}" != 0 ]; then
+        printf 'keep\t%s commit(s) added after its PR merged\n' "$n_un"; return 0
+      fi
+      printf 'delete\tPR merged %s\n' "$url" ;;
+    CLOSED) printf 'delete\tPR closed %s\n' "$url" ;;
+    *)
+      if [ -z "$tip" ]; then printf 'keep\tcould not read the branch\n'
+      elif [ "${n_un:-0}" = 0 ]; then printf 'delete\tno PR, every commit is in %s\n' "$def"
+      else printf 'keep\tno PR, %s commit(s) not in %s\n' "$n_un" "$def"; fi ;;
+  esac
+}
+# branch_delete <repo> <branch> <default>: git push origin --delete, one branch; never the default branch, HEAD or a name
+# that looks like an option. Returns 1 (the git message on stderr) when it fails; callers warn and carry on.
+branch_delete() {
+  local repo="$1" b="$2" def="$3" out
+  case "$b" in "" | -* | "$def" | HEAD) return 1 ;; esac
+  out="$(git -C "$repo" push origin --delete "$b" 2>&1)" || { printf '%s\n' "$out" | tail -n 1 >&2; return 1; }
+}
+
 # Claude Code transcripts. projects_dir is where Claude keeps them (tests point HOME at a fixture
 # tree); transcript_dir_for <cwd> is the project directory for a working directory (every character
 # of the cwd that is not a letter or digit becomes "-"). Observed for "/" and "."; UNVERIFIED for other
@@ -1061,7 +1183,7 @@ render_line() {
     retire_ask) printf 'Retire %s? Outcome %s. Unpushed: %s. Kept: %s. Reply yes to retire.\n' "${L_team:-}" "${L_outcome:-Abandoned}" "${L_unpushed:-none}" "${L_kept:-none}" ;;
     retired) printf 'Retired %s (%s): PRs %s. %s%s%s\n' "${L_team:-}" "${L_outcome:-Abandoned}" "${L_prs:-none}" \
       "$([ -n "${L_archived:-}" ] && printf 'Archived to %s.' "$L_archived" || printf 'Nothing archived.')" \
-      "${L_kept:+ Kept: $L_kept.}" "${L_issue_state:+ Issue → $L_issue_state.}${L_note:+ $L_note}" ;;
+      "${L_kept:+ Kept: $L_kept.}${L_branches:+ Branches: $L_branches.}" "${L_issue_state:+ Issue → $L_issue_state.}${L_note:+ $L_note}" ;;
     parked) printf 'Parked %s: slot free, worktrees and claim kept.\n' "${L_team:-}" ;;
     park_marked) printf 'Marked %s: it parks when its PR merges.\n' "${L_team:-}" ;;
     unparked) printf 'Unparked %s: %s back.\n' "${L_team:-}" "${L_agents:-}" ;;
@@ -1094,7 +1216,8 @@ render_line() {
     input_pending) printf 'Unsent text in %s'"'"'s input box: "%s". It was not typed by the owner; clear it before answering.\n' "${L_name:-}" "${L_text:-}" ;;
     pr_opened) printf 'PR opened: %s%s. %s.\n' "${L_pr:-}" "${L_issue:+ for $L_issue}" "${L_told:-Lead told to start the tester}" ;;
     event) printf '%s %s: %s. %s.\n' "${L_event:-}" "${L_name:-}" "${L_what%.}" "${L_next%.}" ;;
-    claim_takeover) printf '%s taken over by %s. Stop or hand off %s.\n' "${L_issue:-}" "${L_machine:-}" "${L_team:-}" ;;
+    claim_takeover) if [ -n "${L_merged:-}" ]; then printf '%s taken over by %s after its PR merged; nothing to do, retire %s.\n' "${L_issue:-}" "${L_machine:-}" "${L_team:-}"
+                    else printf '%s taken over by %s. Stop or hand off %s.\n' "${L_issue:-}" "${L_machine:-}" "${L_team:-}"; fi ;;
     slot_free) printf 'Slot free (%s of %s teams running%s). Pick the next issue and boot it.\n' "${L_live:-?}" "${L_target:-?}" "${L_fixing:+, $L_fixing fixing}" ;;
     morning_report) printf 'Morning report %s: %s. Relay it as it is.\n' "${L_date:-}" "${L_path:-}" ;;
     slim) printf 'Slim: %s.%s%s\n' "${L_state:-off}" "${L_backup:+ Backup at $L_backup.}" "${L_replaced:+ Replaced $L_replaced.}" ;;
@@ -1148,7 +1271,7 @@ render_notice() {
       if [ "$d" = "login expired" ]; then render_line event event="Needs input" name="$name" what="$d" next="Run /login in its pane"
       else render_line event event="Needs input" name="$name" what="$d" next="Look at its pane"; fi ;;
     brief_failed) render_line event event="Brief failed" name="$name" what="its brief never arrived, re-sent once" next="Look at its pane, then re-send or re-boot" ;;
-    claim_takeover) render_line claim_takeover issue="$(team_issue "$team")" machine="$(jq -r '.holder // "another machine"' <<<"$e")" team="$team" ;;
+    claim_takeover) render_line claim_takeover issue="$(team_issue "$team")" machine="$(jq -r '.holder // "another machine"' <<<"$e")" team="$team" merged="$(jq -r 'if .merged == true then "yes" else "" end' <<<"$e")" ;;
     claim_lost) n="$(jq -r '.issue // ""' <<<"$e")"
       render_line event event="Claim lost" name="$team" what="$(team_issue "$team") lost this machine's label: another machine released the claim as lapsed" \
         next="Claim it again with fleet claim $n while no one holds it, or stop $team" ;;

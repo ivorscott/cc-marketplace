@@ -1,6 +1,7 @@
 | Command | What it does | Example |
 |---|---|---|
 | `boot` | Boot a team on a task or an issue | `fleet boot build export ~/code/api "add CSV invoice export"` |
+| `branches` | Delete a repo's stale remote branches that are safe to delete | `fleet branches --dry-run` |
 | `candidates` | List the work a team could boot now, and what was skipped and why | `fleet candidates` |
 | `catchup` | Bring a finished team back to merge main into its conflicting PR | `fleet catchup build-api https://github.com/acme/app-api/pull/12` |
 | `claim` | Claim an issue on Linear for this machine | `fleet claim DEV-123` |
