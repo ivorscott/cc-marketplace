@@ -8,6 +8,8 @@
 #   LINEAR_ARGV_LOG      one line per call with its argv (the key is never in it; it arrives on stdin)
 #   LINEAR_STUB_KEY      the key the stub accepts, read from the `-K -` config on stdin
 #   LINEAR_STUB_ALSO     label name: after an issueUpdate, that label is added beside ours (two machine labels on the issue)
+#   LINEAR_STUB_DOC_REFUSE  set: a DocumentCreate or DocumentUpdate is refused with an error (the document store is unavailable)
+#   (documents live in LINEAR_DB `.documents`: [{id, title, content, updatedAt}])
 #   LINEAR_STUB_RACE     label name: after an issueUpdate, another machine "wins" and replaces the labels
 # An unknown operation is logged as "UNKNOWN <name>" and answered with an error.
 set -u
@@ -113,6 +115,19 @@ case "$op" in
         | ([$i.labelIds[] as $l | $r.labels[] | select(.id == $l)]) as $ls
         | select(any($ls[]; if $mode == "eq" then .name == $v.n else (.name | startswith($v.n)) end))
         | {id: $i.id, identifier: $i.identifier, labels: {nodes: ($ls | map({id, name, description}))}, comments: {nodes: $i.comments}}]}}')" ;;
+  SummaryDocs)
+    ok "$(db --argjson v "$vars" '{documents: {nodes: [(.documents // [])[] | select(.title | startswith($v.p))]}}')" ;;
+  TeamId)
+    ok '{"teams": {"nodes": [{"id": "T1"}]}}' ;;
+  DocumentCreate | DocumentUpdate)
+    if [ -n "${LINEAR_STUB_DOC_REFUSE:-}" ]; then echo '{"errors":[{"message":"document store unavailable"}]}'; exit 0; fi
+    if [ "$op" = DocumentCreate ]; then
+      save "$(db --argjson v "$vars" '(.next + 1) as $n | .next = $n | .documents = ((.documents // []) + [{id: ("D" + ($n | tostring)), title: $v.input.title, content: $v.input.content, teamId: $v.input.teamId, updatedAt: "2026-01-01T00:00:00Z"}])')"
+      ok "$(db '{documentCreate: {success: true, document: {id: .documents[-1].id}}}')"
+    else
+      save "$(db --argjson v "$vars" '.documents |= map(if .id == $v.id then .content = $v.input.content else . end)')"
+      ok '{"documentUpdate": {"success": true}}'
+    fi ;;
   *)
     echo "UNKNOWN $op" >>"$LINEAR_LOG"
     echo '{"errors":[{"message":"unknown operation"}]}' ;;

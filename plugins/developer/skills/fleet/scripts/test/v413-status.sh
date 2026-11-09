@@ -69,15 +69,15 @@ v413_summary_publish() {
   s="$(bash -c '. "$1/common.sh"; fleet_summary' _ "$SCRIPTS")"
   eq "v413-1 summary: one entry per team, compact, with its issue, PR and state" "$(printf '%s' "$s" | jq -c '.[0] | {t, i, pr, s}')" \
     '{"t":"build-s","i":"DEV-1","pr":"https://github.com/acme/app-api/pull/40","s":"Working"}'
-  # many teams: at most 12 entries, and under the size cap
+  # many teams: every live team is in the summary (the document has room; DEV-768)
   for n in $(seq 1 20); do v413_agent "build-m$n/lead" Lead Working "pr=https://github.com/acme/app-api/pull/$((100 + n))"; done
   s="$(bash -c '. "$1/common.sh"; fleet_summary' _ "$SCRIPTS")"
-  eq "v413-1 summary: capped to 12 teams and 1500 characters" "$(printf '%s' "$s" | jq 'length <= 12'):$([ ${#s} -le 1500 ] && echo fits)" "true:fits"
+  eq "v413-1 summary: all 21 live teams, past 12 entries and 1500 characters" "$(printf '%s' "$s" | jq 'length'):$([ ${#s} -gt 1500 ] && echo long)" "21:long"
   v413_linear
   jq '.labels += [{id: "L9", name: "fleet:test", description: "owner=Fixture", parent: {id: "L0", name: "fleet"}}]
       | .issues += [{id: "I1", identifier: "DEV-1", team: {id: "T1"}, state: {id: "S", name: "In Progress"}, labelIds: ["L9"], comments: []}]' "$LINEAR_DB" >"$LINEAR_DB.t" && mv "$LINEAR_DB.t" "$LINEAR_DB"
   gcfg 'linear_writes = "on"'; : >"$LINEAR_LOG"; FLEET_NOW=2026-10-29T10:00:00Z "$SCRIPTS/linear.sh" heartbeat >/dev/null 2>&1; rc=$?
-  eq "v413-1 heartbeat: the summary rides on the one label update" "$rc:$(grep -c '^mutation IssueLabelUpdate' "$LINEAR_LOG")" "0:1"
+  eq "v413-1 heartbeat: the thin summary rides on the one label update, the full one on a document" "$rc:$(grep -c '^mutation IssueLabelUpdate' "$LINEAR_LOG"):$(grep -c '^mutation DocumentCreate' "$LINEAR_LOG")" "0:1:1"
   desc="$(jq -r '.labels[] | select(.name == "fleet:test") | .description' "$LINEAR_DB")"
   eq "v413-1 heartbeat: the description holds heartbeat= and a summary= line next to it, once" \
     "$(printf '%s\n' "$desc" | grep -c '^heartbeat=2026-10-29T10:00:00Z$'):$(printf '%s\n' "$desc" | grep -c '^summary=\[')" "1:1"
@@ -208,13 +208,13 @@ v648_summary_fits() {
   sm="$(printf '%s\n' "$desc" | sed -n 's/^summary=//p')"
   eq "v648 heartbeat: 6 teams and a claimed= line: the description is at most 255, with heartbeat, claim and a summary of all 6 teams" \
     "$rc:$([ ${#desc} -le 255 ] && echo fits):$(printf '%s\n' "$desc" | grep -c '^heartbeat=2026-10-30T10:00:00Z$'):$(printf '%s\n' "$desc" | grep -c '^claimed=DEV-641@'):$(printf '%s' "$sm" | jq -c 'if type == "array" then length else -1 end')" "0:fits:1:1:6"
-  eq "v648 peers: the other machine reads the same summary back" \
-    "$([ -n "$sm" ] && [ "$(FLEET_MACHINE=other "$SCRIPTS/linear.sh" peers | jq -c '[.[] | select(.machine == "test")] | first | .summary')" = "$(printf '%s' "$sm" | jq -c .)" ] && echo same)" "same"
-  # teams exist but none fits: the heartbeat still lands, and a warning says why
+  eq "v648 peers: the other machine reads the whole summary back from the document" \
+    "$([ -n "$sm" ] && [ "$(FLEET_MACHINE=other "$SCRIPTS/linear.sh" peers | jq -c '[.[] | select(.machine == "test")] | first | [.summary, .source]')" = "[$(bash -c '. "$1/common.sh"; fleet_summary' _ "$SCRIPTS" | jq -c .),\"doc\"]" ] && echo same)" "same"
+  # no room left in the label: the label line is dropped, the heartbeat lands and the document still holds every team
   FLEET_NOW=2026-10-30T10:01:00Z FLEET_DESC_CAP=80 "$SCRIPTS/linear.sh" heartbeat >/dev/null 2>"$T/hb648.err"; rc=$?
   desc="$(jq -r '.labels[] | select(.name == "fleet:test") | .description' "$LINEAR_DB")"
-  eq "v648 heartbeat: teams with no summary that fits warn, and the heartbeat still lands" \
-    "$rc:$(grep -c 'no team summary fits' "$T/hb648.err"):$(printf '%s\n' "$desc" | grep -c '^heartbeat=2026-10-30T10:01:00Z$'):$(printf '%s\n' "$desc" | grep -c '^summary=')" "0:1:1:0"
+  eq "v648 heartbeat: with no room in the label the heartbeat lands without a label summary and nothing is lost" \
+    "$rc:$(grep -c 'no team summary fits' "$T/hb648.err"):$(printf '%s\n' "$desc" | grep -c '^heartbeat=2026-10-30T10:01:00Z$'):$(printf '%s\n' "$desc" | grep -c '^summary='):$(jq -r '.documents[0].content' "$LINEAR_DB" | grep -o '"i":"DEV-64' | wc -l | tr -d ' ')" "0:0:1:0:6"
   # fleet_summary itself failing (no registry readable) never stops the heartbeat
   printf 'not json' >"$FLEET_STATE_DIR/bad.json"
   FLEET_NOW=2026-10-30T10:02:00Z FLEET_REGISTRY="$FLEET_STATE_DIR/bad.json" "$SCRIPTS/linear.sh" heartbeat >/dev/null 2>"$T/hb648.err"; rc=$?
