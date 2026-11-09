@@ -657,7 +657,8 @@ case "$cmd" in
         | (.name | ltrimstr($p)) as $k | doc($k) as $d | docsum($d) as $ds
         | ([(.description // "") | match("(^|\n)summary=([^\n]*)").captures[1].string | fromjson? | select(type == "array")] | first // null) as $ls
         | {machine: $k, label: .name, issue: $i.identifier, heartbeat: ([(.description // "") | match("(^|\n)heartbeat=([^\n ]+)").captures[1].string] | first // null),
-          summary: ($ds // $ls), source: (if $ds != null then "doc" elif $ls != null then "label" else null end)}
+          summary: ($ds // $ls)}
+          + (if $ds != null then {source: "doc"} elif $ls != null then {source: "label"} else {} end)
           + (([(.description // "") | split("\n")[] | select(contains(" · ")) | split(" · ")[0]] | first) as $ln
              | ([($d.content // "") | match("(^|\n)name=([^\n]*)").captures[1].string] | first) as $dn
              | ($dn // $ln) | if . then {name: .} else {} end)]' ;;
