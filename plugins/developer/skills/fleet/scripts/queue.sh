@@ -3,7 +3,7 @@
 # from GitHub and the registry on every call, never from chat or a cache. Internal: `status`, the pr_ready and
 # pr_merged wakes and the morning report print it through render_queue (references/output.md).
 #
-#   queue.sh      JSON {ready: [{n, url, pr, issue, machine, why, after}], not_ready: [{url, pr, machine, missing: [...]}], notes: [...]}
+#   queue.sh      JSON {ready: [{n, url, pr, issue, machine, why, after}], not_ready: [{url, pr, machine, missing: [...]}], on_hold: [{url, pr, machine, note}], notes: [...]}
 #
 # Inputs: the registry rows not Retired (Parked and Done rows included), one read-only `gh pr list --state open` per
 # repo (FLEET_GH; the repos of the rows' PR URLs and of their own origin remotes), and Linear's `blocks` relations of
@@ -12,11 +12,12 @@
 # or fleet/<issue key>-...), whatever local branch it came from; theirs is any other open fleet/* PR.
 # Ready is common.sh PR_DEFS, the rule tick's pr_ready uses: the tester's signed SHA is the head, CI green (or none
 # in a no_pr_ci repo), mergeable (UNKNOWN is "mergeable unknown", never conflicting), not a draft, not held. Another
-# machine's PR is ready here only when that machine's published summary (linear.sh peers: the `summary=` line of its
-# label, `r`) says so and the summary is not older than lease_hours; its sign-off is not ours to see. Otherwise it is
+# machine's PR is ready here only when that machine's published summary (linear.sh peers: the summary document of its machine, else the `summary=` line of its
+# label; `r`) says so and the summary is not older than lease_hours; its sign-off is not ours to see. Otherwise it is
 # an order input only, listed as missing "other machine" with its state when the summary has one. One queue for every
 # machine: each row has the machine that holds the PR. A ready PR whose changed files another PR, not ready yet, also
-# touches says so in its "why".
+# touches says so in its "why". A PR the owner holds (`fleet hold`, common.sh holds_json) is on neither list: it is
+# listed in on_hold with its note, and it counts as blocked, so a PR that depends on it says "waits for <repo> #N".
 #
 # Order, the first rule that decides:
 #   1. dependencies: a PR another needs goes first. Linear `blocks` ("blocks DEV-x"), the same "Part of <issue>"
@@ -38,10 +39,10 @@ rowurls="$(jq -c '[.[] | .pr // "" | strings | select(startswith("https://"))] |
 # row knows yet is found too.
 slugs="$({ jq -r '.[] | capture("^https?://[^/]+/(?<s>[^/]+/[^/]+)/").s // empty' <<<"$rowurls"
   jq -r '[.[] | .repo // "" | strings | select(. != "")] | unique[]' <<<"$rows" | while IFS= read -r d; do [ ! -d "$d" ] || repo_slug "$d"; done; } | sort -u)"
-if [ -z "$slugs" ] && [ "$rowurls" = "[]" ]; then echo '{"ready":[],"not_ready":[],"notes":[]}'; exit 0; fi
+if [ -z "$slugs" ] && [ "$rowurls" = "[]" ]; then echo '{"ready":[],"not_ready":[],"on_hold":[],"notes":[]}'; exit 0; fi
 if ! command -v "$FLEET_GH" >/dev/null 2>&1; then
-  [ "$rowurls" != "[]" ] || { echo '{"ready":[],"not_ready":[],"notes":[]}'; exit 0; }
-  jq -c "$RENDER_DEFS"'{ready: [], not_ready: map({url: ., pr: pr_cell(.), missing: ["GitHub unreadable"]}), notes: ["Merge queue unknown: gh not found"]}' <<<"$rowurls"
+  [ "$rowurls" != "[]" ] || { echo '{"ready":[],"not_ready":[],"on_hold":[],"notes":[]}'; exit 0; }
+  jq -c "$RENDER_DEFS"'{ready: [], not_ready: map({url: ., pr: pr_cell(.), missing: ["GitHub unreadable"]}), on_hold: [], notes: ["Merge queue unknown: gh not found"]}' <<<"$rowurls"
   exit 0
 fi
 
@@ -103,13 +104,13 @@ if [ "$(jq length <<<"$all")" -ge 2 ] && [ -n "$issues" ]; then
   else notes='["Linear order unknown (no key)"]'; fi
 fi
 
-jq -c --argjson notes "$notes" --slurpfile blocks <(printf '%s' "$blocks") "$RENDER_DEFS$PART_OF_JQ$PR_DEFS"'$blocks[0] as $blocks |
+jq -c --argjson notes "$notes" --argjson holds "$(holds_json)" --slurpfile blocks <(printf '%s' "$blocks") "$RENDER_DEFS$PART_OF_JQ$PR_DEFS"'$blocks[0] as $blocks |
   def repo: .url | capture("^https?://[^/]+/[^/]+/(?<r>[^/]+)/").r // "?";
   def ref: "\(repo) #\(.number)";
   def series: (.body | part_of); # "Part of DEV-7", its tracker URL, or a markdown link to it (common.sh)
   def slice: ((.title + " " + .body) | [match("(?i)slice\\s*([0-9]+)").captures[0].string | tonumber] | first // null);
   def migs: [.files[] | select(test("(^|/)migrations/")) | (split("/") | last | capture("^(?<m>[0-9]+)").m // empty)] | unique;
-  . as $all
+  map(. as $h | if ($holds | has($h.url)) then . + {held: true, note: ($holds[$h.url].note // ""), missing: (.missing + ["on hold"])} else . end) as $all
   # dependency edges {from, to, why_from}: from goes first
   | ([range(0; $all | length) as $i | range(0; $all | length) as $j | select($i != $j) | $all[$i] as $a | $all[$j] as $b
       | (if $a.issue != "" and $b.issue != "" and (($blocks[$a.issue] // []) | index($b.issue)) != null then "blocks \($b.issue)"
@@ -153,6 +154,7 @@ jq -c --argjson notes "$notes" --slurpfile blocks <(printf '%s' "$blocks") "$REN
                + (if ($notyet | length) > 0 then "; touches the same files as \($notyet | join(", ")) (not ready yet)" else "" end)),
          after: (if ($renum | length) > 0 then "renumber migration after \($renum | join(", "))"
                  elif ($rebase | length) > 0 then "rebase after \($rebase | join(", "))" else "—" end)}],
-     not_ready: [$nodes[] | select((.missing | length) > 0 or (.waits | length) > 0 or .cycle != null)
+     not_ready: [$nodes[] | select((.held // false) | not) | select((.missing | length) > 0 or (.waits | length) > 0 or .cycle != null)
       | {url, pr: pr_cell(.url), machine, missing: (.missing + (.waits | map("waits for " + .)) + (if .cycle != null then ["dependency cycle with \(.cycle)"] else [] end))}],
+     on_hold: [$nodes[] | select(.held // false) | {url, pr: pr_cell(.url), machine, note}],
      notes: $notes}' <<<"$all"

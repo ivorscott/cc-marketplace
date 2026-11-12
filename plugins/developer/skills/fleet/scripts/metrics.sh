@@ -7,7 +7,8 @@
 # --morning prints the morning report of overnight mode instead (tick writes it to reports/fleet-morning-<date>.md):
 # sections in a fixed order (Merged, Needs your eyes, Failures, Proposed lessons and What is next only when they have lines), one line per entry and "none" for an empty one (references/output.md): Ready to
 # merge (the merge queue as it is now), Decisions taken (the leads' decision notes), UNVERIFIED (lines of the done
-# summaries), Takeovers (claims taken from us, lapsed claims released), Boots (with the search that picked each issue)
+# summaries), Takeovers (claims taken from us, lapsed claims released; a repeated event reads as one line with the time it
+# was first seen), Branches deleted (only when there are some), Boots (with the search that picked each issue)
 # and Merge-order conflicts (pr_conflicting events, and PRs that conflict now).
 #
 # --since takes Nd (days), Nh (hours) or Nm (minutes); default 7d. One row per PR seen in the window:
@@ -52,11 +53,12 @@ events='[]'; [ ! -s "$f" ] || events="$(jq -sc --arg c "$cutoff" '[.[] | select(
 section() { printf '\n## %s\n\n%s\n' "$1" "${2:-none}"; }
 if $morning; then
   rows="$("$FLEET_SCRIPTS/registry.sh" list --with-archived 2>/dev/null || echo '[]')"
-  q="$("$FLEET_SCRIPTS/queue.sh" 2>/dev/null)" || q='{"ready":[],"not_ready":[],"notes":[]}'
+  q="$("$FLEET_SCRIPTS/queue.sh" 2>/dev/null)" || q='{"ready":[],"not_ready":[],"on_hold":[],"notes":[]}'
   printf '# Morning report %s\n' "$(local_time "$now_epoch" %Y-%m-%d)"
   opt_section() { [ -z "${2:-}" ] || section "$1" "$2"; } # a section that only appears when it has lines (the report stays short)
   opt_section "Merged" "$(jq -r "$RENDER_DEFS"'.[] | select(.type == "pr_merged") | "- \(pr_cell(.pr))\(if (.team // "") != "" then " (" + .team + ")" else "" end)"' <<<"$events")"
-  section "Ready to merge" "$(render_queue "$q")"
+  section "Ready to merge" "$(render_queue "$(jq -c '.on_hold = []' <<<"$q")")"
+  opt_section "On hold" "$(jq -r '(.on_hold // [])[] | "- \(.pr)\(if (.note // "") != "" then ": " + (.note | gsub("\n"; " ")) else "" end)"' <<<"$q")"
   section "Decisions taken" "$(jq -r --arg c "$cutoff" "$RENDER_DEFS"'.[] | .name as $n | (.notes // [])[]
     | select(.kind == "decision" and (.at // "") >= $c) | "- \($n | md): \(.message | md)"' <<<"$rows")"
   section "UNVERIFIED" "$(jq -r --arg c "$cutoff" "$RENDER_DEFS"'.[] | select((.updated_at // "") >= $c) | .name as $n
@@ -93,11 +95,23 @@ if $morning; then
   opt_section "Proposed lessons" "$(jq -r --arg c "$cutoff" '[.[] | select(.tier != "Orchestrator" and .status == "Retired" and (.outcome // "") != "" and (.updated_at // "") >= $c)]
     | group_by(.team)[] | "- \(.[0].team) (\([.[].outcome] | unique | join("/"))): " + (sort_by(if .tier == "Lead" then 0 else 1 end) | map((.name | split("/")[1:] | join("/")) + ": "
       + (if (.lessons // "") == "" then "lesson due (fleet debrief)" else (.lessons | gsub("[\r\n\t]+"; " ")) end)) | join("; "))' <<<"$rows")"
-  section "Takeovers" "$(jq -r '.[] | select(.type == "claim_takeover" or .type == "claim_released" or .type == "claim_lost")
-    | ((.detail // "") | sub("^holder "; "") | split(": ")[0]) as $h
-    | if .type == "claim_takeover" then "- \(.issue // "?"): taken over by \($h)"
-      elif .type == "claim_lost" then "- \(.issue // "?"): this machine'"'"'s claim was released by another machine (\(.team // "?"))"
-      else "- \(.issue // "?"): released from \($h) (heartbeat lapsed, no open PR)" end' <<<"$events")"
+  # Takeovers: one line per (issue, holder) for a takeover or a release, per (issue, team) for a lost claim, with the time it
+  # was first seen; the same event repeated (an older event log can hold a hundred of them) reads as one line.
+  tk=""
+  while IFS=$'\t' read -r tk_epoch tk_text; do
+    [ -n "$tk_epoch" ] || continue
+    tk+="- $tk_text (first seen $(local_time "$tk_epoch" %H:%M))"$'\n'
+  done < <(jq -r 'def ep: sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601;
+    [.[] | select(.type == "claim_takeover" or .type == "claim_released" or .type == "claim_lost")
+      | ((.detail // "") | sub("^holder "; "") | split(": ")[0]) as $h
+      | {at: (.at | ep), k: (.type + "|" + (.issue // "?") + "|" + (if .type == "claim_lost" then (.team // "?") else $h end)),
+         t: (if .type == "claim_takeover" then "\(.issue // "?"): taken over by \($h)\(if ((.detail // "") | contains("PR merged")) then " (PR already merged)" else "" end)"
+             elif .type == "claim_lost" then "\(.issue // "?"): this machine'"'"'s claim was released by another machine (\(.team // "?"))"
+             else "\(.issue // "?"): released from \($h) (heartbeat lapsed, no open PR)" end)}]
+    | unique_by(.k) | sort_by(.at) | .[] | [(.at | tostring), .t] | @tsv' <<<"$events")
+  section "Takeovers" "${tk%$'\n'}"
+  # Branches deleted: the stale remote branches the daily sweep, fleet branches and retire deleted (branches_deleted events).
+  opt_section "Branches deleted" "$(jq -r '.[] | select(.type == "branches_deleted") | "- \(.name // "?"): \(.detail // "?")"' <<<"$events")"
   section "Boots" "$(jq -r --slurpfile rows <(printf '%s' "$rows") '$rows[0] as $rows | .[] | select(.type == "boot") | .team as $t
     | ([$rows[] | select(.name == ($t + "/lead")) | (.notes // [])[] | select(.kind == "picked") | .message] | last) as $why
     | "- \($t)\(if (.issue // "") != "" then " on " + .issue else "" end): \($why // "named by the user")"' <<<"$events")"

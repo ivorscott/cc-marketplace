@@ -628,7 +628,28 @@ PR_DEFS='def pr_noci_ok($noci; $repo; $url): ($repo | split("/") | last) as $bas
 # minute for it, however often status runs.
 queue_file() { printf '%s\n' "$FLEET_STATE_DIR/queue.json"; }
 queue_sig() {
-  "$FLEET_SCRIPTS/registry.sh" list | jq -c '[.[] | select(.status != "Retired") | [.name, (.pr // ""), (.signoff.sha? // ""), (.issue // ""), (.branch // ""), (.comment_open // "")]] | sort' | cksum | awk '{ print $1 }'
+  { "$FLEET_SCRIPTS/registry.sh" list | jq -c '[.[] | select(.status != "Retired") | [.name, (.pr // ""), (.signoff.sha? // ""), (.issue // ""), (.branch // ""), (.comment_open // "")]] | sort'
+    holds_json; } | cksum | awk '{ print $1 }'
+}
+# Holds: a ready PR the owner keeps back on purpose. holds.json in the state dir, {"<pr url>": {note, at}}; this machine
+# only. A held PR is not ready: the queue, status and the morning report list it as on hold with its note, tick sends
+# no pr_ready for it, and the overlap check ignores it (new work branches from main; the held PR catches up later).
+holds_file() { printf '%s\n' "$FLEET_STATE_DIR/holds.json"; }
+holds_json() { # the holds as one JSON object; {} when there are none or the file is unreadable
+  local f; f="$(holds_file)"
+  jq -ce 'select(type == "object")' "$f" 2>/dev/null || printf '{}\n'
+}
+holds_write() { # holds_write <JSON object>: atomic, like queue_write
+  local f tmp; f="$(holds_file)"; mkdir -p "$(dirname "$f")"; tmp="$(mktemp "$f.XXXXXX")" || return 1
+  if jq -c . <<<"$1" >"$tmp" 2>/dev/null; then mv "$tmp" "$f"; else rm -f "$tmp"; return 1; fi
+}
+hold_set() { # hold_set <pr url> <note>
+  holds_write "$(holds_json | jq -c --arg u "$1" --arg n "$2" --arg at "${FLEET_NOW:-$(now)}" '. + {($u): {note: $n, at: $at}}')"
+}
+hold_clear() { # hold_clear <pr url>: 0 when it was held, 1 when it was not
+  local h; h="$(holds_json)"
+  [ "$(jq --arg u "$1" 'has($u)' <<<"$h")" = true ] || return 1
+  holds_write "$(jq -c --arg u "$1" 'del(.[$u])' <<<"$h")"
 }
 queue_write() { # queue_write <queue JSON>
   local f tmp; f="$(queue_file)"; tmp="$(mktemp "$f.XXXXXX" 2>/dev/null)" || return 0
@@ -644,13 +665,22 @@ fleet_queue() {
   q="$("$FLEET_SCRIPTS/queue.sh")" || return 1
   queue_write "$q"; printf '%s\n' "$q"
 }
-# fleet_summary: this machine's teams as one compact JSON array, the line `summary=` of its Linear label description
-# (linear.sh write_heartbeat), which is how another machine's `fleet status` sees them: [{t: team, i: issue key, pr: PR
-# URL, s: state word, n: what it needs from you, r: true when the merge queue lists its PR as ready}], the 12 teams
-# changed last, and fewer when the line would pass the cap: $1 characters, else SUMMARY_CAP. Whole entries are dropped,
-# never shortened, so the line stays a valid JSON array that 4.1.3 machines parse. linear.sh write_heartbeat gives the
-# room left under DESC_CAP, the label description limit (bounded, not confirmed). Built from the registry and the queue tick kept (never from GitHub); keys with no value are left out.
-SUMMARY_CAP=1500
+# fleet_summary: this machine's teams as one compact JSON array, the body of its Linear summary document (linear.sh
+# write_heartbeat), which is how another machine's `fleet status` sees them: [{t: team, i: issue key, pr: PR URL, s: state
+# word, n: what it needs from you, r: true when the merge queue lists its PR as ready, f: plan files}], every live team,
+# the ones changed last first, with no size limit (a document has room). Built from the registry and the queue tick kept
+# (never from GitHub); keys with no value are left out.
+# summary_for_label <room>: the summary array on stdin fitted to <room> characters for the old `summary=` label line (the
+# 255-character description), kept for one release for machines on an older plugin: the 12 teams changed last, in the thinner
+# tier that keeps the most teams. Whole entries are dropped, never shortened, so the line stays a valid JSON array.
+summary_for_label() {
+  jq -c --argjson cap "$1" '
+    def fit: if length > 0 and (tojson | length) > $cap then .[:-1] | fit else . end;
+    def idt: if ((.i // "") != "") then {i} elif ((.t // "") != "") then {t: .t[0:12]} else {} end;
+    def tiers: [., map(del(.pr, .n, .f)), map(idt + {s} | with_entries(select(.value != null))), map(idt)] | map(fit);
+    def best: tiers | reduce .[] as $x (null; if . == null or ($x | length) > length then $x else . end);
+    .[:12] | best'
+}
 # plan_files <plan file>: the paths of the Files: block of a planner's plan, one per line: a line `Files:` (a heading or
 # bold is fine), then list lines (`- path`, a note after the path is ignored) up to the first line that is not one.
 plan_files() {
@@ -676,21 +706,12 @@ plan_file_map() {
 # shellcheck disable=SC2034  # read by linear.sh write_heartbeat
 DESC_CAP="${FLEET_DESC_CAP:-255}"
 fleet_summary() {
-  local cap="${1:-$SUMMARY_CAP}"
   local rows esc q='null' f pfm; f="$(queue_file)"
   rows="$("$FLEET_SCRIPTS/registry.sh" list)" || return 1
   esc="$("$FLEET_SCRIPTS/registry.sh" escalations --open --not-retired 2>/dev/null)" || esc='[]'
   [ ! -s "$f" ] || q="$(jq -c '.queue // null' "$f" 2>/dev/null)" || q='null'
   pfm="$(plan_file_map "$rows" 2>/dev/null)" || pfm='{}'
-  jq -nc --slurpfile rows <(printf '%s' "$rows") --slurpfile esc <(printf '%s' "$esc") --argjson q "$q" --argjson cap "$cap" --argjson pfm "$pfm" "$RENDER_DEFS"'
-    def fit: if length > 0 and (tojson | length) > $cap then .[:-1] | fit else . end;
-    # Thinner rows when the full ones leave too little room (a claimed= line leaves ~90 characters): the tier that keeps the
-    # most teams wins, the richer one on a tie. Every tier is an array of objects, so an older reader still parses it.
-    # A row is named by its issue, or by a short prefix of its team name when it has no issue (only in these thin tiers, the full rows keep t whole);
-    # a row with neither keeps only s. An empty string is truthy in jq, so the test is on the value, not the key.
-    def idt: if ((.i // "") != "") then {i} elif ((.t // "") != "") then {t: .t[0:12]} else {} end;
-    def tiers: [., map(del(.pr, .n, .f)), map(idt + {s} | with_entries(select(.value != null))), map(idt)] | map(fit);
-    def best: tiers | reduce .[] as $x (null; if . == null or ($x | length) > length then $x else . end);
+  jq -nc --slurpfile rows <(printf '%s' "$rows") --slurpfile esc <(printf '%s' "$esc") --argjson q "$q" --argjson pfm "$pfm" "$RENDER_DEFS"'
     [$rows[0][] | select(.tier != "Orchestrator" and .status != "Retired" and (.team // "") != "")]
     | group_by(.team) | map(. as $g | $g[0].team as $t
       | ([$esc[0][] | select(.team == $t)] | sort_by({"P0": 0, "P1": 1, "P2": 2}[.severity] // 3) | first) as $e
@@ -699,7 +720,7 @@ fleet_summary() {
       | (team_needs($g; $e; $state; $pr; $q) | if . == "-" then "" else .[0:60] end) as $n
       | {u: ($g | map(.updated_at // "") | max), t: $t, i: ($g | map(.issue // "") | map(select(. != "")) | first // ""), pr: $pr, s: $state, n: $n,
          r: (([($q.ready // [])[] | select(.url == $pr)] | length) > 0 and $pr != ""), f: ($pfm[$t] // [])})
-    | sort_by(.u) | reverse | .[:12] | map(del(.u) | with_entries(select(.value != "" and .value != false and .value != []))) | best'
+    | sort_by(.u) | reverse | map(del(.u) | with_entries(select(.value != "" and .value != false and .value != [])))'
 }
 
 # PART_OF_JQ: jq `def part_of;` on a PR body: the issue a "Part of <issue>" line names (its identifier, a markdown link
@@ -723,6 +744,132 @@ HEAD_TEAM_JQ='def head_team($rows): . as $h
 # none or it is not of that shape (a local path).
 repo_slug() {
   git -C "$1" remote get-url origin 2>/dev/null | sed -E 's#^(git@[^:]+:|[a-z]+://([^@/]+@)?[^/]+/)##; s#\.git$##' | grep -E '^[^/[:space:]]+/[^/[:space:]]+$' || true
+}
+
+# --- remote branch cleanup (DEV-739) --------------------------------------------------------------------------
+# DELETE_RULE: the permission rule a branch delete needs in permissions.allow. Only `fleet run init` (after the owner's
+# explicit yes) ever adds it; retire, branches and tick only read for it and skip the deletes without it.
+DELETE_RULE='Bash(git push origin --delete:*)'
+# claude_settings: the user-level Claude Code settings file (FLEET_CLAUDE_SETTINGS replaces it; tests always set it).
+claude_settings() { printf '%s\n' "${FLEET_CLAUDE_SETTINGS:-$HOME/.claude/settings.json}"; }
+# branch_delete_allowed [repo]: is DELETE_RULE in permissions.allow of the user settings, or the repo's
+# .claude/settings.json or settings.local.json. Read only; an unreadable or invalid file counts as "no".
+branch_delete_allowed() {
+  local f
+  for f in "$(claude_settings)" ${1:+"$1/.claude/settings.json" "$1/.claude/settings.local.json"}; do
+    [ -f "$f" ] || continue
+    jq -e --arg r "$DELETE_RULE" '(.permissions.allow // []) | if type == "array" then index($r) != null else false end' "$f" >/dev/null 2>&1 && return 0
+  done
+  return 1
+}
+BRANCH_OFF_LINE="Branch deletes are off: add $DELETE_RULE to permissions.allow (fleet run init does it after your yes)"
+# settings_add_rule: add DELETE_RULE to permissions.allow of the user settings file. The caller has the owner's explicit
+# yes; nothing else calls this. The file is backed up first (settings.json.bak-YYYYMMDD, -N when that exists); the rule
+# is merged with jq (never replacing the array, no reordering) into a temp file that must parse before it is written
+# back with cat > file, so a symlink stays a symlink and the file keeps its mode. A missing file is created. Invalid
+# JSON (or a permissions block of the wrong shape) is left untouched with a warning, return 1.
+settings_add_rule() {
+  local f tmp bak day n
+  f="$(claude_settings)"
+  tmp="$(mktemp "${TMPDIR:-/tmp}/fleet-settings.XXXXXX")" || { warn "cannot make a temp file"; return 1; }
+  if [ ! -e "$f" ] && [ ! -L "$f" ]; then
+    mkdir -p "$(dirname "$f")" 2>/dev/null || { rm -f "$tmp"; warn "cannot create $(dirname "$f")"; return 1; }
+    jq -n --arg r "$DELETE_RULE" '{permissions: {allow: [$r]}}' >"$tmp"
+    if cat "$tmp" >"$f" 2>/dev/null; then rm -f "$tmp"; printf 'Added %s to %s. No backup: the file did not exist.\n' "$DELETE_RULE" "$f"; return 0; fi
+    rm -f "$tmp"; warn "cannot write $f"; return 1
+  fi
+  if ! jq -e 'type == "object" and ((.permissions // {}) | type == "object") and ((.permissions.allow // []) | type == "array")' "$f" >/dev/null 2>&1; then
+    rm -f "$tmp"; warn "$f is not valid settings JSON (or its permissions block has an unexpected shape); left untouched. Add $DELETE_RULE to permissions.allow by hand"; return 1
+  fi
+  if jq -e --arg r "$DELETE_RULE" '(.permissions.allow // []) | index($r) != null' "$f" >/dev/null 2>&1; then
+    rm -f "$tmp"; printf 'Already allowed: %s is in %s.\n' "$DELETE_RULE" "$f"; return 0
+  fi
+  day="${FLEET_NOW:-$(now)}"; day="${day:0:10}"; day="${day//-/}"
+  bak="$f.bak-$day"; n=1; while [ -e "$bak" ]; do n=$((n + 1)); bak="$f.bak-$day-$n"; done
+  cp -p "$f" "$bak" 2>/dev/null || { rm -f "$tmp"; warn "cannot back up $f; left untouched"; return 1; }
+  if ! jq --arg r "$DELETE_RULE" '.permissions.allow = ((.permissions.allow // []) + [$r])' "$f" >"$tmp" 2>/dev/null || ! jq -e . "$tmp" >/dev/null 2>&1; then
+    rm -f "$tmp"; warn "could not merge the rule into $f; left untouched (backup at $bak)"; return 1
+  fi
+  if ! cat "$tmp" >"$f" 2>/dev/null || ! jq -e . "$f" >/dev/null 2>&1; then
+    cat "$bak" >"$f" 2>/dev/null; rm -f "$tmp"; warn "writing $f failed; restored it from $bak"; return 1
+  fi
+  rm -f "$tmp"; printf 'Added %s to %s. Backup: %s.\n' "$DELETE_RULE" "$f" "$bak"
+}
+
+# default_branch <repo>: the repo's default branch as origin says (origin/HEAD, else main, else master); empty when unknown.
+default_branch() {
+  local br
+  br="$(git -C "$1" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null | sed 's#^origin/##' || true)"
+  if [ -z "$br" ]; then
+    for br in main master; do git -C "$1" rev-parse -q --verify "refs/remotes/origin/$br" >/dev/null 2>&1 && { printf '%s\n' "$br"; return 0; }; done
+    br=""
+  fi
+  printf '%s\n' "$br"
+}
+
+# branch_verdict <repo> <branch> <default> [<team being retired>]: whether a remote branch is safe to delete, as one line
+# "delete<TAB>reason" or "keep<TAB>reason". Rules, first match wins:
+#   keep    the default branch or HEAD; release/*; renovate/*; a branch gh cannot read the PRs of; a branch with an open PR;
+#           another machine's branch (fleet/<issue>-<machine key>...) while its claim is live or its holder cannot be read
+#           (unless its PR merged); a branch a non-Retired registry row of another team on this machine names as branch or
+#           push_branch ("team <t> is live", unless its PR merged; the team being retired is exempt)
+#   delete  the latest PR of the head is MERGED (when the branch moved on after it, only if every commit is in the default
+#           branch) or CLOSED; no PR and every commit already in the default branch
+#   keep    otherwise: "no PR, N commit(s) not in <default>".
+# Never writes anything; every gh call is a read.
+branch_verdict() {
+  local repo="$1" b="$2" def="$3" exempt="${4:-}" pj last state url tip live n_un key m issue hj re='^fleet/([a-z]+-[0-9]+)-([0-9a-f]{8})(-|$)'
+  case "$b" in "" | -*) printf 'keep\tnot a branch name\n'; return 0 ;; esac
+  if [ "$b" = "$def" ] || [ "$b" = HEAD ]; then printf 'keep\tdefault branch\n'; return 0; fi
+  case "$b" in release/*) printf 'keep\trelease branch\n'; return 0 ;; renovate/*) printf 'keep\trenovate branch\n'; return 0 ;; esac
+  if ! pj="$(cd "$repo" && "$FLEET_GH" pr list --head "$b" --state all --limit 30 --json number,state,url,headRefOid 2>/dev/null)" ||
+     ! jq -e 'type == "array"' >/dev/null 2>&1 <<<"$pj"; then printf 'keep\tcould not read PR state\n'; return 0; fi
+  last="$(jq -c 'sort_by(.number) | last // null' <<<"$pj")"
+  state="$(jq -r '.state // ""' <<<"$last")"; url="$(jq -r '.url // ""' <<<"$last")"
+  if jq -e 'any(.[]; .state == "OPEN")' >/dev/null 2>&1 <<<"$pj"; then
+    printf 'keep\topen PR %s\n' "$(jq -r '[.[] | select(.state == "OPEN")][0].url' <<<"$pj")"; return 0
+  fi
+  if [ "$state" != MERGED ]; then
+    # another machine's branch while its claim is live (an unreadable holder counts as live)
+    if [[ "$b" =~ $re ]]; then
+      issue="$(printf '%s' "${BASH_REMATCH[1]}" | tr '[:lower:]' '[:upper:]')"; key="${BASH_REMATCH[2]}"
+      m="$("$FLEET_SCRIPTS/machine-id.sh" key 2>/dev/null || true)"
+      if [ "$key" != "$m" ]; then
+        if hj="$("$FLEET_SCRIPTS/linear.sh" holder "$issue" 2>/dev/null)" && jq -e 'type == "object"' >/dev/null 2>&1 <<<"$hj"; then
+          if [ "$(jq -r '(.holder != null) and (.ours | not)' <<<"$hj")" = true ]; then printf 'keep\t%s holds %s\n' "$(jq -r .holder <<<"$hj")" "$issue"; return 0; fi
+        else printf 'keep\tanother machine'"'"'s branch and its holder could not be read\n'; return 0; fi
+      fi
+    fi
+    # a live team on this machine that names the branch (the team being retired is exempt)
+    live="$("$FLEET_SCRIPTS/registry.sh" list 2>/dev/null | jq -r --arg b "$b" --arg x "$exempt" \
+      '[.[] | select(.status != "Retired" and .tier != "Orchestrator" and (.team // "") != $x and (.branch == $b or .push_branch == $b)) | .team] | first // ""' 2>/dev/null || true)"
+    if [ -n "$live" ]; then printf 'keep\tteam %s is live\n' "$live"; return 0; fi
+  fi
+  tip="$(git -C "$repo" rev-parse -q --verify "refs/remotes/origin/$b" 2>/dev/null || true)"
+  n_un="$(git -C "$repo" cherry "origin/$def" "refs/remotes/origin/$b" 2>/dev/null | grep -c '^+' || true)"
+  case "$state" in
+    MERGED)
+      if [ "$(jq -r '.headRefOid // ""' <<<"$last")" != "$tip" ] && [ "${n_un:-0}" != 0 ]; then
+        printf 'keep\t%s commit(s) added after its PR merged\n' "$n_un"; return 0
+      fi
+      printf 'delete\tPR merged %s\n' "$url" ;;
+    CLOSED)
+      if [ "$(jq -r '.headRefOid // ""' <<<"$last")" != "$tip" ] && [ "${n_un:-0}" != 0 ]; then
+        printf 'keep\t%s commit(s) added after its PR closed\n' "$n_un"; return 0
+      fi
+      printf 'delete\tPR closed %s\n' "$url" ;;
+    *)
+      if [ -z "$tip" ]; then printf 'keep\tcould not read the branch\n'
+      elif [ "${n_un:-0}" = 0 ]; then printf 'delete\tno PR, every commit is in %s\n' "$def"
+      else printf 'keep\tno PR, %s commit(s) not in %s\n' "$n_un" "$def"; fi ;;
+  esac
+}
+# branch_delete <repo> <branch> <default>: git push origin --delete, one branch; never the default branch, HEAD or a name
+# that looks like an option. Returns 1 (the git message on stderr) when it fails; callers warn and carry on.
+branch_delete() {
+  local repo="$1" b="$2" def="$3" out
+  case "$b" in "" | -* | "$def" | HEAD) return 1 ;; esac
+  out="$(git -C "$repo" push origin --delete "$b" 2>&1)" || { printf '%s\n' "$out" | tail -n 1 >&2; return 1; }
 }
 
 # Claude Code transcripts. projects_dir is where Claude keeps them (tests point HOME at a fixture
@@ -877,7 +1024,9 @@ RENDER_DEFS='def md: tostring | gsub("[\r\n\t]+"; " ") | gsub("\\|"; "\\|");
   def team_state($g): if any($g[]; .status == "Parked") then "Parked" else ($g | map(.status | word) | sort_by(rank) | last) end;
   def team_needs($g; $e; $state; $pr; $q):
     def qready($u): ([($q.ready // [])[] | select(.url == $u)] | first);
-    def merge_cell($u): (qready($u)) as $r | if $r != null and ($r.after // "—") != "—" then $r.after else "merge the PR" end;
+    def held($u): ([($q.on_hold // [])[] | select(.url == $u)] | first);
+    def hold_cell($u): "on hold" + (if (held($u).note // "") != "" then ": \(held($u).note)" else "" end);
+    def merge_cell($u): if held($u) != null then hold_cell($u) else (qready($u)) as $r | if $r != null and ($r.after // "—") != "—" then $r.after else "merge the PR" end end;
     if $e != null then "\($e.severity | sev): \($e.message | .[0:60])"
     elif any($g[]; .status == "Needs input") then ($g | map(.status_detail // "") | map(select(. != "")) | first // "answer its prompt")
     elif $state == "Zombie" then "agent gone: respawn or retire"
@@ -886,7 +1035,7 @@ RENDER_DEFS='def md: tostring | gsub("[\r\n\t]+"; " ") | gsub("\\|"; "\\|");
     elif any($g[]; (.input_flag // "") != "") then "unsent text in \([$g[] | select((.input_flag // "") != "") | .name][0] | split("/")[1:] | join("/"))'"'"'s input box"
     elif $state == "Done" then (if $pr != "" then merge_cell($pr) else "retire the team" end)
     elif $state == "Parked" and $pr != "" then
-      (if $q != null then (if qready($pr) != null then merge_cell($pr) else "-" end)
+      (if $q != null then (if qready($pr) != null or held($pr) != null then merge_cell($pr) else "-" end)
        elif any($g[]; .parked_reason == "signed-off") then "merge the PR" else "-" end)
     else "-" end;
   def ago($now): if (. // "") == "" then "-"
@@ -917,8 +1066,16 @@ roles_line() {
 # own names from their label descriptions (FLEET_PEERS_JSON, which status.sh exports after reading linear.sh peers).
 machine_names() {
   local me; me="$(machine_key 2>/dev/null || echo local)"
-  printf '%s' "${FLEET_PEERS_JSON:-[]}" | jq -c --arg me "$me" --arg n "$("$FLEET_SCRIPTS/machine-id.sh" name 2>/dev/null || echo "$me")" \
-    '([.[]? | select((.name // "") != "") | {key: .machine, value: .name}] | from_entries) + {($me): $n}' 2>/dev/null || printf '{}'
+  printf '%s' "${FLEET_PEERS_JSON:-[]}" | jq -c --arg me "$me" --arg n "$("$FLEET_SCRIPTS/machine-id.sh" name 2>/dev/null || echo "$me")" --argjson cfg "$(cfg_machine_names)" \
+    '([.[]? | select((.name // "") != "") | {key: .machine, value: .name}] | from_entries) + {($me): $n} + $cfg' 2>/dev/null || printf '{}'
+}
+# cfg_machine_names: JSON {machine key: display name} from the [machine_names] table of config.toml (key = "name"); {} without
+# one. It wins over the name a machine publishes, so every machine shows the same names (never a number made up here).
+cfg_machine_names() {
+  local f="$FLEET_CONFIG_DIR/config.toml"
+  [ -f "$f" ] || { printf '{}'; return; }
+  sed -n '/^[[:space:]]*\[machine_names\]/,/^[[:space:]]*\[/p' "$f" | sed -nE 's/^[[:space:]]*"?([A-Za-z0-9_.:-]+)"?[[:space:]]*=[[:space:]]*"([^"]*)".*/\1\t\2/p' |
+    jq -Rsc '[split("\n")[] | select(. != "") | split("\t") | {key: .[0], value: .[1]}] | from_entries' 2>/dev/null || printf '{}'
 }
 # One table for every machine: every row carries its Machine (this machine's key for the registry's teams), and
 # --peers adds the other machines' teams (status.sh builds them from their published summaries: machine, team, issue,
@@ -994,15 +1151,16 @@ render_escalations() {
 
 # render_queue <queue.sh JSON>: "Merge in this order:" and | # | PR | Issue | Machine | Why this order | After merge |, each
 # PR its URL ("Merge in this order: none ready." when nothing is), then "Not ready: <url> ✗ <missing> · ✗
-# ..." per open PR that is not, then the queue's notes, a blank line between any two (reply). Nothing at all when
+# ..." per open PR that is not, "On hold: <url> - <note>" per PR the owner holds (fleet hold), then the queue's notes, a blank line between any two (reply). Nothing at all when
 # no PR is open.
 render_queue() {
-  jq -r --argjson names "$(machine_names)" 'if (.ready | length) == 0 and (.not_ready | length) == 0 then empty else
+  jq -r --argjson names "$(machine_names)" 'if (.ready | length) == 0 and (.not_ready | length) == 0 and ((.on_hold // []) | length) == 0 then empty else
       [(if (.ready | length) == 0 then "Merge in this order: none ready." else "Merge in this order:" end),
        (if (.ready | length) == 0 then empty else
          (["| # | PR | Issue | Machine | Why this order | After merge |", "|---|---|---|---|---|---|",
            (.ready[] | "| \(.n) | \(.pr) | \(.issue) | \($names[.machine // ""] // .machine // "-" | gsub("\\|"; "/")) | \(.why) | \(.after) |")] | join("\n")) end),
        (.not_ready[] | "Not ready: \(.pr) \(.missing | map("✗ " + .) | join(" · "))"),
+       ((.on_hold // [])[] | "On hold: \(.pr)\(if (.note // "") != "" then " - " + .note else "" end)"),
        (.notes[] | "\(.).")]
       | join("\n\n")
     end' <<<"$1"
@@ -1064,13 +1222,15 @@ render_line() {
     retire_ask) printf 'Retire %s? Outcome %s. Unpushed: %s. Kept: %s. Reply yes to retire.\n' "${L_team:-}" "${L_outcome:-Abandoned}" "${L_unpushed:-none}" "${L_kept:-none}" ;;
     retired) printf 'Retired %s (%s): PRs %s. %s%s%s\n' "${L_team:-}" "${L_outcome:-Abandoned}" "${L_prs:-none}" \
       "$([ -n "${L_archived:-}" ] && printf 'Archived to %s.' "$L_archived" || printf 'Nothing archived.')" \
-      "${L_kept:+ Kept: $L_kept.}" "${L_issue_state:+ Issue → $L_issue_state.}${L_note:+ $L_note}" ;;
+      "${L_kept:+ Kept: $L_kept.}${L_branches:+ Branches: $L_branches.}" "${L_issue_state:+ Issue → $L_issue_state.}${L_note:+ $L_note}" ;;
     parked) printf 'Parked %s: slot free, worktrees and claim kept.\n' "${L_team:-}" ;;
     park_marked) printf 'Marked %s: it parks when its PR merges.\n' "${L_team:-}" ;;
     unparked) printf 'Unparked %s: %s back.\n' "${L_team:-}" "${L_agents:-}" ;;
     focused) printf 'Focused on %s: parked %s.%s\n' "${L_team:-}" "${L_parked:-none}" "${L_refused:+ Refused: $L_refused.}" ;;
     focus_marked) printf 'Focused on %s: %s park when their PRs merge.%s\n' "${L_team:-}" "${L_marked:-none}" "${L_refused:+ Refused: $L_refused.}" ;;
     focus_cleared) printf 'Focus cleared: unparked %s.%s\n' "${L_unparked:-none}" "${L_refused:+ Refused: $L_refused.}" ;;
+    held) printf 'Held %s: %s. It is not ready to merge, and new work branches from main.\n' "${L_pr:-}" "${L_note:-}" ;;
+    unheld) printf 'Unheld %s: back in the merge queue.\n' "${L_pr:-}" ;;
     focus) printf 'Focus: %s.\n' "${L_team:-none}" ;;
     no_problems) printf 'No problems.\n' ;;
     other_machines) printf 'Other machines: %s.\n' "${L_list:-none}" ;;
@@ -1097,7 +1257,8 @@ render_line() {
     input_pending) printf 'Unsent text in %s'"'"'s input box: "%s". It was not typed by the owner; clear it before answering.\n' "${L_name:-}" "${L_text:-}" ;;
     pr_opened) printf 'PR opened: %s%s. %s.\n' "${L_pr:-}" "${L_issue:+ for $L_issue}" "${L_told:-Lead told to start the tester}" ;;
     event) printf '%s %s: %s. %s.\n' "${L_event:-}" "${L_name:-}" "${L_what%.}" "${L_next%.}" ;;
-    claim_takeover) printf '%s taken over by %s. Stop or hand off %s.\n' "${L_issue:-}" "${L_machine:-}" "${L_team:-}" ;;
+    claim_takeover) if [ -n "${L_merged:-}" ]; then printf '%s taken over by %s after its PR merged; nothing to do, retire %s.\n' "${L_issue:-}" "${L_machine:-}" "${L_team:-}"
+                    else printf '%s taken over by %s. Stop or hand off %s.\n' "${L_issue:-}" "${L_machine:-}" "${L_team:-}"; fi ;;
     slot_free) printf 'Slot free (%s of %s teams running%s). Pick the next issue and boot it.\n' "${L_live:-?}" "${L_target:-?}" "${L_fixing:+, $L_fixing fixing}" ;;
     morning_report) printf 'Morning report %s: %s. Relay it as it is.\n' "${L_date:-}" "${L_path:-}" ;;
     slim) printf 'Slim: %s.%s%s\n' "${L_state:-off}" "${L_backup:+ Backup at $L_backup.}" "${L_replaced:+ Replaced $L_replaced.}" ;;
@@ -1151,7 +1312,7 @@ render_notice() {
       if [ "$d" = "login expired" ]; then render_line event event="Needs input" name="$name" what="$d" next="Run /login in its pane"
       else render_line event event="Needs input" name="$name" what="$d" next="Look at its pane"; fi ;;
     brief_failed) render_line event event="Brief failed" name="$name" what="its brief never arrived, re-sent once" next="Look at its pane, then re-send or re-boot" ;;
-    claim_takeover) render_line claim_takeover issue="$(team_issue "$team")" machine="$(jq -r '.holder // "another machine"' <<<"$e")" team="$team" ;;
+    claim_takeover) render_line claim_takeover issue="$(team_issue "$team")" machine="$(jq -r '.holder // "another machine"' <<<"$e")" team="$team" merged="$(jq -r 'if .merged == true then "yes" else "" end' <<<"$e")" ;;
     claim_lost) n="$(jq -r '.issue // ""' <<<"$e")"
       render_line event event="Claim lost" name="$team" what="$(team_issue "$team") lost this machine's label: another machine released the claim as lapsed" \
         next="Claim it again with fleet claim $n while no one holds it, or stop $team" ;;
@@ -1253,7 +1414,7 @@ notices_show() {
   notices_lock || return 0
   n="$(wc -l <"$f" | tr -d ' ')"; s="$(cat "$f.shown" 2>/dev/null || true)"
   case "$s" in "" | *[!0-9]*) s=0 ;; esac; [ "$s" -le "$n" ] || s=0
-  [ "$s" -ge "$n" ] || tail -n +$((s + 1)) "$f" | jq -Rrn --slurpfile reg <(cat "$FLEET_REGISTRY" 2>/dev/null || echo '{}') "$ESC_DEFS"'
+  [ "$s" -ge "$n" ] || tail -n +$((s + 1)) "$f" | jq -Rrn --slurpfile reg <(cat "$FLEET_REGISTRY" 2>/dev/null || echo '{}') --argjson holds "$(holds_json)" "$ESC_DEFS"'
     ($reg[0] // {}) as $r | [($r.agents // {})[] | select(type == "object" and .status != "Retired")] as $rows
     | [($r.agents // {})[] | select(type == "object") | .name as $n | escs[] | select(.resolved_at == null) | "\($n)|\(.id)"] as $open
     | (($r.prefs // {}).version_ok // "") as $ok
@@ -1262,6 +1423,7 @@ notices_show() {
           or ($t != "" and ($x.url // "") != "" and ([$g[] | .pr // empty] | index($x.url)) == null)
           or ($t != "" and ($x.issue // "") != "" and ([$g[] | .issue // empty] | index($x.issue)) == null)
           or (($x.esc // "") != "" and ($open | index($x.esc)) == null)
+          or ($x.type == "pr_ready" and ($x.url // "") != "" and ($holds | has($x.url)))
           or ($x.type == "stale_version" and ($x.to // "") != "" and $ok == $x.to)
           or (($x.type == "failed" or $x.type == "brief_failed") and ([$rows[] | select(.name == $x.name and .status == "Failed")] | length) == 0);
       def newer($x; $y): ($x.type == "slot_free" and $y.type == "slot_free") or ($y.url == $x.url and ($x.url // "") != "" and (

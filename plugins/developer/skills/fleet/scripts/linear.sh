@@ -12,8 +12,9 @@
 #   linear.sh holder <ISSUE>                  JSON: who holds the issue, their last heartbeat and whether it lapsed
 #                                             (`lapsed`: older than lease_hours, takeover's own check; null without a
 #                                             heartbeat)   (read-only)
-#   linear.sh peers                           JSON: other machines' claims {machine, label, name, issue, heartbeat, summary}, for
-#                                             `fleet status` (summary: the parsed `summary=` line, null when there is none)   (read-only)
+#   linear.sh peers                           JSON: other machines' claims {machine, label, name, issue, heartbeat, summary, source}, for
+#                                             `fleet status` (summary: the machine's summary document, else the parsed `summary=`
+#                                             label line, null when there is neither; source: doc | label)   (read-only; one extra read)
 #   linear.sh candidates [--detail]           JSON: identifiers of the open issues a team could take now: Todo or Backlog, or In
 #                                             Progress with no fleet label or only lapsed ones, not blocked by an open issue,
 #                                             in a tracker_teams team and with a role label (unless candidates_allow_unlabelled);
@@ -58,7 +59,8 @@
 # subcommand that would write, exits 3 ("Linear writes are off") before any call, the same path as
 # having no key. test:FT: each write is cleared on its own: an issue update or a comment only on an issue
 # of Linear team FT (the team key is read first, so a refusal makes no mutation and names the team), and a
-# label create or description update only of this machine's own fleet:<key> label. Nothing else is
+# label create or description update only of this machine's own fleet:<key> label, and a summary document create or update only of
+# this machine's own "Fleet summary · <key>" document. Nothing else is
 # written in test mode: not the workspace-wide `fleet` group label (create it in Linear first). on: no
 # restriction. Reads and --dry-runs never need it. A write the test guard has not cleared is refused.
 #
@@ -213,8 +215,9 @@ clear_write() {
     IssueUpdate | CommentCreate | CommentDelete | IssueCreate | AttachmentCreate) case " $ISSUES_OK " in *" $2 "*) return 0 ;; esac ;;
     IssueLabelUpdate) [ -z "$OWN_LID" ] || [ "$2" != "$OWN_LID" ] || return 0 ;;
     IssueLabelCreate) [ "$2" != "$(machine_label)" ] || return 0 ;;
+    DocumentCreate | DocumentUpdate) [ "$2" != "$DOC_PREFIX$(machine_key)" ] || return 0 ;;
   esac
-  die "test mode (linear_writes = test:$TEST_TEAM): $1 on $2 is outside team $TEST_TEAM and this machine's own label. Nothing was written"
+  die "test mode (linear_writes = test:$TEST_TEAM): $1 on $2 is outside team $TEST_TEAM and this machine's own label and summary document. Nothing was written"
 }
 
 # ---- reads (queries only) ------------------------------------------------------------------------
@@ -264,6 +267,16 @@ q_issue_sources() { # q_issue_sources <ISSUE> → {branch, urls[]}: the issue's 
     "$(jq -nc --arg id "$1" '{id: $id}')" | jq -c '.data.issue // error("no such issue") | {branch: (.branchName // ""),
       urls: [(.attachments.nodes // [])[] | (.url // "") | capture("^(?<u>https://github\\.com/[^/]+/[^/]+/pull/[0-9]+)") | .u] | unique}' 2>/dev/null
 }
+DOC_PREFIX="Fleet summary · "
+q_summary_docs() { # q_summary_docs → [{id, title, content, updatedAt}]: every machine's summary document, one read (UNVERIFIED filter syntax)
+  gql_read SummaryDocs 'query SummaryDocs($p: String!) { documents(first: 50, filter: { title: { startsWith: $p } }) { nodes { id title content updatedAt } } }' \
+    "$(jq -nc --arg p "$DOC_PREFIX" '{p: $p}')" | jq -c '.data.documents.nodes // []'
+}
+q_team_id() { # q_team_id → the id of the team a summary document is created under: the test team, else the first tracker_teams key, else the first team (UNVERIFIED)
+  local k="${TEST_TEAM:-$(config_list tracker_teams | jq -r '.[0] // ""')}"
+  gql_read TeamId 'query TeamId($k: String) { teams(first: 1, filter: { key: { eq: $k } }) { nodes { id } } }' "$(jq -nc --arg k "$k" '{k: $k}')" |
+    jq -r '.data.teams.nodes[0].id // empty'
+}
 q_viewer() { # the Linear user behind the key
   gql_read Viewer 'query Viewer { viewer { id name } }' '{}' | jq -c '.data.viewer // error("no viewer")' 2>/dev/null || die "cannot read the Linear viewer"
 }
@@ -289,6 +302,16 @@ m_label_describe() { # m_label_describe <label id> <description>
   clear_write IssueLabelUpdate "$1"
   gql_write IssueLabelUpdate 'mutation IssueLabelUpdate($id: String!, $input: IssueLabelUpdateInput!) { issueLabelUpdate(id: $id, input: $input) { success } }' \
     "$(jq -nc --arg id "$1" --arg d "$2" '{id: $id, input: {description: $d}}')" >/dev/null
+}
+m_doc_create() { # m_doc_create <title> <content> <team id> → the new document's id (UNVERIFIED: the parent requirement)
+  clear_write DocumentCreate "$1"
+  gql_write DocumentCreate 'mutation DocumentCreate($input: DocumentCreateInput!) { documentCreate(input: $input) { success document { id } } }' \
+    "$(jq -nc --arg t "$1" --arg c "$2" --arg team "$3" '{input: {title: $t, content: $c, teamId: $team}}')" | jq -r '.data.documentCreate.document.id // empty'
+}
+m_doc_update() { # m_doc_update <document id> <title> <content>: title is the guard's name for it
+  clear_write DocumentUpdate "$2"
+  gql_write DocumentUpdate 'mutation DocumentUpdate($id: String!, $input: DocumentUpdateInput!) { documentUpdate(id: $id, input: $input) { success } }' \
+    "$(jq -nc --arg id "$1" --arg c "$3" '{id: $id, input: {content: $c}}')" >/dev/null
 }
 m_issue_update() { # m_issue_update <issue id> <label ids json array | ""> <state id | "">: an empty one is left as it is
   clear_write IssueUpdate "$1"
@@ -519,10 +542,31 @@ ensure_label() {
   OWN_LID="$lid"; printf '%s\n' "$lid"
 }
 
+# write_summary_doc <summary JSON>: this machine's summary document = a `name=` line and the summary in a fenced block, no
+# size limit. Written only when its hash differs from the last one written ($FLEET_STATE_DIR/summary.doc.sha); with no hash
+# kept the document is read once and compared. Returns 1 when the write failed (the caller warns).
+write_summary_doc() {
+  local content title sha hf="$FLEET_STATE_DIR/summary.doc.sha" docs id tid
+  title="$DOC_PREFIX$(machine_key)"
+  content="$(printf 'name=%s\n```json\n%s\n```\n' "$("$FLEET_SCRIPTS/machine-id.sh" name 2>/dev/null || machine_key)" "$1")"
+  sha="$(printf '%s' "$content" | cksum | tr ' ' '-')"
+  [ "$(cat "$hf" 2>/dev/null || true)" != "$sha" ] || return 0
+  docs="$( (q_summary_docs) 2>/dev/null)" || return 1
+  id="$(jq -r --arg t "$title" --arg c "$content" '[.[] | select(.title == $t)][0] | if . == null then "" elif (.content // "") == $c then "same" else .id end' <<<"$docs")"
+  if [ "$id" = same ]; then :
+  elif [ -n "$id" ]; then (m_doc_update "$id" "$title" "$content") || return 1
+  else
+    [ "$1" != "[]" ] || return 0 # nothing to publish and nothing published
+    tid="$( (q_team_id) 2>/dev/null)" || return 1; [ -n "$tid" ] || return 1
+    (m_doc_create "$title" "$content" "$tid" >/dev/null) || return 1
+  fi
+  mkdir -p "$FLEET_STATE_DIR" 2>/dev/null && printf '%s\n' "$sha" >"$hf" 2>/dev/null || true
+}
+
 # write_heartbeat: rewrite the heartbeat= line of this machine's label to now (one mutation, none when the line already
 # says now). Sets HB_AT and returns 0; returns 2 when the machine has no label yet. Claim, takeover and heartbeat share it.
 write_heartbeat() {
-  local mine found lid cur sm base room err nteams
+  local mine found lid cur sm base room err full
   mine="$(machine_label)"
   found="$(q_labels_named "$mine")" || return 1
   lid="$(printf '%s' "$found" | jq -r '.[0].id // empty')"
@@ -530,16 +574,16 @@ write_heartbeat() {
   HB_AT="${FLEET_NOW:-$(now)}"; OWN_LID="$lid"
   # A description an older version wrote still holds the full machine id: hashed here too, or nothing is written.
   cur="$(legacy_ids_hashed "$(printf '%s' "$found" | jq -r '.[0].description // ""')")" || return 1
-  # The summary line (fleet_summary) rides on the same write: one mutation, and none when neither line changed. It is fitted
-  # to what is left under DESC_CAP once the other lines are in (whole teams dropped, never a cut line).
+  # The full summary (fleet_summary, no size limit) lives in this machine's summary document, rewritten only when it changed.
+  # The label keeps a thin copy of it as `summary=` for one release, so a machine on an older plugin still reads rows; it
+  # rides on the same single write as the heartbeat, fitted to what is left under DESC_CAP (whole teams dropped, never a cut
+  # line). A summary that cannot be built, or a document that cannot be written, never stops the heartbeat.
   base="$(describe_with_summary "$(describe_with_claim "$(describe_with_hb "$(describe_with_owner "$cur" "$(owner_name)")" "$HB_AT")" "${CLAIM_LINE:-}")" "")"
   room=$((DESC_CAP - ${#base} - 4)); [ "$room" -gt 2 ] || room=2
-  # A summary that cannot be built never stops the heartbeat; and teams with no summary that fits are said, not dropped silently.
-  if sm="$(fleet_summary "$room" 2>/dev/null)"; then
-    if [ "$sm" = "[]" ]; then
-      sm=""; nteams="$(fleet_summary 100000 2>/dev/null | jq 'length' 2>/dev/null || echo 0)"
-      [ "${nteams:-0}" = 0 ] || warn "no team summary fits: $nteams team(s) live, $room characters left under $DESC_CAP; the heartbeat is written without it"
-    fi
+  if full="$(fleet_summary 2>/dev/null)"; then
+    write_summary_doc "$full" || warn "team summary document not written; peers fall back to the label line"
+    sm="$(summary_for_label "$room" <<<"$full" 2>/dev/null)" || sm=""
+    [ "$sm" != "[]" ] || sm=""
   else
     sm=""; warn "team summary not built; the heartbeat is written without it"
   fi
@@ -605,11 +649,19 @@ case "$cmd" in
   peers)
     READONLY=1
     mine="$(machine_label)"
-    q_open_issues_labelled "$(label_prefix)" startsWith | jq -c --arg p "$(label_prefix)" --arg m "$mine" --arg l "$(cfg_str machine_legacy_label '')" '
+    docs="$(q_summary_docs 2>/dev/null)" || docs="[]"
+    q_open_issues_labelled "$(label_prefix)" startsWith | jq -c --arg p "$(label_prefix)" --arg m "$mine" --arg l "$(cfg_str machine_legacy_label '')" --arg dp "$DOC_PREFIX" --argjson docs "$docs" '
+      def doc($k): [$docs[] | select(.title == $dp + $k)][0] // null;
+      def docsum($d): if $d == null then null else ([($d.content // "") | split("```json\n")[1]? | split("\n```")[0] | fromjson? | select(type == "array")] | first // null) end;
       [.[] | . as $i | .labels.nodes[] | select((.name | startswith($p)) and .name != $m and ($l == "" or .name != $l))
-        | {machine: (.name | ltrimstr($p)), label: .name, issue: $i.identifier, heartbeat: ([(.description // "") | match("(^|\n)heartbeat=([^\n ]+)").captures[1].string] | first // null),
-          summary: ([(.description // "") | match("(^|\n)summary=([^\n]*)").captures[1].string | fromjson? | select(type == "array")] | first // null)}
-          + ([(.description // "") | split("\n")[] | select(contains(" · ")) | split(" · ")[0]] | first | if . then {name: .} else {} end)]' ;;
+        | (.name | ltrimstr($p)) as $k | doc($k) as $d | docsum($d) as $ds
+        | ([(.description // "") | match("(^|\n)summary=([^\n]*)").captures[1].string | fromjson? | select(type == "array")] | first // null) as $ls
+        | {machine: $k, label: .name, issue: $i.identifier, heartbeat: ([(.description // "") | match("(^|\n)heartbeat=([^\n ]+)").captures[1].string] | first // null),
+          summary: ($ds // $ls)}
+          + (if $ds != null then {source: "doc"} elif $ls != null then {source: "label"} else {} end)
+          + (([(.description // "") | split("\n")[] | select(contains(" · ")) | split(" · ")[0]] | first) as $ln
+             | ([($d.content // "") | match("(^|\n)name=([^\n]*)").captures[1].string] | first) as $dn
+             | ($dn // $ln) | if . then {name: .} else {} end)]' ;;
 
   candidates)
     READONLY=1

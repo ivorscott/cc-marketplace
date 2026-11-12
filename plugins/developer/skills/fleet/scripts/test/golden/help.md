@@ -1,6 +1,7 @@
 | Command | What it does | Example |
 |---|---|---|
 | `boot` | Boot a team on a task or an issue | `fleet boot build export ~/code/api "add CSV invoice export"` |
+| `branches` | Delete a repo's stale remote branches that are safe to delete | `fleet branches --dry-run` |
 | `candidates` | List the work a team could boot now, and what was skipped and why | `fleet candidates` |
 | `catchup` | Bring a finished team back to merge main into its conflicting PR | `fleet catchup build-api https://github.com/acme/app-api/pull/12` |
 | `claim` | Claim an issue on Linear for this machine | `fleet claim DEV-123` |
@@ -12,6 +13,7 @@
 | `escalations` | List escalations, the open ones or all | `fleet escalations --open` |
 | `focus` | Park every other team so one team gets the slots | `fleet focus build-api --now` |
 | `help` | List the commands, or show one command's usage | `fleet help status` |
+| `hold` | Hold a PR back from the merge queue with a note, so new work branches from main | `fleet hold #12 --note "wait for the release"` |
 | `holder` | Say which machine holds an issue, and whether its claim lapsed | `fleet holder DEV-123` |
 | `metrics` | Show per-PR metrics from the event log | `fleet metrics --since 7d` |
 | `next` | Move a team to its next issue after its PR merged | `fleet next build-api DEV-124` |
@@ -30,5 +32,6 @@
 | `status` | Show every machine's teams and what needs you | `fleet status` |
 | `takeover` | Take an issue over from a machine whose claim lapsed | `fleet takeover DEV-123` |
 | `tell` | Send a team's lead (or one agent) a message and check it arrived | `fleet tell build-api/lead "focus on token expiry"` |
+| `unhold` | Let a held PR go back to the merge queue | `fleet unhold #12` |
 | `unpark` | Bring a parked team back | `fleet unpark build-api` |
 | `watch` | Print the wake Monitor command to (re)arm | `fleet watch` |
