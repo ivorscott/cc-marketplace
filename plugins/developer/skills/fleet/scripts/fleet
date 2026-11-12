@@ -10,7 +10,7 @@
 # help reads those lines, so the list is what the scripts say and cannot drift from them. A script without the line
 # (common.sh, agent-lib.sh, loop-tick.sh, registry.sh, tick.sh, linear.sh, ...) is internal and stays out of it.
 # A few commands have no script of their own and run a subcommand of an internal script: escalate, escalations and
-# resolve (registry.sh), claim, takeover and holder (linear.sh); their help is that script's usage lines for the
+# resolve (registry.sh), claim, takeover and holder (linear.sh), unhold (hold.sh); their help is that script's usage lines for the
 # subcommand, and escalations, claim, takeover and holder turn the script's JSON into their reply line or table.
 # A command that fails ends with the error form, "<command>: <what failed>. <the one next step>." (references/
 # output.md), made from its last line on stderr, with "Run fleet help <command>." when that line names no next step;
@@ -31,7 +31,8 @@ aliases() { # <name> <script> <subcommand> <what it does · e.g. example>, for t
     resolve registry resolve 'Close an escalation once its answer reached the agent · e.g. fleet resolve build-api/lead 20261024T090000Z-1 --note "use pg"' \
     claim linear claim 'Claim an issue on Linear for this machine · e.g. fleet claim DEV-123' \
     takeover linear takeover 'Take an issue over from a machine whose claim lapsed · e.g. fleet takeover DEV-123' \
-    holder linear holder 'Say which machine holds an issue, and whether its claim lapsed · e.g. fleet holder DEV-123'
+    holder linear holder 'Say which machine holds an issue, and whether its claim lapsed · e.g. fleet holder DEV-123' \
+    unhold hold unhold 'Let a held PR go back to the merge queue · e.g. fleet unhold #12'
 }
 
 commands() { # one line per command, by name: <name> TAB <script> TAB <subcommand or -> TAB <what it does · e.g. example>

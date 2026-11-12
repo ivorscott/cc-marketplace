@@ -530,6 +530,7 @@ Each command works the same from Claude Code (`/fleet <command>`) and from a she
 | `escalations` | List escalations, the open ones or all | `fleet escalations --open` |
 | `focus` | Park every other team so one team gets the slots | `fleet focus build-api --now` |
 | `help` | List the commands, or show one command's usage | `fleet help status` |
+| `hold` | Hold a PR back from the merge queue with a note, so new work branches from main | `fleet hold #12 --note "wait for the release"` |
 | `holder` | Say which machine holds an issue, and whether its claim lapsed | `fleet holder DEV-123` |
 | `metrics` | Show per-PR metrics from the event log | `fleet metrics --since 7d` |
 | `next` | Move a team to its next issue after its PR merged | `fleet next build-api DEV-124` |
@@ -548,6 +549,7 @@ Each command works the same from Claude Code (`/fleet <command>`) and from a she
 | `status` | Show every machine's teams and what needs you | `fleet status` |
 | `takeover` | Take an issue over from a machine whose claim lapsed | `fleet takeover DEV-123` |
 | `tell` | Send a team's lead (or one agent) a message and check it arrived | `fleet tell build-api/lead "focus on token expiry"` |
+| `unhold` | Let a held PR go back to the merge queue | `fleet unhold #12` |
 | `unpark` | Bring a parked team back | `fleet unpark build-api` |
 
 Plain language works too: "how is the fleet", "ask the build team to …", "shut the team down". An escalation stays open until the Orchestrator runs `fleet resolve <name> <id|at>`, or the team is retired; a retire asks live agents to push first, archives their reports, removes clean worktrees and the team's test cluster, and closes open escalations ("closed at retire").
@@ -656,6 +658,23 @@ repo-specific rule, use that repo's `.claude/settings.json` instead.
 
 `retire.sh --summary` prints the one line the user answers before a retire: the outcomes the agents
 reported, the worktrees with commits on no remote, and every worktree a retire would keep, with why.
+
+## Holding a PR
+
+A PR can be ready (signed off, green, mergeable) and still not be the one you want merged yet. `fleet hold <PR> --note
+"<why>"` keeps it back and `fleet unhold <PR>` lets it go; `<PR>` is a PR URL, or `#N` for a PR a registry row names. Only the
+Orchestrator runs them. While a PR is held:
+
+- the merge queue and `fleet status` list it as `On hold: <PR> - <note>`, and its team's row says `on hold: <note>`
+  instead of `merge the PR`;
+- tick sends no `pr_ready` for it, and an unhold fires `pr_ready` again;
+- the overlap check ignores it, so a plan that touches its files builds now, branched from main, and the held PR
+  catches up later (a PR whose body has a `Hold:` line is ignored the same way, which covers a hold made on another
+  machine);
+- a PR that merges after it (`Merge after #N`, `Depends on`) waits for it;
+- the ready push and the morning report list it under On hold, not Ready to merge.
+
+The hold is kept on this machine (`holds.json` in the state dir), so another machine's status does not show it.
 
 ## Parking a team
 
@@ -1026,6 +1045,16 @@ DEV-768: the per-machine team summary no longer has to fit a 255-character label
 UNVERIFIED against the real API (tests use the stub): that `documentCreate` accepts a `teamId` parent (the document is
 created under the first `tracker_teams` team, or the test team), and the `documents(filter: {title: {startsWith: ...}})`
 filter syntax. If either is wrong the write fails as a warning and peers fall back to the label line.
+
+## What changed in 4.2.9
+
+DEV-743.
+
+1. **Hold a ready PR** (DEV-743). `fleet hold <PR> --note "<why>"` keeps a PR
+   out of the merge queue on purpose, and `fleet unhold <PR>` lets it go (see "Holding a PR"). A held PR shows as `On hold`
+   with its note in the queue, `fleet status` and the morning report, is not announced as ready, and no longer makes the
+   overlap check say `wait #N`: new work branches from main and the held PR catches up later. Before this, the only hold was a
+   `Hold:` line in the PR body, which still works and still counts as a hold for the overlap check.
 
 ## What changed in 4.2.8
 

@@ -53,11 +53,12 @@ events='[]'; [ ! -s "$f" ] || events="$(jq -sc --arg c "$cutoff" '[.[] | select(
 section() { printf '\n## %s\n\n%s\n' "$1" "${2:-none}"; }
 if $morning; then
   rows="$("$FLEET_SCRIPTS/registry.sh" list --with-archived 2>/dev/null || echo '[]')"
-  q="$("$FLEET_SCRIPTS/queue.sh" 2>/dev/null)" || q='{"ready":[],"not_ready":[],"notes":[]}'
+  q="$("$FLEET_SCRIPTS/queue.sh" 2>/dev/null)" || q='{"ready":[],"not_ready":[],"on_hold":[],"notes":[]}'
   printf '# Morning report %s\n' "$(local_time "$now_epoch" %Y-%m-%d)"
   opt_section() { [ -z "${2:-}" ] || section "$1" "$2"; } # a section that only appears when it has lines (the report stays short)
   opt_section "Merged" "$(jq -r "$RENDER_DEFS"'.[] | select(.type == "pr_merged") | "- \(pr_cell(.pr))\(if (.team // "") != "" then " (" + .team + ")" else "" end)"' <<<"$events")"
-  section "Ready to merge" "$(render_queue "$q")"
+  section "Ready to merge" "$(render_queue "$(jq -c '.on_hold = []' <<<"$q")")"
+  opt_section "On hold" "$(jq -r '(.on_hold // [])[] | "- \(.pr)\(if (.note // "") != "" then ": " + (.note | gsub("\n"; " ")) else "" end)"' <<<"$q")"
   section "Decisions taken" "$(jq -r --arg c "$cutoff" "$RENDER_DEFS"'.[] | .name as $n | (.notes // [])[]
     | select(.kind == "decision" and (.at // "") >= $c) | "- \($n | md): \(.message | md)"' <<<"$rows")"
   section "UNVERIFIED" "$(jq -r --arg c "$cutoff" "$RENDER_DEFS"'.[] | select((.updated_at // "") >= $c) | .name as $n

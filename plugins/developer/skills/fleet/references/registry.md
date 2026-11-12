@@ -90,7 +90,7 @@ mistakes, not against an adversary.
 `{at, type, team, name, issue, pr, sha, detail}` (empty fields are null). Types: `boot`, `brief_delivered`,
 `brief_failed`, `signoff`, `escalation_raised`, `escalation_resolved`, `next`, `pr_opened`, `pr_ready`,
 `pr_merged`, `stalled`, `dead`, `respawned`, `retired`, `parked`, `unparked`, `park_marked`, `focus_set`,
-`focus_cleared` and `issue_done`. `detail` is a short reason (cut at 120 characters), never brief text and
+`focus_cleared`, `hold`, `unhold` and `issue_done`. `detail` is a short reason (cut at 120 characters), never brief text and
 never the Linear key. `issue_done` is the one type with more fields: `outcome`, `summary` and `lessons`, one
 event per row, written by `registry.sh reassign` (`next.sh`) before it clears the old issue's row, so a debrief
 still finds them. `metrics.sh` reads the log.
