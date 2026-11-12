@@ -222,14 +222,14 @@ Retire <team>? Outcome <outcome>. Unpushed: <none|role (n commits), …>. Kept: 
 After:
 
 ```
-Retired <team> (<outcome>): PRs <PR url, …|none>. Archived to <path>. Kept: <role (why), …>. Issue → <Done|Verify|Todo>.[ No UNVERIFIED step, so Done, not Verify.]
+Retired <team> (<outcome>): PRs <PR url, …|none>. Archived to <path>. Kept: <role (why), …>. Branches: deleted <n>, kept <m> (<branch>: <why>, …). Issue → <Done|Verify|Todo>.[ No UNVERIFIED step, so Done, not Verify.]
 ```
 
 An explicit `--outcome` is the outcome of every retired row, whatever the rows reported. An issue (or claim) another machine
 holds is never moved or released from here, whatever the outcome: one warning says `left DEV-1 alone: <machine> holds it` (or
 `could not tell who holds it`), and no `Issue →` is printed.
 
-`Nothing archived.` when no report was copied; ` Kept: …` only when something was kept; ` Issue → …` only when the
+`Nothing archived.` when no report was copied; ` Kept: …` only when something was kept; ` Branches: …` only when a remote branch was deleted or kept (the reasons also go to stderr); ` Issue → …` only when the
 retire moved the team's issue on Linear. Then the table.
 
 ### park
@@ -414,6 +414,20 @@ One line per item a team's PR leaves for the owner (the list under `Deferred:`, 
 owner:` in the PR body), each filed once as an issue linked to the PR and noted on the lead (`registry.sh note ... deferred`). With
 no Linear key, or writes off, the item is only noted (`not filed`) so the morning report lists it. tick runs it when a PR becomes ready.
 
+### branches
+
+```
+Branches of <owner/repo>: <n> to delete, <m> kept. Dry run: nothing deleted.
+Branches of <owner/repo>: deleted <n>, kept <m>.
+Branches of <owner/repo>: <n> to delete, <m> kept. Branch deletes are off: add Bash(git push origin --delete:*) to permissions.allow (fleet run init does it after your yes).
+```
+
+then a `### Delete` table (`--dry-run`, or deletes off) or a `### Deleted` table, and a `### Keep` table, each `| Branch | Why |`
+with one row per branch. A delete that failed is a Keep row, `delete failed`. The reasons: `PR merged <url>`, `PR closed <url>`,
+`no PR, every commit is in <default>`; kept: `default branch`, `release branch`, `renovate branch`, `open PR <url>`,
+`<machine> holds <ISSUE>`, `team <t> is live`, `no PR, <n> commit(s) not in <default>`, `<n> commit(s) added after its PR merged`,
+`could not read PR state`.
+
 ### run
 
 `fleet run init` asks one question at a time, each as `<question> [<recommended or saved answer>]:`, then ends with
@@ -422,7 +436,10 @@ no Linear key, or writes off, the item is only noted (`not filed`) so the mornin
 Run profile saved: <n> teams (<k> can run), installs <allow|ask>. Written to <config.toml path>.
 ```
 
-`<k>` is how many can really run: one team per repo per machine, so at most `teams_per_repo` per repo in `repos`. `fleet run show`
+`<k>` is how many can really run: one team per repo per machine, so at most `teams_per_repo` per repo in `repos`. With a yes to the `branch_delete` question it first prints `Added Bash(git push origin --delete:*) to <settings path>. Backup: <path>.`
+(or `Already allowed: …`; a file that is not valid JSON is left alone with a warning). `fleet run start` prints one
+`Branch deletes are off: run fleet run init and answer yes, or add Bash(git push origin --delete:*) to permissions.allow in <path>.`
+line after its first line when the profile wants deletes and the rule is missing. `fleet run show`
 prints the saved profile, one `key: value` line per answer (the defaults for what is not saved), then `human-only: <list>`.
 
 `fleet run start` prints, and then the rules to follow, made from the profile:
@@ -600,6 +617,12 @@ Brief failed <team/role>: its brief never arrived, re-sent once. Look at its pan
 
 ```
 [DEV-1](url) <title> taken over by <machine>. Stop or hand off <team>.
+```
+
+When every PR of the team already merged:
+
+```
+[DEV-1](url) <title> taken over by <machine> after its PR merged; nothing to do, retire <team>.
 ```
 
 ### wake claim_lost
@@ -780,8 +803,12 @@ without one) to `reports/fleet-morning-<date>.md`, covering the time since the l
 
 ## Takeovers
 
-- DEV-1: taken over by <machine>
-- DEV-2: released from <machine> (heartbeat lapsed, no open PR)
+- DEV-1: taken over by <machine> (first seen 03:12)
+- DEV-2: released from <machine> (heartbeat lapsed, no open PR) (first seen 04:00)
+
+## Branches deleted
+
+- <owner/repo>: <branch> (<why>)
 
 ## Boots
 
@@ -798,7 +825,7 @@ without one) to `reports/fleet-morning-<date>.md`, covering the time since the l
 ```
 
 The sections always come in this order, one line per entry. The older ones say `none` when empty; Merged, Needs your eyes,
-Failures, Proposed lessons and What is next appear only when they have lines, so the report stays short. Ready to merge is the merge
+Failures, Proposed lessons, Branches deleted and What is next appear only when they have lines, so the report stays short. Ready to merge is the merge
 queue as it is when the report is written. Needs your eyes is where nothing waits in a PR body: each deferred item is an issue
 (`fleet defer`), each Verify item says what to check, and an item in Verify over 7 days is asked about once (`Still worth
 checking?`) and moved to Done with a comment at the next report.

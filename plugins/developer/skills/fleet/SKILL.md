@@ -45,6 +45,7 @@ done contract, escalation, caps, guards and debrief; mechanics that are not rout
 | a loop wake (`fleet tick: …`), "run the fleet", `watch` | **Tick** |
 | `/fleet escalate …`, `/fleet escalations`, `/fleet resolve …` | **E. Escalate** |
 | `/fleet retire …`, "shut the team down" | **F. Retire** |
+| `/fleet branches …`, "clean up stale branches" | `$F/fleet branches [<repo>] [--dry-run]`; relay its reply as it is (it deletes only with the permission rule; never add the rule yourself, `fleet run init` does after the owner's yes) |
 | `/fleet park …`, `/fleet unpark …`, `/fleet focus …`, "pause the team", "just work on X" | **F2. Park** |
 | `/fleet prime`, or you lost track after a compaction | **G. Prime** |
 | `/fleet debrief`, "what did we learn" | **H. Debrief** |
@@ -106,7 +107,8 @@ It replaces your own [ui] lines in herdr's config and keeps a backup. (yes/no)".
    `permission_mode`), answers folder-trust only for the repo and those worktrees, sends each brief as a file with
    the done contract and house rules appended, and writes the registry rows. Pass `--issue DEV-123 --issue-url
    <URL> --issue-title "<title>"` for an issue-bound team: the PR body gets the exact `Fixes <URL>` line and the team
-   table's Issue cell shows the title (from your search; status never calls the tracker for it). A repo with
+   table's Issue cell shows the title (from your search; status never calls the tracker for it). The PR body then has a
+   `## In plain English` section (`rules/house.md`); the lead posts it as a comment on the issue when the PR opens. A repo with
    `.claude/fleet-env.json` gets a team test cluster (`references/operations.md`, "Team environment").
 3. It prints its line (each agent ✓, or ✗ and why) and the team table. Anything not `Working` needs you now: go to
    **B** for that agent.
@@ -190,7 +192,8 @@ question box (AskUserQuestion): the wakes queue behind it. Ask in plain text and
   protection, `gh pr ready` and closing stay P1 for the user (branches catch up with merge commits in every mode, not only overnight).
 - An agent blocked on a permission prompt for two ticks gets a P1 escalation ("blocked on a permission prompt"),
   overnight or not: look at its pane and apply the blocked-prompt policy.
-- `claim_takeover`: stop or hand off the team (F), tell the user, escalate P1; never fight back (operations.md).
+- `claim_takeover`: stop or hand off the team (F), tell the user, escalate P1; never fight back (operations.md). When the
+  notice says the PR already merged (`merged`), it is a note: nothing to stop or hand off, no P1; retire the team (F).
 - `claim_lost`: another machine released this machine's lapsed claim on the team's issue (this one slept past
   lease_hours). Check `$F/fleet holder <ISSUE>`: with no holder, claim it again (`$F/fleet claim <ISSUE>`); with
   another machine's, treat it as `claim_takeover`.
@@ -249,6 +252,7 @@ worktrees, branches, plans, reports and the Linear claim (no Linear write). Tick
 - `park` refuses, changing nothing, when herdr is down or a worktree has unpushed work: ask the lead to push.
 - `$F/fleet park <team> --after-merge`: nothing changes now; when the PR merges, tick parks the team.
 - `$F/fleet unpark <team>` restarts the agents with the resume brief; it refuses when a cap is full (never queue).
+- `$F/fleet hold <PR> --note "<why>"` keeps a ready PR out of the merge queue (it shows as On hold, new work branches from main); `$F/fleet unhold <PR>` lets it go.
 - `$F/fleet focus <team> [--now]` parks every other live team; `$F/fleet focus --clear` unparks only those.
 
 ## G. Prime

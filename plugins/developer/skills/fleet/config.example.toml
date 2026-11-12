@@ -20,6 +20,11 @@ label_prefix = "fleet:"
 lease_hours = 2      # a claim's lease; a lapsed lease with no open PR can be taken over
 linear_writes = "off"   # off | "test:FT" (only issues of Linear team FT) | "on"; off means no heartbeat, claim, takeover or migrate
 # machine_name = "Mac 1"            # display name
+# Machine names every machine shows for the others (by machine key); wins over the name a machine publishes. A table, so it goes
+# after the top-level keys:
+# [machine_names]
+# a1b2c3d4 = "Studio"
+# e5f6a7b8 = "Laptop"
 # machine_legacy_label = "fleet:mac1"   # only while migrating an older label
 
 # Agents
@@ -74,3 +79,4 @@ merge_push_mins = 15      # at most one batched "ready to merge" push every N mi
 status_mins = 10          # at most one status table every N minutes, and only when something changed
 report_at = "08:00"       # morning report time, local HH:MM
 stop = "never"            # never | HH:MM | no-work
+branch_delete = "yes"     # yes | no; yes lets fleet run init add Bash(git push origin --delete:*) to ~/.claude/settings.json (after a backup, on your yes) so stale remote branches are deleted

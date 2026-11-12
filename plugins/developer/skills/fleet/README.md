@@ -326,7 +326,8 @@ series order, and notes why on the lead's row.
 Install the plugin there and give it the same `config.toml` keys, its own `machine_name`, and its own Linear key. Each
 machine is told apart by the first 8 hex characters of its machine id (it is the Machine column of `status`).
 `status` on either machine then prints one table of every machine's teams and one merge queue, from the compact
-`summary=` line each machine keeps in its label description beside its heartbeat. A machine whose plugin is older shows as
+summary each machine keeps in its own Linear document (`Fleet summary · <machine key>`; see "What changed in 4.2.10"). A
+machine whose plugin is older still shows its rows from the `summary=` line it keeps in its label; one with neither shows as
 `claim only`; with no Linear key, one line says the others are unknown. A claim is the machine's label; a machine whose
 loop stops (asleep, off) stops heartbeating, and that is the moment a takeover is allowed.
 
@@ -518,6 +519,7 @@ Each command works the same from Claude Code (`/fleet <command>`) and from a she
 | Command | What it does | Example |
 |---|---|---|
 | `boot` | Boot a team on a task or an issue | `fleet boot build export ~/code/api "add CSV invoice export"` |
+| `branches` | Delete a repo's stale remote branches that are safe to delete | `fleet branches --dry-run` |
 | `catchup` | Bring a finished team back to merge main into its conflicting PR | `fleet catchup build-api https://github.com/acme/app-api/pull/12` |
 | `claim` | Claim an issue on Linear for this machine | `fleet claim DEV-123` |
 | `debrief` | List the retired teams and their lessons, the ones still due marked | `fleet debrief` |
@@ -528,6 +530,7 @@ Each command works the same from Claude Code (`/fleet <command>`) and from a she
 | `escalations` | List escalations, the open ones or all | `fleet escalations --open` |
 | `focus` | Park every other team so one team gets the slots | `fleet focus build-api --now` |
 | `help` | List the commands, or show one command's usage | `fleet help status` |
+| `hold` | Hold a PR back from the merge queue with a note, so new work branches from main | `fleet hold #12 --note "wait for the release"` |
 | `holder` | Say which machine holds an issue, and whether its claim lapsed | `fleet holder DEV-123` |
 | `metrics` | Show per-PR metrics from the event log | `fleet metrics --since 7d` |
 | `next` | Move a team to its next issue after its PR merged | `fleet next build-api DEV-124` |
@@ -546,6 +549,7 @@ Each command works the same from Claude Code (`/fleet <command>`) and from a she
 | `status` | Show every machine's teams and what needs you | `fleet status` |
 | `takeover` | Take an issue over from a machine whose claim lapsed | `fleet takeover DEV-123` |
 | `tell` | Send a team's lead (or one agent) a message and check it arrived | `fleet tell build-api/lead "focus on token expiry"` |
+| `unhold` | Let a held PR go back to the merge queue | `fleet unhold #12` |
 | `unpark` | Bring a parked team back | `fleet unpark build-api` |
 
 Plain language works too: "how is the fleet", "ask the build team to …", "shut the team down". An escalation stays open until the Orchestrator runs `fleet resolve <name> <id|at>`, or the team is retired; a retire asks live agents to push first, archives their reports, removes clean worktrees and the team's test cluster, and closes open escalations ("closed at retire").
@@ -618,7 +622,7 @@ The Orchestrator and agents call these directly (from `scripts/`). You can call 
 
 `~/.config/fleet/config.toml` holds machine-wide settings. Every key is optional, and [`config.example.toml`](config.example.toml) is the only list of them: it has every key with its default and a line of what it does (a test keeps the scripts and that file in step). A key that is not in it, or whose value is the wrong kind, is ignored with one warning per key. The caps are `max_teams` (live teams, default 3; Parked teams do not count), `teams_per_repo` (default 1) and `repos` (repos that should always have a team; with it set, only teams on a listed repo take a slot); `min_free_gb` and `warn_free_gb` guard the disk, and `prune_cap_gb` (default 20) is the size of the Go cache or docker's reclaimable at which tick prunes them (at most hourly, and also whenever the disk is below `warn_free_gb`; a named docker volume is never removed); `overnight` (default false) turns on overnight mode: leads decide inside the issue's scope and note each decision, the rest stays P1 for you, branches catch up with merge commits, and the first tick after 07:00 local time writes `reports/fleet-morning-<date>.md` (`metrics.sh --morning`) and wakes the Orchestrator with it; `lease_hours`, `label_prefix`, `machines` and `linear_writes` (off | `test:<TEAM>` | on, default off), `machine_name` and `machine_legacy_label` (only while migrating an older label) are the claim settings; `tracker_allow`, `forge_allow`, `chat_channel`, `chat_allow` and `permission_mode` are the agents' permissions. Internal timings (the tell confirm wait, the claim settle wait, the respawn budget, the background-task age, the compact threshold) are constants; the tests change them with `FLEET_TELL_CONFIRM_SECS`, `FLEET_CLAIM_SETTLE_SECS`, `FLEET_RESPAWN_MAX`, `FLEET_RESPAWN_WINDOW_HOURS`, `FLEET_BG_TASK_MAX_HOURS` and `FLEET_COMPACT_ABOVE_PCT`. Hard rules are not settings: the credential scrub always runs.
 
-`fleet run init` writes the self-driving loop's profile as a `[run]` table in the same file, so both machines read the same rules: `teams` (also written to `max_teams`), `work` (`anything`, `parent:<issue>` or `label:<name>`), `order`, `fill`, `install_policy` (`allow` also writes the top-level `installs = "allow"` that the bash guard reads), `usage_margin`, `merge_push_mins`, `status_mins`, `report_at` and `stop`. It changes only that table and those two keys. The top-level readers never read inside a table, so a key of the same name in `[run]` cannot be mistaken for a top-level one; `public_repos` and `private_repos` (lists of `owner/name`) tell the redact check which repos it gates.
+`fleet run init` writes the self-driving loop's profile as a `[run]` table in the same file, so both machines read the same rules: `teams` (also written to `max_teams`), `work` (`anything`, `parent:<issue>` or `label:<name>`), `order`, `fill`, `install_policy` (`allow` also writes the top-level `installs = "allow"` that the bash guard reads), `usage_margin`, `merge_push_mins`, `status_mins`, `report_at`, `stop` and `branch_delete` (`yes` lets init add the branch-delete permission rule after your yes, see below). It changes only that table and those two keys, plus `~/.claude/settings.json` on a yes to `branch_delete`. The top-level readers never read inside a table, so a key of the same name in `[run]` cannot be mistaken for a top-level one; `public_repos` and `private_repos` (lists of `owner/name`) tell the redact check which repos it gates.
 
 Claims need Linear. With another tracker, run the fleet on one machine and leave the claim keys unset. Permissions in `tracker_allow` and `forge_allow` are added to every Claude agent at boot (Claude Code permission rules); templates name no tracker or code host.
 
@@ -654,6 +658,23 @@ repo-specific rule, use that repo's `.claude/settings.json` instead.
 
 `retire.sh --summary` prints the one line the user answers before a retire: the outcomes the agents
 reported, the worktrees with commits on no remote, and every worktree a retire would keep, with why.
+
+## Holding a PR
+
+A PR can be ready (signed off, green, mergeable) and still not be the one you want merged yet. `fleet hold <PR> --note
+"<why>"` keeps it back and `fleet unhold <PR>` lets it go; `<PR>` is a PR URL, or `#N` for a PR a registry row names. Only the
+Orchestrator runs them. While a PR is held:
+
+- the merge queue and `fleet status` list it as `On hold: <PR> - <note>`, and its team's row says `on hold: <note>`
+  instead of `merge the PR`;
+- tick sends no `pr_ready` for it, and an unhold fires `pr_ready` again;
+- the overlap check ignores it, so a plan that touches its files builds now, branched from main, and the held PR
+  catches up later (a PR whose body has a `Hold:` line is ignored the same way, which covers a hold made on another
+  machine);
+- a PR that merges after it (`Merge after #N`, `Depends on`) waits for it;
+- the ready push and the morning report list it under On hold, not Ready to merge.
+
+The hold is kept on this machine (`holds.json` in the state dir), so another machine's status does not show it.
 
 ## Parking a team
 
@@ -789,9 +810,9 @@ tracker runs the fleet on one machine, and those parts are skipped.
 - **The tracker has no compare-and-swap.** The last writer wins and both machines re-read; that
   narrows the race, it does not remove it. A machine whose issue was taken over stops and tells
   you; it never fights back.
-- `status` builds one table from `linear.sh peers` and this machine's registry. Each machine publishes a compact
-  `summary=` line next to its `heartbeat=` in its label description (its teams: issue, PR, state, what it needs, whether
-  its PR is ready), and the others show those rows with a Machine column and one merge queue. Other machines' health is
+- `status` builds one table from `linear.sh peers` and this machine's registry. Each machine publishes its
+  summary in one Linear document of its own (its teams: issue, PR, state, what it needs, whether its PR is ready; no size
+  limit), and the others show those rows with a Machine column and one merge queue. Other machines' health is
   not probed; a machine with no summary shows as a claim only.
 - The Linear API key lives only on the Orchestrator machine (`~/.config/fleet/linear_api_key`,
   mode 600, or `LINEAR_API_KEY` in its shell). Boot gives it to no agent: panes start with
@@ -977,6 +998,7 @@ Fixes from the first day of 4.1 (DEV-512), one per item:
 | `scripts/slim.sh`, `styles/slim.toml` | the slim panel style for herdr, between markers in herdr's config |
 | `rules/house.md` | the house rules every brief ends with (a repo's `.claude/fleet-rules.md` follows them); with `installs = "allow"` in config.toml, the install rule says agents install what the work needs themselves and list each install |
 | `scripts/retire.sh` | safe teardown: archives reports to `reports/fleet-archive/`, removes worktrees, removes the team's test cluster |
+| `scripts/branches.sh` | `fleet branches [<repo>] [--dry-run]`: deletes a repo's stale remote branches by `common.sh branch_verdict` (merged or closed PR, or no PR and every commit in the default branch; never the default branch, `release/*`, `renovate/*`, an open PR, another machine's live claim or a live team); `tick` runs it once a day per repo in `repos`, `retire` runs the same rules on a retired team's branches |
 | `scripts/env.sh` | per-team disposable test cluster, declared by the repo's `.claude/fleet-env.json` |
 | `scripts/test/run.sh` | offline tests (stub `up`/`down`, docker, df and herdr; no kind, no live fleet) |
 | `scripts/registry.sh` | registry CLI used by every agent |
@@ -1025,6 +1047,70 @@ the team parked, done or retired, reached nobody, and the PR could be merged wit
 
 Not in this version: comments and reviews on the pull request itself (only the tracker issue is read), and two teams on one
 issue (the cursor is per issue, so the second team is told nothing).
+
+## What changed in 4.2.10
+
+DEV-768: the per-machine team summary no longer has to fit a 255-character label description.
+
+1. **One document per machine.** Each machine keeps its summary in a Linear document titled `Fleet summary · <machine key>`:
+   a `name=<machine name>` line, then the summary array in a fenced `json` block, with every live team and no size limit.
+   `tick` rewrites it only when it changed (a hash of the last write is kept in the state dir as `summary.doc.sha`; without
+   one the document is read once and compared). A document that cannot be written is a warning: the heartbeat still lands.
+   `linear.sh peers` reads every machine's document in one query and returns the rows with `source: doc` (or `label`).
+2. **The label line stays for one release.** The thin `summary=` line is still written to the label, in the same single
+   heartbeat update, so machines on 4.2.7 and 4.2.8 keep showing rows. A reader uses the document first and falls back to
+   the label line. The next minor drops the label line. Only this thin copy is ever cut to the 12 most recent teams.
+3. **Machine names from config.** `status` names a machine by `[machine_names]` in `config.toml` (`<machine key> = "Name"`),
+   else the `name=` line of its document, else the name in its label, else the key. It never makes up a number.
+4. **Test mode** (`linear_writes = "test:FT"`) clears a document write only for this machine's own summary document.
+
+UNVERIFIED against the real API (tests use the stub): that `documentCreate` accepts a `teamId` parent (the document is
+created under the first `tracker_teams` team, or the test team), and the `documents(filter: {title: {startsWith: ...}})`
+filter syntax. If either is wrong the write fails as a warning and peers fall back to the label line.
+
+## What changed in 4.2.9
+
+DEV-743.
+
+1. **Hold a ready PR** (DEV-743). `fleet hold <PR> --note "<why>"` keeps a PR
+   out of the merge queue on purpose, and `fleet unhold <PR>` lets it go (see "Holding a PR"). A held PR shows as `On hold`
+   with its note in the queue, `fleet status` and the morning report, is not announced as ready, and no longer makes the
+   overlap check say `wait #N`: new work branches from main and the held PR catches up later. Before this, the only hold was a
+   `Hold:` line in the PR body, which still works and still counts as a hold for the overlap check.
+
+## What changed in 4.2.8
+
+DEV-739, DEV-736 and DEV-740 in one release.
+
+1. **Stale remote branches are deleted** ([DEV-739](https://linear.app/devpies/issue/DEV-739)). `fleet retire` deletes a
+   retired team's remote branches that are safe to delete and names the ones it kept (`Branches: deleted N, kept M (<branch>:
+   <why>).`). `fleet branches [<repo>] [--dry-run]` sweeps one repo with the same rules, and `tick` sweeps each repo in
+   `repos` once a day; the morning report lists them under `Branches deleted`. A branch goes when its latest PR is merged or
+   closed, or it has no PR and every commit is already in the default branch. It stays when it is the default branch,
+   `release/*`, `renovate/*`, has an open PR, is another machine's branch while that claim is live (or the holder cannot be
+   read), is named by a live team on this machine, has unmerged commits and no PR, or gh cannot read its PR state. Deletes are
+   `git push origin --delete <branch>`, one at a time, never forced. They need `Bash(git push origin --delete:*)` in
+   `permissions.allow` (the user settings or the repo's `.claude/settings*.json`); without it nothing is deleted and one line
+   says how to add it.
+   **Who may edit permission settings:** only `fleet run init`, and only after your explicit yes to the new `branch_delete`
+   question (a typed yes or y, or Enter at a real terminal when the shown default is yes). It backs up
+   `~/.claude/settings.json` to `settings.json.bak-<date>`, merges the rule into `permissions.allow` (nothing replaced or
+   reordered, a symlink stays a symlink, the file mode stays), and leaves a file that is not valid JSON untouched with a
+   warning. An answers file's default, EOF or a no never edits it. `fleet run start` only checks, and prints one line with the
+   fix when the rule is missing. `retire`, `branches` and `tick` never edit it.
+   **Your no stands:** with `branch_delete = "no"` in `[run]` the daily sweep does nothing and `retire` deletes nothing (it names
+   the branches as kept: `branch deletes are off (fleet run init answer: no)`); only a `fleet branches` you run by hand still
+   goes by the permission rule alone. With no `[run]` profile the default is yes. A branch whose PR closed also stays when
+   commits were added after it closed that are not in the default branch.
+2. **Every PR body has `## In plain English`** ([DEV-736](https://linear.app/devpies/issue/DEV-736)). House rule: right after
+   the `Fixes` line and any other issue URLs, before the technical summary: the problem, what the PR does, how it works, what
+   still fails, what to review. The lead posts the section on the issue when the PR opens.
+3. **One takeover, one report line** ([DEV-740](https://linear.app/devpies/issue/DEV-740)). A team whose PR had merged
+   (its row Done, not yet retired) was reported as taken over on every tick, 100+ times in one morning report. The tick
+   pruned its dedupe key against the live rows only, which leave out Done and Parked ones; it now prunes against the rows it
+   scans, so the event is logged once. The morning report also reads a repeated takeover, release or lost claim as one line
+   with the time it was first seen (older event logs too), and a takeover after the PR merged is marked `merged` and is a
+   note, not a P1.
 
 ## What changed in 4.2.7
 

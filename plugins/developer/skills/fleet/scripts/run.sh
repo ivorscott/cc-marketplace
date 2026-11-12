@@ -10,6 +10,11 @@
 #   run.sh stop     stop keeping teams running (target_teams 0); running teams, their PRs and the loop's ticks carry on
 #   run.sh status   one line: whether the loop runs, the target, the teams live now
 #
+# init also asks whether the fleet may delete stale remote branches (branch_delete). Only on the owner's explicit yes (a typed
+# yes or y, or Enter at a real terminal when the shown default is yes) does it back up ~/.claude/settings.json and merge
+# Bash(git push origin --delete:*) into permissions.allow (common.sh settings_add_rule); an answers file's default, EOF or no
+# never edits it, and invalid JSON is left untouched with a warning. start only checks for the rule and prints one line with
+# the fix when it is missing; no other command edits the file.
 # init is the only interactive command. Enter keeps the recommended answer (the saved one on a re-run). Without a
 # terminal on stdin it refuses and prints the questions rather than guess; FLEET_RUN_ANSWERS=<file> reads one answer
 # per line from a file instead (an empty line keeps the default), for scripts and tests. It writes only the [run] table
@@ -33,6 +38,7 @@ RUN_KEYS=(
   "status_mins|10|Status: at most one status table every N minutes when something changed"
   "report_at|08:00|Morning report time (local, HH:MM)"
   "stop|never|When to stop: never, an HH:MM time, or no-work (when no work is left)"
+  "branch_delete|yes|Let the fleet delete stale remote branches? A yes adds Bash(git push origin --delete:*) to ~/.claude/settings.json after a backup (yes/no, recommended yes)"
 )
 HUMAN_ONLY="merging, production, infrastructure applies, secrets and branch protection"
 
@@ -56,6 +62,7 @@ valid() { # valid <key> <value>: is it an acceptable answer
     order) case "$2" in critical-path | priority | oldest) return 0 ;; *) return 1 ;; esac ;;
     fill) case "$2" in whole-first | whole-only) return 0 ;; *) return 1 ;; esac ;;
     install_policy) case "$2" in allow | ask) return 0 ;; *) return 1 ;; esac ;;
+    branch_delete) case "$2" in yes | no) return 0 ;; *) return 1 ;; esac ;;
     report_at) [[ "$2" =~ ^([01][0-9]|2[0-3]):[0-5][0-9]$ ]] ;;
     stop) [[ "$2" =~ ^([01][0-9]|2[0-3]):[0-5][0-9]$ ]] || [ "$2" = never ] || [ "$2" = no-work ] ;;
     *) return 1 ;;
@@ -75,7 +82,7 @@ can_run() {
 }
 
 cmd_init() {
-  local row k d q cur a v answers="${FLEET_RUN_ANSWERS:-}" src=""
+  local row k d q cur a raw v answers="${FLEET_RUN_ANSWERS:-}" src="" explicit_yes=false
   if [ -n "$answers" ]; then [ -f "$answers" ] || die "no answers file at $answers"; exec 3<"$answers"; src="file"
   elif [ -t 0 ]; then exec 3<&0; src="tty"
   else
@@ -90,8 +97,14 @@ cmd_init() {
       printf '%s [%s]: ' "$q" "$cur"
       a=""; IFS= read -r a <&3 || { [ "$src" = file ] || die "input closed before the questions were answered"; a=""; }
       [ "$src" = tty ] || printf '%s\n' "$a"
-      a="${a:-$cur}"
-      if valid "$k" "$a"; then break; fi
+      raw="$a"; a="${a:-$cur}"
+      if [ "$k" = branch_delete ]; then case "$a" in y | Y | yes | YES | Yes) a=yes ;; n | N | no | NO | No) a=no ;; esac; fi
+      if valid "$k" "$a"; then
+        # Only an explicit yes lets init touch settings.json: a typed yes or y, or Enter at a real terminal when the
+        # shown default is yes. EOF, an empty line in an answers file, or a default from a file never does.
+        if [ "$k" = branch_delete ] && [ "$a" = yes ] && { [ -n "$raw" ] || [ "$src" = tty ]; }; then explicit_yes=true; fi
+        break
+      fi
       [ "$src" = tty ] || die "'$a' is not an answer to: $q"
       printf 'Not an answer; try again.\n'
     done
@@ -109,6 +122,12 @@ cmd_init() {
   cfg_write - max_teams "$ans_teams"
   # shellcheck disable=SC2154
   if [ "$ans_install_policy" = allow ]; then cfg_write - installs '"allow"'; else cfg_write - installs -; fi
+  # The one place the plugin edits permission settings: only after the owner's explicit yes. On a no the file is not read.
+  # shellcheck disable=SC2154
+  if [ "$ans_branch_delete" = yes ]; then
+    if $explicit_yes; then settings_add_rule || true
+    else printf 'Branch deletes stay off: no explicit yes, so %s was not edited. Run fleet run init in a terminal and answer yes, or add %s to permissions.allow yourself.\n' "$(claude_settings)" "$DELETE_RULE"; fi
+  fi
   render_line run_saved teams="$ans_teams" can_run="$(can_run "$ans_teams")" installs="$ans_install_policy" path="$FLEET_CONFIG_DIR/config.toml"
 }
 
@@ -126,10 +145,10 @@ have_profile() { [ -n "$(run_val teams)" ]; }
 
 cmd_start() {
   have_profile || die "no run profile saved" "Run fleet run init once"
-  local teams work order fill pol margin mpush spush rep stop reg sched
+  local teams work order fill pol margin mpush spush rep stop reg sched bdel bdline
   teams="$(run_int teams 3)"; work="$(shown work "$(run_str work anything)")"; order="$(run_str order critical-path)"; fill="$(run_str fill whole-first)"
   pol="$(run_str install_policy allow)"; margin="$(run_int usage_margin 10)"; mpush="$(run_int merge_push_mins 15)"; spush="$(run_int status_mins 10)"
-  rep="$(run_str report_at 08:00)"; stop="$(run_str stop never)"
+  rep="$(run_str report_at 08:00)"; stop="$(run_str stop never)"; bdel="$(run_str branch_delete yes)"
   reg="$FLEET_SCRIPTS/registry.sh"
   if [ -n "${HERDR_PANE_ID:-}" ]; then "$reg" orchestrator here >/dev/null || die "could not register this pane as the Orchestrator"
   elif [ -z "$("$reg" get orchestrator 2>/dev/null | jq -r '.herdr_ref // ""')" ]; then
@@ -143,6 +162,12 @@ cmd_start() {
       else "$FLEET_SCRIPTS/schedule.sh" install >/dev/null 2>&1 && sched="installed" || sched="not installed: run fleet schedule install"; fi ;;
   esac
   render_line run_started teams="$teams" work="$work" order="$order" loop="${sched:-unknown}"
+  # Branch deletes: only a check. If the owner wants them and the rule is missing, one line says how to add it; start never edits.
+  bdline="Branch deletes: ${bdel}."
+  if [ "$bdel" = yes ] && ! branch_delete_allowed; then
+    bdline="Branch deletes are off until $DELETE_RULE is in permissions.allow."
+    printf 'Branch deletes are off: run fleet run init and answer yes, or add %s to permissions.allow in %s.\n' "$DELETE_RULE" "$(claude_settings)"
+  fi
   cat <<EOF
 Follow this until fleet run stop. After a context compaction, or in a fresh session, run fleet run show and follow it again.
 - Keep $teams teams running. On a slot_free wake, pick the next issue (work: $work; order: $order; fill: $fill) and boot it. Never ask which one.
@@ -152,6 +177,7 @@ Follow this until fleet run stop. After a context compaction, or in a fresh sess
 - Open no question box. The only wait is a PR waiting to merge. Keep one wake monitor armed and re-arm it silently: on an expiry run `fleet watch`, start Monitor with its first line, end the turn with no text.
 - Say only what the owner can act on: a status table when it changes (every $spush minutes at most), the ready-to-merge push (every $mpush minutes at most), a failure, a usage limit, the morning report at $rep. Never your own housekeeping.
 - Usage guard: leave $margin% of the plan's limit unused where it can be read; on a usage_limit wake boot nothing until the backoff ends.
+- $bdline The fleet never edits permission settings itself; only fleet run init does, after the owner's yes.
 - Stop: $stop.
 EOF
 }

@@ -201,13 +201,13 @@ v42x_nameless_peer() { # DEV-661: a thin summary tier keeps a name for a team wi
     if [ $((n % 2)) = 1 ]; then v413_agent "build-nameless-long-$n/lead" Lead Working "issue=DEV-$((660 + n))"
     else v413_agent "build-nameless-long-$n/lead" Lead Working; fi
   done
-  s="$(bash -c '. "$1/common.sh"; fleet_summary 90' _ "$SCRIPTS")"
+  s="$(bash -c '. "$1/common.sh"; fleet_summary | summary_for_label 90' _ "$SCRIPTS")"
   eq "v42x nameless: at 90 characters the thin tier keeps rows and names each (the issue, else a short team name)" \
     "$(printf '%s' "$s" | jq -r 'length > 0 and ((tojson | length) <= 90) and all(.[]; has("i") or has("t"))')" true
   eq "v42x nameless: a team name in the thin tier is cut to 12 characters" \
     "$(printf '%s' "$s" | jq -r '[.[] | select(has("t")) | .t | length] | max <= 12')" true
   eq "v42x nameless: the full rows keep the whole team name" \
-    "$(bash -c '. "$1/common.sh"; fleet_summary 1500' _ "$SCRIPTS" | jq -r '[.[].t | length] | min')" 21
+    "$(bash -c '. "$1/common.sh"; fleet_summary' _ "$SCRIPTS" | jq -r '[.[].t | length] | min')" 21
   # the reader: a row with only t shows its team; rows with neither print no row and one line with the count
   v413_linear
   jq '.labels |= map(if .name == "fleet:peera" then .description = "owner=Fixture\nheartbeat=2026-10-29T09:55:00Z\nsummary=[{\"t\":\"only-team\",\"s\":\"Working\"}]"
