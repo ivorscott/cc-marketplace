@@ -337,6 +337,8 @@ if [ "${1:-}" = --v4210 ]; then v4210_full; printf '\n%d passed, %d failed\n' "$
 if [ "${1:-}" = --v429 ]; then v429_full; printf '\n%d passed, %d failed\n' "$pass" "$failn"; [ "$failn" = 0 ]; exit; fi
 if [ "${1:-}" = --v428 ]; then v428_full; printf '\n%d passed, %d failed\n' "$pass" "$failn"; [ "$failn" = 0 ]; exit; fi
 if [ "${1:-}" = --v427 ]; then v427_full; printf '\n%d passed, %d failed\n' "$pass" "$failn"; [ "$failn" = 0 ]; exit; fi
+. "$HERE/v4211.sh" # 4.2.11: v4211_smoke and v4211_full
+if [ "${1:-}" = --v4211 ]; then v4211_full; printf '\n%d passed, %d failed\n' "$pass" "$failn"; [ "$failn" = 0 ]; exit; fi
 if [ "${1:-}" = --v426 ]; then v426_full; printf '\n%d passed, %d failed\n' "$pass" "$failn"; [ "$failn" = 0 ]; exit; fi
 if [ "${1:-}" = --v42x ]; then v42x_full; printf '\n%d passed, %d failed\n' "$pass" "$failn"; [ "$failn" = 0 ]; exit; fi # only the 4.2.x patch cases
 if [ "${1:-}" = --v420 ]; then v420_full; printf '\n%d passed, %d failed\n' "$pass" "$failn"; [ "$failn" = 0 ]; exit; fi # only the 4.2.0 cases
@@ -767,6 +769,7 @@ Merge this one first." "Do not merge until the API ships" "  hold: waiting on de
   v428_smoke
   v4210_smoke
   v429_smoke
+  v4211_smoke
   printf '\n%d passed, %d failed\n' "$pass" "$failn"
   [ "$failn" = 0 ]; exit
 fi
@@ -3963,6 +3966,7 @@ for w in $WAKES; do
     claim_released) ev='{"type":"claim_released","team":"","name":"","issue":"DEV-2","holder":"fleet:other"}' ;;
     claim_held_pr) ev='{"type":"claim_held_pr","team":"","name":"","issue":"DEV-6","holder":"fleet:other","url":"https://github.com/acme/app-api/pull/9"}' ;;
     claim_lapsed) ev='{"type":"claim_lapsed","team":"","name":"","issue":"DEV-4","holder":"fleet:other","detail":"no heartbeat, so it is not proven lapsed"}' ;;
+    comment_pending) ev='{"type":"comment_pending","name":"build-api","issue":"DEV-12","url":"https://github.com/acme/app-api/pull/214","state":"retired","detail":"Owner: please rename the flag"}' ;;
     *) ev="$(jq -cn --arg t "$w" '{type: $t, team: "build-api", name: "build-api/builder"}')" ;;
   esac
   gold "wake-$w" "$(bash -c '. "$1/common.sh"; render_notice "$2"' _ "$SCRIPTS" "$ev")"
@@ -4626,6 +4630,7 @@ v427_full
 v428_full
 v4210_full
 v429_full
+v4211_full
 # ---- end 4.2.0 ----
 
 printf '\n%d passed, %d failed\n' "$pass" "$failn"

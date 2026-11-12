@@ -319,7 +319,7 @@ live_team_count() {
       | .team] | unique | length'
 }
 # Fixes override the slot limits. A team brought back to fix its open PR (a conflict after another merge, red CI, a head
-# the tester has not signed, review rework) is marked `fixing` on its rows (revive.sh); live_team_count and teams_on_repo
+# the tester has not signed, review rework, a new comment on its issue: tell.sh --fix) is marked `fixing` on its rows (revive.sh); live_team_count and teams_on_repo
 # leave such a team out, so it goes over max_teams and teams_per_repo without parking anything and without taking a slot
 # from the next issue. The mark goes when the PR is ready again or merged (tick), or the team is parked. New issues and
 # a parked feature team still respect the limits.
@@ -599,6 +599,8 @@ forge_pr_json() {
 #                                   conflicting), "draft", "held". Ready: open, the tester's signed SHA is the head
 #                                   (a short SHA counts as the full one it starts), CI green or none, mergeable, not a
 #                                   draft, not held.
+#   pr_missing($signoff; $nociok; $comment)   the same, plus "comment not answered" when $comment is true: a comment on
+#                                   the issue is open on the team's lead row (comment_open; tick.sh comments_forward).
 PR_DEFS='def pr_noci_ok($noci; $repo; $url): ($repo | split("/") | last) as $base
     | ($url | sub("^https?://[^/]+/"; "") | sub("/(pull|merge_requests)/.*$"; "")) as $slug
     | (($noci | index($base)) != null or ($noci | index($slug)) != null or ($noci | index($repo)) != null);
@@ -618,14 +620,15 @@ PR_DEFS='def pr_noci_ok($noci; $repo; $url): ($repo | split("/") | last) as $bas
        (if .mergeable == "CONFLICTING" then "conflicting" elif .mergeable != "MERGEABLE" then "mergeable unknown" else empty end),
        (if .isDraft == true then "draft" else empty end),
        (if pr_held then "held" else empty end)];
+  def pr_missing($signoff; $nociok; $comment): pr_missing($signoff; $nociok) + (if $comment == true then ["comment not answered"] else [] end);
   '
 # The merge queue as tick built it last: queue.json in the state dir, {at, sig, queue}. status reuses it while it is
 # under QUEUE_FRESH_SECS (60) old and sig, a hash of what the queue is built from on the rows (each row's PR, signed
-# SHA, issue and branch), is unchanged; otherwise it runs queue.sh and keeps the result. GitHub is read at most once a
+# SHA, issue, branch and open comment), is unchanged; otherwise it runs queue.sh and keeps the result. GitHub is read at most once a
 # minute for it, however often status runs.
 queue_file() { printf '%s\n' "$FLEET_STATE_DIR/queue.json"; }
 queue_sig() {
-  { "$FLEET_SCRIPTS/registry.sh" list | jq -c '[.[] | select(.status != "Retired") | [.name, (.pr // ""), (.signoff.sha? // ""), (.issue // ""), (.branch // "")]] | sort'
+  { "$FLEET_SCRIPTS/registry.sh" list | jq -c '[.[] | select(.status != "Retired") | [.name, (.pr // ""), (.signoff.sha? // ""), (.issue // ""), (.branch // ""), (.comment_open // "")]] | sort'
     holds_json; } | cksum | awk '{ print $1 }'
 }
 # Holds: a ready PR the owner keeps back on purpose. holds.json in the state dir, {"<pr url>": {note, at}}; this machine
@@ -1313,6 +1316,15 @@ render_notice() {
     claim_lost) n="$(jq -r '.issue // ""' <<<"$e")"
       render_line event event="Claim lost" name="$team" what="$(team_issue "$team") lost this machine's label: another machine released the claim as lapsed" \
         next="Claim it again with fleet claim $n while no one holds it, or stop $team" ;;
+    comment_pending) n="$(jq -r '.issue // ""' <<<"$e")"; d="$(jq -r '.detail // ""' <<<"$e")"
+      case "$(jq -r '.state // ""' <<<"$e")" in
+        retired) render_line event event="Comment waiting" name="$n" what="a new comment while $(pr_link "$url") is open and its team $name is retired: \"$d\"" \
+          next="Boot a team for $n with the comment as its task, to carry on in the PR's branch" ;;
+        merged) render_line event event="Comment waiting" name="$n" what="a new comment after $(pr_link "$url") of $name merged or closed: \"$d\"" \
+          next="Boot a new team for it, or file a follow-up issue" ;;
+        *) d="$(jq -r '.refused // ""' <<<"$e")"
+          render_line event event="Comment waiting" name="$n" what="a new comment did not reach $name${d:+ ($d)}" next="It is sent again every tick; look at $team (fleet status)" ;;
+      esac ;;
     claim_released | claim_held_pr | claim_lapsed)
       n="$(jq -r '.issue // ""' <<<"$e")"; o="$(jq -r '.holder // "another machine"' <<<"$e")"; d="$(jq -r '.detail // ""' <<<"$e")"
       case "$type" in
@@ -1340,7 +1352,7 @@ render_notice() {
 
 # WAKE_TYPES: the tick events that wake the Orchestrator (loop-tick.sh) and get a notice (tick.sh); each has an entry
 # in references/output.md. An escalation wakes at any severity, pr_opened only when the lead could not be told.
-WAKE_TYPES="pr_ready pr_merged pr_opened pr_conflicting input_pending dead failed stalled needs_input brief_failed claim_takeover claim_lost claim_released claim_held_pr claim_lapsed stale_version slot_free usage_limit status_changed main_red signoff_failed weekly_summary morning_report escalation"
+WAKE_TYPES="pr_ready pr_merged pr_opened pr_conflicting input_pending dead failed stalled needs_input brief_failed claim_takeover claim_lost claim_released claim_held_pr claim_lapsed comment_pending stale_version slot_free usage_limit status_changed main_red signoff_failed weekly_summary morning_report escalation"
 # WAKE_JQ: the jq filter that keeps the events that wake, with $wake bound to WAKE_TYPES (--arg wake "$WAKE_TYPES").
 WAKE_JQ='select(type == "object") | select((.type as $t | $wake | split(" ") | index($t)) and (.type != "pr_opened" or .lead_told == false))'
 

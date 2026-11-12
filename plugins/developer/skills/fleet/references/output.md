@@ -653,6 +653,21 @@ Why: `no heartbeat, so it is not proven lapsed`, or `its heartbeat is older than
 off`, `linear_writes is in test mode` or `the fleet has no repo to look for its PR in`. The three come from tick's
 sweep of other machines' claims (operations.md, "Sweep"), once per (issue, holder, heartbeat).
 
+### wake comment_pending
+
+A new comment on an issue that could not go to a running team. One of three, by what happened to it:
+
+```
+Comment waiting DEV-1: a new comment while <PR url> is open and its team <team> is retired: "<who>: <comment>". Boot a team for DEV-1 with the comment as its task, to carry on in the PR's branch.
+Comment waiting DEV-1: a new comment after <PR url> of <team> merged or closed: "<who>: <comment>". Boot a new team for it, or file a follow-up issue.
+Comment waiting DEV-1: a new comment did not reach <team/lead> (<why>). It is sent again every tick; look at <team> (fleet status).
+```
+
+The first two come once per comment and carry no team (nothing of the fleet runs for them); the third comes once per
+comment while the lead cannot be reached, and tick sends the comment again at every tick until it arrives. A comment
+that reached its lead is no wake: the lead has it, and the PR is `✗ comment not answered` under "Not ready" until the
+lead answers (`registry.sh answer`) or the tester signs a new head off.
+
 ### wake stale_version
 
 ```
