@@ -30,7 +30,8 @@
 #                   builder's row, the lead is told to start the tester. Once per PR.
 #   pr_ready        the row's PR is open, mergeable, checks green (or none exist and the repo is in
 #                   no_pr_ci in config.toml), the tester's signed-off SHA is the PR head, no body line starts with
-#                   "Do not merge" or "Hold:", the PR is not a draft, and every PR its body says it merges after
+#                   "Do not merge" or "Hold:", the owner has not put it on hold (fleet hold: an unhold makes it ready again, and
+#                   it fires again), the PR is not a draft, and every PR its body says it merges after
 #                   ("Merge after #N", "Depends on <url>", "Stacked on #N") is no longer open. Once per (PR, head SHA).
 #                   While a team's PR is ready and every agent of the team is Done or Idle, on that tick or a later one,
 #                   it is parked (park.sh --reason signed-off) to free its slot.
@@ -668,11 +669,11 @@ if [ "$(printf '%s' "$prs" | jq length)" != 0 ]; then
         warn "gh returned no PR state for $url"; continue
       fi
       # Ready is one rule (common.sh PR_DEFS), shared with the merge queue.
-      ev="$(jq -cn --argjson p "$p" --slurpfile g <(printf '%s' "$j") --slurpfile stf "$STATE_FILE" --argjson noci "$no_ci" "$PR_DEFS"'
+      ev="$(jq -cn --argjson p "$p" --slurpfile g <(printf '%s' "$j") --slurpfile stf "$STATE_FILE" --argjson noci "$no_ci" --argjson holds "$(holds_json)" "$PR_DEFS"'
         $g[0] | pr_noci_ok($noci; $p.repo; $p.pr) as $nociok | ((.headRefOid // "") | ascii_downcase) as $head
         | if .state == "MERGED" then
             (if (($stf[0].pr_merged_emitted // []) | index($p.pr)) == null then {type: "pr_merged", team: $p.team, name: $p.name, url: $p.pr} + (if $p.park_after_merge != null then {parks: $p.park_after_merge} else {} end) + (if $p.parked then {parked: true} else {} end) else null end)
-          elif (pr_missing($p.signoff; $nociok) | length) == 0 and (($stf[0].pr_ready_emitted // []) | index($p.pr + "@" + $head)) == null
+          elif (pr_missing($p.signoff; $nociok) | length) == 0 and ($holds | has($p.pr) | not) and (($stf[0].pr_ready_emitted // []) | index($p.pr + "@" + $head)) == null
           then {type: "pr_ready", team: $p.team, name: $p.name, url: $p.pr, sha: $head, ci: pr_ci($nociok)}
           else null end')"
       # A PR that must merge after another (common.sh pr_after: "Merge after #N", "Depends on <url>", "Stacked on")
@@ -1039,7 +1040,7 @@ if [ -z "$team" ]; then
     tsig="$(jq -cn --argjson q "$q_built" --argjson esc "$("$registry" escalations --open | jq -c '[.[] | .name + "|" + .id]')" \
       --argjson bad "$("$registry" list | jq -c '[.[] | select(.status == "Failed" or .status == "Dead" or .status == "Zombie") | .name + "|" + .status]')" \
       --argjson usage "$(jq -c '(if (.usage_active // false) then (.usage_until // 0) else 0 end)' "$STATE_FILE")" \
-      '{ready: [($q.ready // [])[] | .url], not_ready: [($q.not_ready // [])[] | [.url, (.missing // [])]], esc: ($esc | sort), bad: ($bad | sort), usage: $usage}' | cksum | awk '{print $1}')"
+      '{ready: [($q.ready // [])[] | .url], on_hold: [($q.on_hold // [])[] | .url], not_ready: [($q.not_ready // [])[] | [.url, (.missing // [])]], esc: ($esc | sort), bad: ($bad | sort), usage: $usage}' | cksum | awk '{print $1}')"
     rnow="$(jq -r '[(.ready // [])[] | .url] | join(" ")' <<<"$q_built")"
     rtxt="$(jq -r '(.ready // []) as $r | ($r | map(.url | capture("^https?://[^/]+/(?<o>[^/]+)/(?<r>[^/]+)/pull/(?<n>[0-9]+)")) | map(.r) | unique | length > 1) as $multi
       | if ($r | length) == 0 then "" else "\($r | length) ready: merge " + ([$r[] | .url | capture("^https?://[^/]+/[^/]+/(?<r>[^/]+)/pull/(?<n>[0-9]+)") | (if $multi then .r else "" end) + "#" + .n] | join(", then ")) end' <<<"$q_built")"
@@ -1095,10 +1096,10 @@ live_esc="$("$registry" escalations --open | jq -c '[.[] | .name + "|" + .id]')"
 claim_keys="$("$registry" list | jq -c '[.[] | select((.issue // "") != "" and .tier != "Orchestrator" and .status != "Retired") | .team + "|" + .issue]')"
 live_names="$("$registry" list --live | jq -c '[.[] | .name]')"
 live_teams="$("$registry" list --live | jq -c '[.[] | .team // empty] | unique')"
-st_upd --argjson prs "$live_prs" --argjson esc "$live_esc" --argjson ck "$claim_keys" --argjson live_names "$live_names" --argjson live_teams "$live_teams" --argjson now "$now_epoch" --argjson w "$(const_int RESPAWN_WINDOW_HOURS 6)" '
+st_upd --argjson holds "$(holds_json)" --argjson prs "$live_prs" --argjson esc "$live_esc" --argjson ck "$claim_keys" --argjson live_names "$live_names" --argjson live_teams "$live_teams" --argjson now "$now_epoch" --argjson w "$(const_int RESPAWN_WINDOW_HOURS 6)" '
   def inrecent: map(select(. > $now - $w * 3600));
   $st
-  + (if .pr_ready_emitted then {pr_ready_emitted: [.pr_ready_emitted[] | select(split("@")[0] as $u | $prs | index($u))]} else {} end)
+  + (if .pr_ready_emitted then {pr_ready_emitted: [.pr_ready_emitted[] | select(split("@")[0] as $u | ($prs | index($u)) and ($holds | has($u) | not))]} else {} end)
   + (if .head_nudged then {head_nudged: [.head_nudged[] | select(split("@")[0] as $u | $prs | index($u))]} else {} end)
   + (if .park_refused then {park_refused: [.park_refused[] | select(split("@")[0] as $u | $prs | index($u))]} else {} end)
   + (if .pr_merged_emitted then {pr_merged_emitted: [.pr_merged_emitted[] | select(. as $u | $prs | index($u))]} else {} end)

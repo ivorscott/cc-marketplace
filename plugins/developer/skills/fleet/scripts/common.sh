@@ -625,7 +625,28 @@ PR_DEFS='def pr_noci_ok($noci; $repo; $url): ($repo | split("/") | last) as $bas
 # minute for it, however often status runs.
 queue_file() { printf '%s\n' "$FLEET_STATE_DIR/queue.json"; }
 queue_sig() {
-  "$FLEET_SCRIPTS/registry.sh" list | jq -c '[.[] | select(.status != "Retired") | [.name, (.pr // ""), (.signoff.sha? // ""), (.issue // ""), (.branch // "")]] | sort' | cksum | awk '{ print $1 }'
+  { "$FLEET_SCRIPTS/registry.sh" list | jq -c '[.[] | select(.status != "Retired") | [.name, (.pr // ""), (.signoff.sha? // ""), (.issue // ""), (.branch // "")]] | sort'
+    holds_json; } | cksum | awk '{ print $1 }'
+}
+# Holds: a ready PR the owner keeps back on purpose. holds.json in the state dir, {"<pr url>": {note, at}}; this machine
+# only. A held PR is not ready: the queue, status and the morning report list it as on hold with its note, tick sends
+# no pr_ready for it, and the overlap check ignores it (new work branches from main; the held PR catches up later).
+holds_file() { printf '%s\n' "$FLEET_STATE_DIR/holds.json"; }
+holds_json() { # the holds as one JSON object; {} when there are none or the file is unreadable
+  local f; f="$(holds_file)"
+  jq -ce 'select(type == "object")' "$f" 2>/dev/null || printf '{}\n'
+}
+holds_write() { # holds_write <JSON object>: atomic, like queue_write
+  local f tmp; f="$(holds_file)"; mkdir -p "$(dirname "$f")"; tmp="$(mktemp "$f.XXXXXX")" || return 1
+  if jq -c . <<<"$1" >"$tmp" 2>/dev/null; then mv "$tmp" "$f"; else rm -f "$tmp"; return 1; fi
+}
+hold_set() { # hold_set <pr url> <note>
+  holds_write "$(holds_json | jq -c --arg u "$1" --arg n "$2" --arg at "${FLEET_NOW:-$(now)}" '. + {($u): {note: $n, at: $at}}')"
+}
+hold_clear() { # hold_clear <pr url>: 0 when it was held, 1 when it was not
+  local h; h="$(holds_json)"
+  [ "$(jq --arg u "$1" 'has($u)' <<<"$h")" = true ] || return 1
+  holds_write "$(jq -c --arg u "$1" 'del(.[$u])' <<<"$h")"
 }
 queue_write() { # queue_write <queue JSON>
   local f tmp; f="$(queue_file)"; tmp="$(mktemp "$f.XXXXXX" 2>/dev/null)" || return 0
@@ -1000,7 +1021,9 @@ RENDER_DEFS='def md: tostring | gsub("[\r\n\t]+"; " ") | gsub("\\|"; "\\|");
   def team_state($g): if any($g[]; .status == "Parked") then "Parked" else ($g | map(.status | word) | sort_by(rank) | last) end;
   def team_needs($g; $e; $state; $pr; $q):
     def qready($u): ([($q.ready // [])[] | select(.url == $u)] | first);
-    def merge_cell($u): (qready($u)) as $r | if $r != null and ($r.after // "—") != "—" then $r.after else "merge the PR" end;
+    def held($u): ([($q.on_hold // [])[] | select(.url == $u)] | first);
+    def hold_cell($u): "on hold" + (if (held($u).note // "") != "" then ": \(held($u).note)" else "" end);
+    def merge_cell($u): if held($u) != null then hold_cell($u) else (qready($u)) as $r | if $r != null and ($r.after // "—") != "—" then $r.after else "merge the PR" end end;
     if $e != null then "\($e.severity | sev): \($e.message | .[0:60])"
     elif any($g[]; .status == "Needs input") then ($g | map(.status_detail // "") | map(select(. != "")) | first // "answer its prompt")
     elif $state == "Zombie" then "agent gone: respawn or retire"
@@ -1009,7 +1032,7 @@ RENDER_DEFS='def md: tostring | gsub("[\r\n\t]+"; " ") | gsub("\\|"; "\\|");
     elif any($g[]; (.input_flag // "") != "") then "unsent text in \([$g[] | select((.input_flag // "") != "") | .name][0] | split("/")[1:] | join("/"))'"'"'s input box"
     elif $state == "Done" then (if $pr != "" then merge_cell($pr) else "retire the team" end)
     elif $state == "Parked" and $pr != "" then
-      (if $q != null then (if qready($pr) != null then merge_cell($pr) else "-" end)
+      (if $q != null then (if qready($pr) != null or held($pr) != null then merge_cell($pr) else "-" end)
        elif any($g[]; .parked_reason == "signed-off") then "merge the PR" else "-" end)
     else "-" end;
   def ago($now): if (. // "") == "" then "-"
@@ -1117,15 +1140,16 @@ render_escalations() {
 
 # render_queue <queue.sh JSON>: "Merge in this order:" and | # | PR | Issue | Machine | Why this order | After merge |, each
 # PR its URL ("Merge in this order: none ready." when nothing is), then "Not ready: <url> ✗ <missing> · ✗
-# ..." per open PR that is not, then the queue's notes, a blank line between any two (reply). Nothing at all when
+# ..." per open PR that is not, "On hold: <url> - <note>" per PR the owner holds (fleet hold), then the queue's notes, a blank line between any two (reply). Nothing at all when
 # no PR is open.
 render_queue() {
-  jq -r --argjson names "$(machine_names)" 'if (.ready | length) == 0 and (.not_ready | length) == 0 then empty else
+  jq -r --argjson names "$(machine_names)" 'if (.ready | length) == 0 and (.not_ready | length) == 0 and ((.on_hold // []) | length) == 0 then empty else
       [(if (.ready | length) == 0 then "Merge in this order: none ready." else "Merge in this order:" end),
        (if (.ready | length) == 0 then empty else
          (["| # | PR | Issue | Machine | Why this order | After merge |", "|---|---|---|---|---|---|",
            (.ready[] | "| \(.n) | \(.pr) | \(.issue) | \($names[.machine // ""] // .machine // "-" | gsub("\\|"; "/")) | \(.why) | \(.after) |")] | join("\n")) end),
        (.not_ready[] | "Not ready: \(.pr) \(.missing | map("✗ " + .) | join(" · "))"),
+       ((.on_hold // [])[] | "On hold: \(.pr)\(if (.note // "") != "" then " - " + .note else "" end)"),
        (.notes[] | "\(.).")]
       | join("\n\n")
     end' <<<"$1"
@@ -1194,6 +1218,8 @@ render_line() {
     focused) printf 'Focused on %s: parked %s.%s\n' "${L_team:-}" "${L_parked:-none}" "${L_refused:+ Refused: $L_refused.}" ;;
     focus_marked) printf 'Focused on %s: %s park when their PRs merge.%s\n' "${L_team:-}" "${L_marked:-none}" "${L_refused:+ Refused: $L_refused.}" ;;
     focus_cleared) printf 'Focus cleared: unparked %s.%s\n' "${L_unparked:-none}" "${L_refused:+ Refused: $L_refused.}" ;;
+    held) printf 'Held %s: %s. It is not ready to merge, and new work branches from main.\n' "${L_pr:-}" "${L_note:-}" ;;
+    unheld) printf 'Unheld %s: back in the merge queue.\n' "${L_pr:-}" ;;
     focus) printf 'Focus: %s.\n' "${L_team:-none}" ;;
     no_problems) printf 'No problems.\n' ;;
     other_machines) printf 'Other machines: %s.\n' "${L_list:-none}" ;;
@@ -1368,7 +1394,7 @@ notices_show() {
   notices_lock || return 0
   n="$(wc -l <"$f" | tr -d ' ')"; s="$(cat "$f.shown" 2>/dev/null || true)"
   case "$s" in "" | *[!0-9]*) s=0 ;; esac; [ "$s" -le "$n" ] || s=0
-  [ "$s" -ge "$n" ] || tail -n +$((s + 1)) "$f" | jq -Rrn --slurpfile reg <(cat "$FLEET_REGISTRY" 2>/dev/null || echo '{}') "$ESC_DEFS"'
+  [ "$s" -ge "$n" ] || tail -n +$((s + 1)) "$f" | jq -Rrn --slurpfile reg <(cat "$FLEET_REGISTRY" 2>/dev/null || echo '{}') --argjson holds "$(holds_json)" "$ESC_DEFS"'
     ($reg[0] // {}) as $r | [($r.agents // {})[] | select(type == "object" and .status != "Retired")] as $rows
     | [($r.agents // {})[] | select(type == "object") | .name as $n | escs[] | select(.resolved_at == null) | "\($n)|\(.id)"] as $open
     | (($r.prefs // {}).version_ok // "") as $ok
@@ -1377,6 +1403,7 @@ notices_show() {
           or ($t != "" and ($x.url // "") != "" and ([$g[] | .pr // empty] | index($x.url)) == null)
           or ($t != "" and ($x.issue // "") != "" and ([$g[] | .issue // empty] | index($x.issue)) == null)
           or (($x.esc // "") != "" and ($open | index($x.esc)) == null)
+          or ($x.type == "pr_ready" and ($x.url // "") != "" and ($holds | has($x.url)))
           or ($x.type == "stale_version" and ($x.to // "") != "" and $ok == $x.to)
           or (($x.type == "failed" or $x.type == "brief_failed") and ([$rows[] | select(.name == $x.name and .status == "Failed")] | length) == 0);
       def newer($x; $y): ($x.type == "slot_free" and $y.type == "slot_free") or ($y.url == $x.url and ($x.url // "") != "" and (

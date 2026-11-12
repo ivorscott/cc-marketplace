@@ -4,6 +4,7 @@
 #   bash scripts/test/run.sh            the full suite (local)
 #   bash scripts/test/run.sh --smoke    the critical cases only (CI, under 2 min)
 #   bash scripts/test/run.sh --v413     only the 4.1.3 cases, test/v413.sh
+#   bash scripts/test/run.sh --v429     only the 4.2.9 cases, test/v429.sh
 #   bash scripts/test/run.sh --v428     only the 4.2.8 cases, test/v428.sh
 #   bash scripts/test/run.sh --v420     only the 4.2.0 cases, test/v420.sh
 #   bash scripts/test/run.sh --v42x     only the 4.2.x patch cases, test/v42x.sh
@@ -329,6 +330,8 @@ if [ "${1:-}" = --v413 ]; then v413_full; printf '\n%d passed, %d failed\n' "$pa
 . "$HERE/v426.sh" # 4.2.6: v426_smoke and v426_full
 . "$HERE/v427.sh" # 4.2.7: v427_smoke and v427_full
 . "$HERE/v428.sh" # 4.2.8: v428_smoke and v428_full
+. "$HERE/v429.sh" # 4.2.9: v429_smoke and v429_full
+if [ "${1:-}" = --v429 ]; then v429_full; printf '\n%d passed, %d failed\n' "$pass" "$failn"; [ "$failn" = 0 ]; exit; fi
 if [ "${1:-}" = --v428 ]; then v428_full; printf '\n%d passed, %d failed\n' "$pass" "$failn"; [ "$failn" = 0 ]; exit; fi
 if [ "${1:-}" = --v427 ]; then v427_full; printf '\n%d passed, %d failed\n' "$pass" "$failn"; [ "$failn" = 0 ]; exit; fi
 if [ "${1:-}" = --v426 ]; then v426_full; printf '\n%d passed, %d failed\n' "$pass" "$failn"; [ "$failn" = 0 ]; exit; fi
@@ -759,6 +762,7 @@ Merge this one first." "Do not merge until the API ships" "  hold: waiting on de
   v426_smoke
   v427_smoke
   v428_smoke
+  v429_smoke
   printf '\n%d passed, %d failed\n' "$pass" "$failn"
   [ "$failn" = 0 ]; exit
 fi
@@ -4615,6 +4619,7 @@ v42x_full
 v426_full
 v427_full
 v428_full
+v429_full
 # ---- end 4.2.0 ----
 
 printf '\n%d passed, %d failed\n' "$pass" "$failn"

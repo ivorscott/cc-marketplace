@@ -17,6 +17,9 @@
 #                        #N to merge and then builds on top of it. A live team with no PR yet: `wait team <name>`.
 #   merge-after #N       the overlap is small (at most 2 files and at most a quarter of the plan): build now and put the
 #                        line `Merge after #N` in the PR body, so the merge queue marks it "merge after #N"
+# A held PR is ignored: one the owner holds with `fleet hold` on this machine, or whose body has a line that starts with
+# "Hold:" or "Do not merge" (common.sh pr_held; that also covers a hold made on another machine). New work branches
+# from main and the held PR catches up later, so it never makes a plan wait.
 # A file the plan missed is caught later by the automatic catch-up (catchup.sh), so the worst case is one extra CI run.
 # --json prints {answer, ref, files, reason}. Exit 0 with an answer; exit 2 when it cannot answer (no plan file, no
 # `Files:` block, gh cannot list the PRs): never "none" by default.
@@ -47,10 +50,10 @@ slug="$(repo_slug "$repo_dir")"
 
 # Candidates: {ref, label, files} for each open PR of the repo (not this team's own) and each other live team's plan.
 cands='[]'
-prs="$("$FLEET_GH" pr list --repo "$slug" --state open --limit 200 --json number,url,headRefName,files,isCrossRepository 2>/dev/null)" &&
+prs="$("$FLEET_GH" pr list --repo "$slug" --state open --limit 200 --json number,url,headRefName,files,isCrossRepository,body 2>/dev/null)" &&
   printf '%s' "$prs" | jq -e 'type == "array"' >/dev/null 2>&1 || die "cannot list the open PRs of $slug" "Run gh auth status"
 own="$("$FLEET_SCRIPTS/registry.sh" list | jq -c --arg t "$team" '[.[] | select(.team == $t) | .pr // empty | select(. != "")]')"
-cands="$(jq -c --argjson own "$own" '[.[] | select(.url as $u | ($own | index($u)) == null)
+cands="$(jq -c --argjson own "$own" --argjson holds "$(holds_json)" "$PR_DEFS"'[.[] | select(.url as $u | ($own | index($u)) == null and ($holds | has($u) | not)) | select(pr_held | not)
   | {kind: "pr", ref: "#\(.number)", team: "", files: [(.files // [])[] | .path // empty]}]' <<<"$prs")"
 # teams on this machine in the same repo that have no PR yet: their plan files
 while IFS= read -r t; do

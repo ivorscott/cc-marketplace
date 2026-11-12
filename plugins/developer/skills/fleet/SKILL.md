@@ -247,6 +247,7 @@ worktrees, branches, plans, reports and the Linear claim (no Linear write). Tick
 - `park` refuses, changing nothing, when herdr is down or a worktree has unpushed work: ask the lead to push.
 - `$F/fleet park <team> --after-merge`: nothing changes now; when the PR merges, tick parks the team.
 - `$F/fleet unpark <team>` restarts the agents with the resume brief; it refuses when a cap is full (never queue).
+- `$F/fleet hold <PR> --note "<why>"` keeps a ready PR out of the merge queue (it shows as On hold, new work branches from main); `$F/fleet unhold <PR>` lets it go.
 - `$F/fleet focus <team> [--now]` parks every other live team; `$F/fleet focus --clear` unparks only those.
 
 ## G. Prime
