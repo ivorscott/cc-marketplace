@@ -4,6 +4,7 @@
 #   bash scripts/test/run.sh            the full suite (local)
 #   bash scripts/test/run.sh --smoke    the critical cases only (CI, under 2 min)
 #   bash scripts/test/run.sh --v413     only the 4.1.3 cases, test/v413.sh
+#   bash scripts/test/run.sh --v4210    only the 4.2.10 cases, test/v4210.sh
 #   bash scripts/test/run.sh --v429     only the 4.2.9 cases, test/v429.sh
 #   bash scripts/test/run.sh --v428     only the 4.2.8 cases, test/v428.sh
 #   bash scripts/test/run.sh --v420     only the 4.2.0 cases, test/v420.sh
@@ -330,6 +331,8 @@ if [ "${1:-}" = --v413 ]; then v413_full; printf '\n%d passed, %d failed\n' "$pa
 . "$HERE/v426.sh" # 4.2.6: v426_smoke and v426_full
 . "$HERE/v427.sh" # 4.2.7: v427_smoke and v427_full
 . "$HERE/v428.sh" # 4.2.8: v428_smoke and v428_full
+. "$HERE/v4210.sh" # 4.2.10: v4210_smoke and v4210_full
+if [ "${1:-}" = --v4210 ]; then v4210_full; printf '\n%d passed, %d failed\n' "$pass" "$failn"; [ "$failn" = 0 ]; exit; fi
 . "$HERE/v429.sh" # 4.2.9: v429_smoke and v429_full
 if [ "${1:-}" = --v429 ]; then v429_full; printf '\n%d passed, %d failed\n' "$pass" "$failn"; [ "$failn" = 0 ]; exit; fi
 if [ "${1:-}" = --v428 ]; then v428_full; printf '\n%d passed, %d failed\n' "$pass" "$failn"; [ "$failn" = 0 ]; exit; fi
@@ -762,6 +765,7 @@ Merge this one first." "Do not merge until the API ships" "  hold: waiting on de
   v426_smoke
   v427_smoke
   v428_smoke
+  v4210_smoke
   v429_smoke
   printf '\n%d passed, %d failed\n' "$pass" "$failn"
   [ "$failn" = 0 ]; exit
@@ -2076,6 +2080,7 @@ J
   : >"$LINEAR_LOG"; : >"$LINEAR_ARGV_LOG"
 }
 nmut() { grep -c '^mutation' "$LINEAR_LOG"; }
+nlmut() { grep -c '^mutation IssueLabelUpdate' "$LINEAR_LOG"; } # the heartbeat writes; a changed summary also writes its document (DEV-768)
 ncomments() { grep -c '^mutation Comment' "$LINEAR_LOG"; }
 labels_of() { jq -r --arg i "$1" '. as $r | .issues[] | select(.identifier == $i) | [.labelIds[] as $l | $r.labels[] | select(.id == $l) | .name] | sort | join(",")' "$LINEAR_DB"; }
 
@@ -2601,7 +2606,7 @@ eq "tick: exactly one mutation for one claimed issue" "$(nmut)" 1
 eq "tick: and it is the heartbeat" "$(grep -c '^mutation IssueLabelUpdate' "$LINEAR_LOG")" 1
 for n in 2 3 4 5; do brow bt$n/builder DEV-3; done
 : >"$LINEAR_LOG"; "$SCRIPTS/tick.sh" >/dev/null 2>&1
-eq "tick: exactly one mutation for five claimed issues" "$(nmut)" 1
+eq "tick: exactly one label write for five claimed issues" "$(nlmut)" 1
 eq "tick: claim, heartbeat and tick log no comment mutation (AC5)" "$(ncomments)" 0
 eq "tick: the Linear viewer is read once per tick" "$(grep -c '^query Viewer' "$LINEAR_LOG")" 1
 "$SCRIPTS/tick.sh" >/dev/null 2>&1
@@ -2655,9 +2660,9 @@ setw on
 for n in 1 2 3 4 5; do "$REG" retire bt$n/builder >/dev/null 2>&1; done
 dbreset; "$LIN" claim DEV-1 >/dev/null 2>&1; brow bt9/builder DEV-1; "$REG" set bt9/builder status=Done >/dev/null; : >"$LINEAR_LOG"
 "$SCRIPTS/tick.sh" >/dev/null 2>&1
-eq "tick: a Done row's claim is still heartbeated (one mutation)" "$(nmut)" 1
+eq "tick: a Done row's claim is still heartbeated (one label write)" "$(nlmut)" 1
 "$REG" retire bt9/builder >/dev/null 2>&1; : >"$LINEAR_LOG"; "$SCRIPTS/tick.sh" >/dev/null 2>&1
-eq "tick: a Retired row's claim does not matter: the pre-flight heartbeat writes once" "$(nmut)" 1
+eq "tick: a Retired row's claim does not matter: the pre-flight heartbeat writes once" "$(nlmut)" 1
 brow bt8/builder DEV-3
 
 # -- no key: exit 3, nothing sent, tick still works and says so once
@@ -4619,6 +4624,7 @@ v42x_full
 v426_full
 v427_full
 v428_full
+v4210_full
 v429_full
 # ---- end 4.2.0 ----
 

@@ -190,12 +190,14 @@ rows keep their fields and add `source: "registry"` and `machine`; a team anothe
 no summary are rows with `status` `Claimed` (`Claimed (heartbeat lapsed)`, `Claimed (no heartbeat)`), `machine`, `issue`,
 `heartbeat` and `heartbeat_age`.
 
-**`summary=` line.** The label description of a machine holds, next to `heartbeat=`, one `summary=<compact JSON array>`
-line, rewritten in the same label update: `[{"t": team, "i": issue key, "pr": PR url, "s": state word, "n": needs you,
-"r": true when its PR is ready}]`, keys with no value left out, the 12 teams changed last, and fewer when the line would
-pass 1500 characters or the room left under the 255-character description cap. When the full rows do not fit, thinner
-ones are used (no `pr`/`n`/`f`, then `i` and `s`, then `i` alone): the tier that keeps the most teams. `linear.sh peers` returns it as `summary` (null when the label has none). UNVERIFIED: Linear's own
-limit on a label description.
+**Summary document.** Each machine keeps its summary in a Linear document titled `Fleet summary · <machine key>`: a
+`name=<machine name>` line, then the compact JSON array in a fenced `json` block: `[{"t": team, "i": issue key, "pr": PR
+url, "s": state word, "n": needs you, "r": true when its PR is ready, "f": plan files}]`, keys with no value left out, every
+live team, no size limit. Rewritten only when it changed. `linear.sh peers` returns it as `summary` with `source: doc`.
+For one release (4.2.10) the label description also holds the old thin `summary=<JSON array>` line (the 12 teams changed
+last, fitted to the room under the 255-character description cap, thinner rows when needed); a reader that finds no document
+falls back to it (`source: label`; null when there is neither). UNVERIFIED: the real API's `documentCreate` parent and
+`documents` filter.
 
 **Cloned machine id.** A cloned VM or restored disk copies the machine id, and two machines then
 share one key. Set `FLEET_MACHINE=<unique>` or delete the stored `machine-id` file on the clone.

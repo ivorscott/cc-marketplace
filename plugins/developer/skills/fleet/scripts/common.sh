@@ -662,13 +662,22 @@ fleet_queue() {
   q="$("$FLEET_SCRIPTS/queue.sh")" || return 1
   queue_write "$q"; printf '%s\n' "$q"
 }
-# fleet_summary: this machine's teams as one compact JSON array, the line `summary=` of its Linear label description
-# (linear.sh write_heartbeat), which is how another machine's `fleet status` sees them: [{t: team, i: issue key, pr: PR
-# URL, s: state word, n: what it needs from you, r: true when the merge queue lists its PR as ready}], the 12 teams
-# changed last, and fewer when the line would pass the cap: $1 characters, else SUMMARY_CAP. Whole entries are dropped,
-# never shortened, so the line stays a valid JSON array that 4.1.3 machines parse. linear.sh write_heartbeat gives the
-# room left under DESC_CAP, the label description limit (bounded, not confirmed). Built from the registry and the queue tick kept (never from GitHub); keys with no value are left out.
-SUMMARY_CAP=1500
+# fleet_summary: this machine's teams as one compact JSON array, the body of its Linear summary document (linear.sh
+# write_heartbeat), which is how another machine's `fleet status` sees them: [{t: team, i: issue key, pr: PR URL, s: state
+# word, n: what it needs from you, r: true when the merge queue lists its PR as ready, f: plan files}], every live team,
+# the ones changed last first, with no size limit (a document has room). Built from the registry and the queue tick kept
+# (never from GitHub); keys with no value are left out.
+# summary_for_label <room>: the summary array on stdin fitted to <room> characters for the old `summary=` label line (the
+# 255-character description), kept for one release for machines on an older plugin: the 12 teams changed last, in the thinner
+# tier that keeps the most teams. Whole entries are dropped, never shortened, so the line stays a valid JSON array.
+summary_for_label() {
+  jq -c --argjson cap "$1" '
+    def fit: if length > 0 and (tojson | length) > $cap then .[:-1] | fit else . end;
+    def idt: if ((.i // "") != "") then {i} elif ((.t // "") != "") then {t: .t[0:12]} else {} end;
+    def tiers: [., map(del(.pr, .n, .f)), map(idt + {s} | with_entries(select(.value != null))), map(idt)] | map(fit);
+    def best: tiers | reduce .[] as $x (null; if . == null or ($x | length) > length then $x else . end);
+    .[:12] | best'
+}
 # plan_files <plan file>: the paths of the Files: block of a planner's plan, one per line: a line `Files:` (a heading or
 # bold is fine), then list lines (`- path`, a note after the path is ignored) up to the first line that is not one.
 plan_files() {
@@ -694,21 +703,12 @@ plan_file_map() {
 # shellcheck disable=SC2034  # read by linear.sh write_heartbeat
 DESC_CAP="${FLEET_DESC_CAP:-255}"
 fleet_summary() {
-  local cap="${1:-$SUMMARY_CAP}"
   local rows esc q='null' f pfm; f="$(queue_file)"
   rows="$("$FLEET_SCRIPTS/registry.sh" list)" || return 1
   esc="$("$FLEET_SCRIPTS/registry.sh" escalations --open --not-retired 2>/dev/null)" || esc='[]'
   [ ! -s "$f" ] || q="$(jq -c '.queue // null' "$f" 2>/dev/null)" || q='null'
   pfm="$(plan_file_map "$rows" 2>/dev/null)" || pfm='{}'
-  jq -nc --slurpfile rows <(printf '%s' "$rows") --slurpfile esc <(printf '%s' "$esc") --argjson q "$q" --argjson cap "$cap" --argjson pfm "$pfm" "$RENDER_DEFS"'
-    def fit: if length > 0 and (tojson | length) > $cap then .[:-1] | fit else . end;
-    # Thinner rows when the full ones leave too little room (a claimed= line leaves ~90 characters): the tier that keeps the
-    # most teams wins, the richer one on a tie. Every tier is an array of objects, so an older reader still parses it.
-    # A row is named by its issue, or by a short prefix of its team name when it has no issue (only in these thin tiers, the full rows keep t whole);
-    # a row with neither keeps only s. An empty string is truthy in jq, so the test is on the value, not the key.
-    def idt: if ((.i // "") != "") then {i} elif ((.t // "") != "") then {t: .t[0:12]} else {} end;
-    def tiers: [., map(del(.pr, .n, .f)), map(idt + {s} | with_entries(select(.value != null))), map(idt)] | map(fit);
-    def best: tiers | reduce .[] as $x (null; if . == null or ($x | length) > length then $x else . end);
+  jq -nc --slurpfile rows <(printf '%s' "$rows") --slurpfile esc <(printf '%s' "$esc") --argjson q "$q" --argjson pfm "$pfm" "$RENDER_DEFS"'
     [$rows[0][] | select(.tier != "Orchestrator" and .status != "Retired" and (.team // "") != "")]
     | group_by(.team) | map(. as $g | $g[0].team as $t
       | ([$esc[0][] | select(.team == $t)] | sort_by({"P0": 0, "P1": 1, "P2": 2}[.severity] // 3) | first) as $e
@@ -717,7 +717,7 @@ fleet_summary() {
       | (team_needs($g; $e; $state; $pr; $q) | if . == "-" then "" else .[0:60] end) as $n
       | {u: ($g | map(.updated_at // "") | max), t: $t, i: ($g | map(.issue // "") | map(select(. != "")) | first // ""), pr: $pr, s: $state, n: $n,
          r: (([($q.ready // [])[] | select(.url == $pr)] | length) > 0 and $pr != ""), f: ($pfm[$t] // [])})
-    | sort_by(.u) | reverse | .[:12] | map(del(.u) | with_entries(select(.value != "" and .value != false and .value != []))) | best'
+    | sort_by(.u) | reverse | map(del(.u) | with_entries(select(.value != "" and .value != false and .value != [])))'
 }
 
 # PART_OF_JQ: jq `def part_of;` on a PR body: the issue a "Part of <issue>" line names (its identifier, a markdown link
@@ -1063,8 +1063,16 @@ roles_line() {
 # own names from their label descriptions (FLEET_PEERS_JSON, which status.sh exports after reading linear.sh peers).
 machine_names() {
   local me; me="$(machine_key 2>/dev/null || echo local)"
-  printf '%s' "${FLEET_PEERS_JSON:-[]}" | jq -c --arg me "$me" --arg n "$("$FLEET_SCRIPTS/machine-id.sh" name 2>/dev/null || echo "$me")" \
-    '([.[]? | select((.name // "") != "") | {key: .machine, value: .name}] | from_entries) + {($me): $n}' 2>/dev/null || printf '{}'
+  printf '%s' "${FLEET_PEERS_JSON:-[]}" | jq -c --arg me "$me" --arg n "$("$FLEET_SCRIPTS/machine-id.sh" name 2>/dev/null || echo "$me")" --argjson cfg "$(cfg_machine_names)" \
+    '([.[]? | select((.name // "") != "") | {key: .machine, value: .name}] | from_entries) + {($me): $n} + $cfg' 2>/dev/null || printf '{}'
+}
+# cfg_machine_names: JSON {machine key: display name} from the [machine_names] table of config.toml (key = "name"); {} without
+# one. It wins over the name a machine publishes, so every machine shows the same names (never a number made up here).
+cfg_machine_names() {
+  local f="$FLEET_CONFIG_DIR/config.toml"
+  [ -f "$f" ] || { printf '{}'; return; }
+  sed -n '/^[[:space:]]*\[machine_names\]/,/^[[:space:]]*\[/p' "$f" | sed -nE 's/^[[:space:]]*"?([A-Za-z0-9_.:-]+)"?[[:space:]]*=[[:space:]]*"([^"]*)".*/\1\t\2/p' |
+    jq -Rsc '[split("\n")[] | select(. != "") | split("\t") | {key: .[0], value: .[1]}] | from_entries' 2>/dev/null || printf '{}'
 }
 # One table for every machine: every row carries its Machine (this machine's key for the registry's teams), and
 # --peers adds the other machines' teams (status.sh builds them from their published summaries: machine, team, issue,

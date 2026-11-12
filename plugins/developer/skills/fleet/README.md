@@ -326,7 +326,8 @@ series order, and notes why on the lead's row.
 Install the plugin there and give it the same `config.toml` keys, its own `machine_name`, and its own Linear key. Each
 machine is told apart by the first 8 hex characters of its machine id (it is the Machine column of `status`).
 `status` on either machine then prints one table of every machine's teams and one merge queue, from the compact
-`summary=` line each machine keeps in its label description beside its heartbeat. A machine whose plugin is older shows as
+summary each machine keeps in its own Linear document (`Fleet summary · <machine key>`; see "What changed in 4.2.10"). A
+machine whose plugin is older still shows its rows from the `summary=` line it keeps in its label; one with neither shows as
 `claim only`; with no Linear key, one line says the others are unknown. A claim is the machine's label; a machine whose
 loop stops (asleep, off) stops heartbeating, and that is the moment a takeover is allowed.
 
@@ -809,9 +810,9 @@ tracker runs the fleet on one machine, and those parts are skipped.
 - **The tracker has no compare-and-swap.** The last writer wins and both machines re-read; that
   narrows the race, it does not remove it. A machine whose issue was taken over stops and tells
   you; it never fights back.
-- `status` builds one table from `linear.sh peers` and this machine's registry. Each machine publishes a compact
-  `summary=` line next to its `heartbeat=` in its label description (its teams: issue, PR, state, what it needs, whether
-  its PR is ready), and the others show those rows with a Machine column and one merge queue. Other machines' health is
+- `status` builds one table from `linear.sh peers` and this machine's registry. Each machine publishes its
+  summary in one Linear document of its own (its teams: issue, PR, state, what it needs, whether its PR is ready; no size
+  limit), and the others show those rows with a Machine column and one merge queue. Other machines' health is
   not probed; a machine with no summary shows as a claim only.
 - The Linear API key lives only on the Orchestrator machine (`~/.config/fleet/linear_api_key`,
   mode 600, or `LINEAR_API_KEY` in its shell). Boot gives it to no agent: panes start with
@@ -1024,6 +1025,26 @@ Fixes found after 4.1.1 (DEV-530), one per item:
    filed and a requested split is done. `retire --summary` stays as a read-only view.
 5. **A fresh claim is fresh.** `claim` and `takeover` refresh the machine label's heartbeat in the same call, and tick
    refreshes it first of all, before herdr is checked and with or without claimed rows.
+
+## What changed in 4.2.10
+
+DEV-768: the per-machine team summary no longer has to fit a 255-character label description.
+
+1. **One document per machine.** Each machine keeps its summary in a Linear document titled `Fleet summary · <machine key>`:
+   a `name=<machine name>` line, then the summary array in a fenced `json` block, with every live team and no size limit.
+   `tick` rewrites it only when it changed (a hash of the last write is kept in the state dir as `summary.doc.sha`; without
+   one the document is read once and compared). A document that cannot be written is a warning: the heartbeat still lands.
+   `linear.sh peers` reads every machine's document in one query and returns the rows with `source: doc` (or `label`).
+2. **The label line stays for one release.** The thin `summary=` line is still written to the label, in the same single
+   heartbeat update, so machines on 4.2.7 and 4.2.8 keep showing rows. A reader uses the document first and falls back to
+   the label line. The next minor drops the label line. Only this thin copy is ever cut to the 12 most recent teams.
+3. **Machine names from config.** `status` names a machine by `[machine_names]` in `config.toml` (`<machine key> = "Name"`),
+   else the `name=` line of its document, else the name in its label, else the key. It never makes up a number.
+4. **Test mode** (`linear_writes = "test:FT"`) clears a document write only for this machine's own summary document.
+
+UNVERIFIED against the real API (tests use the stub): that `documentCreate` accepts a `teamId` parent (the document is
+created under the first `tracker_teams` team, or the test team), and the `documents(filter: {title: {startsWith: ...}})`
+filter syntax. If either is wrong the write fails as a warning and peers fall back to the label line.
 
 ## What changed in 4.2.9
 

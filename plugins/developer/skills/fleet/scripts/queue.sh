@@ -12,8 +12,8 @@
 # or fleet/<issue key>-...), whatever local branch it came from; theirs is any other open fleet/* PR.
 # Ready is common.sh PR_DEFS, the rule tick's pr_ready uses: the tester's signed SHA is the head, CI green (or none
 # in a no_pr_ci repo), mergeable (UNKNOWN is "mergeable unknown", never conflicting), not a draft, not held. Another
-# machine's PR is ready here only when that machine's published summary (linear.sh peers: the `summary=` line of its
-# label, `r`) says so and the summary is not older than lease_hours; its sign-off is not ours to see. Otherwise it is
+# machine's PR is ready here only when that machine's published summary (linear.sh peers: the summary document of its machine, else the `summary=` line of its
+# label; `r`) says so and the summary is not older than lease_hours; its sign-off is not ours to see. Otherwise it is
 # an order input only, listed as missing "other machine" with its state when the summary has one. One queue for every
 # machine: each row has the machine that holds the PR. A ready PR whose changed files another PR, not ready yet, also
 # touches says so in its "why". A PR the owner holds (`fleet hold`, common.sh holds_json) is on neither list: it is

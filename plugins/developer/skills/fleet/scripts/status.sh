@@ -13,8 +13,8 @@
 # that team instead: | Agent | Role | State | Model | Last action |. --json is the bare array of this machine's agents
 # (of the <team> when one is given), for tick and the tests; it shows no notice.
 #
-# Every machine in one table. Status reads the other machines' published summaries from Linear (linear.sh peers: one
-# read) and shows their teams in the same table and the same merge queue, each row with its Machine; the rows are never
+# Every machine in one table. Status reads the other machines' published summaries from Linear (linear.sh peers: one read
+# for the labels and one for the summary documents; a machine with no document falls back to the `summary=` label line) and shows their teams in the same table and the same merge queue, each row with its Machine; the rows are never
 # probed and nothing is written for them. A machine on an older plugin, or one that has published no summary, shows as
 # one line, "Other machines: DEV-1 on <key> (claim only: no summary)"; with no Linear key the table
 # is this machine's alone and a line says "Other machines: unknown (no Linear key)". A summary older than lease_hours
