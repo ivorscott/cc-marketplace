@@ -8,4 +8,5 @@ merge_push_mins: 15
 status_mins: 10
 report_at: 08:00
 stop: never
+branch_delete: yes
 human-only: merging, production, infrastructure applies, secrets and branch protection

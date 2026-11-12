@@ -16,8 +16,8 @@ Not ready: https://github.com/acme/app-api/pull/85 ✗ conflicting
 
 ## Takeovers
 
-- DEV-83: taken over by fleet:other
-- DEV-84: released from fleet:pr (heartbeat lapsed, no open PR)
+- DEV-83: taken over by fleet:other (first seen 03:00)
+- DEV-84: released from fleet:pr (heartbeat lapsed, no open PR) (first seen 04:00)
 
 ## Boots
 

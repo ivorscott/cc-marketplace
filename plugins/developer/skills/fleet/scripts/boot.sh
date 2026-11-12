@@ -31,7 +31,7 @@
 # Claims (see SKILL.md, "Claim"): boot never calls a tracker. The Orchestrator claims the issue
 # first (linear.sh claim) and passes the result in.
 #   --issue ID           the tracker issue this team works on
-#   --issue-url URL      the issue's full URL: briefs carry the exact "Fixes <URL>" line for the PR body
+#   --issue-url URL      the issue's full URL: briefs carry the exact "Fixes <URL>" line for the PR body, then a "## In plain English" section
 #   --issue-title TEXT   the issue's title, from the search that picked it: the team table's Issue cell shows it
 #   --claimed-by KEY     the machine key (or label) that holds the claim
 #   --labels a,b,c       the issue's labels, as just re-read; any <label_prefix>* label that

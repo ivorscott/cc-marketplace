@@ -48,13 +48,18 @@
 #   disk, disk_ok   free disk crossed below warn_free_gb, and recovered
 #   slot_free       fewer live teams than target_teams (orchestrator row) and max_teams: the Orchestrator picks and
 #                   boots. Once per (live count, target)
-#   claim_takeover  a team's issue now carries another machine's label (once per team, issue and holder)
+#   claim_takeover  a team's issue now carries another machine's label (once per team, issue and holder, however many ticks
+#                   its Done or Parked row stays); `merged` when every PR on its rows already merged (a note, not a P1)
 #   claim_lost      a team's issue that this machine claimed carries no machine label any more: another machine
 #                   released it as lapsed (once per team and issue; not while linear_writes is off)
 #   claim_released  another machine's lapsed claim with no open PR was released (linear.sh release --lapsed)
 #   claim_held_pr   another machine's lapsed claim has an open PR, so it was left alone
 #   claim_lapsed    another machine's claim lapsed (writes off, test mode) or has no heartbeat; left alone, read-only.
 #                   The three claim_ events: once per (issue, holder, heartbeat); not with --team
+# Not an event: once a day per repo in config.toml `repos` (not with --team), tick sweeps its stale remote branches with
+#                   branches.sh (state `branches_swept`, repo to date). Nobody is woken; each deletion is logged as a
+#                   branches_deleted event, listed in the morning report. Skipped, with one warning a day, while the
+#                   permission rule Bash(git push origin --delete:*) is missing; a sweep that failed is retried next tick.
 # Not an event: a new comment on a live team's issue (from the owner or another machine; the fleet's own start "[fleet]")
 #                   is told to that team's lead once, as quoted data (linear.sh comments), and the lead re-reads the issue.
 #   usage_limit     agents stopped on the plan's usage limit: no boot until usage_until, once per episode (usage_guard)
@@ -181,7 +186,7 @@ heartbeat() {
 # writes are not off, since a team moved unclaimed carries no claimed_by.
 claims_taken_over() {
   "$FLEET_SCRIPTS/linear.sh" has-key >/dev/null 2>&1 || return 0
-  local t i c h writes; writes="$(linear_writes)"
+  local t i c h writes merged; writes="$(linear_writes)"
   while IFS=$'\t' read -r t i c; do
     [ -n "$i" ] || continue
     h="$("$FLEET_SCRIPTS/linear.sh" holder "$i" 2>/dev/null)" || { warn "could not read the holder of $i"; continue; }
@@ -196,7 +201,10 @@ claims_taken_over() {
     printf '%s' "$h" | jq -e '.holder != null and (.ours | not)' >/dev/null 2>&1 || continue
     h="$(printf '%s' "$h" | jq -r .holder)"
     if [ "$(jq --arg k "$t|$i|$h" '(.takeover_emitted // []) | index($k) == null' "$STATE_FILE")" = true ]; then
-      add_events "$(jq -cn --arg t "$t" --arg i "$i" --arg h "$h" '[{type: "claim_takeover", team: $t, name: ($t + "/lead"), issue: $i, holder: $h}]')"
+      # merged: every PR on the team's rows already merged (pr_merged_emitted), so the takeover is a note, not a P1.
+      merged="$(jq -n --arg t "$t" --argjson rows "$claim_rows" --slurpfile stf "$STATE_FILE" '[$rows[] | select(.team == $t) | (.pr // empty), (.prs // [])[] | select(. != "")] | unique
+        | length > 0 and all(.[]; . as $u | (($stf[0].pr_merged_emitted // []) | index($u)) != null)')"
+      add_events "$(jq -cn --arg t "$t" --arg i "$i" --arg h "$h" --argjson m "$merged" '[{type: "claim_takeover", team: $t, name: ($t + "/lead"), issue: $i, holder: $h} + (if $m then {merged: true} else {} end)]')"
       st_upd --arg k "$t|$i|$h" '$st + {takeover_emitted: ((($st.takeover_emitted // []) + [$k]) | unique)}'
     fi
   done < <(printf '%s' "$claim_rows" | jq -r 'group_by(.team + "|" + .issue) | .[] | [.[0].team, .[0].issue, ([.[].claimed_by // empty | select(. != "")] | first // "")] | @tsv')
@@ -292,11 +300,42 @@ plan_overlap() {
   done < <("$registry" list ${team:+--team "$team"} | jq -r '[.[] | select(.tier != "Orchestrator" and .status != "Retired" and .status != "Parked")] | group_by(.team) | .[]
     | select(any(.[]; (.name | endswith("/planner")) and .status == "Done")) | [.[0].team, ([.[].repo // empty | select(. != "")] | first // "")] | @tsv')
 }
+# The daily branch sweep (DEV-739): each repo in `repos` once a day, with branches.sh (same rules as fleet branches). Not
+# with --team (a fleet-wide check). A repo whose sweep cannot run (no permission rule, or branches.sh failed) is not recorded
+# as done, so the next tick tries again; the warning is given once a day per repo.
+branches_sweep() {
+  [ -z "$team" ] || return 0
+  [ "$(run_str branch_delete yes)" != no ] || return 0 # the owner answered no in fleet run init
+  local today repo err
+  today="${FLEET_NOW:-$(now)}"; today="${today:0:10}"
+  while IFS= read -r repo; do
+    [ -d "$repo" ] || continue
+    [ "$(jq -r --arg r "$repo" '(.branches_swept // {})[$r] // ""' "$STATE_FILE")" != "$today" ] || continue
+    if ! branch_delete_allowed "$repo"; then
+      if [ "$(jq -r --arg r "$repo" '(.branches_warned // {})[$r] // ""' "$STATE_FILE")" != "$today" ]; then
+        warn "branch sweep of $repo skipped: $BRANCH_OFF_LINE"
+        st_upd --arg r "$repo" --arg d "$today" '$st + {branches_warned: (($st.branches_warned // {}) + {($r): $d})}'
+      fi
+      continue
+    fi
+    err="$(mktemp "${TMPDIR:-/tmp}/fleet-tick-branches.XXXXXX")"
+    if "$FLEET_SCRIPTS/branches.sh" "$repo" >/dev/null 2>"$err"; then
+      st_upd --arg r "$repo" --arg d "$today" '$st + {branches_swept: (($st.branches_swept // {}) + {($r): $d})}'
+    elif [ "$(jq -r --arg r "$repo" '(.branches_warned // {})[$r] // ""' "$STATE_FILE")" != "$today" ]; then
+      warn "branch sweep of $repo failed: $(tail -n 1 "$err")"
+      st_upd --arg r "$repo" --arg d "$today" '$st + {branches_warned: (($st.branches_warned // {}) + {($r): $d})}'
+    fi
+    rm -f "$err"
+  done < <(config_list repos | jq -r '.[]')
+  # only configured repos keep a date
+  st_upd --argjson c "$(config_list repos)" '$st + {branches_swept: ((($st.branches_swept // {}) | with_entries(select(.key as $k | $c | index($k)))))}'
+}
 heartbeat
 claims_taken_over
 claims_lapsed
 comments_forward
 plan_overlap
+branches_sweep
 
 # --- usage guard ----------------------------------------------------------------------------------
 # Agents that stop on the plan's rate or usage limit (api_error_detail says "usage limit") start a backoff: usage_until in
@@ -1037,7 +1076,7 @@ done < <(jq -r 'def d: if . == null or . == "" then "-" else tostring end;
     "claim_takeover", "claim_lost", "claim_released", "claim_held_pr", "claim_lapsed", "morning_report"))
   | [.type, (.team | d), (.name | d), (.url | d), (.sha | d), (if (.type | startswith("claim_")) then (.issue | d) else "-" end),
      (if .type == "claim_lost" then "claimed by this machine, released by another"
-      elif (.type | startswith("claim_")) then ("holder " + (.holder // "?") + (if .detail then ": " + .detail else "" end))
+      elif (.type | startswith("claim_")) then ("holder " + (.holder // "?") + (if .detail then ": " + .detail elif .merged == true then ": PR merged" else "" end))
       elif (.type | IN("pr_conflicting", "morning_report")) then (.detail | d) else "-" end)] | @tsv' "$EVENTS_FILE")
 
 # --- notices: each wake's reply, rendered once for `fleet status` (references/output.md) --------------------------
@@ -1051,10 +1090,12 @@ done < <(jq -c --arg wake "$WAKE_TYPES" ".[] | $WAKE_JQ" "$EVENTS_FILE")
 # the thing they describe (a PR on a row, an open escalation, a claimed issue, a recent respawn) still exists.
 live_prs="$("$registry" list | jq -c '[.[] | select(.status != "Retired") | (.pr // empty), (.prs // [])[]]')"
 live_esc="$("$registry" escalations --open | jq -c '[.[] | .name + "|" + .id]')"
-live_claims="$("$registry" list --live | jq -c '[.[] | select((.issue // "") != "") | .team + "|" + .issue]')"
+# The takeover and lost keys are checked against the rows claims_taken_over scans (Done and Parked included, a team
+# waiting on its merge keeps its claim), not --live: a Done row's key pruned each tick re-emitted the event every tick.
+claim_keys="$("$registry" list | jq -c '[.[] | select((.issue // "") != "" and .tier != "Orchestrator" and .status != "Retired") | .team + "|" + .issue]')"
 live_names="$("$registry" list --live | jq -c '[.[] | .name]')"
 live_teams="$("$registry" list --live | jq -c '[.[] | .team // empty] | unique')"
-st_upd --argjson prs "$live_prs" --argjson esc "$live_esc" --argjson cl "$live_claims" --argjson live_names "$live_names" --argjson live_teams "$live_teams" --argjson now "$now_epoch" --argjson w "$(const_int RESPAWN_WINDOW_HOURS 6)" '
+st_upd --argjson prs "$live_prs" --argjson esc "$live_esc" --argjson ck "$claim_keys" --argjson live_names "$live_names" --argjson live_teams "$live_teams" --argjson now "$now_epoch" --argjson w "$(const_int RESPAWN_WINDOW_HOURS 6)" '
   def inrecent: map(select(. > $now - $w * 3600));
   $st
   + (if .pr_ready_emitted then {pr_ready_emitted: [.pr_ready_emitted[] | select(split("@")[0] as $u | $prs | index($u))]} else {} end)
@@ -1065,8 +1106,8 @@ st_upd --argjson prs "$live_prs" --argjson esc "$live_esc" --argjson cl "$live_c
   + (if .ready_prev then {ready_prev: [.ready_prev[] | select(. as $u | $prs | index($u))]} else {} end)
   + (if .conflict_told then {conflict_told: [.conflict_told[] | select(split("@")[0] as $u | $prs | index($u))]} else {} end)
   + (if .escalations_emitted then {escalations_emitted: [.escalations_emitted[] | select(. as $k | $esc | index($k))]} else {} end)
-  + (if .takeover_emitted then {takeover_emitted: [.takeover_emitted[] | select(split("|")[0:2] | join("|") as $k | $cl | index($k))]} else {} end)
-  + (if .lost_emitted then {lost_emitted: [.lost_emitted[] | select(. as $k | $cl | index($k))]} else {} end)
+  + (if .takeover_emitted then {takeover_emitted: [.takeover_emitted[] | select(split("|")[0:2] | join("|") as $k | $ck | index($k))]} else {} end)
+  + (if .lost_emitted then {lost_emitted: [.lost_emitted[] | select(. as $k | $ck | index($k))]} else {} end)
   + (if .stale_emitted then {stale_emitted: [.stale_emitted[] | select(split("|")[0] as $t | $live_teams | index($t))]} else {} end)
   + (if .brief_failed_emitted then {brief_failed_emitted: [.brief_failed_emitted[] | select(split("|")[0] as $n | $live_names | index($n))]} else {} end)
   + (if .respawns then {respawns: (.respawns | with_entries(.value |= inrecent) | with_entries(select(.value | length > 0)))} else {} end)'
