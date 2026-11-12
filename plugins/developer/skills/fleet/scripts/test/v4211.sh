@@ -182,14 +182,14 @@ v4211_render() { # the notices a wake carries, by what happened to the comment
 
 v4211_smoke() { # the critical cases, CI (V4211_ONLY="name name" runs just those, to debug one)
   local f
-  for f in v4211_parked v4211_done v4211_undelivered v4211_merged v4211_retired v4211_own_lines; do
+  for f in v4211_parked v4211_merged; do
     case " ${V4211_ONLY:-$f} " in *" $f "*) "$f" ;; esac
   done
 }
 v4211_full() {
   local f
   v4211_smoke
-  for f in v4211_nopr v4211_render; do
+  for f in v4211_done v4211_undelivered v4211_retired v4211_own_lines v4211_nopr v4211_render; do
     case " ${V4211_ONLY:-$f} " in *" $f "*) "$f" ;; esac
   done
 }
