@@ -305,7 +305,17 @@ the deterministic parts so they survive a compaction:
 - `usage_limit`: agents hit the plan's rate or usage limit, or `usage.json` puts the remaining usage inside `usage_margin`; backoff 15 minutes doubling to 4 hours; no boot, no `slot_free`;
   once per episode.
 - Overlap: when a planner is Done, `overlap.sh` compares its `Files:` list with the open PRs and live teams of the same repo and
-  tick tells the lead. Comments on a live team's issue reach its lead. Deferred items in a PR body become linked issues.
+  tick tells the lead. Deferred items in a PR body become linked issues.
+- Comments: a new comment on a team's issue reaches its lead once, as quoted data, whatever the team does: a Working team
+  is told; a Parked or Done team whose PR is open comes back as a fix (over `max_teams` and `teams_per_repo`, like a conflict
+  or red CI); a Parked team with no PR is left alone and gets it when it runs again. The comment is then open on the lead's
+  row (`comment_open`) and the PR is not ready (`✗ comment not answered`: no `pr_ready`, no ready push, not parked as signed
+  off) until the lead answers that no change is needed (`registry.sh answer <team/lead> "<why>"`) or the tester signs off a
+  head it had not signed when the comment came. Tick posts either on the issue as a `[fleet]` comment, so whoever commented
+  reads the outcome there. What no running team can take wakes the Orchestrator (`comment_pending`): the team is retired and
+  its PR is open, the PR has merged or closed, or the lead could not be reached (sent again every tick). Comments that start
+  `[fleet]` are the fleet's own and are never forwarded; a machine's `fleet:` line is told and asks for no answer. It needs
+  the tracker key and `linear_writes` on; the first look at an issue only records its newest comment.
 - The morning report at `report_at`; the Verify expiry is applied after it. The profile's `stop` ends the run quietly.
 - A fix on an open PR (conflict, red CI, an unsigned head) goes over `max_teams` and `teams_per_repo` and is counted apart.
 - `overnight` is the older switch; `fleet run` supersedes it and both keep working.

@@ -35,6 +35,7 @@ restarted, compacted or replaced agent picks up from the row, not from memory.
 | `plugin_version`, `issue_url`, `issue_title` | the plugin version that booted (or last restarted) the agent, for tick's `stale_version`; the issue's full URL, for the brief's `Fixes` line; the issue's title (`boot.sh --issue-title`, `next.sh --issue-title`, `registry.sh reassign --issue-title`), which the team table's Issue cell shortens, so status never calls the tracker for it |
 | `last_brief`, `brief_failed_at`, `brief_failed_line`, `brief_resent` | the agent's latest brief file (`briefs/<team>/<role>/<id>.md` in the state dir, mode 600); set when a brief did not arrive, with the transcript's length then (the row stays Failed, never Stalled, until the brief's id shows in its transcript after that line: `status.sh` then clears these and the row comes back, logging `brief_delivered` with detail `late`); set when tick re-sent the pointer, once |
 | `pr`, `signoff` | `registry.sh signoff <name> <PR URL or N> <sha>` (the tester) sets `pr` and `signoff = {pr, sha, at}`; `tick.sh` reads them. `registry.sh reassign <team> <issue>` (run by `next.sh`) clears `outcome`, `summary`, `done_at`, `pr`, `signoff` and `lessons`, closes open escalations with `resolution: "closed at next"`, sets `issue`, rewrites `assignment`, and sets the lead Working and the workers Idle; it logs `issue_done` (the old issue, PR and outcome) to the event log first |
+| `comment_open`, `comment_signed`, `comment_answer` | on a lead's row, set by `tick.sh` when it forwards a new comment on the team's issue: the id of the newest comment that waits for an answer, the head the tester had signed then (empty when none), and the lead's answer (`registry.sh answer <name> TEXT`: a lead for its own row, the Orchestrator for any). While `comment_open` is set the team's PR is not ready. Tick clears the three once the answer is there, or the tester has signed another head, and posts the outcome on the issue; `registry.sh reassign` clears them too |
 | `escalation`, `escalations[]` | `escalation` is derived: the highest severity among open entries, `""` when none. Each entry is `{severity, message, at}` plus `resolved_at` and `resolution` once `registry.sh resolve` closes it; `(name, at)` identifies one. Open entries survive `done` and `retire` |
 | `discovered[]` | unrelated work the agent filed instead of doing |
 | `notes[]` | `{kind, message, at}` from `registry.sh note <name> decision\|picked TEXT`: `decision` is an option an agent took on its own (overnight mode), `picked` the search behind a boot (the Orchestrator, on the lead's row); the morning report reads both |
@@ -90,7 +91,7 @@ mistakes, not against an adversary.
 `{at, type, team, name, issue, pr, sha, detail}` (empty fields are null). Types: `boot`, `brief_delivered`,
 `brief_failed`, `signoff`, `escalation_raised`, `escalation_resolved`, `next`, `pr_opened`, `pr_ready`,
 `pr_merged`, `stalled`, `dead`, `respawned`, `retired`, `parked`, `unparked`, `park_marked`, `focus_set`,
-`focus_cleared` and `issue_done`. `detail` is a short reason (cut at 120 characters), never brief text and
+`focus_cleared`, `comment_pending`, `comment_answered` and `issue_done`. `detail` is a short reason (cut at 120 characters), never brief text and
 never the Linear key. `issue_done` is the one type with more fields: `outcome`, `summary` and `lessons`, one
 event per row, written by `registry.sh reassign` (`next.sh`) before it clears the old issue's row, so a debrief
 still finds them. `metrics.sh` reads the log.
@@ -98,7 +99,9 @@ still finds them. `metrics.sh` reads the log.
 ## Tick state
 
 `tick.state.json` in the state dir remembers what `tick.sh` already reported (statuses, escalation
-keys (`name|id`), opened PRs, the archive week, `PR@sha` ready, merged PRs, disk state, repos without a team) so each event is emitted once.
+keys (`name|id`), opened PRs, the archive week, `PR@sha` ready, merged PRs, disk state, repos without a team, the newest
+comment dealt with per issue (`comments_seen`), the comment that did not reach its lead (`comments_waiting`) and the PRs of
+retired teams seen merged or closed (`retired_pr_closed`)) so each event is emitted once.
 Deleting it replays the current events. Beside it: `queue.json`, the merge queue tick built last (`{at, sig, queue}`,
 reused by `status` for a minute while the rows' PRs and sign-offs are unchanged), `notices.log` (each wake's reply
 and what it is about, dropped once handled), `config.warned` (the config.toml checksum tick last warned about) and

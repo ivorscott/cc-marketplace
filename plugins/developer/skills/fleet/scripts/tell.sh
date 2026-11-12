@@ -2,7 +2,7 @@
 # Send text to a fleet agent and check that it arrived. A message that did not arrive is a
 # failure, never a silent success.
 #
-#   tell.sh <team/role | herdr agent> <text> [--no-confirm] [--brief]
+#   tell.sh <team/role | herdr agent> <text> [--no-confirm] [--brief] [--fix]
 #   tell.sh <team/role> - --brief-file PATH
 #
 # --brief sends the text as a FILE: it is written to $FLEET_STATE_DIR/briefs/<team>/<role>/<id>.md (mode 600)
@@ -38,17 +38,21 @@
 # its PR still open brings the team back: revive.sh starts its agents again in their worktrees and the lead gets the message
 # in its resume brief; the reply ends "(revived)". A message for a worker goes to the lead, who is told the role it was for.
 # A merged or closed PR is refused ("Boot a new team, or move the team on (fleet next)").
+# --fix says the message is rework on the team's open PR (tick sends a new comment on the issue this way): a team that
+# has to be brought back for it comes back as a fix (revive.sh --fix), over the caps and without taking a slot. It
+# changes nothing for a team that is running.
 # Command: Send a team's lead (or one agent) a message and check it arrived · e.g. fleet tell build-api/lead "focus on token expiry"
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
 require_herdr
 
-usage="usage: tell.sh <team/role | herdr agent> <text> [--no-confirm] [--brief | --brief-file PATH]"
+usage="usage: tell.sh <team/role | herdr agent> <text> [--no-confirm] [--fix] [--brief | --brief-file PATH]"
 target="${1:?$usage}"; text="${2:?$usage}"; shift 2
-confirm=true; is_brief=false; brief_file=""
+confirm=true; is_brief=false; brief_file=""; fix=false
 while [ $# -gt 0 ]; do
   case "$1" in
     --no-confirm) confirm=false; shift ;;
+    --fix) fix=true; shift ;;
     --brief) is_brief=true; shift ;;
     --brief-file) is_brief=true; brief_file="${2:?--brief-file needs a path}"; shift 2 ;;
     *) die "unknown option: $1" ;;
@@ -150,11 +154,11 @@ if [ -z "${FLEET_ROLE:-}" ] && ! $is_brief && $confirm; then
         fi
         if [ -n "$open_pr" ]; then
           tlead="$tteam/lead"; ttext="$text"; [ "$target" = "$tlead" ] || ttext="(meant for ${target#*/}) $text"
-          if "$FLEET_SCRIPTS/revive.sh" "$tteam" --text "$ttext" --why "you were sent a message while your team was not running; it has been brought back for it" --pr "$open_pr" >/dev/null 2>"$FLEET_STATE_DIR/tell-revive.err"; then
+          if "$FLEET_SCRIPTS/revive.sh" "$tteam" --text "$ttext" --why "you were sent a message while your team was not running; it has been brought back for it" --pr "$open_pr" $($fix && echo --fix) >/dev/null 2>"$FLEET_STATE_DIR/tell-revive.err"; then
             rm -f "$FLEET_STATE_DIR/tell-revive.err"
             render_line told name="$tlead" text="$(jq -rn --arg t "$text" '$t | split("\n")[0] | .[0:60]')" how=revived; exit 0
           fi
-          render_error tell "not delivered to $target: $(grep -v '^fleet: warning:' "$FLEET_STATE_DIR/tell-revive.err" | head -n 1 | sed 's/^fleet: //')" "Free a slot, then tell it again" >&2
+          render_error tell "not delivered to $target: $(grep -v '^fleet: warning:' "$FLEET_STATE_DIR/tell-revive.err" | head -n 1 | sed 's/^fleet: //')" "$($fix && echo 'Look at the team (fleet status), then tell it again' || echo 'Free a slot, then tell it again')" >&2
           rm -f "$FLEET_STATE_DIR/tell-revive.err"; exit 1
         elif [ -n "$merged_pr" ] && { [ "$tstatus" = Done ] || [ "$tstatus" = Parked ]; }; then
           render_error tell "not delivered to $target: its PR $merged_pr is merged or closed" "Boot a new team, or move the team on (fleet next)" >&2; exit 1

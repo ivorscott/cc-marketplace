@@ -591,14 +591,14 @@ The Orchestrator and agents call these directly (from `scripts/`). You can call 
 | `registry.sh archive` | moves Retired rows with lessons and no open escalation to `fleet-archive.json` (`archive_after_days` in config.toml, default 0), and past 512 KB also those with no lessons; `get --archived` and `list --with-archived` read both |
 | `tick.sh` | `tick.sh [--team T]` one JSON array of what changed since the last tick (stalled, dead, escalation, pr_ready, pr_merged, pr_conflicting, repo_without_team, disk), or nothing, and each wake's reply in `notices.log` · reads PRs with read-only `gh pr view` and `gh pr list` through `FLEET_GH`, and builds the merge queue once for status |
 | `queue.sh` | the merge queue as JSON: the open PRs the fleet holds (one read-only `gh pr list` per repo; a PR whose head branch a local team pushed is ours even when no row names it yet), the ready ones in the order to merge them (dependencies first, then fewest rebases, then oldest), the rest with what is missing. `status` reuses the one tick built in the last minute; the pr_ready/pr_merged wakes print it |
-| `tell.sh` | `tell.sh <team/role> <text> [--no-confirm]` sends and checks delivery, then prints `Told <team/role>: "…" (delivered)`, or `(queued)` for an agent busy in a turn; exit 1 not delivered, 2 pane at the shell |
+| `tell.sh` | `tell.sh <team/role> <text> [--no-confirm] [--fix]` (`--fix`: a Done or Parked team with an open PR comes back as a fix, over the caps) sends and checks delivery, then prints `Told <team/role>: "…" (delivered)`, or `(queued)` for an agent busy in a turn; exit 1 not delivered, 2 pane at the shell |
 | `next.sh` | `next.sh <team> <issue> [--brief TEXT] [--assignment TEXT] [--issue-url URL] [--issue-title TEXT]` after a merge, at a safe point (clean worktrees then move to the fresh default branch; dirty or unpushed ones stay, with a warning) (every agent idle, no background task): log `issue_done`, reassign, then restart every agent (`/exit`, a fresh session, its full brief as a file) |
 | `sandbox.sh` | `sandbox.sh [--keep] [--] [cmd...]` runs a reproduction with a temporary state and config root, shims for herdr, gh and curl, and no session, key or `FLEET_ROLE`; refuses the live roots |
 | `respawn.sh` | `respawn.sh <team/role>` starts a Zombie row again from the row (same role, worktree, branch, model; new session id; an existing worktree is kept as it is, a missing one recreated) and sends a resume brief; `tick.sh` calls it within the budget `respawn_max` (1) per `respawn_window_hours` (6). `--restart` (next's) waits for the agent to be idle, never types into a busy one, and confirms Claude's exit dialog |
 | `metrics.sh` | `metrics.sh [--since 7d] [--json]` the weekly table (issues shipped, PRs, rework, median cycle) and a report file with one row per PR: minutes to ready, rework rounds, stalls, missed messages, tokens (from `events.jsonl` and the agents' transcripts) |
 | `retire.sh` | `retire.sh <team\|team/role> [--outcome O] [--verify]` safe teardown; `--summary <target...>` a read-only view of what a retire would keep (a retire never waits on it). A whole team's issue follows the outcome on Linear when writes are on (Shipped → Done, or Verify with `--verify`, once its PR merged; Abandoned, Failed or no outcome → Todo, claim released; a PR that says "Part of <issue>", in any case, leaves it); reports are archived to the team repo's `reports/fleet-archive/`, and build output (`node_modules`, `.terraform`, `bin`, `test-results`, ...) never keeps a worktree. A team name with no live rows but leftovers of an earlier boot (`fleet/<team>/*` branches, worktrees) is tidied: what would lose nothing is removed, the rest kept and named |
 | `env.sh` | `up [--branch B] <team>` creates the team's cluster (exit 75 = queued at `max_envs`) · `down <team>` removes it, with its images and builder · `status` lists every env |
-| `registry.sh` | `add '<json>'` · `set <name> key=value…` · `add-pr <name> <url>` · `get <name>` · `list [--team T] [--live] [--problems]` · `list --envs` · `done <name> --outcome O --summary TEXT` · `escalate <name> P0\|P1\|P2 TEXT` · `escalations [--open] [--team T] [--not-retired]` · `resolve <name> <id|at> [--note TEXT]` · `note <name> discovered\|decision\|picked TEXT` · `retire <name\|team> [--outcome O]` · `pref <key> [value]` · `unsynced` · `synced <name…>` · `path` |
+| `registry.sh` | `add '<json>'` · `set <name> key=value…` · `add-pr <name> <url>` · `get <name>` · `list [--team T] [--live] [--problems]` · `list --envs` · `done <name> --outcome O --summary TEXT` · `escalate <name> P0\|P1\|P2 TEXT` · `escalations [--open] [--team T] [--not-retired]` · `resolve <name> <id|at> [--note TEXT]` · `answer <name> TEXT` (the lead's answer to the comment open on its issue) · `note <name> discovered\|decision\|picked TEXT` · `retire <name\|team> [--outcome O]` · `pref <key> [value]` · `unsynced` · `synced <name…>` · `path` |
 
 ## Requirements
 
@@ -1003,6 +1003,28 @@ Fixes found after 4.1.1 (DEV-530), one per item:
    filed and a requested split is done. `retire --summary` stays as a read-only view.
 5. **A fresh claim is fresh.** `claim` and `takeover` refresh the machine label's heartbeat in the same call, and tick
    refreshes it first of all, before herdr is checked and with or without claimed rows.
+
+## What changed in 4.2.11
+
+A comment on an issue was forwarded only to a team that was running. A comment made while the PR waited for its merge, with
+the team parked, done or retired, reached nobody, and the PR could be merged without it.
+
+1. **A comment reaches the team whatever it does.** Tick forwards a new comment on a team's issue to its lead; a Parked or
+   Done team whose PR is open comes back for it as a fix (`tell.sh --fix`: over `max_teams` and `teams_per_repo`, no slot
+   taken), with the comment quoted as data in the lead's brief. A Parked team with no PR is left alone and gets the comment
+   when it runs again.
+2. **The PR waits for the answer.** From the moment a comment is seen, the PR is `✗ comment not answered`: no `pr_ready`, not
+   in the merge order, not parked as signed off. It is answered when the lead says no change is needed (`registry.sh answer
+   <team/lead> "<why>"`) or when the tester signs off a head it had not signed when the comment came. Tick posts the outcome
+   on the issue as a `[fleet]` comment, so the person who commented reads it where they wrote.
+3. **What no team can take wakes the Orchestrator** (`comment_pending`, "Comment waiting DEV-1: …"): the team is retired and
+   its PR is still open (boot a team for the issue with the comment as its task); the PR has merged or closed (a new team or
+   a follow-up issue); or the lead could not be reached (one wake per comment, and the comment is sent again every tick).
+4. **Nothing is lost on a failed delivery.** The cursor moves only when the comment arrived, so a comment is never marked
+   seen because a pane was busy or a revive was refused.
+
+Not in this version: comments and reviews on the pull request itself (only the tracker issue is read), and two teams on one
+issue (the cursor is per issue, so the second team is told nothing).
 
 ## What changed in 4.2.7
 

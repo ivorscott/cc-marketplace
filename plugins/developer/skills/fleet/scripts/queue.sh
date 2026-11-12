@@ -76,14 +76,15 @@ all="$(jq -cn --slurpfile rows <(printf '%s' "$rows") --slurpfile open <(printf 
       issue: ([$g[] | .issue // empty | select(. != "")] | first // ""), issue_url: ([$g[] | .issue_url // empty | select(. != "")] | first // ""),
       issue_title: ([$g[] | .issue_title // empty | select(. != "")] | first // ""),
       signoff: ([$g[] | select((.name | endswith("/tester")) and ((.signoff | objects | .sha) != null) and ((.signoff.pr // .pr // "") == $url))
-        | .signoff.sha] | first // "")};
+        | .signoff.sha] | first // ""),
+      comment: any($g[]; ((.comment_open // "") | tostring) != "")};
   def gh_fields: {number, title: (.title // ""), head: (.headRefName // ""), base: (.baseRefName // ""), body: (.body // ""),
       created: (.createdAt // ""), files: [(.files // [])[] | .path // empty]};
   ([$open[] | select(.ok) | .slug]) as $readable
   | [$open[] | select(.ok) | .prs[]? | select(type == "object" and (.isCrossRepository // false) != true) | . as $g
       | (if ($urls | index($g.url)) != null then ([$rows[] | select(.pr == $g.url) | .team] | first) else ($g.headRefName // "" | head_team($rows)) end) as $t
       | if $t != null then entry($t; $g.url) as $p
-          | $p + ($g | gh_fields) + {other: false, machine: $me, missing: ($g | pr_missing($p.signoff; pr_noci_ok($noci; $p.repo_dir; $p.url)))}
+          | ($p | del(.comment)) + ($g | gh_fields) + {other: false, machine: $me, missing: ($g | pr_missing($p.signoff; pr_noci_ok($noci; $p.repo_dir; $p.url); $p.comment))}
         elif ($g.headRefName // "" | startswith("fleet/")) then ($psum[$g.url]) as $ps
           | {url: $g.url, team: "", issue: ($ps.issue // ""), issue_url: "", issue_title: ""} + ($g | gh_fields)
             + {other: true, machine: ($ps.machine // "other machine"),

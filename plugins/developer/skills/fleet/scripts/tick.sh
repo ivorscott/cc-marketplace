@@ -55,8 +55,13 @@
 #   claim_held_pr   another machine's lapsed claim has an open PR, so it was left alone
 #   claim_lapsed    another machine's claim lapsed (writes off, test mode) or has no heartbeat; left alone, read-only.
 #                   The three claim_ events: once per (issue, holder, heartbeat); not with --team
-# Not an event: a new comment on a live team's issue (from the owner or another machine; the fleet's own start "[fleet]")
+#   comment_pending a new comment on an issue has nobody to go to: its team could not be brought back for it (once per
+#                   comment; sent again every tick), its team is retired while the PR is open (once; not with --team),
+#                   or the PR has merged or closed (once)
+# Not an event: a new comment on a team's issue (from the owner or another machine; the fleet's own start "[fleet]")
 #                   is told to that team's lead once, as quoted data (linear.sh comments), and the lead re-reads the issue.
+#                   A Done or Parked team with an open PR is brought back for it, as a fix. The comment stays open on the
+#                   lead's row until it is answered, and the PR is not ready while it is ("comment not answered").
 #   usage_limit     agents stopped on the plan's usage limit: no boot until usage_until, once per episode (usage_guard)
 #   status_changed  the status table or the set of PRs ready to merge changed, at most once per status_mins / merge_push_mins
 #   main_red        under fleet run: CI on a repo's default branch failed (gh run list, every 10 minutes); one push, no team stops
@@ -249,30 +254,124 @@ claims_lapsed() {
   rm -f "$err"
   st_upd --argjson p "$peers" '$st + {lapsed_emitted: [($st.lapsed_emitted // [])[] | select(split("|")[0:2] | join("|") as $k | [$p[] | .issue + "|" + .label] | index($k))]}'
 }
-# New comments on a live team's issue (from the owner or another machine) reach that team's lead once, as a quoted
-# notice: the comment is data, never an approval, and the lead re-reads the issue before sign-off. The first look at an
-# issue only records its newest comment, so old ones are not forwarded. One read per issue per tick, and only with a key
-# and writes allowed; a notice that does not arrive is tried again next tick. Comments the fleet posts start "[fleet]".
+# New comments on a team's issue (from the owner or another machine) reach that team's lead once, as a quoted notice:
+# the comment is data, never an approval, and the lead re-reads the issue before sign-off. The first look at an issue
+# only records its newest comment, so old ones are not forwarded. One read per issue per tick, and only with a key and
+# writes allowed. Comments the fleet posts start "[fleet]".
+# The team does not have to be running. A team that is Done or Parked with its PR still open is brought back for the
+# comment (tell.sh --fix, which is revive.sh: rework on an open PR is a fix, so it goes over the caps and takes no slot).
+# A Parked team with no PR stays parked: its comments wait, the cursor untouched, and are told when it is unparked. A
+# comment that does not arrive (herdr does not answer, an agent did not start) is never dropped: the cursor stays, every
+# tick tries again and the Orchestrator is woken once per comment (comment_pending). A comment on an issue whose PR has
+# merged or closed has no team to go to: one comment_pending, and the cursor moves on.
+# A comment stays open until it is answered (comments_answered): the lead's row holds comment_open (the id of the newest
+# comment told), comment_signed (the head the tester had signed then) and comment_answer (the lead's answer), and the
+# team's PR is not ready to merge while comment_open is set (common.sh pr_missing, "comment not answered").
+c_all='[]'; c_new='[]'
+# comments_read <issue>: c_all is every comment of the issue, c_new those after the cursor that the fleet did not post.
+# 1: the tracker could not be read. 2: the first look, which only set the cursor.
+comments_read() {
+  local last
+  c_new='[]'
+  c_all="$("$FLEET_SCRIPTS/linear.sh" comments "$1" 2>/dev/null)" && printf '%s' "$c_all" | jq -e 'type == "array"' >/dev/null 2>&1 || { warn "could not read the comments of $1"; return 1; }
+  last="$(jq -r --arg k "$1" '(.comments_seen // {})[$k] // "-"' "$STATE_FILE")"
+  if [ "$last" = - ]; then comments_mark "$1"; return 2; fi
+  c_new="$(printf '%s' "$c_all" | jq -c --arg l "$last" '(if $l == "" then . elif any(.[]; .id == $l) then (map(.id) | index($l)) as $x | .[$x + 1:] else [] end)
+    | map(select(.body | startswith("[fleet]") | not))')"
+}
+# comments_mark <issue>: the cursor moves to the issue's newest comment (c_all), and nothing waits for it any more.
+comments_mark() {
+  st_upd --arg k "$1" --arg l "$(printf '%s' "$c_all" | jq -r 'last.id // ""')" \
+    '$st + {comments_seen: (($st.comments_seen // {}) + {($k): $l}), comments_waiting: (($st.comments_waiting // {}) | del(.[$k]))}'
+}
+comments_quote() { jq -r '[.[] | "\(.user): \(.body | gsub("\\s+"; " ") | .[0:400])"] | join(" | ")'; }
+# tester_sha <team>: the head the team's tester signed off last, nothing when it has signed none.
+tester_sha() {
+  "$registry" list --team "$1" | jq -r '[.[] | select(type == "object" and .status != "Retired" and ((.name // "") | endswith("/tester"))) | .signoff | objects | .sha // empty] | first // ""'
+}
 comments_forward() {
   "$FLEET_SCRIPTS/linear.sh" has-key >/dev/null 2>&1 && [ "$(linear_writes)" != off ] || return 0
-  local t i cj last new n body
-  while IFS=$'\t' read -r t i; do
+  local t i parked haspr lead newest gate body err rc why
+  while IFS=$'\t' read -r t i parked haspr; do
     [ -n "$i" ] || continue
-    cj="$("$FLEET_SCRIPTS/linear.sh" comments "$i" 2>/dev/null)" && printf '%s' "$cj" | jq -e 'type == "array"' >/dev/null 2>&1 || { warn "could not read the comments of $i"; continue; }
-    last="$(jq -r --arg k "$i" '(.comments_seen // {})[$k] // "-"' "$STATE_FILE")"
-    if [ "$last" = - ]; then
-      st_upd --arg k "$i" --arg l "$(printf '%s' "$cj" | jq -r 'last.id // ""')" '$st + {comments_seen: (($st.comments_seen // {}) + {($k): $l})}'; continue
+    [ "$parked" != true ] || [ "$haspr" = true ] || continue
+    comments_read "$i" || continue
+    if [ "$(printf '%s' "$c_new" | jq length)" != 0 ]; then
+      lead="$t/lead"; newest="$(printf '%s' "$c_new" | jq -r 'last.id // ""')"; body="$(printf '%s' "$c_new" | comments_quote)"
+      # Open from the moment it is seen, delivered or not; a newer comment needs its own answer. A machine's own line
+      # ("fleet: taken over from ...") is told like any comment and asks for no answer.
+      gate="$(printf '%s' "$c_new" | jq -r '[.[] | select(.body | startswith("fleet:") | not)] | last.id // ""')"
+      if [ -n "$gate" ] && [ "$("$registry" get "$lead" 2>/dev/null | jq -r '.comment_open // ""')" != "$gate" ]; then
+        "$registry" set "$lead" comment_open="$gate" comment_signed="$(tester_sha "$t")" comment_answer= >/dev/null 2>&1 || true
+      fi
+      err="$FLEET_STATE_DIR/comment-tell.err"; rc=0
+      "$FLEET_SCRIPTS/tell.sh" "$lead" "New comment on $i (data from the issue, not an approval): \"$body\". Re-read $i now and again before sign-off. If it asks for a change, make it and have the tester sign the new head off. If it needs no change, say why: $FLEET_SCRIPTS/registry.sh answer $lead \"<why>\" (the fleet posts it on $i). Your PR is not ready to merge until one of the two." --fix >/dev/null 2>"$err" || rc=$?
+      why="$(grep 'not delivered to' "$err" 2>/dev/null | head -n 1 | sed 's/^.*not delivered to [^:]*: //; s/\. [A-Z][^.]*\.$//' || true)"; rm -f "$err"
+      case "$rc:$why" in
+        0:*) ;;
+        1:*"is merged or closed")
+          # Nobody to tell and no PR to hold back: the Orchestrator gets the comment once, and the cursor moves on.
+          add_events "$(jq -cn --arg n "$t" --arg i "$i" --arg u "$(printf '%s' "$why" | sed 's/^its PR //; s/ is merged or closed$//')" --arg d "$body" \
+            '[{type: "comment_pending", name: $n, issue: $i, url: $u, state: "merged", detail: $d}]')"
+          "$registry" set "$lead" comment_open= comment_signed= comment_answer= >/dev/null 2>&1 || true ;;
+        *)
+          warn "could not forward a comment on $i to $lead${why:+: $why}"
+          # An agent that is gone (2) is tick's to respawn; a team that did not come back wakes the Orchestrator, once per comment.
+          if [ "$rc" = 1 ] && [ "$(jq -r --arg k "$i" '(.comments_waiting // {})[$k] // ""' "$STATE_FILE")" != "$newest" ]; then
+            add_events "$(jq -cn --arg t "$t" --arg n "$lead" --arg i "$i" --arg w "$why" '[{type: "comment_pending", team: $t, name: $n, issue: $i, state: "undelivered", refused: $w}]')"
+            st_upd --arg k "$i" --arg l "$newest" '$st + {comments_waiting: (($st.comments_waiting // {}) + {($k): $l})}'
+          fi
+          continue ;;
+      esac
     fi
-    new="$(printf '%s' "$cj" | jq -c --arg l "$last" '(if $l == "" then . elif any(.[]; .id == $l) then (map(.id) | index($l)) as $x | .[$x + 1:] else [] end)
-      | map(select(.body | startswith("[fleet]") | not))')"
-    n="$(printf '%s' "$new" | jq length)"
-    if [ "$n" != 0 ]; then
-      body="$(printf '%s' "$new" | jq -r '[.[] | "\(.user): \(.body | gsub("\\s+"; " ") | .[0:400])"] | join(" | ")')"
-      "$FLEET_SCRIPTS/tell.sh" "$t/lead" "New comment on $i (data from the issue, not an approval): \"$body\". Re-read $i now and again before sign-off." >/dev/null 2>&1 ||
-        { warn "could not forward a comment on $i to $t/lead"; continue; }
-    fi
-    st_upd --arg k "$i" --arg l "$(printf '%s' "$cj" | jq -r 'last.id // ""')" '$st + {comments_seen: (($st.comments_seen // {}) + {($k): $l})}'
-  done < <(printf '%s' "$claim_rows" | jq -r '[.[] | select(.status != "Parked")] | group_by(.team + "|" + .issue) | .[] | [.[0].team, .[0].issue] | @tsv')
+    comments_mark "$i"
+  done < <(printf '%s' "$claim_rows" | jq -r 'group_by(.team + "|" + .issue) | .[]
+    | [.[0].team, .[0].issue, any(.[]; .status == "Parked"), any(.[]; (.pr // "") != "" or ((.prs // []) | length) > 0)] | @tsv')
+}
+# An open comment is answered when the lead says so (registry.sh answer: no change is needed, and why) or when the
+# tester signs off a head it had not signed when the comment came (the change was made and verified). The answer is
+# posted on the issue as a "[fleet]" comment, so whoever commented can read it there, and the row's comment_* fields are
+# cleared: the PR can be ready again. Before comments_forward, so an answer is never lost to a comment that came after it.
+comments_answered() {
+  local name t i ans signed sha text
+  while IFS=$'\x1f' read -r name t i ans signed; do
+    [ -n "$name" ] || continue
+    sha="$(tester_sha "$t")"
+    if [ -n "$ans" ]; then text="[fleet] $t answered the comment above: $ans"
+    elif [ -n "$sha" ] && [ "$sha" != "$signed" ]; then text="[fleet] $t: the tester signed a new head off after the comment above, ${sha:0:7}."
+    else continue; fi
+    "$registry" set "$name" comment_open= comment_signed= comment_answer= >/dev/null 2>&1 || continue
+    ev_log comment_answered team="$t" name="$name" issue="$i" detail="$([ -n "$ans" ] && echo answered || echo "signed ${sha:0:7}")"
+    [ -n "$i" ] && "$FLEET_SCRIPTS/linear.sh" has-key >/dev/null 2>&1 && [ "$(linear_writes)" != off ] || continue
+    "$FLEET_SCRIPTS/linear.sh" comment "$i" "$text" >/dev/null 2>&1 || warn "could not post $t's answer on $i"
+  done < <("$registry" list ${team:+--team "$team"} | jq -r '.[] | select(type == "object" and .status != "Retired" and ((.comment_open // "") | tostring) != "")
+    | [.name, (.team // ""), (.issue // ""), (.comment_answer // ""), (.comment_signed // "")] | map(tostring | gsub("[\u001f\n]"; " ")) | join("\u001f")')
+}
+# A retired team whose PR is still open has nobody to tell. A new comment on its issue wakes the Orchestrator once
+# (comment_pending), which boots a team for it. Not for an issue a team of this machine holds now (comments_forward has
+# it), and not with --team. A PR seen merged or closed is remembered (retired_pr_closed), so it is read from GitHub once.
+comments_retired() {
+  [ -z "$team" ] || return 0
+  "$FLEET_SCRIPTS/linear.sh" has-key >/dev/null 2>&1 && [ "$(linear_writes)" != off ] || return 0
+  command -v "$FLEET_GH" >/dev/null 2>&1 || return 0
+  local t i u pst
+  while IFS=$'\t' read -r t i u; do
+    [ -n "$u" ] || continue
+    pst="$(forge_pr_json "$u" 2>/dev/null | jq -r '.state // ""' 2>/dev/null || true)"
+    case "$pst" in
+      OPEN) ;;
+      MERGED | CLOSED) st_upd --arg u "$u" '$st + {retired_pr_closed: ((($st.retired_pr_closed // []) + [$u]) | unique)}'; continue ;;
+      *) continue ;;
+    esac
+    comments_read "$i" || continue
+    [ "$(printf '%s' "$c_new" | jq length)" = 0 ] ||
+      add_events "$(jq -cn --arg n "$t" --arg i "$i" --arg u "$u" --arg d "$(printf '%s' "$c_new" | comments_quote)" \
+        '[{type: "comment_pending", name: $n, issue: $i, url: $u, state: "retired", detail: $d}]')"
+    comments_mark "$i"
+  done < <("$registry" list | jq -r --argjson held "$(printf '%s' "$claim_rows" | jq -c '[.[].issue] | unique')" --slurpfile st "$STATE_FILE" '
+    [.[] | select(type == "object" and .status == "Retired" and .tier != "Orchestrator" and ((.issue // "") | strings) != "" and ((.pr // "") | strings) != "")
+      | select(.issue as $i | $held | index($i) | not) | select(.pr as $u | ($st[0].retired_pr_closed // []) | index($u) | not)]
+    | group_by(.issue + "|" + .pr) | .[] | [.[0].team, .[0].issue, .[0].pr] | @tsv')
 }
 # The overlap check: once per team, when its planner is Done and its plan file holds a Files: block, overlap.sh compares
 # the plan with the open PRs and live teams of the same repo, and the lead is told the answer (build now, wait for #N, or
@@ -295,7 +394,9 @@ plan_overlap() {
 heartbeat
 claims_taken_over
 claims_lapsed
+comments_answered
 comments_forward
+comments_retired
 plan_overlap
 
 # --- usage guard ----------------------------------------------------------------------------------
@@ -606,13 +707,15 @@ badrows="$(printf '%s' "$all_rows" | jq -r '[.[] | select(type == "object") | se
 [ -z "$badrows" ] || warn "skipping malformed row(s) for PR checks: $badrows"
 prs="$(printf '%s' "$all_rows" | jq -c '
   [.[] | select(type == "object" and .status == "Parked") | .team] as $parked
+  | [.[] | select(type == "object" and .status != "Retired" and ((.comment_open // "") | tostring) != "") | .team] as $commented
   | [.[] | select(type == "object") | select(((.pr // "") | type) == "string" and ((.repo // "") | type) == "string"
       and (.signoff == null or ((.signoff | type) == "object" and ((.signoff.sha // "") | type) == "string")))
     | select(.status != "Retired")
     | . as $r | ([$r.pr // empty] + (if ($r.prs | type) == "array" then [$r.prs[] | strings] else [] end) | map(select(. != "")) | unique)[] as $u | $r + {pr: $u}]
   | group_by(.pr) | map(. as $g | {pr: .[0].pr, team: .[0].team, name: .[0].name, repo: (.[0].repo // ""),
       signoff: ([$g[] | select((.signoff | objects | .sha) != null and ((.name // "") | endswith("/tester")) and .team == $g[0].team) | .signoff.sha] | first // null),
-      park_after_merge: ([$g[] | .park_after_merge // empty] | first // null), parked: (($parked | index($g[0].team)) != null)})')"
+      park_after_merge: ([$g[] | .park_after_merge // empty] | first // null), parked: (($parked | index($g[0].team)) != null),
+      comment: (($commented | index($g[0].team)) != null)})')"
 read_now=(); ready_now=(); unknown_now=(); merged_now=(); conflicting=() # this tick's view of each PR, for the conflict rule below
 if [ "$(printf '%s' "$prs" | jq length)" != 0 ]; then
   if ! command -v "$FLEET_GH" >/dev/null 2>&1; then
@@ -633,7 +736,7 @@ if [ "$(printf '%s' "$prs" | jq length)" != 0 ]; then
         $g[0] | pr_noci_ok($noci; $p.repo; $p.pr) as $nociok | ((.headRefOid // "") | ascii_downcase) as $head
         | if .state == "MERGED" then
             (if (($stf[0].pr_merged_emitted // []) | index($p.pr)) == null then {type: "pr_merged", team: $p.team, name: $p.name, url: $p.pr} + (if $p.park_after_merge != null then {parks: $p.park_after_merge} else {} end) + (if $p.parked then {parked: true} else {} end) else null end)
-          elif (pr_missing($p.signoff; $nociok) | length) == 0 and (($stf[0].pr_ready_emitted // []) | index($p.pr + "@" + $head)) == null
+          elif (pr_missing($p.signoff; $nociok; $p.comment) | length) == 0 and (($stf[0].pr_ready_emitted // []) | index($p.pr + "@" + $head)) == null
           then {type: "pr_ready", team: $p.team, name: $p.name, url: $p.pr, sha: $head, ci: pr_ci($nociok)}
           else null end')"
       # A PR that must merge after another (common.sh pr_after: "Merge after #N", "Depends on <url>", "Stacked on")
@@ -653,7 +756,7 @@ if [ "$(printf '%s' "$prs" | jq length)" != 0 ]; then
       fi
       # \x1f, not a tab: a tab read collapses an empty field (a null mergeable), shifting the ones after it.
       IFS=$'\x1f' read -r pst pready pmerge phead < <(jq -rn --argjson p "$p" --slurpfile g <(printf '%s' "$j") --argjson noci "$no_ci" "$PR_DEFS"'
-        $g[0] | [.state, ((pr_missing($p.signoff; pr_noci_ok($noci; $p.repo; $p.pr)) | length) == 0), (.mergeable // ""), ((.headRefOid // "") | ascii_downcase)]
+        $g[0] | [.state, ((pr_missing($p.signoff; pr_noci_ok($noci; $p.repo; $p.pr); $p.comment) | length) == 0), (.mergeable // ""), ((.headRefOid // "") | ascii_downcase)]
         | map(tostring) | join("\u001f")')
       read_now+=("$url")
       [ "$pready" != true ] || ready_now+=("$url")
@@ -1034,9 +1137,10 @@ while IFS=$'\t' read -r etype eteam ename eurl esha eissue edetail; do
   ev_log "$etype" team="$eteam" name="$ename" pr="$eurl" sha="$esha" issue="$eissue" detail="$edetail"
 done < <(jq -r 'def d: if . == null or . == "" then "-" else tostring end;
   .[] | select(.type | IN("pr_opened", "pr_ready", "pr_merged", "pr_conflicting", "stalled", "dead", "failed", "needs_input", "stale_version", "slot_free", "usage_limit", "status_changed", "main_red", "signoff_failed",
-    "claim_takeover", "claim_lost", "claim_released", "claim_held_pr", "claim_lapsed", "morning_report"))
-  | [.type, (.team | d), (.name | d), (.url | d), (.sha | d), (if (.type | startswith("claim_")) then (.issue | d) else "-" end),
+    "claim_takeover", "claim_lost", "claim_released", "claim_held_pr", "claim_lapsed", "comment_pending", "morning_report"))
+  | [.type, (.team | d), (.name | d), (.url | d), (.sha | d), (if (.type | startswith("claim_")) or .type == "comment_pending" then (.issue | d) else "-" end),
      (if .type == "claim_lost" then "claimed by this machine, released by another"
+      elif .type == "comment_pending" then (.state | d)
       elif (.type | startswith("claim_")) then ("holder " + (.holder // "?") + (if .detail then ": " + .detail else "" end))
       elif (.type | IN("pr_conflicting", "morning_report")) then (.detail | d) else "-" end)] | @tsv' "$EVENTS_FILE")
 
@@ -1054,7 +1158,9 @@ live_esc="$("$registry" escalations --open | jq -c '[.[] | .name + "|" + .id]')"
 live_claims="$("$registry" list --live | jq -c '[.[] | select((.issue // "") != "") | .team + "|" + .issue]')"
 live_names="$("$registry" list --live | jq -c '[.[] | .name]')"
 live_teams="$("$registry" list --live | jq -c '[.[] | .team // empty] | unique')"
-st_upd --argjson prs "$live_prs" --argjson esc "$live_esc" --argjson cl "$live_claims" --argjson live_names "$live_names" --argjson live_teams "$live_teams" --argjson now "$now_epoch" --argjson w "$(const_int RESPAWN_WINDOW_HOURS 6)" '
+held_issues="$("$registry" list | jq -c '[.[] | select(.status != "Retired") | .issue // empty | strings | select(. != "")] | unique')"
+retired_prs="$("$registry" list | jq -c '[.[] | select(.status == "Retired") | .pr // empty | strings | select(. != "")] | unique')"
+st_upd --argjson held "$held_issues" --argjson rprs "$retired_prs" --argjson prs "$live_prs" --argjson esc "$live_esc" --argjson cl "$live_claims" --argjson live_names "$live_names" --argjson live_teams "$live_teams" --argjson now "$now_epoch" --argjson w "$(const_int RESPAWN_WINDOW_HOURS 6)" '
   def inrecent: map(select(. > $now - $w * 3600));
   $st
   + (if .pr_ready_emitted then {pr_ready_emitted: [.pr_ready_emitted[] | select(split("@")[0] as $u | $prs | index($u))]} else {} end)
@@ -1066,6 +1172,8 @@ st_upd --argjson prs "$live_prs" --argjson esc "$live_esc" --argjson cl "$live_c
   + (if .conflict_told then {conflict_told: [.conflict_told[] | select(split("@")[0] as $u | $prs | index($u))]} else {} end)
   + (if .escalations_emitted then {escalations_emitted: [.escalations_emitted[] | select(. as $k | $esc | index($k))]} else {} end)
   + (if .takeover_emitted then {takeover_emitted: [.takeover_emitted[] | select(split("|")[0:2] | join("|") as $k | $cl | index($k))]} else {} end)
+  + (if .comments_waiting then {comments_waiting: (.comments_waiting | with_entries(select(.key as $k | $held | index($k))))} else {} end)
+  + (if .retired_pr_closed then {retired_pr_closed: [.retired_pr_closed[] | select(. as $u | $rprs | index($u))]} else {} end)
   + (if .lost_emitted then {lost_emitted: [.lost_emitted[] | select(. as $k | $cl | index($k))]} else {} end)
   + (if .stale_emitted then {stale_emitted: [.stale_emitted[] | select(split("|")[0] as $t | $live_teams | index($t))]} else {} end)
   + (if .brief_failed_emitted then {brief_failed_emitted: [.brief_failed_emitted[] | select(split("|")[0] as $n | $live_names | index($n))]} else {} end)

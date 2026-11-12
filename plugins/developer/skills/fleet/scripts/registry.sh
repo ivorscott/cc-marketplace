@@ -23,6 +23,8 @@
 #                                                          Orchestrator, on the lead's row). The last two go to `notes`
 #   registry.sh retire <name|team> [--outcome O]           an explicit --outcome is every retired row's outcome (else the one it reported); also closes the rows' open escalations ("closed at retire")
 #   registry.sh signoff <name> <pr-url|N> <sha>            the tester's sign-off: records the PR and the exact SHA verified
+#   registry.sh answer <name> TEXT                         the lead's answer to the comment open on its issue when it asks for no change (the row's
+#                                                          comment_answer); tick posts it on the issue and the PR can be ready again. A lead: its own row
 #   registry.sh reassign <team> <issue> [--assignment TEXT] [--issue-url URL] [--issue-title TEXT] [--claimed-by KEY]
 #                                                          move a team to a new issue (next.sh): logs issue_done for the old one,
 #                                                          clears the old outcome, PR and sign-off, rewrites the assignment;
@@ -378,6 +380,17 @@ case "$cmd" in
       '.agents[$n] += {pr: $pr, signoff: {pr: $pr, sha: $sha, at: $t}, updated_at: $t}'
     ev_log signoff team="$(jq -r --arg n "$name" '.agents[$n].team // ""' "$FLEET_REGISTRY")" name="$name" pr="$pr" sha="$sha"
     ;;
+  answer)
+    # A new comment on a team's issue stays open on the lead's row (comment_open, set by tick) until it is answered:
+    # by a head the tester signs off after it, or by this, when it asks for no change. An agent answers only for its own row.
+    name="${1:?usage: answer <name> TEXT}"; msg="${2:?usage: answer <name> TEXT}"
+    case "$name" in */*) ;; *) name="$name/lead" ;; esac
+    exists "$name"
+    [ -z "${FLEET_ROLE:-}" ] || [ "${FLEET_NAME:-}" = "$name" ] || die "answer: $name is not you (${FLEET_NAME:-unknown}); the lead answers a comment on its own issue"
+    [ "$(jq -r --arg n "$name" '.agents[$n] | (.comment_open // "") | tostring' "$FLEET_REGISTRY")" != "" ] || die "no comment is open for $name; nothing to answer"
+    update --arg n "$name" --arg m "$msg" --arg t "$(now)" '.agents[$n] += {comment_answer: ($m | gsub("\\s+"; " ") | .[0:1000]), updated_at: $t}'
+    printf 'Answered the comment open for %s. The fleet posts it on the issue at its next tick.\n' "$name"
+    ;;
   reassign)
     team="${1:?usage: reassign <team> <issue> [--assignment TEXT] [--issue-url URL] [--issue-title TEXT] [--claimed-by KEY]}"; issue="${2:?usage: reassign <team> <issue>}"; shift 2
     assignment=""; iurl=""; ititle=""; cby=""
@@ -412,7 +425,7 @@ case "$cmd" in
       .agents |= with_entries(
         if .value.team == $t and .value.status != "Retired" and .value.tier != "Orchestrator" then
           .value |= (
-            del(.outcome, .summary, .done_at, .signoff, .pr, .prs, .lessons, .nudged_at)
+            del(.outcome, .summary, .done_at, .signoff, .pr, .prs, .lessons, .nudged_at, .comment_open, .comment_signed, .comment_answer)
             | norm | esc_close("closed at next"; $now)
             | derive | .issue = $i | .assignment = $a
             | (if $u != "" then .issue_url = $u else del(.issue_url) end)

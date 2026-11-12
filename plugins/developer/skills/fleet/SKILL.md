@@ -135,7 +135,8 @@ retire (F) or re-boot; **Failed**, re-send with `$F/fleet tell <team/role> - --b
 ## C. Steer
 
 - Send to the **lead** unless the user names a worker: `$F/fleet tell <team/role> <text>` (a bare team name is its lead). A
-  message to a Done or Parked team whose PR is still open starts the team again and reaches its lead (`(revived)`). It checks the message
+  message to a Done or Parked team whose PR is still open starts the team again and reaches its lead (`(revived)`; with `--fix`,
+  as rework on that PR, over the caps: tick sends a new comment on the issue this way). It checks the message
   arrived and exits 1 (not delivered) or 2 (pane or agent gone); never treat an undelivered message as sent.
 - `agent_blocked` → read the screen first, apply the policy, then wait with `--until idle --until blocked`, never on
   idle alone. A wait that times out: check the agent again with `herdr agent get` and its row before waiting again.
@@ -195,6 +196,10 @@ question box (AskUserQuestion): the wakes queue behind it. Ask in plain text and
   another machine's, treat it as `claim_takeover`.
 - `claim_released`: tick freed another machine's lapsed claim; the issue can be picked (A, step 0). `claim_held_pr`
   and `claim_lapsed`: tick left another machine's claim alone (an open PR, writes off, or no heartbeat); relay it.
+- `comment_pending`: a new comment on an issue that no running team could take. Its team is retired and the PR is open: boot a
+  team for the issue with the comment as its task. The PR merged or closed: boot a new team or file a follow-up issue. It did
+  not reach the lead: tick sends it again every tick; look at the team. A comment that did arrive is no wake: the team (Parked
+  and Done ones come back as a fix) has it, and its PR is not ready until the lead answers or the tester signs a new head.
 - `pr_conflicting`: a ready PR conflicts now (after a merge, or a change on main); tick unparked its team and told its
   lead. Act only when the notice says the unpark was refused (a cap is full: unpark the team when a slot frees) or
   that the lead was not reached (tell it).
