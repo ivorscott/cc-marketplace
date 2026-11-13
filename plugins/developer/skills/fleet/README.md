@@ -1030,6 +1030,14 @@ Fixes found after 4.1.1 (DEV-530), one per item:
 
 1. **A team's own PR summary is not a comment to answer.** The lead copies its PR body's `## In plain English` section to the issue (house rule). 4.2.11 took that copy for a new comment from the owner, sent it back to the lead and held the PR out of the merge queue with "comment not answered". Tick now skips a comment with a `## In plain English` heading line (the lead may put a "PR opened" line above it), as it already skipped `[fleet]` lines.
 
+Also in 4.2.12 (#71): a fleet with no `tracker_teams` in `config.toml` never wrote its team summary document (4.2.10), so every other machine saw it
+only as `claim only: no summary` lines and its PRs as `✗ other machine`, instead of one shared team table.
+
+2. **The summary document finds a team.** With `tracker_teams` unset, the team the document is created under is the team key
+   of an issue on a registry row, else the first team in the workspace. Before, the lookup filtered on an empty key, matched
+   no team, and every heartbeat warned `team summary document not written`.
+3. **The test tracker matches team keys like Linear.** An empty key finds no team, so the old behaviour fails the suite.
+
 ## What changed in 4.2.11
 
 A comment on an issue was forwarded only to a team that was running. A comment made while the PR waited for its merge, with

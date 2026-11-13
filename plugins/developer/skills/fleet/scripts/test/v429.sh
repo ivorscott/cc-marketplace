@@ -123,9 +123,10 @@ v429_morning() { # the morning report lists a held PR under On hold, not under R
   eq "v429 morning: the other PR is still ready" "$(printf '%s\n' "$out" | awk '/^## /{s=$0} s == "## Ready to merge"' | grep -c 'pull/3')" 1
 }
 
-v429_version() {
-  eq "v429 version: plugin.json and the marketplace read 4.2.10, and the README still has the What changed section of 4.2.9" \
-    "$(jq -r .version "$SCRIPTS/../../../.claude-plugin/plugin.json"):$(jq -r '.plugins[] | select(.name == "developer") | .version' "$SCRIPTS/../../../../../.claude-plugin/marketplace.json"):$(grep -c '^## What changed in 4.2.9$' "$SCRIPTS/../README.md")" "4.2.10:4.2.10:1"
+v429_version() { # the version is one number everywhere: plugin.json, the marketplace entry and a README "What changed" section
+  local v; v="$(jq -r .version "$SCRIPTS/../../../.claude-plugin/plugin.json")"
+  eq "v429 version: plugin.json and the marketplace agree, and the README has the What changed section of that version" \
+    "$(jq -r '.plugins[] | select(.name == "developer") | .version' "$SCRIPTS/../../../../../.claude-plugin/marketplace.json"):$(grep -c "^## What changed in $v\$" "$SCRIPTS/../README.md")" "$v:1"
 }
 
 v429_smoke() {
