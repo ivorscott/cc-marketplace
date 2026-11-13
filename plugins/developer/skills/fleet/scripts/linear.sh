@@ -272,10 +272,19 @@ q_summary_docs() { # q_summary_docs → [{id, title, content, updatedAt}]: every
   gql_read SummaryDocs 'query SummaryDocs($p: String!) { documents(first: 50, filter: { title: { startsWith: $p } }) { nodes { id title content updatedAt } } }' \
     "$(jq -nc --arg p "$DOC_PREFIX" '{p: $p}')" | jq -c '.data.documents.nodes // []'
 }
-q_team_id() { # q_team_id → the id of the team a summary document is created under: the test team, else the first tracker_teams key, else the first team (UNVERIFIED)
+q_team_id() { # q_team_id → the id of the team a summary document is created under: the test team, else the first tracker_teams key,
+  # else the team key of an issue on a registry row, else the first team. A key filter on an empty key matches no team, so
+  # with no key known the query has no filter at all (with tracker_teams unset, no summary document was ever written).
   local k="${TEST_TEAM:-$(config_list tracker_teams | jq -r '.[0] // ""')}"
-  gql_read TeamId 'query TeamId($k: String) { teams(first: 1, filter: { key: { eq: $k } }) { nodes { id } } }' "$(jq -nc --arg k "$k" '{k: $k}')" |
-    jq -r '.data.teams.nodes[0].id // empty'
+  if [ -z "$k" ]; then
+    k="$("$FLEET_SCRIPTS/registry.sh" list --with-archived 2>/dev/null | jq -r '[.[] | (.issue // "") | select(test("^[A-Za-z][A-Za-z0-9]*-[0-9]+$")) | sub("-[0-9]+$"; "")] | first // ""' 2>/dev/null)" || k=""
+  fi
+  if [ -n "$k" ]; then
+    gql_read TeamId 'query TeamId($k: String) { teams(first: 1, filter: { key: { eq: $k } }) { nodes { id } } }' "$(jq -nc --arg k "$k" '{k: $k}')" |
+      jq -r '.data.teams.nodes[0].id // empty'
+  else
+    gql_read TeamIdAny 'query TeamIdAny { teams(first: 1) { nodes { id } } }' '{}' | jq -r '.data.teams.nodes[0].id // empty'
+  fi
 }
 q_viewer() { # the Linear user behind the key
   gql_read Viewer 'query Viewer { viewer { id name } }' '{}' | jq -c '.data.viewer // error("no viewer")' 2>/dev/null || die "cannot read the Linear viewer"
