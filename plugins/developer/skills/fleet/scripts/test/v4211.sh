@@ -154,7 +154,9 @@ v4211_own_lines() { # the fleet's own comments open nothing; registry.sh answer 
   local ev o rc
   v413_agent ol-a/lead Lead Working; echo working >"$AS/ol-a-lead"; v413_agent ol-a/builder Worker Idle
   ev="$(v420_tick 2026-10-29T10:00:00Z)"
-  v4211_say C2 "[fleet] decision recorded"; v4211_say C2b "## In plain English
+  v4211_say C2 "[fleet] decision recorded"; v4211_say C2b "PR opened: https://github.com/acme/app-api/pull/9
+
+## In plain English
 - **Problem:** the summary the lead copies from its PR body"; v4211_say C3 "fleet: taken over from other-mac"; : >"$HERDR_LOG"
   ev="$(v420_tick 2026-10-29T10:01:00Z)"
   eq "v4211 own lines: a machine's takeover line is told and asks for no answer; a [fleet] comment and the lead's own In plain English summary are not told at all" \
