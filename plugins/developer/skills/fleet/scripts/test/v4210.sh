@@ -109,5 +109,21 @@ v4210_sandbox() { # the issue's case: 12 teams on machine A, 3 on B; both machin
   v420_nolinear; unset FLEET_NOW FLEET_GH FLEET_MACHINE
 }
 
-v4210_smoke() { v4210_sandbox; }
+v4210_team() { # with tracker_teams unset, the summary document is still created: under the registry's issue key, else any team
+  qfresh v4210t; export FLEET_NOW=2026-10-29T10:00:00Z FLEET_GH="$QD/gh-shim" DF_GB=100
+  v4210_db; v4210_machine a1; rm -f "$FLEET_REGISTRY" "$FLEET_STATE_DIR/summary.doc.sha"
+  v413_agent "tk/lead" Lead Working "issue=DEV-400"
+  : >"$LINEAR_LOG"; "$SCRIPTS/linear.sh" heartbeat >/dev/null 2>"$T/v4210t.err"
+  eq "v4210 team: no tracker_teams, the registry's issue key finds the team and the document is written" \
+    "$(grep -c 'summary document not written' "$T/v4210t.err"):$(grep -cx 'query TeamId' "$LINEAR_LOG"):$(jq -r '[.documents[] | .title + "@" + .teamId] | join(",")' "$LINEAR_DB")" \
+    "0:1:Fleet summary · a1@T1"
+  v4210_db; v4210_machine a1; rm -f "$FLEET_REGISTRY" "$FLEET_STATE_DIR/fleet-archive.json" "$FLEET_STATE_DIR/summary.doc.sha"
+  v413_agent "tn/lead" Lead Working "issue="
+  : >"$LINEAR_LOG"; "$SCRIPTS/linear.sh" heartbeat >/dev/null 2>"$T/v4210t.err"
+  eq "v4210 team: no tracker_teams and no issue on any row, the first team is used (no empty key filter)" \
+    "$(grep -c 'summary document not written' "$T/v4210t.err"):$(grep -cx 'query TeamIdAny' "$LINEAR_LOG"):$(jq '.documents | length' "$LINEAR_DB")" "0:1:1"
+  v420_nolinear; unset FLEET_NOW FLEET_GH FLEET_MACHINE DF_GB
+}
+
+v4210_smoke() { v4210_sandbox; v4210_team; }
 v4210_full() { v4210_smoke; }

@@ -117,7 +117,12 @@ case "$op" in
         | {id: $i.id, identifier: $i.identifier, labels: {nodes: ($ls | map({id, name, description}))}, comments: {nodes: $i.comments}}]}}')" ;;
   SummaryDocs)
     ok "$(db --argjson v "$vars" '{documents: {nodes: [(.documents // [])[] | select(.title | startswith($v.p))]}}')" ;;
-  TeamId)
+  TeamId) # like Linear: a key filter matches only that key (the stub's one team is DEV, or FT or T in test mode); "" matches none
+    case "$(jq -r '.k // ""' <<<"$vars")" in
+      DEV | FT | T) ok '{"teams": {"nodes": [{"id": "T1"}]}}' ;;
+      *) ok '{"teams": {"nodes": []}}' ;;
+    esac ;;
+  TeamIdAny)
     ok '{"teams": {"nodes": [{"id": "T1"}]}}' ;;
   DocumentCreate | DocumentUpdate)
     if [ -n "${LINEAR_STUB_DOC_REFUSE:-}" ]; then echo '{"errors":[{"message":"document store unavailable"}]}'; exit 0; fi
