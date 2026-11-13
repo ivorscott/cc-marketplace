@@ -243,8 +243,7 @@ Merge in this order:
 | 1 | https://github.com/acme/app-api/pull/12 | - | 3f9a2c1e | oldest first | — |
 ```
 
-A PR that is not ready is listed under it: `Not ready: https://github.com/acme/app-api/pull/12 ✗ no sign-off` (the other
-reasons are `signed <sha7> ≠ head`, `CI pending`, `CI red`, `no CI checks`, `conflicting`, `draft`, `held`). With the
+A PR that is not ready is not listed: the team table already shows it. With the
 scheduled loop a ready PR also wakes the Orchestrator with `✓ Ready to merge: <PR> … Tester signed abc1234 = head, CI
 green, mergeable.`
 
@@ -381,8 +380,6 @@ Orchestrator writes `reports/fleet-morning-<date>.md` and relays it:
 ## Ready to merge
 
 Merge in this order: none ready.
-
-Not ready: https://github.com/acme/app-api/pull/85 ✗ conflicting
 
 ## Decisions taken
 
@@ -1025,6 +1022,12 @@ Fixes found after 4.1.1 (DEV-530), one per item:
    filed and a requested split is done. `retire --summary` stays as a read-only view.
 5. **A fresh claim is fresh.** `claim` and `takeover` refresh the machine label's heartbeat in the same call, and tick
    refreshes it first of all, before herdr is checked and with or without claimed rows.
+
+## What changed in 4.2.13
+
+1. **The merge queue lists only what to merge.** `Merge in this order:` and its table, or `Merge in this order: none ready.`
+   The `Not ready: <PR> ✗ …` lines are gone: they read like a second queue, and the team table above already shows each
+   PR's team and state.
 
 ## What changed in 4.2.12
 

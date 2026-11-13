@@ -38,7 +38,7 @@ v4211_parked() { # a parked team with an open PR comes back for a comment, over 
   eq "v4211 parked: the lead's brief quotes the comment as data and says how to answer it" "$(v4211_told "please rename the flag" "$b"):$(grep -c 'registry.sh answer pk-a/lead' "$b")" "1:1"
   eq "v4211 parked: the comment is open on the lead's row, with the head the tester had signed" "$(v4211_row pk-a/lead '[.comment_open, .comment_signed] | join(",")'):$(v4211_seen)" "C2,aaaaaaa90:C2"
   eq "v4211 parked: the PR is signed off and green, and still not ready: no pr_ready, and the queue says why" "$(v420_evn "$ev" pr_ready):$(v4211_missing 90)" "0:comment not answered"
-  eq "v4211 parked: status shows it under Not ready" "$("$SCRIPTS/status.sh" 2>/dev/null | grep -c "^Not ready: $url ✗ comment not answered")" 1
+  eq "v4211 parked: status leaves it out of the merge queue" "$("$SCRIPTS/status.sh" 2>/dev/null | grep -c "^| [0-9]* | $url ")" 0
   : >"$HERDR_LOG"; ev="$(v420_tick 2026-10-29T10:02:00Z)"
   eq "v4211 parked: the comment is sent once" "$(grep -c 'New comment on DEV-1' "$HERDR_LOG"):$(v4211_seen):$(v4211_row pk-a/lead .comment_open)" "0:C2:C2"
   o="$(FLEET_ROLE=lead FLEET_NAME=pk-a/lead "$REG" answer pk-a/lead "the flag name   comes from the contract" 2>&1)"; rc=$?

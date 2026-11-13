@@ -1150,8 +1150,8 @@ render_escalations() {
 }
 
 # render_queue <queue.sh JSON>: "Merge in this order:" and | # | PR | Issue | Machine | Why this order | After merge |, each
-# PR its URL ("Merge in this order: none ready." when nothing is), then "Not ready: <url> ✗ <missing> · ✗
-# ..." per open PR that is not, "On hold: <url> - <note>" per PR the owner holds (fleet hold), then the queue's notes, a blank line between any two (reply). Nothing at all when
+# PR its URL ("Merge in this order: none ready." when nothing is; the PRs not ready are not listed, the team table
+# already shows them), "On hold: <url> - <note>" per PR the owner holds (fleet hold), then the queue's notes, a blank line between any two (reply). Nothing at all when
 # no PR is open.
 render_queue() {
   jq -r --argjson names "$(machine_names)" 'if (.ready | length) == 0 and (.not_ready | length) == 0 and ((.on_hold // []) | length) == 0 then empty else
@@ -1159,7 +1159,6 @@ render_queue() {
        (if (.ready | length) == 0 then empty else
          (["| # | PR | Issue | Machine | Why this order | After merge |", "|---|---|---|---|---|---|",
            (.ready[] | "| \(.n) | \(.pr) | \(.issue) | \($names[.machine // ""] // .machine // "-" | gsub("\\|"; "/")) | \(.why) | \(.after) |")] | join("\n")) end),
-       (.not_ready[] | "Not ready: \(.pr) \(.missing | map("✗ " + .) | join(" · "))"),
        ((.on_hold // [])[] | "On hold: \(.pr)\(if (.note // "") != "" then " - " + .note else "" end)"),
        (.notes[] | "\(.).")]
       | join("\n\n")

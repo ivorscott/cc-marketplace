@@ -47,7 +47,7 @@ v413_all_machines() {
   eq "v413-6 status: a summary older than lease_hours stays in the table with its age, and its PR is not ready" \
     "$(printf '%s\n' "$out" | grep '^| build-p ' | cut -d'|' -f6 | tr -d ' '):$(printf '%s\n' "$out" | grep -c '^| [12] | .*pull/21')" "Done:0"
   eq "v413 heartbeat: and a plain line says its heartbeat lapsed, with no age" "$(printf '%s\n' "$out" | grep -i 'heartbeat')" "peera: heartbeat lapsed."
-  eq "v413-6 queue: and it is listed as not ready, with the peer's state" "$(printf '%s\n' "$out" | grep -c 'Not ready: https://github.com/acme/app-api/pull/21 ✗ other machine (Done)')" 1
+  eq "v413-6 queue: and the queue prints no not-ready line for it (the table shows it)" "$(printf '%s\n' "$out" | grep -c 'Not ready')" 0
   # --json
   eq "v413-6 status --json: this machine only, the shape unchanged" "$("$SCRIPTS/status.sh" --json 2>/dev/null | jq -c '[.[] | .source // "none"] | unique')" '["none"]'
   eq "v413-6 status --json --all: the other machines' rows carry machine and source" \

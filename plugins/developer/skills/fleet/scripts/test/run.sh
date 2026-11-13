@@ -4074,7 +4074,7 @@ eq "dev408-18 queue: not ready: signed another head, held" "$(nr 23)" "signed bb
 eq "dev408-18 queue: a dependency cycle is named" "$(nr 24):$(nr 25)" "waits for app-api #25, dependency cycle with #25:waits for app-api #24, dependency cycle with #24"
 eq "dev408-18 queue: another machine's fleet PR is an order input, never ready; a non-fleet PR is not read" "$(nr 30):$(nr 31)" "other machine:not listed"
 eq "dev408-18 queue: with nothing ready the queue says so" "$(bash -c '. "$1/common.sh"; render_queue "$2"' _ "$SCRIPTS" "$(q)" | head -n 1)" "Merge in this order: none ready."
-check "dev408-18 queue: and each not-ready PR is one line, its URL, a ✗ per missing check (dev408-20)" bash -c ". '$SCRIPTS/common.sh'; render_queue \"\$1\" | grep -qx 'Not ready: https://github.com/acme/app-api/pull/23 ✗ signed bbbbbbb ≠ head · ✗ held'" _ "$(q)"
+eq "dev408-18 queue: and a not-ready PR is not printed: the queue is only what to merge (4.2.13)" "$(bash -c '. "$1/common.sh"; render_queue "$2"' _ "$SCRIPTS" "$(q)" | grep -c 'Not ready')" 0
 qfresh waits; qpr app-api 40 fleet/dev-40 main 2026-10-18T10:00:00Z '["a.go"]' x; qpr app-api 41 fleet/dev-41 fleet/dev-40 2026-10-18T10:00:00Z '["b.go"]' x
 qteam t40 app-api 40 DEV-40; qteam t41 app-api 41 DEV-41 aaaaaaa41
 eq "dev408-18 queue: a ready PR whose parent is not ready waits for it" "$(nr 41)" "waits for app-api #40"
