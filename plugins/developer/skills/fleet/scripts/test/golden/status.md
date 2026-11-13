@@ -13,5 +13,3 @@ Merge in this order:
 | # | PR | Issue | Machine | Why this order | After merge |
 |---|---|---|---|---|---|
 | 1 | https://github.com/acme/app-web/pull/121 | DEV-13 | test | oldest first | — |
-
-Not ready: https://github.com/acme/app-api/pull/214 ✗ no sign-off

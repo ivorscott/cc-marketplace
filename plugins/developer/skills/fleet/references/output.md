@@ -16,8 +16,7 @@ instead of markdown: Ghostty, iTerm2, WezTerm, kitty and recent GNOME Terminal s
 through is UNVERIFIED. `<PR url>` is the PR's full URL as it is, never shortened or relabelled (`-` when there is
 none). "Then the table" means the team table follows.
 
-A reply is made of blocks: a command's line, the summary line, a table, `Waiting on you`, the queue heading, each
-`Not ready` line, each note and each footer line. Exactly one blank line separates two blocks (`reply` in common.sh),
+A reply is made of blocks: a command's line, the summary line, a table, `Waiting on you`, the queue heading, each note and each footer line. Exactly one blank line separates two blocks (`reply` in common.sh),
 because Markdown ends a table only at a blank line and runs adjacent lines together into one paragraph. A test
 fails when a golden file has a table row next to a line that is neither a row nor blank.
 
@@ -31,7 +30,6 @@ Unicode, never emoji and never color codes, so a reply reads the same in a termi
 | Symbol | Means | Where |
 |---|---|---|
 | `✓` | ready to merge | the `pr_ready` wake |
-| `✗ <missing>` | one check a PR still misses | `Not ready:` |
 | `✓`, `✗ (why)` | an agent started, or did not | the `boot` line |
 
 A severity is `**P0**` or `**P1**` in bold (they wait on you) and `P2` plain, wherever it appears: the Needs you cell,
@@ -71,8 +69,6 @@ Merge in this order:
 |---|---|---|---|---|---|
 | 1 | <PR url> | [DEV-1](url) <title> | <machine> | <why> | <after merge> |
 
-Not ready: <PR url> ✗ <what is missing> · ✗ <what else is missing>
-
 Linear order unknown (no key).
 ```
 
@@ -85,10 +81,8 @@ its contract`, `<repo> #N merges after it` for a `Merge after #N` line; the depe
 `oldest first`; a ready PR whose files a not-ready PR also changes adds `; touches the same files as <repo> #N (not
 ready yet)`. One queue for every machine: another machine's PR is ready here when that machine's published summary says
 so and is not older than `lease_hours`, and its Machine says whose it is. After merge is `rebase after #N`, `renumber migration after #N` or `—`. With nothing ready the first
-line is `Merge in this order: none ready.` Not ready gives each missing check its own `✗`: `no sign-off`, `signed <sha7> ≠ head`,
-`CI pending`, `CI red`, `no CI checks`, `conflicting`, `mergeable unknown`, `draft`, `held`, `waits for <repo> #N`,
-`dependency cycle with #N`, `GitHub unreadable`, or `other machine (<its state>)` for another machine's fleet PR that is
-not ready. The note appears
+line is `Merge in this order: none ready.` A PR that is not ready is not listed: the team table above already shows
+its team and state. The note appears
 when two or more PRs are open and Linear could not be read.
 
 ### error
@@ -665,7 +659,7 @@ Comment waiting DEV-1: a new comment did not reach <team/lead> (<why>). It is se
 
 The first two come once per comment and carry no team (nothing of the fleet runs for them); the third comes once per
 comment while the lead cannot be reached, and tick sends the comment again at every tick until it arrives. A comment
-that reached its lead is no wake: the lead has it, and the PR is `✗ comment not answered` under "Not ready" until the
+that reached its lead is no wake: the lead has it, and the PR is not ready (`comment not answered`) until the
 lead answers (`registry.sh answer`) or the tester signs a new head off.
 
 ### wake stale_version

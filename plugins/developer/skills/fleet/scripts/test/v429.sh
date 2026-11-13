@@ -51,7 +51,7 @@ v429_queue() { # the merge queue: a held PR is on_hold, not ready, not not_ready
   eq "v429 queue: a held PR is not ready, and the PR that merges after it waits" "$(v429_ready)" "#3"
   eq "v429 queue: it is in on_hold with its note, and in no not_ready" "$(q | jq -r '[.on_hold[] | "\(.url | sub(".*/pull/"; "#"))=\(.note)"] | join(",")'):$(q | jq -r '[.not_ready[] | "\(.url | sub(".*/pull/"; "#"))=\(.missing | join("+"))"] | join(",")')" \
     "#1=wait for the release:#2=waits for app-api #1"
-  eq "v429 queue: the queue prints it as On hold with the note, not as Not ready" "$(render_queue_out | grep -c '^On hold: .*pull/1.* - wait for the release$'):$(render_queue_out | grep -c '^Not ready: .*pull/1')" "1:0"
+  eq "v429 queue: the queue prints it as On hold with the note, not as Not ready" "$(render_queue_out | grep -c '^On hold: .*pull/1.* - wait for the release$'):$(render_queue_out | grep -c 'Not ready')" "1:0"
   eq "v429 queue: a hold shows at once, the kept queue is not used past it" "$(FLEET_GH="$QD/gh-shim" bash -c '. "$1/common.sh"; fleet_queue | jq -r "[.on_hold[].url | sub(\".*/pull/\"; \"#\")] | join(\",\")"' _ "$SCRIPTS")" "#1"
   "$SCRIPTS/hold.sh" unhold "$V429_API/1" >/dev/null 2>&1
   eq "v429 queue: after unhold it is ready again, in its place" "$(v429_ready)" "#1,#2,#3"

@@ -4,8 +4,6 @@
 
 Merge in this order: none ready.
 
-Not ready: https://github.com/acme/app-api/pull/85 ✗ conflicting
-
 ## Decisions taken
 
 - mo1/lead: chose postgres over sqlite

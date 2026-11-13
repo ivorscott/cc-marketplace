@@ -118,7 +118,7 @@ It replaces your own [ui] lines in herdr's config and keeps a backup. (yes/no)".
 `$F/fleet status [<team>] [--problems] [--json]` recomputes health, writes it back and prints the status reply of
 `references/output.md`: the wake notices not shown yet, then the team table (a summary line, then Team, Machine, Issue
 as the key and a short title, PR as its full URL, State as one word, Needs you), then the merge queue when a PR is open
-(every ready PR in the order to merge them, as tick built it in the last minute, then `Not ready: …`), then the focus,
+(every ready PR in the order to merge them, as tick built it in the last minute), then the focus,
 the disk line (below `warn_free_gb`), the loop line and the skill line when they apply. Status shows every machine by
 default: one table with a Machine column and one queue, the other machines' teams read from the summaries they publish
 on Linear (a machine with no summary is one `Other machines:` line; with no Linear key the line says they are unknown).
