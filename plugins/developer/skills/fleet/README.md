@@ -1026,6 +1026,10 @@ Fixes found after 4.1.1 (DEV-530), one per item:
 5. **A fresh claim is fresh.** `claim` and `takeover` refresh the machine label's heartbeat in the same call, and tick
    refreshes it first of all, before herdr is checked and with or without claimed rows.
 
+## What changed in 4.2.12
+
+1. **A team's own PR summary is not a comment to answer.** The lead copies its PR body's `## In plain English` section to the issue (house rule). 4.2.11 took that copy for a new comment from the owner, sent it back to the lead and held the PR out of the merge queue with "comment not answered". Tick now skips a comment that starts with `## In plain English`, as it already skipped `[fleet]` lines.
+
 ## What changed in 4.2.11
 
 A comment on an issue was forwarded only to a team that was running. A comment made while the PR waited for its merge, with

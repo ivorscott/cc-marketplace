@@ -154,10 +154,11 @@ v4211_own_lines() { # the fleet's own comments open nothing; registry.sh answer 
   local ev o rc
   v413_agent ol-a/lead Lead Working; echo working >"$AS/ol-a-lead"; v413_agent ol-a/builder Worker Idle
   ev="$(v420_tick 2026-10-29T10:00:00Z)"
-  v4211_say C2 "[fleet] decision recorded"; v4211_say C3 "fleet: taken over from other-mac"; : >"$HERDR_LOG"
+  v4211_say C2 "[fleet] decision recorded"; v4211_say C2b "## In plain English
+- **Problem:** the summary the lead copies from its PR body"; v4211_say C3 "fleet: taken over from other-mac"; : >"$HERDR_LOG"
   ev="$(v420_tick 2026-10-29T10:01:00Z)"
-  eq "v4211 own lines: a machine's takeover line is told and asks for no answer; a [fleet] comment is not told at all" \
-    "$(v4211_told "fleet: taken over from other-mac"):$(grep -c 'decision recorded' "$HERDR_LOG"):$(v4211_row ol-a/lead '.comment_open // ""'):$(v4211_seen)" "1:0::C3"
+  eq "v4211 own lines: a machine's takeover line is told and asks for no answer; a [fleet] comment and the lead's own In plain English summary are not told at all" \
+    "$(v4211_told "fleet: taken over from other-mac"):$(grep -c 'decision recorded' "$HERDR_LOG"):$(grep -c 'the summary the lead copies' "$HERDR_LOG"):$(v4211_row ol-a/lead '.comment_open // ""'):$(v4211_seen)" "1:0:0::C3"
   o="$("$REG" answer ol-a/lead "nothing to say" 2>&1)"; rc=$?
   eq "v4211 answer: with no comment open there is nothing to answer" "$([ "$rc" != 0 ] && echo refused):$(printf '%s' "$o" | grep -c 'no comment is open for ol-a/lead')" "refused:1"
   v4211_say C4 "why two flags?"

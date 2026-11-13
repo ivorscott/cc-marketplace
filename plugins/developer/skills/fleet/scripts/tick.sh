@@ -278,6 +278,8 @@ claims_lapsed() {
 # team's PR is not ready to merge while comment_open is set (common.sh pr_missing, "comment not answered").
 c_all='[]'; c_new='[]'
 # comments_read <issue>: c_all is every comment of the issue, c_new those after the cursor that the fleet did not post.
+# The fleet posts two kinds: "[fleet] ..." lines, and the lead's copy of its PR body's "## In plain English" section
+# (house rule). Neither is a request, so neither is forwarded.
 # 1: the tracker could not be read. 2: the first look, which only set the cursor.
 comments_read() {
   local last
@@ -286,7 +288,7 @@ comments_read() {
   last="$(jq -r --arg k "$1" '(.comments_seen // {})[$k] // "-"' "$STATE_FILE")"
   if [ "$last" = - ]; then comments_mark "$1"; return 2; fi
   c_new="$(printf '%s' "$c_all" | jq -c --arg l "$last" '(if $l == "" then . elif any(.[]; .id == $l) then (map(.id) | index($l)) as $x | .[$x + 1:] else [] end)
-    | map(select(.body | startswith("[fleet]") | not))')"
+    | map(select(.body | test("^\\s*(\\[fleet\\]|## In plain English)") | not))')"
 }
 # comments_mark <issue>: the cursor moves to the issue's newest comment (c_all), and nothing waits for it any more.
 comments_mark() {
