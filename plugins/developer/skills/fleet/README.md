@@ -1026,6 +1026,16 @@ Fixes found after 4.1.1 (DEV-530), one per item:
 5. **A fresh claim is fresh.** `claim` and `takeover` refresh the machine label's heartbeat in the same call, and tick
    refreshes it first of all, before herdr is checked and with or without claimed rows.
 
+## What changed in 4.2.12
+
+A fleet with no `tracker_teams` in `config.toml` never wrote its team summary document (4.2.10), so every other machine saw it
+only as `claim only: no summary` lines and its PRs as `✗ other machine`, instead of one shared team table.
+
+1. **The summary document finds a team.** With `tracker_teams` unset, the team the document is created under is the team key
+   of an issue on a registry row, else the first team in the workspace. Before, the lookup filtered on an empty key, matched
+   no team, and every heartbeat warned `team summary document not written`.
+2. **The test tracker matches team keys like Linear.** An empty key finds no team, so the old behaviour fails the suite.
+
 ## What changed in 4.2.11
 
 A comment on an issue was forwarded only to a team that was running. A comment made while the PR waited for its merge, with
