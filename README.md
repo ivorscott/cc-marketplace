@@ -363,6 +363,12 @@ claude
 Optional: `claude --agent developer:orchestrator` starts it as the Orchestrator agent, with its edit tools removed so it
 can never write code itself.
 
+> **Tip:** to start the Orchestrator agent without typing it each time, add an alias to your shell profile:
+>
+> ```
+> alias ccf='claude --agent developer:orchestrator'
+> ```
+
 You get one line and the team table (names are examples):
 
 ```

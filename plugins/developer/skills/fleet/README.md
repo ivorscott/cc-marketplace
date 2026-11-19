@@ -71,6 +71,12 @@ claude
 Optional: `claude --agent developer:orchestrator` starts it as the Orchestrator agent, with its edit tools removed so it
 can never write code itself.
 
+> **Tip:** to start the Orchestrator agent without typing it each time, add an alias to your shell profile:
+>
+> ```
+> alias ccf='claude --agent developer:orchestrator'
+> ```
+
 **4. Give it a task.**
 
 ```
@@ -185,6 +191,12 @@ claude
 
 Your first `/fleet` command makes this session the Orchestrator. Optional: `claude --agent developer:orchestrator`
 starts it as the Orchestrator agent, with its edit tools removed so it can never write code itself.
+
+> **Tip:** to start the Orchestrator agent without typing it each time, add an alias to your shell profile:
+>
+> ```
+> alias ccf='claude --agent developer:orchestrator'
+> ```
 
 The first run asks you two things:
 
