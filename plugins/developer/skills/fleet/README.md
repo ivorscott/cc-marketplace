@@ -441,7 +441,14 @@ a morning report. Your only job is merging. It needs Linear for picking work; se
 
 ### 1. Answer the questions once
 
-`fleet run init` is the one interactive command. Run it in a terminal, in a shell pane:
+`fleet run init` is the one interactive command. Run it in the Orchestrator (this works in the Claude Code app too, for
+example over `/remote-control`):
+
+```
+/fleet run init
+```
+
+Or in a terminal, in a shell pane:
 
 ```
 F="$(jq -r '.plugins["developer@cc-marketplace"][0].installPath' ~/.claude/plugins/installed_plugins.json)/skills/fleet/scripts"

@@ -402,7 +402,7 @@ down".
 Hands-off in three steps, once Linear is set up:
 
 ```
-fleet run init      # in a terminal: answer the questions once; Enter keeps each recommended answer
+/fleet run init     # answer the questions once; Enter keeps each recommended answer
 /fleet run start    # in the Orchestrator: it asks nothing and keeps your teams running
 /fleet run stop     # stop starting new teams; running teams carry on
 ```
