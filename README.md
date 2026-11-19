@@ -366,11 +366,11 @@ You get one line and the team table (names are examples):
 Booted build-app-studio in app-studio: lead ✓ planner ✓ builder ✓ tester ✓
 
 1 team · 1 working
+```
 
 | Team | Machine | Issue | PR | State | Needs you |
 |---|---|---|---|---|---|
 | build-app-studio | 3f9a2c1e | - | - | Working | - |
-```
 
 The planner writes a plan. The builder implements it and opens a PR. The tester verifies the PR's exact commit and
 signs off. Check in whenever you like:

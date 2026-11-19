@@ -78,11 +78,11 @@ claude --agent developer:orchestrator
 Booted build-app-studio in app-studio: lead ✓ planner ✓ builder ✓ tester ✓
 
 1 team · 1 working
+```
 
 | Team | Machine | Issue | PR | State | Needs you |
 |---|---|---|---|---|---|
 | build-app-studio | 3f9a2c1e | - | - | Working | - |
-```
 
 **5. Check in, merge, clean up.**
 
@@ -212,11 +212,11 @@ four agents and sends each its brief. Every brief ends with the done contract an
 Booted build-app-studio in app-studio: lead ✓ planner ✓ builder ✓ tester ✓
 
 1 team · 1 working
+```
 
 | Team | Machine | Issue | PR | State | Needs you |
 |---|---|---|---|---|---|
 | build-app-studio | 3f9a2c1e | - | - | Working | - |
-```
 
 Each `✓` is an agent that started and got its brief. A `✗ (why)` names what failed. If every row says `Working`, leave
 the team alone.
@@ -234,14 +234,12 @@ means nothing. For one team's agents:
 /fleet status build-app-studio
 ```
 
-```
 | Agent | Role | State | Model | Last action |
 |---|---|---|---|---|
 | build-app-studio/lead | lead | Working | opus | updated 30m ago |
 | build-app-studio/planner | planner | Done | sonnet | done 25m ago |
 | build-app-studio/builder | builder | Working | sonnet | brief_delivered 10m ago |
 | build-app-studio/tester | tester | Idle | sonnet | updated 15m ago |
-```
 
 What happens while you wait:
 
@@ -292,19 +290,17 @@ A bare team name reaches its lead. `(queued)` means the agent was mid-turn and r
 
 When the team has signed off, `status` shows the PR in the queue:
 
-```
-1 team · 1 done
+**1 team · 1 done**
 
 | Team | Machine | Issue | PR | State | Needs you |
 |---|---|---|---|---|---|
 | build-app-studio | 3f9a2c1e | - | https://github.com/acme/app-studio/pull/12 | Done | merge the PR |
 
-Merge in this order:
+**Merge in this order:**
 
 | # | PR | Issue | Machine | Why this order | After merge |
 |---|---|---|---|---|---|
 | 1 | https://github.com/acme/app-studio/pull/12 | - | 3f9a2c1e | oldest first | — |
-```
 
 A PR that is not ready is listed under it with what it misses:
 
@@ -397,14 +393,12 @@ Park refuses when a worktree has uncommitted changes or commits on no remote, so
 `status` lists every ready PR in the order to merge them: dependencies first, then the order that causes the fewest
 rebases, then the oldest. Each row says why it is there.
 
-```
-Merge in this order:
+**Merge in this order:**
 
 | # | PR | Issue | Machine | Why this order | After merge |
 |---|---|---|---|---|---|
 | 1 | https://github.com/acme/app-studio/pull/12 | PROJ-12 | 3f9a2c1e | app-studio-web #5 uses its contract | — |
 | 2 | https://github.com/acme/app-studio-web/pull/5 | PROJ-5 | 3f9a2c1e | needs app-studio #12 | — |
-```
 
 Merge top to bottom. The **After merge** column warns ahead: `rebase after #10`, `renumber migration after #12`.
 
