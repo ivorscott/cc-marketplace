@@ -350,10 +350,10 @@ and open a pane. In that pane, once:
 herdr integration install claude
 ```
 
-Start the Orchestrator and give it a task:
+Start Claude Code in that pane and give it a task:
 
 ```
-claude --agent developer:orchestrator
+claude
 ```
 
 ```
@@ -366,11 +366,11 @@ You get one line and the team table (names are examples):
 Booted build-app-studio in app-studio: lead ✓ planner ✓ builder ✓ tester ✓
 
 1 team · 1 working
+```
 
 | Team | Machine | Issue | PR | State | Needs you |
 |---|---|---|---|---|---|
 | build-app-studio | 3f9a2c1e | - | - | Working | - |
-```
 
 The planner writes a plan. The builder implements it and opens a PR. The tester verifies the PR's exact commit and
 signs off. Check in whenever you like:
@@ -402,8 +402,8 @@ down".
 Hands-off in three steps, once Linear is set up:
 
 ```
-fleet run init      # in a terminal: answer the questions once; Enter keeps each recommended answer
-/fleet run start    # in the Orchestrator: it asks nothing and keeps your teams running
+/fleet run init     # answer the questions once; Enter keeps each recommended answer
+/fleet run start    # asks nothing and keeps your teams running
 /fleet run stop     # stop starting new teams; running teams carry on
 ```
 
