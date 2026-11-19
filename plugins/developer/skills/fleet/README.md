@@ -68,15 +68,6 @@ herdr integration install claude
 claude
 ```
 
-Optional: `claude --agent developer:orchestrator` starts it as the Orchestrator agent, with its edit tools removed so it
-can never write code itself.
-
-> **Tip:** to start the Orchestrator agent without typing it each time, add an alias to your shell profile:
->
-> ```
-> alias ccf='claude --agent developer:orchestrator'
-> ```
-
 **4. Give it a task.**
 
 ```
@@ -189,14 +180,10 @@ Start Claude Code in that pane:
 claude
 ```
 
-Your first `/fleet` command makes this session the Orchestrator. Optional: `claude --agent developer:orchestrator`
-starts it as the Orchestrator agent, with its edit tools removed so it can never write code itself.
+Your first `/fleet` command makes this session the Orchestrator.
 
-> **Tip:** to start the Orchestrator agent without typing it each time, add an alias to your shell profile:
->
-> ```
-> alias ccf='claude --agent developer:orchestrator'
-> ```
+Optional: `claude --agent developer:orchestrator` removes the edit tools, so the Orchestrator can never write code. An
+alias saves typing it, for example `alias ccf='claude --agent developer:orchestrator'`.
 
 The first run asks you two things:
 
@@ -457,8 +444,7 @@ a morning report. Your only job is merging. It needs Linear for picking work; se
 
 ### 1. Answer the questions once
 
-`fleet run init` is the one interactive command. Run it in the Orchestrator (this works in the Claude Code app too, for
-example over `/remote-control`):
+`fleet run init` is the one interactive command. Run it in the Orchestrator:
 
 ```
 /fleet run init

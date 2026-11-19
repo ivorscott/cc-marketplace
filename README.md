@@ -360,15 +360,6 @@ claude
 /fleet boot build app-studio ~/code/app-studio "add CSV invoice export"
 ```
 
-Optional: `claude --agent developer:orchestrator` starts it as the Orchestrator agent, with its edit tools removed so it
-can never write code itself.
-
-> **Tip:** to start the Orchestrator agent without typing it each time, add an alias to your shell profile:
->
-> ```
-> alias ccf='claude --agent developer:orchestrator'
-> ```
-
 You get one line and the team table (names are examples):
 
 ```
@@ -412,7 +403,7 @@ Hands-off in three steps, once Linear is set up:
 
 ```
 /fleet run init     # answer the questions once; Enter keeps each recommended answer
-/fleet run start    # in the Orchestrator: it asks nothing and keeps your teams running
+/fleet run start    # asks nothing and keeps your teams running
 /fleet run stop     # stop starting new teams; running teams carry on
 ```
 
