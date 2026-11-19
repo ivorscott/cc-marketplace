@@ -350,15 +350,18 @@ and open a pane. In that pane, once:
 herdr integration install claude
 ```
 
-Start the Orchestrator and give it a task:
+Start Claude Code in that pane and give it a task:
 
 ```
-claude --agent developer:orchestrator
+claude
 ```
 
 ```
 /fleet boot build app-studio ~/code/app-studio "add CSV invoice export"
 ```
+
+Optional: `claude --agent developer:orchestrator` starts it as the Orchestrator agent, with its edit tools removed so it
+can never write code itself.
 
 You get one line and the team table (names are examples):
 

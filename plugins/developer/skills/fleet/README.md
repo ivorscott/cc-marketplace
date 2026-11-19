@@ -62,11 +62,14 @@ GitHub).
 herdr integration install claude
 ```
 
-**3. Start the Orchestrator in the same pane.**
+**3. Start Claude Code in the same pane.**
 
 ```
-claude --agent developer:orchestrator
+claude
 ```
+
+Optional: `claude --agent developer:orchestrator` starts it as the Orchestrator agent, with its edit tools removed so it
+can never write code itself.
 
 **4. Give it a task.**
 
@@ -174,13 +177,14 @@ herdr integration install claude
 The fleet reads agent state from the integration's hooks, never from the screen. Boot and `status` warn when it is not
 current.
 
-Start the Orchestrator in that pane:
+Start Claude Code in that pane:
 
 ```
-claude --agent developer:orchestrator
+claude
 ```
 
-Typing `/fleet` in any Claude Code session inside a herdr pane works too.
+Your first `/fleet` command makes this session the Orchestrator. Optional: `claude --agent developer:orchestrator`
+starts it as the Orchestrator agent, with its edit tools removed so it can never write code itself.
 
 The first run asks you two things:
 
