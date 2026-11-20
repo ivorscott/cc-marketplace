@@ -659,7 +659,9 @@ Merge this one first." "Do not merge until the API ships" "  hold: waiting on de
     "$("$REG" get build-b21/builder | jq -r '[.status, (.brief_failed_at // "")] | join(",")'):$(evc "$e21" failed):$(grep -c 'Read your brief' "$HERDR_LOG"):$(printf '%s\n' "$o21" | grep -c '^Failed build-b21\|^Brief failed build-b21')" "Idle,:0:0:0"
   # dev512-23: parallel herdr calls with long arguments log whole lines (the flaky next case)
   dfresh 23; head -c 100000 /dev/zero | tr '\0' x >"$SM/long23"; : >"$HERDR_LOG"
-  for i in $(seq 1 12); do herdr --session test agent start "a23-$i" --settings "$SM/long23" >/dev/null & done; wait
+  # each parallel call writes its own log (no shared lock to race on a slow runner); the logs are joined once every call is done
+  for i in $(seq 1 12); do HERDR_LOG="$SM/log23.$i" herdr --session test agent start "a23-$i" --settings "$SM/long23" >/dev/null & done; wait
+  for i in $(seq 1 12); do cat "$SM/log23.$i" >>"$HERDR_LOG"; done
   eq "smoke: dev512-23 twelve parallel calls with 100 KB arguments log twelve whole lines" "$(grep -c '^agent start a23-[0-9]* --settings x' "$HERDR_LOG"):$(awk 'length($0) > 100000' "$HERDR_LOG" | grep -vc '^agent start a23-[0-9]* --settings x*$')" "12:0"
   # dev512-24: the README still has its 4.1.1 What changed section
   eq "smoke: dev512-24 the README has its 4.1.1 What changed section" "$(grep -c '^## What changed in 4.1.1' "$SCRIPTS/../README.md")" 1
