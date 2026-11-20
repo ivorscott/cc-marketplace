@@ -258,13 +258,14 @@ v428_run() {
   unset FLEET_CLAUDE_SETTINGS
 }
 
-v428_house() { # DEV-736: the rule is in house.md and in the build briefs
+v428_house() { # DEV-736, reshaped by DEV-1023: the short PR body rule is in house.md and in the build briefs
   local h="$SCRIPTS/../rules/house.md" t="$SCRIPTS/../templates/build.json" f p
-  f="$(grep -n 'Fixes <the issue' "$h" | head -n 1 | cut -d: -f1)"; p="$(grep -n '^- Every PR body has a `## In plain English` section' "$h" | head -n 1 | cut -d: -f1)"
-  eq "v428 house: house.md has the In plain English rule right after the Fixes rule" "$((f + 1))" "$p"
-  eq "v428 house: and says it comes after the issue-URL lines and before the technical summary, and that the lead posts it on the issue" \
-    "$(grep -c 'right after the `Fixes` line and any other issue-URL lines, before the technical summary' "$h"):$(grep -c 'The lead posts the same section as one comment on the issue' "$h")" "1:1"
-  eq "v428 house: the lead and builder briefs name the section" "$(jq -r '[.lead.brief, (.workers[] | select(.role == "builder") | .brief)] | map(select(contains("## In plain English"))) | length' "$t")" 2
+  f="$(grep -n 'Fixes <the issue' "$h" | head -n 1 | cut -d: -f1)"; p="$(grep -n '^- The PR body is short:' "$h" | head -n 1 | cut -d: -f1)"
+  eq "v428 house: house.md has the short PR body rule right after the Fixes rule" "$((f + 1))" "$p"
+  eq "v428 house: and says the lead comments the same 1-2 sentences plus the PR link, with no In plain English section" \
+    "$(grep -c 'the same 1-2 sentences plus the PR link' "$h"):$(grep -c 'no `In plain English` section' "$h")" "1:1"
+  eq "v428 house: the lead and builder briefs name 1-2 sentences and no longer ask for In plain English" \
+    "$(jq -r '[.lead.brief, (.workers[] | select(.role == "builder") | .brief)] | map(select(contains("1-2 sentences") and (contains("## In plain English") | not))) | length' "$t")" 2
 }
 
 v428_fixround() { # review round: F1 closed PR with later commits, F2 the owner's no, F3 the rule per repo

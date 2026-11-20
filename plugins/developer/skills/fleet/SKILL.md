@@ -107,8 +107,7 @@ It replaces your own [ui] lines in herdr's config and keeps a backup. (yes/no)".
    `permission_mode`), answers folder-trust only for the repo and those worktrees, sends each brief as a file with
    the done contract and house rules appended, and writes the registry rows. Pass `--issue DEV-123 --issue-url
    <URL> --issue-title "<title>"` for an issue-bound team: the PR body gets the exact `Fixes <URL>` line and the team
-   table's Issue cell shows the title (from your search; status never calls the tracker for it). The PR body then has a
-   `## In plain English` section (`rules/house.md`); the lead posts it as a comment on the issue when the PR opens. A repo with
+   table's Issue cell shows the title (from your search; status never calls the tracker for it). The PR body then is short (`rules/house.md`): 1-2 sentences and up to 5 bullets; the lead posts the sentences and the PR link as a comment on the issue when the PR opens. A repo with
    `.claude/fleet-env.json` gets a team test cluster (`references/operations.md`, "Team environment").
 3. It prints its line (each agent ✓, or ✗ and why) and the team table. Anything not `Working` needs you now: go to
    **B** for that agent.
