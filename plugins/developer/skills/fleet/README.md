@@ -1332,6 +1332,7 @@ What changed in each version, newest first.
 ## What changed in 4.2.13
 
 1. **Short PR bodies** ([DEV-1023](https://linear.app/devpies/issue/DEV-1023)). House rule and the build briefs: `Fixes <URL>` (or `Part of <URL>`), 1-2 sentences, up to 5 bullets, then `Try it` and `Needs you` only when they apply. No `## In plain English` section, technical summary or tables. The lead's issue comment is the same sentences plus the PR link.
+2. **One full test run per head, and it is CI.** The builder brief now says it: the builder runs only the tests for the code it changed, then pushes, and never repeats a run. The Orchestrator's task text never asks for local full-suite or repeated runs (on DEV-1024 a brief asking the suite to "pass twice" made builder and tester run the 8-minute suite three times, in parallel).
 
 ## What changed in 4.2.12
 

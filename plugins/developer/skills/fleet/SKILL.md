@@ -26,7 +26,7 @@ done contract, escalation, caps, guards and debrief; mechanics that are not rout
 - **Caps:** `max_teams` (default 3; Parked teams don't count) and `teams_per_repo` (default 1), in
   `~/.config/fleet/config.toml` (`config.example.toml` lists every key), and the disk floor `min_free_gb`
   (default 40). Over any, tell the user and ask before retrying with `FLEET_FORCE=1`.
-- **House rules:** every brief ends with `rules/house.md`, then the repo's `.claude/fleet-rules.md`.
+- **House rules:** every brief ends with `rules/house.md`, then the repo's `.claude/fleet-rules.md`. A task text never overrides the house test rule: never ask an agent to run the full suite locally or to repeat a run ("pass twice"); CI is the one full run per head.
 - **Sandbox:** reproductions run only in `$F/fleet sandbox [--keep] [--] [cmd...]` (temporary state root, shims for
   herdr, gh and curl, no tracker key); it refuses the live fleet.
 - **Relay output verbatim:** every command and every wake prints its final reply in one fixed shape
