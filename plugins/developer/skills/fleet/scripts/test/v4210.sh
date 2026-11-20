@@ -106,7 +106,7 @@ v4210_sandbox() { # the issue's case: 12 teams on machine A, 3 on B; both machin
   jq '.issues[0].team = {id: "T1", key: "T"}' "$LINEAR_DB" >"$LINEAR_DB.t" && mv "$LINEAR_DB.t" "$LINEAR_DB"
   "$SCRIPTS/linear.sh" heartbeat >/dev/null 2>&1
   eq "v4210 test mode: a heartbeat writes only this machine's document" "$(jq -r '[.documents[].title] | join(",")' "$LINEAR_DB")" "Fleet summary · a1"
-  v420_nolinear; unset FLEET_NOW FLEET_GH FLEET_MACHINE
+  v420_nolinear; unset FLEET_NOW FLEET_GH; export FLEET_MACHINE=test
 }
 
 v4210_team() { # with tracker_teams unset, the summary document is still created: under the registry's issue key, else any team
@@ -122,7 +122,7 @@ v4210_team() { # with tracker_teams unset, the summary document is still created
   : >"$LINEAR_LOG"; "$SCRIPTS/linear.sh" heartbeat >/dev/null 2>"$T/v4210t.err"
   eq "v4210 team: no tracker_teams and no issue on any row, the first team is used (no empty key filter)" \
     "$(grep -c 'summary document not written' "$T/v4210t.err"):$(grep -cx 'query TeamIdAny' "$LINEAR_LOG"):$(jq '.documents | length' "$LINEAR_DB")" "0:1:1"
-  v420_nolinear; unset FLEET_NOW FLEET_GH FLEET_MACHINE DF_GB
+  v420_nolinear; unset FLEET_NOW FLEET_GH DF_GB; export FLEET_MACHINE=test
 }
 
 v4210_smoke() { v4210_sandbox; v4210_team; }
