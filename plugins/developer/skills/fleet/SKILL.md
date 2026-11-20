@@ -26,7 +26,7 @@ done contract, escalation, caps, guards and debrief; mechanics that are not rout
 - **Caps:** `max_teams` (default 3; Parked teams don't count) and `teams_per_repo` (default 1), in
   `~/.config/fleet/config.toml` (`config.example.toml` lists every key), and the disk floor `min_free_gb`
   (default 40). Over any, tell the user and ask before retrying with `FLEET_FORCE=1`.
-- **House rules:** every brief ends with `rules/house.md`, then the repo's `.claude/fleet-rules.md`.
+- **House rules:** every brief ends with `rules/house.md`, then the repo's `.claude/fleet-rules.md`. A task text never overrides the house test rule: never ask an agent to run the full suite locally or to repeat a run ("pass twice"); CI is the one full run per head.
 - **Sandbox:** reproductions run only in `$F/fleet sandbox [--keep] [--] [cmd...]` (temporary state root, shims for
   herdr, gh and curl, no tracker key); it refuses the live fleet.
 - **Relay output verbatim:** every command and every wake prints its final reply in one fixed shape
@@ -107,8 +107,7 @@ It replaces your own [ui] lines in herdr's config and keeps a backup. (yes/no)".
    `permission_mode`), answers folder-trust only for the repo and those worktrees, sends each brief as a file with
    the done contract and house rules appended, and writes the registry rows. Pass `--issue DEV-123 --issue-url
    <URL> --issue-title "<title>"` for an issue-bound team: the PR body gets the exact `Fixes <URL>` line and the team
-   table's Issue cell shows the title (from your search; status never calls the tracker for it). The PR body then has a
-   `## In plain English` section (`rules/house.md`); the lead posts it as a comment on the issue when the PR opens. A repo with
+   table's Issue cell shows the title (from your search; status never calls the tracker for it). The PR body then is short (`rules/house.md`): 1-2 sentences and up to 5 bullets; the lead posts the sentences and the PR link as a comment on the issue when the PR opens. A repo with
    `.claude/fleet-env.json` gets a team test cluster (`references/operations.md`, "Team environment").
 3. It prints its line (each agent ✓, or ✗ and why) and the team table. Anything not `Working` needs you now: go to
    **B** for that agent.

@@ -636,7 +636,7 @@ Claimed PROJ-12 for fleet:3f9a2c1e.
 
 What an issue adds:
 
-- The PR body starts with `Fixes <the issue URL>`, then a `## In plain English` section the lead also posts on the issue.
+- The PR body starts with `Fixes <the issue URL>`, then 1-2 sentences and up to 5 bullets; the lead posts the sentences and the PR link on the issue.
 - The Issue cell reads `PROJ-12 <title>`, with the key linked.
 - Retire moves the issue: Shipped → Done once the PR merged, or Verify with `--verify` when a hands-on check is left.
   Abandoned or Failed → Todo, with the claim released.
@@ -1329,6 +1329,11 @@ in 4.1. Anything that newly exposes the key is a blocker; the items that touch t
 
 What changed in each version, newest first.
 
+## What changed in 4.2.13
+
+1. **Short PR bodies** ([DEV-1023](https://linear.app/devpies/issue/DEV-1023)). House rule and the build briefs: `Fixes <URL>` (or `Part of <URL>`), 1-2 sentences, up to 5 bullets, then `Try it` and `Needs you` only when they apply. No `## In plain English` section, technical summary or tables. The lead's issue comment is the same sentences plus the PR link.
+2. **One full test run per head, and it is CI.** The builder brief now says it: the builder runs only the tests for the code it changed, then pushes, and never repeats a run. The Orchestrator's task text never asks for local full-suite or repeated runs (on DEV-1024 a brief asking the suite to "pass twice" made builder and tester run the 8-minute suite three times, in parallel).
+
 ## What changed in 4.2.12
 
 1. **A team's own PR summary is not a comment to answer.** The lead copies its PR body's `## In plain English` section to the issue (house rule). 4.2.11 took that copy for a new comment from the owner, sent it back to the lead and held the PR out of the merge queue with "comment not answered". Tick now skips a comment with a `## In plain English` heading line (the lead may put a "PR opened" line above it), as it already skipped `[fleet]` lines.
@@ -1417,9 +1422,8 @@ DEV-739, DEV-736 and DEV-740 in one release.
    the branches as kept: `branch deletes are off (fleet run init answer: no)`); only a `fleet branches` you run by hand still
    goes by the permission rule alone. With no `[run]` profile the default is yes. A branch whose PR closed also stays when
    commits were added after it closed that are not in the default branch.
-2. **Every PR body has `## In plain English`** ([DEV-736](https://linear.app/devpies/issue/DEV-736)). House rule: right after
-   the `Fixes` line and any other issue URLs, before the technical summary: the problem, what the PR does, how it works, what
-   still fails, what to review. The lead posts the section on the issue when the PR opens.
+2. **Every PR body has `## In plain English`** ([DEV-736](https://linear.app/devpies/issue/DEV-736)). Replaced in 4.2.13 by the
+   short PR body ([DEV-1023](https://linear.app/devpies/issue/DEV-1023)).
 3. **One takeover, one report line** ([DEV-740](https://linear.app/devpies/issue/DEV-740)). A team whose PR had merged
    (its row Done, not yet retired) was reported as taken over on every tick, 100+ times in one morning report. The tick
    pruned its dedupe key against the live rows only, which leave out Done and Parked ones; it now prunes against the rows it
