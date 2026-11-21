@@ -13,7 +13,6 @@ A curated collection of Claude Code plugins for learners and developers.
   - [`/ascii` — ASCII Diagram Renderer](#ascii--ascii-diagram-renderer)
 - [developer — Skills](#developer--skills)
   - [`/spec` — Feature Spec Generator](#spec--feature-spec-generator)
-  - [`/spec-archaeology` — Spec Archaeology](#spec-archaeology--spec-archaeology)
   - [`/fleet` — Agent Fleet Orchestrator](#fleet--agent-fleet-orchestrator)
 - [archify — Create Architecture Map](#archify--create-architecture-map)
 - [Installation](#installation)
@@ -300,27 +299,6 @@ with `@.brief/`.
         │                │      │  pushed)      │
         └────────────────┘      └───────────────┘
 ```
-
----
-
-### `/spec-archaeology` — Spec Archaeology
-
-Reads a specification document, identifies every significant decision, and
-reconstructs the reasoning behind each one — with references to relevant
-papers, RFCs, or well-known resources.
-
-**Usage:**
-
-```
-/spec-archaeology SPEC.md
-/spec-archaeology @SPEC.md
-/spec-archaeology
-```
-
-The last form uses the file currently open in the IDE.
-
-**Output:** Writes `{original-filename}-archaeology.md` in the same
-directory as the input file.
 
 ---
 
