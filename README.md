@@ -4,6 +4,10 @@ A curated collection of Claude Code plugins for learners and developers.
 
 ## Table of Contents
 
+- [developer — Skills](#developer--skills)
+  - [`/spec` — Feature Spec Generator](#spec--feature-spec-generator)
+  - [`/fleet` — Agent Fleet Orchestrator](#fleet--agent-fleet-orchestrator)
+  - [`archify` — Create Architecture Map](#archify--create-architecture-map)
 - [learner — Skills](#learner--skills)
   - [`/install-obsidian` — Obsidian Setup](#install-obsidian--obsidian-setup)
   - [`/install-wiki` — LLM Wiki Setup](#install-wiki--llm-wiki-setup)
@@ -11,10 +15,6 @@ A curated collection of Claude Code plugins for learners and developers.
   - [`/study` — Study Session Generator](#study--study-session-generator)
   - [`/analogy` — Analogy Generator](#analogy--analogy-generator)
   - [`/ascii` — ASCII Diagram Renderer](#ascii--ascii-diagram-renderer)
-- [developer — Skills](#developer--skills)
-  - [`/spec` — Feature Spec Generator](#spec--feature-spec-generator)
-  - [`/fleet` — Agent Fleet Orchestrator](#fleet--agent-fleet-orchestrator)
-  - [`archify` — Create Architecture Map](#archify--create-architecture-map)
 - [Installation](#installation)
 - [License](#license)
 
@@ -29,6 +29,177 @@ Add the marketplace, then install whichever plugins you need:
 /plugin install developer@cc-marketplace
 /plugin install learner@cc-marketplace
 ```
+
+---
+
+## `developer` — Skills
+
+### `/spec` — Feature Spec Generator
+
+Drafts a markdown feature specification and initializes a Git branch.
+
+**Usage:**
+
+```
+/spec Short feature description
+/spec @.brief/briefing.md Short feature description
+```
+
+**Output:** Writes `.spec/<feature-slug>.md`, commits and pushes a
+`claude/feature/<slug>` branch.
+
+#### Briefings (optional)
+
+A briefing is an external document that supplies additional context for the
+spec. Store briefings in `.brief/` at the project root and reference them
+with `@.brief/`.
+
+- Briefing contents **inform** the spec but are **not added** to the codebase.
+- If a briefing contains proposals, `/spec` will challenge them rather than accepting them outright.
+- Without a briefing, the spec is generated from the feature description alone using the built-in template.
+- On first use, `/spec` automatically adds `/.brief/` to `.gitignore` so the folder never blocks subsequent runs.
+
+```
+  ┌───────────────────────┐      ┌──────────────────────────┐
+  │  @.brief/file.md      │      │  Feature description     │
+  │  (optional briefing)  │      │  (required)              │
+  └────────┬──────────────┘      └──────────┬───────────────┘
+           │                                │
+           │   Briefing informs spec but    │
+           │   proposals are challenged     │
+           ▼                                ▼
+  ┌─────────────────────────────────────────────────────────┐
+  │                    /spec                                │
+  │                                                         │
+  │  1. Generate spec from description + built-in template  │
+  │     (briefing contents refine but don't override)       │
+  │  2. Write spec to .spec/<feature-slug>.md               │
+  └──────────────────────────┬──────────────────────────────┘
+                             │
+                 ┌───────────┴───────────┐
+                 ▼                       ▼
+        ┌────────────────┐      ┌───────────────┐
+        │ .spec/         │      │ Git branch    │
+        │ <slug>.md      │      │ claude/       │
+        │ (spec file)    │      │ feature/      │
+        │                │      │ <slug>        │
+        │                │      │ (committed &  │
+        │                │      │  pushed)      │
+        └────────────────┘      └───────────────┘
+```
+
+---
+
+### `/fleet` — Agent Fleet Orchestrator
+
+Run teams of coding agents from one chat. You say what you want built. `/fleet` turns a Claude Code session into an
+**Orchestrator** that boots a team (a lead, a planner, a builder and a tester) in [herdr](https://herdr.dev) panes, each
+writer on its own git worktree. A build team ends in a pull request that a tester has checked at an exact commit. You
+merge it.
+
+**For you if** you want several agents working in parallel on one or more repos, through pull requests.
+**Not for you if** you run one-off tasks in a single session, or your work doesn't go through PRs.
+
+**Requirements:**
+
+- [herdr](https://herdr.dev) 0.9+ and Claude Code (other agent CLIs herdr supports, such as Codex, can be workers)
+- `git`, `jq`, and your code host's CLI (`gh`, `glab`, …)
+- a tracker for issue-bound work (Linear, Jira, …); Linear for more than one machine or the self-driving loop
+- macOS for the scheduled loop (launchd); on Linux, a systemd timer you write
+
+#### Quick start: one machine, one repo, one task
+
+Install the `developer` plugin as the [Installation](#installation) section shows. Start herdr from your own terminal
+and open a pane. In that pane, once:
+
+```
+herdr integration install claude
+```
+
+Start Claude Code in that pane and give it a task:
+
+```
+claude
+```
+
+```
+/fleet boot build app-studio ~/code/app-studio "add CSV invoice export"
+```
+
+You get one line and the team table (names are examples):
+
+```
+Booted build-app-studio in app-studio: lead ✓ planner ✓ builder ✓ tester ✓
+
+1 team · 1 working
+```
+
+| Team | Machine | Issue | PR | State | Needs you |
+|---|---|---|---|---|---|
+| build-app-studio | 3f9a2c1e | - | - | Working | - |
+
+The planner writes a plan. The builder implements it and opens a PR. The tester verifies the PR's exact commit and
+signs off. Check in whenever you like:
+
+```
+/fleet status
+```
+
+A ready PR is listed under `Merge in this order:`. One that isn't ready is listed under `Not ready:` with what is
+missing (`✗ no sign-off`, `✗ CI pending`). Review it and merge it yourself on your code host: the fleet never merges.
+Then clean up:
+
+```
+/fleet retire build-app-studio --outcome Shipped
+```
+
+Three commands carry most days: `boot`, `status`, `retire`. Plain language works too: "how is the fleet", "shut the team
+down".
+
+#### Going further
+
+| Level | You get | Guide |
+|---|---|---|
+| 1. Your first team | Booting, watching, answering a question, merging, retiring | [Lv1](plugins/developer/skills/fleet/README.md#level-1-your-first-team) |
+| 2. Daily driving | Several teams, the merge queue, park, focus and hold, conflict repair | [Lv2](plugins/developer/skills/fleet/README.md#level-2-daily-driving) |
+| 3. Hands-off | `fleet run`: it keeps teams running, picks the next issue, decides routine questions and writes a morning report | [Lv3](plugins/developer/skills/fleet/README.md#level-3-hands-off-with-fleet-run) |
+| 4. Issues, repos, machines | Linear issues and claims, several repos, a second machine | [Lv4](plugins/developer/skills/fleet/README.md#level-4-issues-repos-and-machines) |
+
+Hands-off in three steps, once Linear is set up:
+
+```
+/fleet run init     # answer the questions once; Enter keeps each recommended answer
+/fleet run start    # asks nothing and keeps your teams running
+/fleet run stop     # stop starting new teams; running teams carry on
+```
+
+Merging, production, infrastructure applies, secrets and branch protection always stay yours.
+
+**Everything else** (how it works, troubleshooting, other trackers and agent CLIs, every command and config key, release
+notes) is in the [fleet guide](plugins/developer/skills/fleet/README.md).
+
+> **NOTE:** Run Claude Code inside a herdr pane. The plugin also ships `developer:lead` and `developer:orchestrator`
+> agents and two hooks, which do nothing outside fleet panes.
+
+---
+
+### `archify` — Create Architecture Map
+
+[Archify](https://github.com/tt-a1i/archify) by tt-a1i (MIT) turns a description or a codebase into an
+interactive diagram: architecture, sequence, ERD, workflow, lifecycle and more. Each diagram is a
+standalone HTML file built from a JSON source, checked in a real browser before delivery.
+
+Installing `developer` installs it too, as a dependency. The marketplace pulls it straight from
+upstream, pinned to a reviewed commit. To take a newer
+version, review upstream and bump `sha` and `version` in `.claude-plugin/marketplace.json`.
+
+**Usage:**
+
+```
+Use Archify to diagram the architecture of this repo.
+```
+
+> **NOTE:** Requires Node 18+. The browser check needs Chrome.
 
 ---
 
@@ -241,177 +412,6 @@ Result rendered below:
   └────────────────────────┘
          (each partition owned by exactly one consumer)
 ```
-
----
-
-## `developer` — Skills
-
-### `/spec` — Feature Spec Generator
-
-Drafts a markdown feature specification and initializes a Git branch.
-
-**Usage:**
-
-```
-/spec Short feature description
-/spec @.brief/briefing.md Short feature description
-```
-
-**Output:** Writes `.spec/<feature-slug>.md`, commits and pushes a
-`claude/feature/<slug>` branch.
-
-#### Briefings (optional)
-
-A briefing is an external document that supplies additional context for the
-spec. Store briefings in `.brief/` at the project root and reference them
-with `@.brief/`.
-
-- Briefing contents **inform** the spec but are **not added** to the codebase.
-- If a briefing contains proposals, `/spec` will challenge them rather than accepting them outright.
-- Without a briefing, the spec is generated from the feature description alone using the built-in template.
-- On first use, `/spec` automatically adds `/.brief/` to `.gitignore` so the folder never blocks subsequent runs.
-
-```
-  ┌───────────────────────┐      ┌──────────────────────────┐
-  │  @.brief/file.md      │      │  Feature description     │
-  │  (optional briefing)  │      │  (required)              │
-  └────────┬──────────────┘      └──────────┬───────────────┘
-           │                                │
-           │   Briefing informs spec but    │
-           │   proposals are challenged     │
-           ▼                                ▼
-  ┌─────────────────────────────────────────────────────────┐
-  │                    /spec                                │
-  │                                                         │
-  │  1. Generate spec from description + built-in template  │
-  │     (briefing contents refine but don't override)       │
-  │  2. Write spec to .spec/<feature-slug>.md               │
-  └──────────────────────────┬──────────────────────────────┘
-                             │
-                 ┌───────────┴───────────┐
-                 ▼                       ▼
-        ┌────────────────┐      ┌───────────────┐
-        │ .spec/         │      │ Git branch    │
-        │ <slug>.md      │      │ claude/       │
-        │ (spec file)    │      │ feature/      │
-        │                │      │ <slug>        │
-        │                │      │ (committed &  │
-        │                │      │  pushed)      │
-        └────────────────┘      └───────────────┘
-```
-
----
-
-### `/fleet` — Agent Fleet Orchestrator
-
-Run teams of coding agents from one chat. You say what you want built. `/fleet` turns a Claude Code session into an
-**Orchestrator** that boots a team (a lead, a planner, a builder and a tester) in [herdr](https://herdr.dev) panes, each
-writer on its own git worktree. A build team ends in a pull request that a tester has checked at an exact commit. You
-merge it.
-
-**For you if** you want several agents working in parallel on one or more repos, through pull requests.
-**Not for you if** you run one-off tasks in a single session, or your work doesn't go through PRs.
-
-**Requirements:**
-
-- [herdr](https://herdr.dev) 0.9+ and Claude Code (other agent CLIs herdr supports, such as Codex, can be workers)
-- `git`, `jq`, and your code host's CLI (`gh`, `glab`, …)
-- a tracker for issue-bound work (Linear, Jira, …); Linear for more than one machine or the self-driving loop
-- macOS for the scheduled loop (launchd); on Linux, a systemd timer you write
-
-#### Quick start: one machine, one repo, one task
-
-Install the `developer` plugin as the [Installation](#installation) section shows. Start herdr from your own terminal
-and open a pane. In that pane, once:
-
-```
-herdr integration install claude
-```
-
-Start Claude Code in that pane and give it a task:
-
-```
-claude
-```
-
-```
-/fleet boot build app-studio ~/code/app-studio "add CSV invoice export"
-```
-
-You get one line and the team table (names are examples):
-
-```
-Booted build-app-studio in app-studio: lead ✓ planner ✓ builder ✓ tester ✓
-
-1 team · 1 working
-```
-
-| Team | Machine | Issue | PR | State | Needs you |
-|---|---|---|---|---|---|
-| build-app-studio | 3f9a2c1e | - | - | Working | - |
-
-The planner writes a plan. The builder implements it and opens a PR. The tester verifies the PR's exact commit and
-signs off. Check in whenever you like:
-
-```
-/fleet status
-```
-
-A ready PR is listed under `Merge in this order:`. One that isn't ready is listed under `Not ready:` with what is
-missing (`✗ no sign-off`, `✗ CI pending`). Review it and merge it yourself on your code host: the fleet never merges.
-Then clean up:
-
-```
-/fleet retire build-app-studio --outcome Shipped
-```
-
-Three commands carry most days: `boot`, `status`, `retire`. Plain language works too: "how is the fleet", "shut the team
-down".
-
-#### Going further
-
-| Level | You get | Guide |
-|---|---|---|
-| 1. Your first team | Booting, watching, answering a question, merging, retiring | [Lv1](plugins/developer/skills/fleet/README.md#level-1-your-first-team) |
-| 2. Daily driving | Several teams, the merge queue, park, focus and hold, conflict repair | [Lv2](plugins/developer/skills/fleet/README.md#level-2-daily-driving) |
-| 3. Hands-off | `fleet run`: it keeps teams running, picks the next issue, decides routine questions and writes a morning report | [Lv3](plugins/developer/skills/fleet/README.md#level-3-hands-off-with-fleet-run) |
-| 4. Issues, repos, machines | Linear issues and claims, several repos, a second machine | [Lv4](plugins/developer/skills/fleet/README.md#level-4-issues-repos-and-machines) |
-
-Hands-off in three steps, once Linear is set up:
-
-```
-/fleet run init     # answer the questions once; Enter keeps each recommended answer
-/fleet run start    # asks nothing and keeps your teams running
-/fleet run stop     # stop starting new teams; running teams carry on
-```
-
-Merging, production, infrastructure applies, secrets and branch protection always stay yours.
-
-**Everything else** (how it works, troubleshooting, other trackers and agent CLIs, every command and config key, release
-notes) is in the [fleet guide](plugins/developer/skills/fleet/README.md).
-
-> **NOTE:** Run Claude Code inside a herdr pane. The plugin also ships `developer:lead` and `developer:orchestrator`
-> agents and two hooks, which do nothing outside fleet panes.
-
----
-
-### `archify` — Create Architecture Map
-
-[Archify](https://github.com/tt-a1i/archify) by tt-a1i (MIT) turns a description or a codebase into an
-interactive diagram: architecture, sequence, ERD, workflow, lifecycle and more. Each diagram is a
-standalone HTML file built from a JSON source, checked in a real browser before delivery.
-
-Installing `developer` installs it too, as a dependency. The marketplace pulls it straight from
-upstream, pinned to a reviewed commit. To take a newer
-version, review upstream and bump `sha` and `version` in `.claude-plugin/marketplace.json`.
-
-**Usage:**
-
-```
-Use Archify to diagram the architecture of this repo.
-```
-
-> **NOTE:** Requires Node 18+. The browser check needs Chrome.
 
 ---
 
