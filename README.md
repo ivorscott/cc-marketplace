@@ -7,7 +7,7 @@ A curated collection of Claude Code plugins for learners and developers.
 - [developer — Skills](#developer--skills)
   - [`/spec` — Feature Spec Generator](#spec--feature-spec-generator)
   - [`/fleet` — Agent Fleet Orchestrator](#fleet--agent-fleet-orchestrator)
-  - [`archify` — Create Architecture Map](#archify--create-architecture-map)
+  - [`/archify` — Create Architecture Map](#archify--create-architecture-map)
 - [learner — Skills](#learner--skills)
   - [`/install-obsidian` — Obsidian Setup](#install-obsidian--obsidian-setup)
   - [`/install-wiki` — LLM Wiki Setup](#install-wiki--llm-wiki-setup)
@@ -183,7 +183,7 @@ notes) is in the [fleet guide](plugins/developer/skills/fleet/README.md).
 
 ---
 
-### `archify` — Create Architecture Map
+### `/archify` — Create Architecture Map
 
 [Archify](https://github.com/tt-a1i/archify) by tt-a1i (MIT) turns a description or a codebase into an
 interactive diagram: architecture, sequence, ERD, workflow, lifecycle and more. Each diagram is a
@@ -196,6 +196,7 @@ version, review upstream and bump `sha` and `version` in `.claude-plugin/marketp
 **Usage:**
 
 ```
+/archify:archify the architecture of this repo
 Use Archify to diagram the architecture of this repo.
 ```
 
