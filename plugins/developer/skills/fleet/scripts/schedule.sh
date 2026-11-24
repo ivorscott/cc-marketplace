@@ -11,7 +11,9 @@
 # The plist (label `fleet.tick`, or schedule_label in config.toml) runs a 5-line launcher,
 # $FLEET_STATE_DIR/bin/fleet-tick. The launcher reads the plugin's installPath from
 # ~/.claude/plugins/installed_plugins.json and runs that version's loop-tick.sh, so an update takes effect on the
-# next tick and a swept old version directory cannot break the job. The job runs every tick_secs (config.toml,
+# next tick and a swept old version directory cannot break the job. If that file is unreadable or lists a missing
+# path, it runs the newest version under $FLEET_PLUGIN_CACHE/*/developer/ (numeric sort); if none, it prints one line
+# to stderr and exits 1 (no version path is written into the launcher). The job runs every tick_secs (config.toml,
 # default 300), once at load, and whenever the escalation inbox changes (WatchPaths), so a P0 starts a tick within
 # seconds. Output goes to $FLEET_STATE_DIR/loop.log. The plist carries PATH and HOME (plus FLEET_STATE_DIR and
 # FLEET_CONFIG_DIR when they are not the defaults), never a key value.
@@ -19,7 +21,8 @@
 # tick fails or never happens it unloads the job and prints the last log line. The loop is healthy when it had a
 # good tick within 2x tick_secs. The user runs install; boot and next never do.
 # Overrides for tests: FLEET_LAUNCH_AGENTS (default ~/Library/LaunchAgents), FLEET_LAUNCHCTL,
-# FLEET_INSTALLED_PLUGINS (default ~/.claude/plugins/installed_plugins.json), FLEET_UID, FLEET_PMSET (pmset).
+# FLEET_INSTALLED_PLUGINS (default ~/.claude/plugins/installed_plugins.json), FLEET_PLUGIN_CACHE
+# (default ~/.claude/plugins/cache), FLEET_UID, FLEET_PMSET (pmset).
 # A second job, `fleet.events` (events_label in config.toml), runs events.sh run with KeepAlive: the herdr event
 # subscriber that wakes the Orchestrator for a dead or blocked agent at once (tick stays the fallback). install adds it
 # after the tick job (launcher $FLEET_STATE_DIR/bin/fleet-events, output in events.log) when nc is installed, uninstall
@@ -61,7 +64,8 @@ write_launcher() {
 #!/bin/bash
 f="\${FLEET_INSTALLED_PLUGINS:-\$HOME/.claude/plugins/installed_plugins.json}"
 p="\$(jq -r '[.plugins | to_entries[] | select(.key | startswith("developer@")) | .value[0].installPath][0] // empty' "\$f" 2>/dev/null)"
-[ -d "\$p/skills/fleet/scripts" ] || p="$(dirname "$(dirname "$FLEET_SKILL_DIR")")"
+c="\${FLEET_PLUGIN_CACHE:-\$HOME/.claude/plugins/cache}"; [ -d "\$p/skills/fleet/scripts" ] || p="\$(for d in "\$c"/*/developer/*; do [ -d "\$d/skills/fleet/scripts" ] && echo "\${d##*/} \$d"; done | sort -t. -k1,1n -k2,2n -k3,3n | tail -1 | sed 's/^[^ ]* //')"
+[ -d "\$p/skills/fleet/scripts" ] || { echo "fleet-tick: no installed developer plugin found (installed_plugins.json unreadable or stale, no version under \$c)" >&2; exit 1; }
 exec /bin/bash "\$p/skills/fleet/scripts/loop-tick.sh"
 LAUNCH
   chmod +x "$launcher"

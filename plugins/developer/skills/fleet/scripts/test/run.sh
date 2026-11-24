@@ -2307,7 +2307,19 @@ mkdir -p "$PLUG/v3/skills/fleet/scripts"; printf '#!/bin/bash\necho "launched fr
 jq -n --arg p "$PLUG/v3" '{plugins: {"developer@cc-marketplace": [{installPath: $p}]}}' >"$FLEET_INSTALLED_PLUGINS"; rm -rf "$PLUG/v2"
 eq "launcher: an update takes effect on the next run, and the swept old dir does not matter" "$(/bin/bash "$LNCH")" "launched from v3"
 echo '{bad json' >"$FLEET_INSTALLED_PLUGINS"
-check "launcher: a corrupt installed_plugins.json falls back to the install-time scripts" bash -c "FLEET_TICK='$FLEET_TICK' /bin/bash '$LNCH' >/dev/null 2>&1; test -f '$FLEET_STATE_DIR/loop.state.json'"
+FC="$T/fakecache"; mkdir -p "$FC/mk/developer/4.2.9/skills/fleet/scripts" "$FC/mk/developer/4.2.10/skills/fleet/scripts"
+for v in 4.2.9 4.2.10; do printf '#!/bin/bash\necho "cache %s"\n' "$v" >"$FC/mk/developer/$v/skills/fleet/scripts/loop-tick.sh"; done
+eq "launcher: a corrupt installed_plugins.json runs the newest cached version" "$(FLEET_PLUGIN_CACHE="$FC" /bin/bash "$LNCH")" "cache 4.2.10"
+rm -f "$FLEET_INSTALLED_PLUGINS"
+eq "launcher: a missing installed_plugins.json runs the newest cached version" "$(FLEET_PLUGIN_CACHE="$FC" /bin/bash "$LNCH")" "cache 4.2.10"
+jq -n '{plugins: {"developer@cc-marketplace": [{installPath: "/nope/gone"}]}}' >"$FLEET_INSTALLED_PLUGINS"
+eq "launcher: a listed but missing installPath runs the newest cached version" "$(FLEET_PLUGIN_CACHE="$FC" /bin/bash "$LNCH")" "cache 4.2.10"
+mkdir -p "$T/emptycache"
+LERR="$(FLEET_PLUGIN_CACHE="$T/emptycache" /bin/bash "$LNCH" 2>&1 >/dev/null)" && LRC=0 || LRC=$?
+eq "launcher: nothing usable exits 1" "$LRC" 1
+eq "launcher: nothing usable prints exactly one stderr line" "$(printf '%s\n' "$LERR" | wc -l | tr -d ' ')" 1
+check "launcher: the one line names the missing plugin" bash -c "printf '%s' '$LERR' | grep -q 'no installed developer plugin found'"
+eq "launcher: no version number is written into it" "$(grep -cE '[0-9]+\.[0-9]+\.[0-9]+' "$LNCH" || true)" 0
 jq -n --arg p "$PLUG/v3" '{plugins: {"developer@cc-marketplace": [{installPath: $p}]}}' >"$FLEET_INSTALLED_PLUGINS"
 rm -f "$FLEET_STATE_DIR/loop.state.json"
 mkdir -p "$PLUG/v4/skills/fleet/scripts"; cp "$SCRIPTS/"*.sh "$PLUG/v4/skills/fleet/scripts/"
