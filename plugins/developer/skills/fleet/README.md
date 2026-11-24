@@ -1150,6 +1150,15 @@ session (`registry.sh orchestrator here`, which prints the log's path) and follo
 `tail -n 0 -F`. `fleet watch` prints that command for a re-arm. Until an Orchestrator is registered with a transcript
 that exists, wakes also go to a desktop notification, so a wake always reaches someone.
 
+A dead or blocked agent is woken faster than a tick. `events.sh`, a second launchd job (`fleet.events`, KeepAlive, added
+by `fleet schedule install` when `nc` exists), subscribes to herdr's event socket and appends the same `dead` or
+`input_pending` line the moment a pane exits or an agent blocks. Rows that are Done, Parked, Retired or being retired are
+skipped, and nothing from the event is written but fields of the registry row. It touches `events.alive` once connected;
+while that file is under 2 minutes old, loop-tick drops its own duplicate of a wake the subscriber already wrote
+(`events.seen.json`). Without a fresh `events.alive` tick writes every wake itself, and `events_down` alerts if a
+subscriber that had run goes quiet. `fleet events status` says whether it is up. After a lost stream it resubscribes with
+a capped backoff and reconciles once against `herdr api snapshot`.
+
 The Linear heartbeat runs only when `linear_writes` is `on` or `test:<TEAM>`.
 
 ### Keeping the Mac awake

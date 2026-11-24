@@ -20,6 +20,10 @@
 # good tick within 2x tick_secs. The user runs install; boot and next never do.
 # Overrides for tests: FLEET_LAUNCH_AGENTS (default ~/Library/LaunchAgents), FLEET_LAUNCHCTL,
 # FLEET_INSTALLED_PLUGINS (default ~/.claude/plugins/installed_plugins.json), FLEET_UID, FLEET_PMSET (pmset).
+# A second job, `fleet.events` (events_label in config.toml), runs events.sh run with KeepAlive: the herdr event
+# subscriber that wakes the Orchestrator for a dead or blocked agent at once (tick stays the fallback). install adds it
+# after the tick job (launcher $FLEET_STATE_DIR/bin/fleet-events, output in events.log) when nc is installed, uninstall
+# removes it, and status adds one line about it once it is installed. UNVERIFIED: launchd KeepAlive for it.
 # Linux: no code here; see the README (systemd user timer).
 # UNVERIFIED until the user runs install: real launchd behaviour (DEV-368).
 # Command: Install, remove or check the launchd loop · e.g. fleet schedule status
@@ -33,6 +37,9 @@ lctl="${FLEET_LAUNCHCTL:-launchctl}"
 plist="$dir/$label.plist"
 launcher="$FLEET_STATE_DIR/bin/fleet-tick"
 domain="gui/${FLEET_UID:-$(id -u)}"
+label_ev="$(cfg_str events_label fleet.events)"
+plist_ev="$dir/$label_ev.plist"
+launcher_ev="$FLEET_STATE_DIR/bin/fleet-events"
 
 # PATH for the job: launchd's own is bare, so keep the caller's plus the usual tool directories.
 job_path() {
@@ -58,6 +65,13 @@ p="\$(jq -r '[.plugins | to_entries[] | select(.key | startswith("developer@")) 
 exec /bin/bash "\$p/skills/fleet/scripts/loop-tick.sh"
 LAUNCH
   chmod +x "$launcher"
+}
+
+# The events launcher: the same lookup of the installed version, running events.sh instead.
+write_launcher_ev() {
+  write_launcher
+  sed -e 's/loop-tick\.sh"/events.sh" run/' "$launcher" >"$launcher_ev"
+  chmod +x "$launcher_ev"
 }
 
 # A state or config root that is not the default goes into the job's environment, so the job runs on the
@@ -114,6 +128,51 @@ render() {
 PLIST
 }
 
+render_events() {
+  cat <<PLIST
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>$(xml "$label_ev")</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/bin/bash</string>
+    <string>$(xml "$launcher_ev")</string>
+  </array>
+  <key>KeepAlive</key>
+  <true/>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>$(xml "$FLEET_STATE_DIR/events.log")</string>
+  <key>StandardErrorPath</key>
+  <string>$(xml "$FLEET_STATE_DIR/events.log")</string>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>$(xml "$(job_path)")</string>
+    <key>HOME</key>
+    <string>$(xml "$HOME")</string>$(env_extra)
+  </dict>
+</dict>
+</plist>
+PLIST
+}
+
+# install_events: the subscriber job, idempotent and silent when nothing changes. Without nc it says so and goes on.
+install_events() {
+  command -v "${FLEET_NC:-nc}" >/dev/null 2>&1 || { warn "nc is not installed: no event subscriber, tick polling only"; return 0; }
+  write_launcher_ev
+  local new; new="$(render_events)"
+  if [ -f "$plist_ev" ] && [ "$(cat "$plist_ev")" = "$new" ] && "$lctl" print "$domain/$label_ev" >/dev/null 2>&1; then return 0; fi
+  printf '%s\n' "$new" >"$plist_ev"
+  "$lctl" bootout "$domain/$label_ev" >/dev/null 2>&1 || true
+  "$lctl" bootstrap "$domain" "$plist_ev" || { warn "launchctl bootstrap failed for $plist_ev; tick polling only"; return 0; }
+  echo "installed: $label_ev (herdr event subscriber)"
+}
+
 # mac_slept <last good epoch> <now epoch>: "HH:MM–HH:MM" (local times, as pmset writes them) when pmset's log has a
 # Sleep after the last good tick and a Wake or DarkWake after it, within 2x tick_secs of now; else nothing. Only lines
 # whose type is exactly Sleep, Wake or DarkWake count ("Wake Requests" does not). A line is "YYYY-MM-DD HH:MM:SS
@@ -133,13 +192,15 @@ mac_slept() {
 
 case "${1:-}" in
   render) render ;;
+  render-events) render_events ;;
+  launcher-events) write_launcher_ev; echo "$launcher_ev" ;;
   launcher) write_launcher; echo "$launcher" ;;
   install)
     mkdir -p "$dir" "$FLEET_STATE_DIR" "$(dirname "$FLEET_INBOX")"; touch "$FLEET_INBOX"
     write_launcher
     new="$(render)"
     if [ -f "$plist" ] && [ "$(cat "$plist")" = "$new" ] && "$lctl" print "$domain/$label" >/dev/null 2>&1; then
-      echo "already installed: $label"; exit 0
+      install_events; echo "already installed: $label"; exit 0
     fi
     printf '%s\n' "$new" >"$plist"
     "$lctl" bootout "$domain/$label" >/dev/null 2>&1 || true
@@ -157,9 +218,11 @@ case "${1:-}" in
       exit 1
     fi
     echo "installed: $label every ${secs}s"
+    install_events
     echo "The Orchestrator registers once per session, then follows the wakes.log it names: $FLEET_SCRIPTS/registry.sh orchestrator here"
     ;;
   uninstall)
+    "$lctl" bootout "$domain/$label_ev" >/dev/null 2>&1 || true; rm -f "$plist_ev"
     "$lctl" bootout "$domain/$label" >/dev/null 2>&1 || true
     if [ -f "$plist" ]; then rm -f "$plist"; echo "uninstalled: $label"; else echo "not installed: $label"; fi
     ;;
@@ -177,6 +240,7 @@ case "${1:-}" in
     fi
     [ "$loaded" = loaded ] || health="problem: the job is $loaded"
     reply "$(render_line loop loaded="$loaded" when="$when" health="$health")" "$(orch_hint)"
+    [ ! -f "$plist_ev" ] || "$FLEET_SCRIPTS/events.sh" status
     ;;
   *) sed -n '2,6p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

@@ -9,6 +9,7 @@
 #   bash scripts/test/run.sh --v428     only the 4.2.8 cases, test/v428.sh
 #   bash scripts/test/run.sh --v420     only the 4.2.0 cases, test/v420.sh
 #   bash scripts/test/run.sh --v42x     only the 4.2.x patch cases, test/v42x.sh
+#   bash scripts/test/run.sh --v4217    only the 4.2.17 cases, test/v4217.sh
 #   bash scripts/test/run.sh --v4215    only the 4.2.15 cases, test/v4215.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
@@ -341,6 +342,8 @@ if [ "${1:-}" = --v427 ]; then v427_full; printf '\n%d passed, %d failed\n' "$pa
 . "$HERE/v4211.sh" # 4.2.11: v4211_smoke and v4211_full
 if [ "${1:-}" = --v4211 ]; then v4211_full; printf '\n%d passed, %d failed\n' "$pass" "$failn"; [ "$failn" = 0 ]; exit; fi
 . "$HERE/v4215.sh" # 4.2.15: v4215_smoke and v4215_full
+. "$HERE/v4217.sh" # 4.2.17: v4217_smoke and v4217_full
+if [ "${1:-}" = --v4217 ]; then v4217_full; printf '\n%d passed, %d failed\n' "$pass" "$failn"; [ "$failn" = 0 ]; exit; fi
 if [ "${1:-}" = --v4215 ]; then v4215_full; printf '\n%d passed, %d failed\n' "$pass" "$failn"; [ "$failn" = 0 ]; exit; fi
 if [ "${1:-}" = --v426 ]; then v426_full; printf '\n%d passed, %d failed\n' "$pass" "$failn"; [ "$failn" = 0 ]; exit; fi
 if [ "${1:-}" = --v42x ]; then v42x_full; printf '\n%d passed, %d failed\n' "$pass" "$failn"; [ "$failn" = 0 ]; exit; fi # only the 4.2.x patch cases
@@ -772,6 +775,7 @@ Merge this one first." "Do not merge until the API ships" "  hold: waiting on de
   v429_smoke
   v4211_smoke
   v4215_smoke
+  v4217_smoke
   printf '\n%d passed, %d failed\n' "$pass" "$failn"
   [ "$failn" = 0 ]; exit
 fi
@@ -1443,7 +1447,7 @@ check "escalate logs 'notification failed'" grep -q 'notification failed' <<<"$e
 err="$(NOTIFY_FAIL=1 "$REG" done esc/solo --outcome Shipped --summary s 2>&1 >/dev/null)"
 check "done logs 'notification failed'" grep -q 'notification failed' <<<"$err"
 eq "a working notification logs nothing" "$("$REG" escalate esc/builder P2 "n2" 2>&1 >/dev/null)" ""
-for f in registry.sh status.sh retire.sh common.sh boot.sh tell.sh tick.sh next.sh linear.sh claim.sh respawn.sh metrics.sh agent-lib.sh schedule.sh loop-tick.sh sandbox.sh park.sh unpark.sh focus.sh; do check "bash -n $f" bash -n "$SCRIPTS/$f"; done
+for f in events.sh registry.sh status.sh retire.sh common.sh boot.sh tell.sh tick.sh next.sh linear.sh claim.sh respawn.sh metrics.sh agent-lib.sh schedule.sh loop-tick.sh sandbox.sh park.sh unpark.sh focus.sh; do check "bash -n $f" bash -n "$SCRIPTS/$f"; done
 SKD0="$SCRIPTS/.."
 eq "SKILL.md no longer routes through escalation-wait.sh" "$(grep -c 'escalation-wait' "$SKD0/SKILL.md" || true)" 0
 check "SKILL.md documents resolve" grep -q 'fleet resolve' "$SKD0/SKILL.md" "$SKD0/references/operations.md"
@@ -2301,7 +2305,7 @@ eq "schedule: status before install" "$(sch status | head -n 1)" "Fleet loop: no
 sch install >"$T/inst0.out"; P="$LA/fleet.tick.plist"
 check "schedule: install tells the Orchestrator to register its pane" grep -q 'registry.sh orchestrator here' "$T/inst0.out"
 check "schedule: install writes the plist" test -f "$P"
-eq "schedule: install bootstraps once into gui/501" "$(grep -c '^bootstrap gui/501 ' "$LCL")" 1
+eq "schedule: install bootstraps the tick job once into gui/501" "$(grep -c '^bootstrap gui/501 .*fleet.tick.plist' "$LCL")" 1
 check "schedule: and waited for a good first tick" bash -c "[ \"\$(jq -r .last_good '$FLEET_STATE_DIR/loop.state.json')\" -gt 0 ]"
 cp "$P" "$T/plist.before"; : >"$LCL"
 eq "schedule: a second install says so" "$(sch install)" "already installed: fleet.tick"
@@ -4634,6 +4638,7 @@ v4210_full
 v429_full
 v4211_full
 v4215_full
+v4217_full
 # ---- end 4.2.0 ----
 
 printf '\n%d passed, %d failed\n' "$pass" "$failn"

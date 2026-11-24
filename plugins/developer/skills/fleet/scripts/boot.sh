@@ -227,6 +227,9 @@ mkdir -p "$(dirname "$plan_file")" 2>/dev/null || warn "could not create $(dirna
 # Agent state (tell's delivery check, status's health) comes from herdr's Claude integration: boot goes on without
 # it, saying so once. Its first herdr call, after every refusal.
 herdr_integration_ok || warn "herdr's Claude integration is not current, so agent state may be wrong; run herdr integration install claude"
+# The event subscriber (events.sh, a launchd job) wakes the Orchestrator for a dead or blocked agent at once. Boot only
+# checks it is up, never starts it: without it tick still catches both, up to a tick later.
+events_alive "$(date +%s)" || warn "the herdr event subscriber is not running, so dead and blocked agents wait for the next tick; run fleet schedule install"
 
 # Rollback: a boot that fails or is interrupted once it has created something undoes only what this run made (an
 # EXIT trap, armed with the workspace and disarmed once the reply is printed): it closes the workspace, removes the

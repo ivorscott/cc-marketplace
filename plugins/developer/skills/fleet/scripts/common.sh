@@ -1357,6 +1357,41 @@ WAKE_TYPES="pr_ready pr_merged pr_opened pr_conflicting input_pending dead faile
 # WAKE_JQ: the jq filter that keeps the events that wake, with $wake bound to WAKE_TYPES (--arg wake "$WAKE_TYPES").
 WAKE_JQ='select(type == "object") | select((.type as $t | $wake | split(" ") | index($t)) and (.type != "pr_opened" or .lead_told == false))'
 
+# wake_safe: stdin cut to the characters a wake line may hold (enumerated fields only, never free text), 80 at most.
+wake_safe() { tr -cd 'A-Za-z0-9._:/@#-' | cut -c1-80; }
+# wake_line <type> <team> <name> <issue> <url> <esc id>: one fixed-template wake line ("-" for an empty field).
+wake_line() {
+  local f out="fleet tick:"
+  for f in "$@"; do out="$out $(printf '%s' "${f:--}" | wake_safe)"; done
+  printf '%s\n' "$out"
+}
+# wake_append <lines>: append wake lines to $FLEET_STATE_DIR/wakes.log (mode 600, at most 500 lines: past that the file
+# moves to wakes.log.1 and a new one starts). The one writer for loop-tick.sh and events.sh.
+wake_append() {
+  local WL="$FLEET_STATE_DIR/wakes.log" n
+  n="$(printf '%s\n' "$1" | wc -l | tr -d ' ')"
+  mkdir -p "$FLEET_STATE_DIR"; (umask 077; touch "$WL")
+  [ $(($(wc -l <"$WL" | tr -d ' ') + n)) -le 500 ] || mv -f "$WL" "$WL.1"
+  (umask 077; printf '%s\n' "$1" >>"$WL"); chmod 600 "$WL" 2>/dev/null || true
+}
+# events_alive <now epoch>: the herdr event subscriber (events.sh) touched events.alive within 2 minutes. Absent or older
+# means it is down, and tick writes every wake itself, as it did before the subscriber existed.
+events_alive() {
+  local f="$FLEET_STATE_DIR/events.alive" m
+  [ -f "$f" ] || return 1
+  m="$(stat -c %Y "$f" 2>/dev/null || stat -f %m "$f" 2>/dev/null)" || return 1
+  [ $(($1 - m)) -le 120 ]
+}
+# events_seen_take <name> <type>: succeed (and forget it) when the subscriber already woke the Orchestrator for this agent
+# and type; loop-tick.sh then drops the same wake line from tick. events.seen.json holds {"<name>|<type>": {pane, at}}.
+events_seen_take() {
+  local f="$FLEET_STATE_DIR/events.seen.json" k n="${3:-$(date +%s)}"
+  k="$(printf '%s' "$1" | wake_safe)|$2"
+  # An entry older than 30 minutes is not this tick's report of the same death: it is dropped and swallows nothing.
+  [ -f "$f" ] && [ "$(jq -r --arg k "$k" --argjson n "$n" '((.[$k].at // 0) > $n - 1800)' "$f" 2>/dev/null)" = true ] || return 1
+  jq -c --arg k "$k" 'del(.[$k])' "$f" >"$f.$$.new" && mv "$f.$$.new" "$f"
+}
+
 # input_line <agent ref>: the text sitting unsent in an idle agent's input box, nothing when the agent is working, blocked
 # (a dialog), gone or the box is empty. The one place the screen is read besides the exit dialog: `herdr agent read
 # --source visible`, the last line that starts with the prompt marker (❯ or >, with or without the box's border) above the
