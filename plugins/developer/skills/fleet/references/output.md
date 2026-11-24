@@ -428,6 +428,8 @@ with one row per branch. A delete that failed is a Keep row, `delete failed`. Th
 `<machine> holds <ISSUE>`, `team <t> is live`, `no PR, <n> commit(s) not in <default>`, `<n> commit(s) added after its PR merged`,
 `could not read PR state`.
 
+`loop.log`: a normal tick prints nothing. An offline tick prints one line, `gh offline: skipped <n> PR lookup(s) this tick`; any other gh failure keeps its `gh could not read <url>` line per PR. A heartbeat summary Linear refuses warns once per cause (cap and size), not every tick.
+
 ### run
 
 `fleet run init` asks one question at a time, each as `<question> [<recommended or saved answer>]:`, then ends with

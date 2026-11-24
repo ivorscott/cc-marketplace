@@ -779,10 +779,15 @@ if [ "$(printf '%s' "$prs" | jq length)" != 0 ]; then
     warn "$FLEET_GH not found; no PR events this tick"
   else
     no_ci="$(config_list no_pr_ci)"
-    ghtmp="$(mktemp)"
+    ghtmp="$(mktemp)"; gh_offline=0; gh_skipped=0
     while IFS= read -r p; do
+      [ "$gh_offline" = 0 ] || { gh_skipped=$((gh_skipped + 1)); continue; }
       url="$(printf '%s' "$p" | jq -r .pr)"
       if ! j="$(forge_pr_json "$url" 2>"$ghtmp")"; then
+        # A network failure fails every other lookup the same way: one line for the tick, the rest are skipped.
+        if grep -qiE 'error connecting to|could not resolve host|dial tcp|i/o timeout|network is unreachable' "$ghtmp"; then
+          gh_offline=1; gh_skipped=1; continue
+        fi
         warn "gh could not read $url: $(head -1 "$ghtmp")"; continue
       fi
       if ! printf '%s' "$j" | jq -e 'type == "object" and (.state | type == "string")' >/dev/null 2>&1; then
@@ -870,6 +875,7 @@ if [ "$(printf '%s' "$prs" | jq length)" != 0 ]; then
       esac
     done < <(printf '%s' "$prs" | jq -c '.[]')
     rm -f "$ghtmp"; ghtmp=""
+    [ "$gh_offline" = 0 ] || warn "gh offline: skipped $gh_skipped PR lookup(s) this tick"
   fi
 fi
 # A PR that was ready (in ready_prev: on the tick before, or since then while GitHub said mergeable unknown) or that
