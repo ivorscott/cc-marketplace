@@ -39,21 +39,22 @@ epoch() { jq -rn --arg t "${FLEET_NOW:-$(now)}" '$t | fromdateiso8601'; }
 beat() { : >"$ALIVE"; }
 
 # seen_has <name> <type> <pane>: this wake already went out for this pane (and was not taken by tick yet).
-seen_has() { [ -f "$SEEN" ] && [ "$(jq -r --arg k "$1|$2" --arg p "$3" '(.[$k] // {}).pane == $p' "$SEEN" 2>/dev/null)" = true ]; }
+seen_key() { printf '%s|%s' "$(printf '%s' "$1" | wake_safe)" "$2"; }
+seen_has() { [ -f "$SEEN" ] && [ "$(jq -r --arg k "$(seen_key "$1" "$2")" --arg p "$3" '(.[$k] // {}).pane == $p' "$SEEN" 2>/dev/null)" = true ]; }
 seen_set() { # <name> <type> <pane>
   local cur='{}'; [ ! -f "$SEEN" ] || cur="$(cat "$SEEN")"
-  printf '%s' "$cur" | jq -c --arg k "$1|$2" --arg p "$3" --argjson n "$(epoch)" --argjson ttl "$SEEN_TTL" \
+  printf '%s' "$cur" | jq -c --arg k "$(seen_key "$1" "$2")" --arg p "$3" --argjson n "$(epoch)" --argjson ttl "$SEEN_TTL" \
     'with_entries(select(.value.at > $n - $ttl)) + {($k): {pane: $p, at: $n}}' >"$SEEN.$$.new" && mv "$SEEN.$$.new" "$SEEN"
 }
 seen_clear() { # <name> <type>
   [ -f "$SEEN" ] || return 0
-  jq -c --arg k "$1|$2" 'del(.[$k])' "$SEEN" >"$SEEN.$$.new" && mv "$SEEN.$$.new" "$SEEN"
+  jq -c --arg k "$(seen_key "$1" "$2")" 'del(.[$k])' "$SEEN" >"$SEEN.$$.new" && mv "$SEEN.$$.new" "$SEEN"
 }
 
 # row_for_pane <pane id>: the one live, non-Orchestrator row on that pane, as "team<TAB>name", else nothing.
 row_for_pane() {
   "$FLEET_SCRIPTS/registry.sh" list 2>/dev/null | jq -r --arg p "$1" '[.[] | select((.pane // "") == $p and .tier != "Orchestrator"
-    and .status != "Retired" and .status != "Parked")] | first // empty | [(.team // "-"), .name] | @tsv'
+    and .status != "Retired" and .status != "Parked" and .status != "Done" and (.retiring // "") == "")] | first // empty | [(.team // "-"), .name] | @tsv'
 }
 
 # wake <type> <team> <name> <pane>: once per (agent, type, pane) until tick takes it or the state is cleared.
@@ -78,7 +79,7 @@ handle() {
         else ["lost", "", ""] end | @tsv end' 2>/dev/null)" || parsed=$'lost\t\t'
   IFS=$'\t' read -r kind pane st <<<"$parsed"
   case "$kind" in
-    ack) if [ "$acked" = 0 ]; then acked=1; return 0; fi; return 2 ;;
+    ack) if [ "$acked" = 0 ]; then acked=1; beat; return 0; fi; return 2 ;; # connected: the subscription succeeded
     pane.exited | pane.agent_status_changed)
       beat
       [ -n "$pane" ] || return 0
@@ -105,7 +106,7 @@ reconcile() {
     elif [ "$blocked" = true ]; then wake input_pending "$team" "$name" "$pane"; fi
   done < <(jq -rn --slurpfile s <(printf '%s' "$snap") --slurpfile r <("$FLEET_SCRIPTS/registry.sh" list 2>/dev/null) '
     [$s[0] | .. | objects | select(has("pane_id")) | {id: (.pane_id | tostring), st: (.agent_status // "")}] as $panes
-    | $r[0][] | select((.pane // "") != "" and .tier != "Orchestrator" and .status != "Retired" and .status != "Parked")
+    | $r[0][] | select((.pane // "") != "" and .tier != "Orchestrator" and .status != "Retired" and .status != "Parked" and .status != "Done" and (.retiring // "") == "")
     | .pane as $p | ([$panes[] | select(.id == $p)] | first) as $m
     | [(.team // "-"), .name, $p, ($m == null | tostring), (($m.st // "") == "blocked" | tostring)] | @tsv')
 }
@@ -113,21 +114,26 @@ reconcile() {
 # pump: read lines from fd 3 until EOF or a lost frame; every 30 seconds without a line only refreshes events.alive.
 pump() {
   local line rc
-  acked=0; beat
+  acked=0 # events.alive is touched only once the subscription is acknowledged, never before
   while :; do
     if IFS= read -r -t 30 -u 3 line; then
       rc=0; handle "$line" || rc=$?
       [ "$rc" != 2 ] || return 2
     else
       [ $? -gt 128 ] || return 2 # EOF
-      beat
+      [ "$acked" = 0 ] || beat
     fi
   done
 }
 
+# next_delay <current> <acked>: the pause before the next connection attempt. A connection that was acknowledged starts
+# over at 1 second; one that never subscribed doubles, to 60 at most, so a subscriber that cannot connect backs off.
+next_delay() { if [ "$2" = 1 ]; then echo 1; else echo $(($1 * 2 > 60 ? 60 : $1 * 2)); fi; }
+
 case "${1:-}" in
+  backoff) next_delay "${2:-1}" "${3:-0}" ;;
   feed)
-    exec 3<&0; beat
+    exec 3<&0
     pump || { reconcile; exit 0; }
     ;;
   run)
@@ -143,11 +149,12 @@ case "${1:-}" in
         exec 5>"$fifo"; printf '%s\n' "$sub" >&5
         pump && true
         exec 3<&- 5>&-; rm -f "$fifo"; pkill -P $$ 2>/dev/null || true
-        reconcile # events_lost, an EOF or a server restart: one snapshot, wakes deduped
-        delay=1
-      fi
+        # events_lost, an EOF or a server restart: one snapshot, wakes deduped (only after a subscription that worked)
+        [ "$acked" = 0 ] || reconcile
+      else acked=0; fi
+      delay="$(next_delay "$delay" "$acked")"
       [ -z "${FLEET_EVENTS_ONCE:-}" ] || exit 0
-      sleep "$delay"; delay=$((delay * 2 > 60 ? 60 : delay * 2))
+      sleep "$delay"
     done
     ;;
   status)

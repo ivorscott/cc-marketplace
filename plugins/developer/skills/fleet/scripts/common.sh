@@ -1385,8 +1385,10 @@ events_alive() {
 # events_seen_take <name> <type>: succeed (and forget it) when the subscriber already woke the Orchestrator for this agent
 # and type; loop-tick.sh then drops the same wake line from tick. events.seen.json holds {"<name>|<type>": {pane, at}}.
 events_seen_take() {
-  local f="$FLEET_STATE_DIR/events.seen.json" k="$1|$2"
-  [ -f "$f" ] && [ "$(jq -r --arg k "$k" 'has($k)' "$f" 2>/dev/null)" = true ] || return 1
+  local f="$FLEET_STATE_DIR/events.seen.json" k n="${3:-$(date +%s)}"
+  k="$(printf '%s' "$1" | wake_safe)|$2"
+  # An entry older than 30 minutes is not this tick's report of the same death: it is dropped and swallows nothing.
+  [ -f "$f" ] && [ "$(jq -r --arg k "$k" --argjson n "$n" '((.[$k].at // 0) > $n - 1800)' "$f" 2>/dev/null)" = true ] || return 1
   jq -c --arg k "$k" 'del(.[$k])' "$f" >"$f.$$.new" && mv "$f.$$.new" "$f"
 }
 

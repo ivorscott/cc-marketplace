@@ -142,7 +142,7 @@ while IFS=$'\t' read -r t team name issue url eid; do
   [ -n "$t" ] || continue
   # The subscriber (events.sh) already woke the Orchestrator for this dead or input_pending agent: once, not twice.
   # Without a fresh events.alive nothing is dropped, and tick behaves as it always did.
-  case "$t" in dead | input_pending) ! { events_alive "$now_epoch" && events_seen_take "$(printf '%s' "$name" | safe)" "$t"; } || continue ;; esac
+  case "$t" in dead | input_pending) ! { events_alive "$now_epoch" && events_seen_take "$name" "$t" "$now_epoch"; } || continue ;; esac
   lines="${lines:+$lines
 }fleet tick: $(printf '%s' "$t" | safe) $(printf '%s' "$team" | safe) $(printf '%s' "$name" | safe) $(printf '%s' "$issue" | safe) $(printf '%s' "$url" | safe) $(printf '%s' "$eid" | safe)"
 done < <(printf '%s' "$out" | jq -r --arg wake "$WAKE_TYPES" '

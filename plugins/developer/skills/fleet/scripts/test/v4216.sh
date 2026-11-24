@@ -44,6 +44,14 @@ v4216_events() {
   rm -f "$FLEET_STATE_DIR/events.seen.json"
   v4216_feed "$v4216_ack" "$(v4216_exit pxa-builder)" "$(v4216_status pxa-lead blocked)" "$(v4216_exit pzzz)" >/dev/null
   eq "v4216 Retired, Parked and unknown panes wake nothing" "$(v4216_wl | wc -l | tr -d ' ')" 3
+  v4216_state dn; "$REG" set xa/builder status=Done >/dev/null; "$REG" set xa/lead retiring=1 >/dev/null
+  v4216_feed "$v4216_ack" "$(v4216_exit pxa-builder)" "$(v4216_exit pxa-lead)" >/dev/null
+  eq "v4216 a Done row, and a row retire has marked retiring, wake nothing on pane exit" "$(v4216_wl | wc -l | tr -d ' ')" 0
+  v4216_snap '{"result":{"panes":[{"pane_id":"pother","agent_status":"working"}]}}'
+  PATH="$T/v4216bin:$PATH" v4216_feed "$v4216_ack" >/dev/null
+  eq "v4216 nor does the reconcile after a lost stream" "$(v4216_wl | wc -l | tr -d ' ')" 0
+  eq "v4216 retire.sh marks the rows retiring before it closes any pane or workspace" \
+    "$(awk '/retiring=1/ && !m {m = NR} /hd (workspace|pane) close/ && !c {c = NR} END {print (m > 0 && c > m) ? "before" : "wrong"}' "$SCRIPTS/retire.sh")" before
 
   # no free text: only enumerated fields of the registry row reach wakes.log
   v4216_state ft
@@ -75,6 +83,12 @@ S
   eq "v4216 the subscriber woke it, then tick reports the same death: still one line" "$(v4216_wl | wc -l | tr -d ' ')" 1
   FLEET_TICK="$ft" "$SCRIPTS/loop-tick.sh" >/dev/null 2>&1
   eq "v4216 a later tick report of a new death is written (the dedupe is used up)" "$(v4216_wl | wc -l | tr -d ' ')" 2
+  # a seen entry from long ago must not swallow a later report of a new death
+  v4216_state old
+  jq -nc --argjson at $((ne - 3000)) '{"xa/builder|dead": {pane: "pxa-builder", at: $at}}' >"$FLEET_STATE_DIR/events.seen.json"
+  : >"$FLEET_STATE_DIR/events.alive"; v4216_touch "$FLEET_STATE_DIR/events.alive" $((ne - 30))
+  FLEET_TICK="$ft" "$SCRIPTS/loop-tick.sh" >/dev/null 2>&1
+  eq "v4216 a stale events.seen.json entry is ignored: tick's wake is written" "$(v4216_wl)" "fleet tick: dead xa xa/builder - - -"
   # a stale events.alive: tick writes the wake itself, as it always did
   v4216_state st
   v4216_feed "$v4216_ack" "$(v4216_exit pxa-builder)" >/dev/null
@@ -130,6 +144,24 @@ S
 rc=1"
 }
 
+v4216_connect() { # events.alive means connected: an nc that never acknowledges leaves it absent; backoff is capped and kept
+  local nc="$T/v4216.nc0"
+  v4216_state cn; export FLEET_NOW=2026-10-29T10:00:00Z
+  printf '#!/usr/bin/env bash\nhead -n 1 >/dev/null\n' >"$nc"; chmod +x "$nc"
+  FLEET_NC="$nc" FLEET_EVENTS_ONCE=1 "$SCRIPTS/events.sh" run >/dev/null 2>&1
+  eq "v4216 nc exits without acknowledging the subscription: no events.alive" "$(test -f "$FLEET_STATE_DIR/events.alive" && echo yes || echo no)" no
+  printf '#!/usr/bin/env bash\nhead -n 1 >/dev/null\necho %s\n' "'$v4216_ack'" >"$nc"
+  FLEET_NC="$nc" FLEET_EVENTS_ONCE=1 "$SCRIPTS/events.sh" run >/dev/null 2>&1
+  eq "v4216 once the subscription is acknowledged, events.alive exists" "$(test -f "$FLEET_STATE_DIR/events.alive" && echo yes || echo no)" yes
+  eq "v4216 a connection that never subscribed doubles the pause (1, 2, 4 ... capped at 60)" \
+    "$("$SCRIPTS/events.sh" backoff 1 0 | tr '\n' ' ')$("$SCRIPTS/events.sh" backoff 2 0 | tr '\n' ' ')$("$SCRIPTS/events.sh" backoff 40 0)" "2 4 60"
+  eq "v4216 only an acknowledged connection starts over at 1" "$("$SCRIPTS/events.sh" backoff 32 1)" 1
+  # tick and events_down take over: the file is absent or old, so tick polls and, once it had run, the alert fires
+  rm -f "$FLEET_STATE_DIR/events.alive"; export FLEET_NC="$nc"
+  eq "v4216 with no events.alive the subscriber counts as down" "$("$SCRIPTS/events.sh" status | cut -c1-30)" "Event subscriber: not running "
+  unset FLEET_NOW FLEET_NC
+}
+
 v4216_status_line() {
   local ne; export FLEET_NOW=2026-10-29T10:00:00Z; ne="$(jq -rn --arg t "$FLEET_NOW" '$t | fromdateiso8601')"
   v4216_state sl; export FLEET_NC="$T/v4216.nc"
@@ -141,15 +173,20 @@ v4216_status_line() {
   unset FLEET_NOW FLEET_NC
 }
 
+v4216_plist() { # v4216_plist <file>: the plist as JSON (python3's plistlib, so no macOS-only plutil is needed)
+  python3 -I -c 'import json, plistlib, sys; print(json.dumps(plistlib.load(open(sys.argv[1], "rb"))))' "$1"
+}
 v4216_job() { # the launchd job: KeepAlive, its own launcher, installed next to the tick job
-  local p="$T/v4216.plist" l
+  local p="$T/v4216.plist" l j
   FLEET_LAUNCH_AGENTS="$T/la" "$SCRIPTS/schedule.sh" render-events >"$p"
-  check "v4216 the events plist is valid XML" plutil -lint "$p"
+  j="$(v4216_plist "$p" 2>/dev/null || true)"
+  eq "v4216 the events plist is valid XML (it parses as a plist)" "$([ -n "$j" ] && echo yes)" yes
   eq "v4216 label is fleet.events, KeepAlive and RunAtLoad, no interval" \
-    "$(plutil -extract Label raw "$p"):$(plutil -extract KeepAlive raw "$p"):$(plutil -extract RunAtLoad raw "$p"):$(plutil -extract StartInterval raw "$p" 2>&1 | grep -c 'No value')" "fleet.events:true:true:1"
-  eq "v4216 it runs the events launcher in the state dir" "$(plutil -extract ProgramArguments json -o - "$p" | jq -c .)" "[\"/bin/bash\",\"$FLEET_STATE_DIR/bin/fleet-events\"]"
+    "$(jq -r '[.Label, .KeepAlive, .RunAtLoad, has("StartInterval")] | map(tostring) | join(":")' <<<"$j")" "fleet.events:true:true:false"
+  eq "v4216 it runs the events launcher in the state dir" "$(jq -c .ProgramArguments <<<"$j")" "[\"/bin/bash\",\"$FLEET_STATE_DIR/bin/fleet-events\"]"
   l="$("$SCRIPTS/schedule.sh" launcher-events)"
-  eq "v4216 the launcher runs events.sh run from the installed version" "$(grep -c 'events.sh run' "$l"):$(grep -c 'loop-tick' "$l")" "1:0"
+  eq "v4216 the launcher's exec line runs events.sh with run as its own argument" "$(grep '^exec ' "$l")" 'exec /bin/bash "$p/skills/fleet/scripts/events.sh" run'
+  eq "v4216 and it never names loop-tick" "$(grep -c 'loop-tick' "$l" || true)" 0
 }
 
 v4216_docs() {
@@ -158,5 +195,5 @@ v4216_docs() {
   check "v4216 the fleet command index lists events" bash -c "'$SCRIPTS/fleet' help | grep -q 'fleet events status'"
 }
 
-v4216_smoke() { v4216_events; v4216_dedupe; v4216_lost; v4216_run; v4216_status_line; v4216_job; v4216_docs; }
+v4216_smoke() { v4216_events; v4216_dedupe; v4216_lost; v4216_run; v4216_connect; v4216_status_line; v4216_job; v4216_docs; }
 v4216_full() { v4216_smoke; }

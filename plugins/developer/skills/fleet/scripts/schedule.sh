@@ -70,7 +70,7 @@ LAUNCH
 # The events launcher: the same lookup of the installed version, running events.sh instead.
 write_launcher_ev() {
   write_launcher
-  sed -e 's/loop-tick\.sh/events.sh run/' "$launcher" >"$launcher_ev"
+  sed -e 's/loop-tick\.sh"/events.sh" run/' "$launcher" >"$launcher_ev"
   chmod +x "$launcher_ev"
 }
 
