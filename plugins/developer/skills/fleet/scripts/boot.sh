@@ -367,7 +367,7 @@ fi
 
 ev_log boot team="$team" issue="$issue" detail="template $template"
 herdr_meta "$team" # the team on herdr's panel (best effort)
-reply "$(render_line booted team="$team" issue="$(issue_link "$issue" "$issue_url" "$issue_title")" repo="$(basename "$repo")" agents="$(roles_line "$team")")" "${base_ref:+Worktrees branched from $base_ref at $base_sha.}" "$(render_table)"
+reply "$(render_line booted team="$team" issue="$(issue_link "$issue" "$issue_url" "$issue_title")" repo="$(basename "$repo")" agents="$(roles_line "$team")")" "${base_ref:+Worktrees branched from $base_ref at $base_sha.}" "$("$FLEET_SCRIPTS/rules.sh" --line "$repo" 2>/dev/null || true)" "$(render_table)"
 armed=0 # booted: from here on a failed brief marks its row Failed, and nothing is rolled back
 if [ "${#failed_agents[@]}" -gt 0 ]; then
   warn "brief not delivered to: ${failed_agents[*]} (rows set to Failed)"

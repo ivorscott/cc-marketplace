@@ -716,8 +716,11 @@ state move.
 **Your own team shape.** A template is one JSON file: roles, agent kind, model, worktree, briefs, exit criteria. Only
 roles with `"worktree": true` get a worktree.
 
-**Repo rules.** Every brief ends with [`rules/house.md`](rules/house.md), then the repo's own
-`.claude/fleet-rules.md`. Put what every team must do in that repo there.
+**Repo rules.** Every brief ends with [`rules/house.md`](rules/house.md), then the company layer
+[`rules/company.md`](rules/company.md) (`company_rules = "none"` drops it), then the repo's own
+`.claude/fleet-rules.md`. Put only what is true of that repo there; a rule every repo needs belongs in a layer above, once.
+`fleet rules check <repo>` flags a repo file that repeats or redefines a central rule and shows the size of the rules an
+agent gets against the 8 KB budget; boot prints the same check as one line.
 
 **A team test cluster.** A repo with `.claude/fleet-env.json` gets a disposable cluster per team. See
 [Team test environment](#team-test-environment).
@@ -821,6 +824,7 @@ prints one command's full usage.
 | `respawn` | Start a dead agent again from its row | `fleet respawn build-api/builder` |
 | `retire` | Shut a team (or one agent) down safely | `fleet retire build-api --outcome Shipped` |
 | `revive` | Bring a finished or parked team back with something to do | `fleet revive build-api --text "the PR needs a review reply"` |
+| `rules` | Check a repo's fleet rules for repeats of the central rules and the 8 KB budget | `fleet rules check ~/code/app-api` |
 | `run` | Set up the self-driving loop once, then run it with no questions | `fleet run init` |
 | `sandbox` | Run a reproduction away from the live fleet | `fleet sandbox --keep` |
 | `schedule` | Install, remove or check the launchd loop | `fleet schedule status` |
@@ -1024,7 +1028,9 @@ The Orchestrator and agents call these directly, from `scripts/`. You can call t
 | `scripts/run.sh` | `fleet run`: `init` saves the `[run]` profile, `start` begins the self-driving loop with no questions, `stop`, `status`, `show` |
 | `scripts/decide.sh`, `defer.sh`, `overlap.sh` | an escalation decided on the owner's behalf (what is the human's parked), a PR's deferred items filed as linked issues, the plan-time overlap check |
 | `scripts/slim.sh`, `styles/slim.toml` | the slim panel style for herdr, between markers in herdr's config |
-| `rules/house.md` | the house rules every brief ends with (a repo's `.claude/fleet-rules.md` follows them); with `installs = "allow"` in config.toml, the install rule says agents install what the work needs themselves and list each install |
+| `scripts/rules.sh` | `fleet rules check`: repeats and redefinitions of the central rules in a repo's `.claude/fleet-rules.md`, and the 8 KB budget |
+| `rules/company.md` | the company layer of the fleet rules, after `house.md`; `company_rules = "none"` turns it off |
+| `rules/house.md` | the house rules every brief ends with (the company layer and a repo's `.claude/fleet-rules.md` follow them); with `installs = "allow"` in config.toml, the install rule says agents install what the work needs themselves and list each install |
 | `scripts/retire.sh` | safe teardown: archives reports to `reports/fleet-archive/`, removes worktrees, removes the team's test cluster |
 | `scripts/branches.sh` | `fleet branches [<repo>] [--dry-run]`: deletes a repo's stale remote branches by `common.sh branch_verdict` (merged or closed PR, or no PR and every commit in the default branch; never the default branch, `release/*`, `renovate/*`, an open PR, another machine's live claim or a live team); `tick` runs it once a day per repo in `repos`, `retire` runs the same rules on a retired team's branches |
 | `scripts/env.sh` | per-team disposable test cluster, declared by the repo's `.claude/fleet-env.json` |
@@ -1328,6 +1334,13 @@ in 4.1. Anything that newly exposes the key is a blocker; the items that touch t
 ## Release notes
 
 What changed in each version, newest first.
+
+## What changed in 4.2.16
+
+1. **Layered fleet rules, one copy each** (DEV-1106). A brief now ends with `rules/house.md` (fleet-wide), then `rules/company.md` (the company layer, on by default; `company_rules = "none"` turns it off), then the repo's `.claude/fleet-rules.md` (repo facts only). `house.md` is trimmed to about 3.4 KB, every rule ends with the failure it prevents, and the contradictions are gone (one install rule, one local-run rule, one report rule, one cluster rule).
+2. **`fleet rules check [<repo>...]`.** Read-only. It flags a repo file that repeats a central line (`repeats`) or reuses a central section title with a different body (`redefines`), and reports the size of the fleet-supplied rules against an 8 KB budget (house, layer, repo file, contract and fleet-run block; role templates and the repo's CLAUDE.md are not counted). Exit 0 clean, 1 findings or over budget, 2 cannot run.
+3. **Boot prints one rules line** under "Booted ...": `Rules 6.4 KB of 8 KB, check ok` or `Rules check: 2 findings (fleet rules check <repo>)`. A finding warns; it never refuses a boot.
+4. Review rounds, one PR per feature and test sizing moved from `house.md` to the build lead brief, which is the only role that applies them.
 
 ## What changed in 4.2.15
 

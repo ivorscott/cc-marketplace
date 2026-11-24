@@ -25,6 +25,7 @@
 | `respawn` | Start a dead agent again from its row | `fleet respawn build-api/builder` |
 | `retire` | Shut a team (or one agent) down safely | `fleet retire build-api --outcome Shipped` |
 | `revive` | Bring a finished or parked team back with something to do | `fleet revive build-api --text "the PR needs a review reply"` |
+| `rules` | Check a repo's fleet rules for repeats of the central rules and the 8 KB budget | `fleet rules check ~/code/app-api` |
 | `run` | Set up the self-driving loop once, then run it with no questions | `fleet run init` |
 | `sandbox` | Run a reproduction away from the live fleet | `fleet sandbox --keep` |
 | `schedule` | Install, remove or check the launchd loop | `fleet schedule status` |

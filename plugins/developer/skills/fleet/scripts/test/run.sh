@@ -10,6 +10,7 @@
 #   bash scripts/test/run.sh --v420     only the 4.2.0 cases, test/v420.sh
 #   bash scripts/test/run.sh --v42x     only the 4.2.x patch cases, test/v42x.sh
 #   bash scripts/test/run.sh --v4215    only the 4.2.15 cases, test/v4215.sh
+#   bash scripts/test/run.sh --v4216    only the 4.2.16 cases, test/v4216.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SCRIPTS="$(dirname "$HERE")"
@@ -342,6 +343,8 @@ if [ "${1:-}" = --v427 ]; then v427_full; printf '\n%d passed, %d failed\n' "$pa
 if [ "${1:-}" = --v4211 ]; then v4211_full; printf '\n%d passed, %d failed\n' "$pass" "$failn"; [ "$failn" = 0 ]; exit; fi
 . "$HERE/v4215.sh" # 4.2.15: v4215_smoke and v4215_full
 if [ "${1:-}" = --v4215 ]; then v4215_full; printf '\n%d passed, %d failed\n' "$pass" "$failn"; [ "$failn" = 0 ]; exit; fi
+. "$HERE/v4216.sh" # 4.2.16: v4216_smoke and v4216_full
+if [ "${1:-}" = --v4216 ]; then v4216_full; printf '\n%d passed, %d failed\n' "$pass" "$failn"; [ "$failn" = 0 ]; exit; fi
 if [ "${1:-}" = --v426 ]; then v426_full; printf '\n%d passed, %d failed\n' "$pass" "$failn"; [ "$failn" = 0 ]; exit; fi
 if [ "${1:-}" = --v42x ]; then v42x_full; printf '\n%d passed, %d failed\n' "$pass" "$failn"; [ "$failn" = 0 ]; exit; fi # only the 4.2.x patch cases
 if [ "${1:-}" = --v420 ]; then v420_full; printf '\n%d passed, %d failed\n' "$pass" "$failn"; [ "$failn" = 0 ]; exit; fi # only the 4.2.0 cases
@@ -776,6 +779,7 @@ Merge this one first." "Do not merge until the API ships" "  hold: waiting on de
   v429_smoke
   v4211_smoke
   v4215_smoke
+  v4216_smoke
   printf '\n%d passed, %d failed\n' "$pass" "$failn"
   [ "$failn" = 0 ]; exit
 fi
@@ -3995,6 +3999,7 @@ eid="$("$REG" escalations --open --team build-api | jq -r '[.[] | select(.messag
 gold resolve "$("$FL" resolve build-api/builder "$eid" --note "use 8080" 2>&1 | sed "s#$eid#<id>#")"
 gold respawn "$("$FL" respawn build-api/tester 2>&1)"
 gold boot "$(FLEET_FORCE=1 "$FL" boot --issue DEV-50 --issue-url https://linear.app/acme/issue/DEV-50/gold --issue-title "Web: the gold standard" build gold "$G/repo" "gold task" 2>/dev/null)"
+gold rules "$("$FL" rules check "$G/repo" 2>&1)"
 gold next "$("$FL" next build-web DEV-14 --issue-url https://linear.app/acme/issue/DEV-14/next --issue-title "API: the next one, with a title well past forty characters" 2>/dev/null)"
 gold park "$("$FL" park build-gold 2>&1)"
 gold unpark "$(FLEET_FORCE=1 "$FL" unpark build-old 2>&1)"
@@ -4512,7 +4517,7 @@ gcfg; eq "dev408-11 overnight: off, a brief has no overnight block" "$(hrules | 
 gcfg 'overnight = true'
 eq "dev408-11 overnight: on, the block follows the house rules, with the lead's decision note" "$(hrules | grep -c '^Overnight mode'):$(hrules | grep -c 'registry.sh note n1/lead decision')" "1:1"
 check "dev408-11 overnight: the house rules and the block agree: a merge commit, never a force-push" bash -c \
-  "grep -q 'when your lead tells you another PR merged ahead of yours' '$SCRIPTS/../rules/house.md' && printf '%s' \"\$1\" | grep -q 'with a merge commit, never a force-push'" _ "$(hrules)"
+  "printf '%s' \"\$1\" | grep -q 'with a merge commit, never a force-push'" _ "$(hrules)"
 # R15: the builder's brief and the fleet rules say the same thing as the overnight block, never the opposite.
 qfresh night15; mkdir -p "$QD/p15"; FLEET_FORCE=1 bt build n15 "$QD/p15" task
 b15() { cat "$("$REG" get "build-n15/$1" | jq -r '.last_brief // "/nonexistent"')" 2>/dev/null; }
@@ -4638,6 +4643,7 @@ v4210_full
 v429_full
 v4211_full
 v4215_full
+v4216_full
 # ---- end 4.2.0 ----
 
 printf '\n%d passed, %d failed\n' "$pass" "$failn"

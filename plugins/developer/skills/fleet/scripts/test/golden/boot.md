@@ -1,5 +1,7 @@
 Booted build-gold on [DEV-50](https://linear.app/acme/issue/DEV-50) the gold standard in repo: lead ✓ planner ✓ builder ✓ tester ✓
 
+Rules 5.9 KB of 8.0 KB, check ok
+
 4 teams · 2 working · 1 parked · 1 done
 
 | Team | Machine | Issue | PR | State | Needs you |

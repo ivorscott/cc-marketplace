@@ -162,6 +162,17 @@ Booted <team> on [DEV-1](url) <title> in <repo>: lead ✓ planner ✓ builder �
 
 Then the table. `✗ (brief not delivered)` for a brief that did not arrive; no ` on …` without an issue.
 
+### rules
+
+```
+<repo>: repeats company.md "<section title>" (<n> lines)
+<repo>: redefines company.md "<section title>"
+<repo>: over the budget: <size> KB of 8.0 KB
+<repo> <size> KB of 8.0 KB (house <a>, company <b>, repo <c>, contract+run <d>)
+```
+
+One line per finding, then one size line per repo. Boot shows one line under its own: `Rules <size> KB of 8.0 KB, check ok`, or `Rules check: <n> findings (fleet rules check <repo>)`.
+
 ### booting
 
 A line the Orchestrator fills itself, above boot's output, when it picked the issue (SKILL.md route A, step 0):
