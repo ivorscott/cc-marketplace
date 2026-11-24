@@ -240,6 +240,8 @@ if [ "$(printf '%s' "$rows" | jq length)" = "0" ]; then
 fi
 whole_team=false; printf '%s' "$rows" | jq -e --arg x "$target" 'all(.team == $x)' >/dev/null && [ "${target%%/*}" = "$target" ] && whole_team=true
 
+# The rows are marked before any pane closes, so the event subscriber (events.sh) never reads this as a death.
+for n in $(printf '%s' "$rows" | jq -r '.[].name'); do "$registry" set "$n" retiring=1 >/dev/null 2>&1 || true; done
 if $whole_team; then
   env_state="$("$registry" env-get "$target" 2>/dev/null | jq -r '.state // "Down"' || true)"
   if [ -n "$env_state" ] && [ "$env_state" != "Down" ]; then
