@@ -151,7 +151,7 @@ retire (F) or re-boot; **Failed**, re-send with `$F/fleet tell <team/role> - --b
 The scheduled loop (`$F/fleet schedule status`; the user installs it with `fleet schedule install`) runs `tick.sh` on a
 timer and appends a line `fleet tick: <type> <team> <name> <issue> <PR url> <esc id>` to `wakes.log` in the fleet
 state dir for every event someone must act on (P2 escalations, `stalled` and `weekly_summary` included; low disk and a
-repo with no team go to the user as alerts). Nothing is typed into your pane. Once per session, in your own pane: run
+repo with no team go to the user as alerts). A dead or blocked agent reaches the same file at once from the herdr event subscriber (`events.sh`, the `fleet.events` job that `fleet schedule install` adds); tick writes those lines itself when the subscriber is down (`fleet events status`). Nothing is typed into your pane. Once per session, in your own pane: run
 `$F/registry.sh orchestrator here` (it prints your row and `wakes`, the log's path), then start `Monitor` in the
 background on `tail -n 0 -F <wakes>`, so each new line wakes you. When a Monitor expires, run `$F/fleet watch`, start
 Monitor with its first line and end the turn with no text. Unregistered, nobody follows the log: wakes go to

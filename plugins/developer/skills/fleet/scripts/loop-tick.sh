@@ -107,8 +107,15 @@ if [ -n "$wake_at" ] && [ -n "$otr" ] && [ -f "$otr" ]; then
   fi
 fi
 
+# --- the event subscriber went quiet: tick polls on its own, but the fast path is gone ----------------------------
+# Only once it has run (events.alive exists), so a machine that never installed it hears nothing.
+if [ -f "$FLEET_STATE_DIR/events.alive" ] && ! events_alive "$now_epoch" &&
+  [ "$("$FLEET_SCRIPTS/registry.sh" list 2>/dev/null | jq '[.[] | select(.tier != "Orchestrator" and .status != "Retired")] | length' 2>/dev/null || echo 0)" != 0 ]; then
+  alert events_down "the herdr event subscriber stopped, so dead and blocked agents wait for the next tick" "Run fleet schedule install"
+fi
+
 # --- alerts: P0/P1, low disk, a repo with no team -------------------------------------------------------------
-safe() { tr -cd 'A-Za-z0-9._:/@#-' | cut -c1-80; }
+safe() { wake_safe; }
 while IFS=$'\t' read -r cause what; do
   [ -n "$cause" ] || continue
   cause="$(printf '%s' "$cause" | safe)" # what is cut to safe characters per field in jq below
@@ -133,6 +140,9 @@ done < <(printf '%s' "$out" | jq -r 'def s: (. // "-") | tostring | gsub("[^A-Za
 lines=""
 while IFS=$'\t' read -r t team name issue url eid; do
   [ -n "$t" ] || continue
+  # The subscriber (events.sh) already woke the Orchestrator for this dead or input_pending agent: once, not twice.
+  # Without a fresh events.alive nothing is dropped, and tick behaves as it always did.
+  case "$t" in dead | input_pending) ! { events_alive "$now_epoch" && events_seen_take "$(printf '%s' "$name" | safe)" "$t"; } || continue ;; esac
   lines="${lines:+$lines
 }fleet tick: $(printf '%s' "$t" | safe) $(printf '%s' "$team" | safe) $(printf '%s' "$name" | safe) $(printf '%s' "$issue" | safe) $(printf '%s' "$url" | safe) $(printf '%s' "$eid" | safe)"
 done < <(printf '%s' "$out" | jq -r --arg wake "$WAKE_TYPES" '
@@ -145,8 +155,7 @@ lines="$(printf '%s\n' "$lines" | awk 'NF && !seen[$0]++' | tail -n 500)"
 n="$(printf '%s\n' "$lines" | wc -l | tr -d ' ')"
 
 # --- one wake: the lines go to wakes.log, which keeps at most 500 ----------------------------------------------
-[ $(($(wc -l <"$WL" | tr -d ' ') + n)) -le 500 ] || mv -f "$WL" "$WL.1"
-(umask 077; printf '%s\n' "$lines" >>"$WL"); chmod 600 "$WL" 2>/dev/null || true
+wake_append "$lines"
 # A registered Orchestrator follows the file, and no reply within 15 minutes alerts (above), a check that reads its
 # transcript. With none registered nobody follows it, and with no transcript to read (none recorded, or the file is
 # gone) no reply could ever be seen: either way the desktop hears too, so no wake reaches no one.

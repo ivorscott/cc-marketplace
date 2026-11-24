@@ -1329,6 +1329,14 @@ in 4.1. Anything that newly exposes the key is a blocker; the items that touch t
 
 What changed in each version, newest first.
 
+## What changed in 4.2.16
+
+1. **Dead and blocked agents wake the Orchestrator at once** ([DEV-1108](https://linear.app/devpies/issue/DEV-1108)). `events.sh` subscribes to herdr's event socket (`pane.exited`, `pane.agent_status_changed`; `nc -U`, no new dependency) and appends the same fixed-template `dead` or `input_pending` line to `wakes.log` that tick would, without waiting up to `tick_secs`. Stalled and everything else stay tick's. Nothing from an event is written to the file except fields of the registry row.
+2. **Tick is the fallback.** The subscriber touches `events.alive` on every event and every 30 s. Older than 2 minutes, or absent, and tick writes every wake itself exactly as before. While it is alive, loop-tick drops tick's own `dead` or `input_pending` line for an agent the subscriber already woke (`events.seen.json`). A non-event line or EOF is `events_lost`: resubscribe with a capped backoff, then one `herdr api snapshot` reconcile.
+3. **A launchd job.** `fleet schedule install` adds `fleet.events` (KeepAlive) next to the tick job when `nc` exists; `schedule status` gains a line once it is installed, `boot` warns when it is not running, and loop-tick raises one `events_down` alert if it was running and went quiet. `fleet events status` says whether it is up. UNVERIFIED until a user installs it: real launchd behaviour, and the frame shapes and the `events_lost` frame against a real herdr.
+
+Measure it in `fleet sandbox`: note the time, close a throwaway agent pane, and compare the time of the new `dead` line in `wakes.log` with the same close while the subscriber is stopped (the line then waits for the next tick).
+
 ## What changed in 4.2.15
 
 1. **A lead no longer waits on a worker** ([DEV-1117](https://linear.app/devpies/issue/DEV-1117)). The lead brief says to start the builder and tester with `herdr agent prompt` and never `--wait`, which held the lead's turn while messages queued behind it.
