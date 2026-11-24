@@ -996,7 +996,7 @@ The Orchestrator and agents call these directly, from `scripts/`. You can call t
 | `tell.sh` | `tell.sh <team/role> <text> [--no-confirm] [--fix]` (`--fix`: a Done or Parked team with an open PR comes back as a fix, over the caps) sends and checks delivery, then prints `Told <team/role>: "…" (delivered)`, or `(queued)` for an agent busy in a turn; exit 1 not delivered, 2 pane at the shell |
 | `next.sh` | `next.sh <team> <issue> [--brief TEXT] [--assignment TEXT] [--issue-url URL] [--issue-title TEXT]` after a merge, at a safe point (clean worktrees then move to the fresh default branch; dirty or unpushed ones stay, with a warning) (every agent idle, no background task): log `issue_done`, reassign, then restart every agent (`/exit`, a fresh session, its full brief as a file) |
 | `sandbox.sh` | `sandbox.sh [--keep] [--] [cmd...]` runs a reproduction with a temporary state and config root, shims for herdr, gh and curl, and no session, key or `FLEET_ROLE`; refuses the live roots |
-| `respawn.sh` | `respawn.sh <team/role>` starts a Zombie row again from the row (same role, worktree, branch, model; new session id; an existing worktree is kept as it is, a missing one recreated) and sends a resume brief; `tick.sh` calls it within the budget `respawn_max` (1) per `respawn_window_hours` (6). `--restart` (next's) waits for the agent to be idle, never types into a busy one, and confirms Claude's exit dialog |
+| `respawn.sh` | `respawn.sh <team/role>` starts a Zombie row again from the row (same role, worktree, branch, model; new session id; an existing worktree is kept as it is, a missing one recreated) and sends a resume brief; `tick.sh` calls it within the budget `respawn_max` (1) per `respawn_window_hours` (6), and not within 120 s of a herdr server restart, reboot or wake (herdr resumes its own sessions first). `--restart` (next's) waits for the agent to be idle, never types into a busy one, and confirms Claude's exit dialog |
 | `metrics.sh` | `metrics.sh [--since 7d] [--json]` the weekly table (issues shipped, PRs, rework, median cycle) and a report file with one row per PR: minutes to ready, rework rounds, stalls, missed messages, tokens (from `events.jsonl` and the agents' transcripts) |
 | `retire.sh` | `retire.sh <team\|team/role> [--outcome O] [--verify]` safe teardown; `--summary <target...>` a read-only view of what a retire would keep (a retire never waits on it). A whole team's issue follows the outcome on Linear when writes are on (Shipped → Done, or Verify with `--verify`, once its PR merged; Abandoned, Failed or no outcome → Todo, claim released; a PR that says "Part of <issue>", in any case, leaves it); reports are archived to the team repo's `reports/fleet-archive/`, and build output (`node_modules`, `.terraform`, `bin`, `test-results`, ...) never keeps a worktree. A team name with no live rows but leftovers of an earlier boot (`fleet/<team>/*` branches, worktrees) is tidied: what would lose nothing is removed, the rest kept and named |
 | `env.sh` | `up [--branch B] <team>` creates the team's cluster (exit 75 = queued at `max_envs`) · `down <team>` removes it, with its images and builder · `status` lists every env |
@@ -1328,6 +1328,11 @@ in 4.1. Anything that newly exposes the key is a blocker; the items that touch t
 ## Release notes
 
 What changed in each version, newest first.
+
+## What changed in 4.2.16
+
+1. **Tick waits for herdr's resume** ([DEV-1107](https://linear.app/devpies/issue/DEV-1107)). After a herdr server restart, reboot or wake, tick respawns nothing for 120 seconds (`FLEET_RESUME_WINDOW_SECS`): no `respawn.sh` call, no budget spent, no `dead` event. A restart is a new server pid, or a gap since the last tick of more than 2x `tick_secs`.
+2. **Boot warns** when the herdr server's environment came from a Claude session (`CLAUDECODE=1`). The supported start path is `brew services start herdr`; "After a reboot or wake" is in `references/herdr-patterns.md`.
 
 ## What changed in 4.2.15
 

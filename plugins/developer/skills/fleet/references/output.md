@@ -586,7 +586,7 @@ agent only. UNVERIFIED against a real Claude Code: the screen layout and herdr a
 ### wake dead
 
 ```
-Dead <team/role>: its agent is gone. Tick respawns it once in <n>h, then escalates P1.
+Dead <team/role>: its agent is gone. Tick respawns it once in <n>h (after herdr's resume window when the server just restarted), then escalates P1.
 ```
 
 ### wake failed

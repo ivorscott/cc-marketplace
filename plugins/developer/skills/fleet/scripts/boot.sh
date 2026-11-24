@@ -227,6 +227,8 @@ mkdir -p "$(dirname "$plan_file")" 2>/dev/null || warn "could not create $(dirna
 # Agent state (tell's delivery check, status's health) comes from herdr's Claude integration: boot goes on without
 # it, saying so once. Its first herdr call, after every refusal.
 herdr_integration_ok || warn "herdr's Claude integration is not current, so agent state may be wrong; run herdr integration install claude"
+# DEV-1107: a server started inside a Claude session turns off transcript saving and breaks `claude --resume` after a restart.
+! herdr_server_env_from_claude || warn "the herdr server was started inside a Claude session, so its agents will not resume after a restart; run herdr server stop, then brew services start herdr"
 
 # Rollback: a boot that fails or is interrupted once it has created something undoes only what this run made (an
 # EXIT trap, armed with the workspace and disarmed once the reply is printed): it closes the workspace, removes the
