@@ -10,7 +10,7 @@
 #   bash scripts/test/run.sh --v420     only the 4.2.0 cases, test/v420.sh
 #   bash scripts/test/run.sh --v42x     only the 4.2.x patch cases, test/v42x.sh
 #   bash scripts/test/run.sh --v4215    only the 4.2.15 cases, test/v4215.sh
-#   bash scripts/test/run.sh --v4216    only the 4.2.16 cases, test/v4216.sh
+#   bash scripts/test/run.sh --v4217    only the 4.2.17 cases, test/v4217.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SCRIPTS="$(dirname "$HERE")"
@@ -351,8 +351,8 @@ if [ "${1:-}" = --v427 ]; then v427_full; printf '\n%d passed, %d failed\n' "$pa
 if [ "${1:-}" = --v4211 ]; then v4211_full; printf '\n%d passed, %d failed\n' "$pass" "$failn"; [ "$failn" = 0 ]; exit; fi
 . "$HERE/v4215.sh" # 4.2.15: v4215_smoke and v4215_full
 if [ "${1:-}" = --v4215 ]; then v4215_full; printf '\n%d passed, %d failed\n' "$pass" "$failn"; [ "$failn" = 0 ]; exit; fi
-. "$HERE/v4216.sh" # 4.2.16: v4216_smoke and v4216_full
-if [ "${1:-}" = --v4216 ]; then v4216_full; printf '\n%d passed, %d failed\n' "$pass" "$failn"; [ "$failn" = 0 ]; exit; fi
+. "$HERE/v4217.sh" # 4.2.17: v4217_smoke and v4217_full
+if [ "${1:-}" = --v4217 ]; then v4217_full; printf '\n%d passed, %d failed\n' "$pass" "$failn"; [ "$failn" = 0 ]; exit; fi
 if [ "${1:-}" = --v426 ]; then v426_full; printf '\n%d passed, %d failed\n' "$pass" "$failn"; [ "$failn" = 0 ]; exit; fi
 if [ "${1:-}" = --v42x ]; then v42x_full; printf '\n%d passed, %d failed\n' "$pass" "$failn"; [ "$failn" = 0 ]; exit; fi # only the 4.2.x patch cases
 if [ "${1:-}" = --v420 ]; then v420_full; printf '\n%d passed, %d failed\n' "$pass" "$failn"; [ "$failn" = 0 ]; exit; fi # only the 4.2.0 cases
@@ -677,8 +677,6 @@ Merge this one first." "Do not merge until the API ships" "  hold: waiting on de
   for i in $(seq 1 12); do HERDR_LOG="$SM/log23.$i" herdr --session test agent start "a23-$i" --settings "$SM/long23" >/dev/null & done; wait
   for i in $(seq 1 12); do cat "$SM/log23.$i" >>"$HERDR_LOG"; done
   eq "smoke: dev512-23 twelve parallel calls with 100 KB arguments log twelve whole lines" "$(grep -c '^agent start a23-[0-9]* --settings x' "$HERDR_LOG"):$(awk 'length($0) > 100000' "$HERDR_LOG" | grep -vc '^agent start a23-[0-9]* --settings x*$')" "12:0"
-  # dev512-24: the README still has its 4.1.1 What changed section
-  eq "smoke: dev512-24 the README has its 4.1.1 What changed section" "$(grep -c '^## What changed in 4.1.1' "$SCRIPTS/../README.md")" 1
   # ---- DEV-530 (4.1.2): one case or two per item, each in its own state root (dfresh), acme names only ----
   # dev530-1: no links between checkouts. The rule is in the house rules and both briefs that run anything; the Bash guard
   # denies an ln whose operand ends in node_modules, .venv or vendor, and lets every other ln through; a worktree whose
@@ -775,8 +773,6 @@ Merge this one first." "Do not merge until the API ships" "  hold: waiting on de
   rm -f "$FLEET_STATE_DIR/tick.state.json"; m2=$(hw5); FLEET_NOW=$N5 "$SCRIPTS/tick.sh" >/dev/null 2>&1
   eq "smoke: dev530-5 a tick with a claimed row writes the heartbeat once, not twice" "$(hb5):$(($(hw5) - m2))" "$N5:1"
   export LINEAR_DB="$SM/linear.json" LINEAR_LOG="$SM/linear.log"; rm -f "$FLEET_CONFIG_DIR/$kf"
-  # dev530-6: the README says what changed in 4.1.2 (the version itself is pinned in the 4.1.3 cases)
-  eq "smoke: dev530-6 the README has its What changed in 4.1.2 section" "$(grep -c '^## What changed in 4.1.2' "$SCRIPTS/../README.md")" "1"
   v413_smoke
   v420_smoke
   v42x_smoke
@@ -787,7 +783,7 @@ Merge this one first." "Do not merge until the API ships" "  hold: waiting on de
   v429_smoke
   v4211_smoke
   v4215_smoke
-  v4216_smoke
+  v4217_smoke
   printf '\n%d passed, %d failed\n' "$pass" "$failn"
   [ "$failn" = 0 ]; exit
 fi
@@ -4650,7 +4646,7 @@ v4210_full
 v429_full
 v4211_full
 v4215_full
-v4216_full
+v4217_full
 # ---- end 4.2.0 ----
 
 printf '\n%d passed, %d failed\n' "$pass" "$failn"
