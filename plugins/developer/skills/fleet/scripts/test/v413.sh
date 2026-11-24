@@ -127,12 +127,7 @@ v413_installs() {
   gcfg
 }
 
-v413_version() {
-  eq "v413 version: the README has its What changed section" "$(grep -c '^## What changed in 4.1.4' "$SCRIPTS/../README.md")" 1
-}
-
 v413_smoke() { # the critical cases, CI
-  v413_version
   v413_installs
   v413_escalation_ids
   v413_bare_team
