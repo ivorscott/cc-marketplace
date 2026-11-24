@@ -576,9 +576,46 @@ v420_margin() { # the profile's usage_margin keeps new teams from booting when t
   gcfg; unset DF_GB
 }
 
+v420_quiet_log() { # DEV-1109: a normal tick prints nothing; an offline tick prints one line
+  v420_state quietlog; export FLEET_NOW=2026-10-29T10:00:00Z FLEET_CLAIM_SETTLE_SECS=0
+  v420_linear
+  local n i warns=0 off_calls out hb="$FLEET_STATE_DIR/hb.err" desc
+  # (a) a summary sized to the cap lands with the summary, whatever the team count: the line overhead is counted
+  for n in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22; do
+    rm -f "$FLEET_REGISTRY" "$FLEET_STATE_DIR/hb.warned"; "$REG" list >/dev/null 2>&1
+    for i in $(seq 1 "$n"); do "$REG" add "{\"name\":\"ql$i-a/lead\",\"team\":\"ql$i-a\",\"tier\":\"Lead\",\"status\":\"Working\",\"herdr_ref\":\"q$i\",\"pane\":\"p$i\",\"issue\":\"DEV-$i\"}" >/dev/null; done
+    FLEET_NOW="2026-10-29T10:$(printf '%02d' "$n"):00Z" LINEAR_STUB_DESC_MAX=255 "$SCRIPTS/linear.sh" heartbeat >/dev/null 2>"$hb"
+    grep -q 'without the team summary' "$hb" && warns=$((warns + 1))
+  done
+  eq "v1109 heartbeat: a summary fitted to the cap is never refused, from 1 to 22 teams" "$warns" 0
+  # (b) a cap that still refuses warns once across ticks, and again when the cause changes
+  rm -f "$FLEET_STATE_DIR/hb.warned"
+  for i in 1 2; do FLEET_NOW="2026-10-29T11:0$i:00Z" LINEAR_STUB_DESC_MAX=60 "$SCRIPTS/linear.sh" heartbeat >/dev/null 2>>"$hb.2"; done
+  eq "v1109 heartbeat: the same refusal on two ticks warns once" "$(grep -c 'without the team summary' "$hb.2")" 1
+  desc="$(jq -r '.labels[] | select(.name == "fleet:test") | .description' "$LINEAR_DB")"
+  eq "v1109 heartbeat: and the heartbeat still lands without the summary" "$(printf '%s\n' "$desc" | grep -c '^heartbeat=2026-10-29T11:02:00Z$'):$(printf '%s\n' "$desc" | grep -c '^summary=')" "1:0"
+  FLEET_NOW=2026-10-29T11:03:00Z "$SCRIPTS/linear.sh" heartbeat >/dev/null 2>&1
+  : >"$hb.2"; FLEET_NOW=2026-10-29T11:04:00Z LINEAR_STUB_DESC_MAX=60 "$SCRIPTS/linear.sh" heartbeat >/dev/null 2>"$hb.2"
+  eq "v1109 heartbeat: after a write with the summary, the next refusal warns again" "$(grep -c 'without the team summary' "$hb.2")" 1
+  # (c) offline: gh fails with a network error; three PRs, one line, one gh call
+  v420_state offlinegh; export FLEET_NOW=2026-10-29T10:00:00Z
+  printf '#!/usr/bin/env bash\necho "$*" >>"%s/gh.log"\necho "error connecting to api.github.com" >&2; exit 1\n' "$FLEET_STATE_DIR" >"$T/v420-ghoff"; chmod +x "$T/v420-ghoff"
+  export FLEET_GH="$T/v420-ghoff"
+  for i in 1 2 3; do "$REG" add "{\"name\":\"of$i/lead\",\"team\":\"of$i\",\"tier\":\"Lead\",\"status\":\"Working\",\"herdr_ref\":\"of$i\",\"pane\":\"p$i\",\"pr\":\"https://github.com/acme/app/pull/$i\",\"repo\":\"acme/app\"}" >/dev/null; echo working >"$AS/of$i"; done
+  out="$("$SCRIPTS/tick.sh" 2>&1 >/dev/null)"
+  eq "v1109 tick: offline over 3 PRs prints one line and asks gh once" "$(printf '%s\n' "$out" | grep -c .):$(printf '%s\n' "$out" | grep -c 'gh offline: skipped 3 PR lookup')" "1:1"
+  off_calls="$(grep -c 'pr view' "$FLEET_STATE_DIR/gh.log")"; : >"$FLEET_STATE_DIR/gh.log"
+  # (d) a failure that is not the network keeps its line per PR
+  printf '#!/usr/bin/env bash\necho "$*" >>"%s/gh.log"\necho "HTTP 404: Not Found" >&2; exit 1\n' "$FLEET_STATE_DIR" >"$T/v420-ghoff"
+  out="$("$SCRIPTS/tick.sh" 2>&1 >/dev/null)"
+  eq "v1109 tick: a non-network gh failure still prints per PR, and the offline tick made two fewer gh calls" \
+    "$(printf '%s\n' "$out" | grep -c 'gh could not read'):$(( $(grep -c 'pr view' "$FLEET_STATE_DIR/gh.log") - off_calls ))" "3:2"
+  unset FLEET_GH; v420_nolinear; unset FLEET_NOW
+}
+
 v420_smoke() { # the critical cases, CI (V420_ONLY="name name" runs just those, to debug one)
   local f
-  for f in v420_version v420_redact_gate v420_run_init v420_run_collide v420_verify v420_claims v420_comments v420_heartbeat_name v420_overlap v420_usage v420_status_changes v420_failure_push v420_quiet v420_fix v420_report v420_run_start v420_stop_midnight v420_decide v420_probes v420_red_signoff v420_margin; do
+  for f in v420_version v420_redact_gate v420_run_init v420_run_collide v420_verify v420_claims v420_comments v420_heartbeat_name v420_overlap v420_usage v420_status_changes v420_failure_push v420_quiet v420_fix v420_report v420_run_start v420_stop_midnight v420_decide v420_probes v420_red_signoff v420_margin v420_quiet_log; do
     case " ${V420_ONLY:-$f} " in *" $f "*) "$f" ;; esac
   done
 }
