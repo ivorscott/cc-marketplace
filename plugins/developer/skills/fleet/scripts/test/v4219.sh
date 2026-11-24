@@ -4,7 +4,7 @@
 # (eq, REG, AS, HERDR_LOG, the herdr shim). Generic names only.
 v4219_bst() { "$SCRIPTS/status.sh" "build-$1" --json 2>/dev/null | jq -r '.[] | select(.name == "build-'"$1"'/builder") | .status'; }
 v4219_idle() { local t="$1" r; shift; for r in "$@"; do echo idle >"$AS/build-$t-$r"; done; } # v4219_idle <team> <role>...
-v4219_nudges() { grep -c "^agent send-keys build-$1-builder" "$HERDR_LOG" || true; } # keys sent to the team's builder
+v4219_nudges() { grep -c "^agent prompt build-$1-builder You went idle without running your done step" "$HERDR_LOG" || true; } # stall nudges sent to the team's builder
 
 v4219_planner_wait() {
   v4211_state pw
