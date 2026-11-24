@@ -592,11 +592,25 @@ elif rows="$("$FLEET_SCRIPTS/status.sh" ${targs[@]+"${targs[@]}"} --json 2>/dev/
   done < <(printf '%s' "$rows" | jq -r '.[] | select(.tier != "Orchestrator" and .status == "Failed" and (.brief_failed_at // "") != "")
     | [.name, (.last_brief // ""), (.brief_resent // ""), (.brief_failed_issue // ""), (.issue // "")] | @tsv')
   rwin="$(const_int RESPAWN_WINDOW_HOURS 6)"; rmax="$(const_int RESPAWN_MAX 1)"
+  # DEV-1107: after a herdr server restart, reboot or wake, herdr resumes its own sessions, and until it has, their rows
+  # read Zombie. A restart is a new server pid, or a gap since the last tick of more than 2x tick_secs (a sleep or reboot
+  # leaves the pid unchanged only when the server survived it). Tick records restart_seen_at and respawns nothing, spends
+  # no budget and reports no dead event until RESUME_WINDOW_SECS (120) have passed; an agent that is back clears itself.
+  srv_pid="$(herdr_server_pid 2>/dev/null || true)"
+  prev_pid="$(jq -r '.server_pid // ""' "$STATE_FILE")"; last_at="$(jq -r '.last_tick_at // ""' "$STATE_FILE")"
+  if { [ -n "$srv_pid" ] && [ -n "$prev_pid" ] && [ "$srv_pid" != "$prev_pid" ]; } ||
+    { [ -n "$last_at" ] && [ $((now_epoch - $(jq -rn --arg t "$last_at" '$t | fromdateiso8601? // 0'))) -gt $((2 * $(cfg_int tick_secs 300))) ]; }; then
+    st_upd --arg at "$now_iso" '$st + {restart_seen_at: $at}'
+  fi
+  [ -z "$srv_pid" ] || st_upd --arg p "$srv_pid" '$st + {server_pid: $p}'
+  resume_until=0; rs_at="$(jq -r '.restart_seen_at // ""' "$STATE_FILE")"
+  [ -z "$rs_at" ] || resume_until=$(($(jq -rn --arg t "$rs_at" '$t | fromdateiso8601? // 0') + $(const_int RESUME_WINDOW_SECS 120)))
   while IFS= read -r zname; do
     [ -n "$zname" ] || continue
     # Respawn needs Zombie on two ticks in a row: the state still holds the previous tick's status. The
     # `dead` event goes with that decision, once per death (dead_emitted, forgotten when the row recovers).
     [ "$(jq --arg n "$zname" '((.status // {})[$n]) == "Zombie"' "$STATE_FILE")" = true ] || continue
+    [ "$now_epoch" -ge "$resume_until" ] || continue # inside herdr's resume window: wait, no event, no budget
     if [ "$(jq --arg n "$zname" '(.dead_emitted // []) | index($n) == null' "$STATE_FILE")" = true ]; then
       add_events "$(printf '%s' "$rows" | jq -c --arg n "$zname" '[.[] | select(.name == $n) | {type: "dead", team, name, status} + (if (.pr // "") != "" then {url: .pr} else {} end)]')"
       st_upd --arg n "$zname" '$st + {dead_emitted: ((($st.dead_emitted // []) + [$n]) | unique)}'

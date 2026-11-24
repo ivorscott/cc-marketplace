@@ -74,6 +74,19 @@ A lead that runs a worker prompt with `--wait` holds its own turn until the work
 
 ## Setup note
 
-Start the herdr server from your own terminal, not from inside a Claude Code session. A
-server started from inside Claude inherits that session's environment, which turns off
-transcript saving in the agents it launches and breaks `claude --resume` after a restart.
+Run the herdr server as the Homebrew service: `brew services start herdr` (it runs `herdr server`, starts at login and
+is kept alive). After a herdr upgrade run `brew services restart herdr`. Never start the server from inside a Claude Code
+session: it inherits that session's environment, which turns off transcript saving in the agents it launches and breaks
+`claude --resume` after a restart. `fleet boot` warns when the running server's environment holds `CLAUDECODE=1` or
+`CLAUDE_CODE_ENTRYPOINT`; fix it with `herdr server stop`, then `brew services start herdr`.
+
+### After a reboot or wake
+
+herdr resumes its own sessions (`claude --resume`) when the server comes back, and until it has, their rows read Zombie.
+Tick knows a restart by a new server pid or by a gap since the last tick of more than twice `tick_secs`, and for one resume
+window (120 seconds, `FLEET_RESUME_WINDOW_SECS`) it respawns nothing, spends no respawn budget and raises no `dead` event.
+
+1. Start the service: `brew services start herdr` (already running: nothing to do).
+2. Wait one resume window, then run `fleet status`.
+3. A row still Zombie after the window is respawned by tick, once per `respawn_window_hours`, then escalated P1.
+4. Do not run `fleet respawn` by hand inside the window: it starts a second agent on the row herdr is resuming.

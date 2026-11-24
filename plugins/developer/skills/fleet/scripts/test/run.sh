@@ -11,6 +11,7 @@
 #   bash scripts/test/run.sh --v42x     only the 4.2.x patch cases, test/v42x.sh
 #   bash scripts/test/run.sh --v4217    only the 4.2.17 cases, test/v4217.sh
 #   bash scripts/test/run.sh --v4215    only the 4.2.15 cases, test/v4215.sh
+#   bash scripts/test/run.sh --v4218    only the 4.2.18 cases, test/v4218.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SCRIPTS="$(dirname "$HERE")"
@@ -115,6 +116,12 @@ cat >"$T/bin/nc" <<'S'
 case " ${NC_BUSY:-} " in *" $3 "*) exit 0 ;; esac; exit 1
 S
 chmod +x "$T/up.sh" "$T/down.sh" "$T/bin/nc"; export PATH="$T/bin:$PATH"
+# DEV-1107: the herdr server's pid and environment. lsof lists a client and the server on the socket ($AS/server.pid holds the
+# server's pid; no file: no listener); ps eww shows HERDR_SERVER_ENV after the command, any other ps goes to the real one.
+export HERDR_SOCK="$T/herdr.sock"
+printf '#!/usr/bin/env bash\n[ -f "$AS/server.pid" ] || exit 1\nprintf "p999\\nn->0x1\\np%%s\\nn%%s\\n" "$(cat "$AS/server.pid")" "$HERDR_SOCK"\n' >"$T/bin/lsof"
+printf '#!/usr/bin/env bash\ncase "$*" in *eww*) [ -f "$AS/server.pid" ] || exit 1; echo "herdr server PATH=/usr/bin ${HERDR_SERVER_ENV:-LANG=C}" ;; *) exec /bin/ps "$@" ;; esac\n' >"$T/bin/ps"
+chmod +x "$T/bin/lsof" "$T/bin/ps"
 # boot.sh and retire.sh with a shim herdr
 cat >"$T/bin/herdr" <<'S'
 #!/usr/bin/env bash
@@ -193,6 +200,8 @@ case "$1 $2" in
   "notification show") if [ -n "${NOTIFY_FAIL:-}" ]; then echo "herdr: no server" >&2; exit 1; fi; echo '{}' ;;
   # herdr's Claude integration: current unless HERDR_INTEGRATION says otherwise (DEV-408 item 13), or the whole
   # answer in HERDR_INTEGRATION_FILE (DEV-512 item 4: a long one).
+  # status server --json (DEV-1107): only the socket path, as in herdr 0.9.1 (no pid, no start time)
+  "status server") printf '{"status":"running","socket":"%s"}\n' "${HERDR_SOCK:-/nonexistent/herdr.sock}" ;;
   "integration status") if [ -n "${HERDR_INTEGRATION_FILE:-}" ]; then cat "$HERDR_INTEGRATION_FILE"; else printf '%s\n' "${HERDR_INTEGRATION:-claude: current}"; fi ;;
   # the panel metadata (DEV-408 item 14); META_FAIL=1 makes herdr refuse it. Like herdr 0.9, the id comes first: an
   # option before it is refused (DEV-512 item 5).
@@ -345,6 +354,8 @@ if [ "${1:-}" = --v4211 ]; then v4211_full; printf '\n%d passed, %d failed\n' "$
 . "$HERE/v4217.sh" # 4.2.17: v4217_smoke and v4217_full
 if [ "${1:-}" = --v4217 ]; then v4217_full; printf '\n%d passed, %d failed\n' "$pass" "$failn"; [ "$failn" = 0 ]; exit; fi
 if [ "${1:-}" = --v4215 ]; then v4215_full; printf '\n%d passed, %d failed\n' "$pass" "$failn"; [ "$failn" = 0 ]; exit; fi
+. "$HERE/v4218.sh" # 4.2.18: v4218_smoke and v4218_full
+if [ "${1:-}" = --v4218 ]; then v4218_full; printf '\n%d passed, %d failed\n' "$pass" "$failn"; [ "$failn" = 0 ]; exit; fi
 if [ "${1:-}" = --v426 ]; then v426_full; printf '\n%d passed, %d failed\n' "$pass" "$failn"; [ "$failn" = 0 ]; exit; fi
 if [ "${1:-}" = --v42x ]; then v42x_full; printf '\n%d passed, %d failed\n' "$pass" "$failn"; [ "$failn" = 0 ]; exit; fi # only the 4.2.x patch cases
 if [ "${1:-}" = --v420 ]; then v420_full; printf '\n%d passed, %d failed\n' "$pass" "$failn"; [ "$failn" = 0 ]; exit; fi # only the 4.2.0 cases
@@ -776,6 +787,7 @@ Merge this one first." "Do not merge until the API ships" "  hold: waiting on de
   v4211_smoke
   v4215_smoke
   v4217_smoke
+  v4218_smoke
   printf '\n%d passed, %d failed\n' "$pass" "$failn"
   [ "$failn" = 0 ]; exit
 fi
@@ -4639,6 +4651,7 @@ v429_full
 v4211_full
 v4215_full
 v4217_full
+v4218_full
 # ---- end 4.2.0 ----
 
 printf '\n%d passed, %d failed\n' "$pass" "$failn"

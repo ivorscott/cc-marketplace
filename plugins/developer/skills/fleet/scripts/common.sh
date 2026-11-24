@@ -114,6 +114,25 @@ herdr_meta() {
 # Its whole answer is read first: `| grep -q` stops reading at the claude line, and herdr writing the lines after it
 # then dies of SIGPIPE, which pipefail turns into a false "not current".
 herdr_integration_ok() { local out; out="$(hd integration status 2>/dev/null)" || true; grep -q '^claude: current' <<<"$out"; }
+# herdr_server_pid: the pid of the process that listens on herdr's socket (DEV-1107). `herdr status server --json` names
+# the socket but has no pid (0.9.1), so lsof finds the owner. Prints nothing, and fails, when any step cannot be read.
+herdr_server_pid() {
+  local sock pid
+  sock="$(hd status server --json 2>/dev/null | jq -r '.socket // empty' 2>/dev/null)" || return 1
+  [ -n "$sock" ] || return 1
+  pid="$(lsof -nP -F pn -U 2>/dev/null | awk -v s="$sock" '/^p/ {p = substr($0, 2)} /^n/ {if (substr($0, 2) == s) {print p; exit}}')" || true
+  case "$pid" in "" | *[!0-9]*) return 1 ;; esac
+  printf '%s\n' "$pid"
+}
+# herdr_server_env_from_claude: succeeds only when the herdr server's environment (ps eww) holds CLAUDECODE=1 or
+# CLAUDE_CODE_ENTRYPOINT=, i.e. the server was started inside a Claude session. Silent failure when the pid or the
+# environment cannot be read: UNVERIFIED is never a warning.
+herdr_server_env_from_claude() {
+  local pid env
+  pid="$(herdr_server_pid)" || return 1
+  env="$(ps eww -o command= -p "$pid" 2>/dev/null)" || return 1
+  grep -Eq '(^|[[:space:]])(CLAUDECODE=1|CLAUDE_CODE_ENTRYPOINT=)' <<<"$env"
+}
 
 require_herdr() {
   need herdr
@@ -1305,7 +1324,7 @@ render_notice() {
       render_line event event=Conflicting name="$name" what="$(pr_link "$url") conflicts $(if [ -n "$o" ]; then printf 'after %s merged' "$o"; else printf 'with main'; fi)" next="$n" ;;
     input_pending) render_line input_pending name="$name" text="$(jq -r '.detail // ""' <<<"$e")" ;;
     pr_opened) render_line pr_opened pr="$(pr_link "$url")" issue="$(team_issue "$team")" told="Lead not reached: tell it to start the tester" ;;
-    dead) render_line event event=Dead name="$name" what="its agent is gone" next="Tick respawns it once in $(const_int RESPAWN_WINDOW_HOURS 6)h, then escalates P1" ;;
+    dead) render_line event event=Dead name="$name" what="its agent is gone" next="Tick respawns it once in $(const_int RESPAWN_WINDOW_HOURS 6)h (after herdr's resume window when the server just restarted), then escalates P1" ;;
     failed) render_line event event=Failed name="$name" what="a restart or its brief did not arrive" next="Re-send its brief or re-boot the team" ;;
     lead_waiting) render_line event event="Lead waiting" name="$name" what="its tester signed off and its queued messages wait behind a long turn, nudged once" next="Send Escape to its pane if it is still stuck, then re-tell it" ;;
     stalled) render_line event event=Stalled name="$name" what="idle without its done step, nudged once" next="Ask it for its done step" ;;

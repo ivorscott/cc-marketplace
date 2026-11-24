@@ -230,6 +230,8 @@ herdr_integration_ok || warn "herdr's Claude integration is not current, so agen
 # The event subscriber (events.sh, a launchd job) wakes the Orchestrator for a dead or blocked agent at once. Boot only
 # checks it is up, never starts it: without it tick still catches both, up to a tick later.
 events_alive "$(date +%s)" || warn "the herdr event subscriber is not running, so dead and blocked agents wait for the next tick; run fleet schedule install"
+# DEV-1107: a server started inside a Claude session turns off transcript saving and breaks `claude --resume` after a restart.
+! herdr_server_env_from_claude || warn "the herdr server was started inside a Claude session, so its agents will not resume after a restart; run herdr server stop, then brew services start herdr"
 
 # Rollback: a boot that fails or is interrupted once it has created something undoes only what this run made (an
 # EXIT trap, armed with the workspace and disarmed once the reply is printed): it closes the workspace, removes the
