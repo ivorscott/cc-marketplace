@@ -601,6 +601,12 @@ Failed <team/role>: a restart or its brief did not arrive. Re-send its brief or 
 Stalled <team/role>: idle without its done step, nudged once. Ask it for its done step.
 ```
 
+### wake lead_waiting
+
+```
+Lead waiting <team/lead>: its tester signed off and its queued messages wait behind a long turn, nudged once. Send Escape to its pane if it is still stuck, then re-tell it.
+```
+
 ### wake needs_input
 
 ```

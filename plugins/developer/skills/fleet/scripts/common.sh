@@ -1307,6 +1307,7 @@ render_notice() {
     pr_opened) render_line pr_opened pr="$(pr_link "$url")" issue="$(team_issue "$team")" told="Lead not reached: tell it to start the tester" ;;
     dead) render_line event event=Dead name="$name" what="its agent is gone" next="Tick respawns it once in $(const_int RESPAWN_WINDOW_HOURS 6)h, then escalates P1" ;;
     failed) render_line event event=Failed name="$name" what="a restart or its brief did not arrive" next="Re-send its brief or re-boot the team" ;;
+    lead_waiting) render_line event event="Lead waiting" name="$name" what="its tester signed off and its queued messages wait behind a long turn, nudged once" next="Send Escape to its pane if it is still stuck, then re-tell it" ;;
     stalled) render_line event event=Stalled name="$name" what="idle without its done step, nudged once" next="Ask it for its done step" ;;
     needs_input) d="$(jq -r '.detail // "API error"' <<<"$e")"
       if [ "$d" = "login expired" ]; then render_line event event="Needs input" name="$name" what="$d" next="Run /login in its pane"
@@ -1352,7 +1353,7 @@ render_notice() {
 
 # WAKE_TYPES: the tick events that wake the Orchestrator (loop-tick.sh) and get a notice (tick.sh); each has an entry
 # in references/output.md. An escalation wakes at any severity, pr_opened only when the lead could not be told.
-WAKE_TYPES="pr_ready pr_merged pr_opened pr_conflicting input_pending dead failed stalled needs_input brief_failed claim_takeover claim_lost claim_released claim_held_pr claim_lapsed comment_pending stale_version slot_free usage_limit status_changed main_red signoff_failed weekly_summary morning_report escalation"
+WAKE_TYPES="pr_ready pr_merged pr_opened pr_conflicting input_pending dead failed stalled lead_waiting needs_input brief_failed claim_takeover claim_lost claim_released claim_held_pr claim_lapsed comment_pending stale_version slot_free usage_limit status_changed main_red signoff_failed weekly_summary morning_report escalation"
 # WAKE_JQ: the jq filter that keeps the events that wake, with $wake bound to WAKE_TYPES (--arg wake "$WAKE_TYPES").
 WAKE_JQ='select(type == "object") | select((.type as $t | $wake | split(" ") | index($t)) and (.type != "pr_opened" or .lead_told == false))'
 

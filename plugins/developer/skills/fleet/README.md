@@ -1329,6 +1329,11 @@ in 4.1. Anything that newly exposes the key is a blocker; the items that touch t
 
 What changed in each version, newest first.
 
+## What changed in 4.2.15
+
+1. **A lead no longer waits on a worker** ([DEV-1117](https://linear.app/devpies/issue/DEV-1117)). The lead brief says to start the builder and tester with `herdr agent prompt` and never `--wait`, which held the lead's turn while messages queued behind it.
+2. **`lead_waiting` event.** `tell.sh` stamps `queued_at` on a lead when a message is queued. Tick sends one nudge and raises one `lead_waiting` event once it is older than `LEAD_QUEUE_MINS` (default 10) and the tester has signed off. Tick never sends Escape.
+
 ## What changed in 4.2.13
 
 1. **Short PR bodies** ([DEV-1023](https://linear.app/devpies/issue/DEV-1023)). House rule and the build briefs: `Fixes <URL>` (or `Part of <URL>`), 1-2 sentences, up to 5 bullets, then `Try it` and `Needs you` only when they apply. No `## In plain English` section, technical summary or tables. The lead's issue comment is the same sentences plus the PR link.
