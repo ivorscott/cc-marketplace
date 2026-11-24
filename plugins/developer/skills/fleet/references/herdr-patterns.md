@@ -66,6 +66,12 @@ you want before pressing Enter. `boot.sh` does this for the trust dialog only, a
 for directories the fleet owns or was given. Every other dialog goes through the
 blocked-prompt policy in `SKILL.md`.
 
+## 5. A foreground `prompt --wait` blocks the lead's turn; queued messages sit behind it
+
+A lead that runs a worker prompt with `--wait` holds its own turn until the worker is idle, done or blocked. Anything `tell.sh` sends it queues behind that turn.
+
+**Pattern:** prompt without `--wait`, then wait for the worker's done step or a fleet line and look with `herdr agent get` or `read`. Tick raises `lead_waiting` when a message has been queued too long after the tester signed off; Escape on the lead's pane frees it.
+
 ## Setup note
 
 Start the herdr server from your own terminal, not from inside a Claude Code session. A

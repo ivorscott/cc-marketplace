@@ -114,6 +114,14 @@ verdict() { # verdict <delivered true|false> <reason> <exit code>
       fi ;;
     esac
   fi
+  # DEV-1117: a message queued behind a lead's turn is stamped (queued_at); tick reads it. Any other delivery clears it.
+  if [ "$1" = true ] && ! $is_brief; then
+    case "$target" in */lead)
+      if [ "${how:-}" = queued ]; then
+        [ -n "$("$FLEET_SCRIPTS/registry.sh" get "$target" 2>/dev/null | jq -r '.queued_at // ""')" ] || "$FLEET_SCRIPTS/registry.sh" set "$target" queued_at="$(now)" >/dev/null 2>&1 || true
+      else "$FLEET_SCRIPTS/registry.sh" set "$target" queued_at= >/dev/null 2>&1 || true; fi ;;
+    esac
+  fi
   if [ "$1" = true ]; then
     render_line told name="$target" text="$(jq -rn --arg t "$text" '$t | split("\n")[0] | .[0:60]')" how="${how:-$($confirm && echo delivered || echo sent)}"
   elif [ "$3" = 2 ] && "$FLEET_SCRIPTS/registry.sh" get "$target" >/dev/null 2>&1; then
