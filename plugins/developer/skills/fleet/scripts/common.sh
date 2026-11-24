@@ -670,12 +670,12 @@ fleet_queue() {
 # word, n: what it needs from you, r: true when the merge queue lists its PR as ready, f: plan files}], every live team,
 # the ones changed last first, with no size limit (a document has room). Built from the registry and the queue tick kept
 # (never from GitHub); keys with no value are left out.
-# summary_for_label <room>: the summary array on stdin fitted to <room> characters for the old `summary=` label line (the
+# summary_for_label <room>: the summary array on stdin fitted to <room> bytes for the old `summary=` label line (the
 # 255-character description), kept for one release for machines on an older plugin: the 12 teams changed last, in the thinner
 # tier that keeps the most teams. Whole entries are dropped, never shortened, so the line stays a valid JSON array.
 summary_for_label() {
   jq -c --argjson cap "$1" '
-    def fit: if length > 0 and (tojson | length) > $cap then .[:-1] | fit else . end;
+    def fit: if length > 0 and (tojson | utf8bytelength) > $cap then .[:-1] | fit else . end;
     def idt: if ((.i // "") != "") then {i} elif ((.t // "") != "") then {t: .t[0:12]} else {} end;
     def tiers: [., map(del(.pr, .n, .f)), map(idt + {s} | with_entries(select(.value != null))), map(idt)] | map(fit);
     def best: tiers | reduce .[] as $x (null; if . == null or ($x | length) > length then $x else . end);

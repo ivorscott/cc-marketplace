@@ -588,6 +588,19 @@ v420_quiet_log() { # DEV-1109: a normal tick prints nothing; an offline tick pri
     grep -q 'without the team summary' "$hb" && warns=$((warns + 1))
   done
   eq "v1109 heartbeat: a summary fitted to the cap is never refused, from 1 to 22 teams" "$warns" 0
+  # (a2) a multibyte owner: room is counted in bytes, so the stored description is at most 255 bytes and nothing warns
+  jq '.viewer = {name: "山田太郎山田太郎山田太郎山田太郎山田太郎山田太郎山田太郎山田太郎"}' "$LINEAR_DB" >"$LINEAR_DB.t" && mv "$LINEAR_DB.t" "$LINEAR_DB"
+  warns=0; local maxb=0 b
+  for n in 3 6 9 12 15 18 21 22; do
+    rm -f "$FLEET_REGISTRY" "$FLEET_STATE_DIR/hb.warned"; "$REG" list >/dev/null 2>&1
+    for i in $(seq 1 "$n"); do "$REG" add "{\"name\":\"qm$i-a/lead\",\"team\":\"qm$i-a\",\"tier\":\"Lead\",\"status\":\"Working\",\"herdr_ref\":\"m$i\",\"pane\":\"p$i\",\"issue\":\"DEV-$i\"}" >/dev/null; done
+    FLEET_NOW="2026-10-29T12:$(printf '%02d' "$n"):00Z" LINEAR_STUB_DESC_MAX=255 "$SCRIPTS/linear.sh" heartbeat >/dev/null 2>"$hb"
+    grep -q 'without the team summary' "$hb" && warns=$((warns + 1))
+    b="$(jq -r '.labels[] | select(.name == "fleet:test") | .description' "$LINEAR_DB" | LC_ALL=C wc -c | tr -d ' ')"; [ "$b" -le "$maxb" ] || maxb="$b"
+  done
+  eq "v1109 heartbeat: with a multibyte owner the description stays within 255 bytes and lands with the summary, no warning" \
+    "$warns:$([ "$maxb" -le 256 ] && echo fits):$(jq -r '.labels[] | select(.name == "fleet:test") | .description' "$LINEAR_DB" | grep -c '^summary=')" "0:fits:1"
+  jq 'del(.viewer)' "$LINEAR_DB" >"$LINEAR_DB.t" && mv "$LINEAR_DB.t" "$LINEAR_DB"
   # (b) a cap that still refuses warns once across ticks, and again when the cause changes
   rm -f "$FLEET_STATE_DIR/hb.warned"
   for i in 1 2; do FLEET_NOW="2026-10-29T11:0$i:00Z" LINEAR_STUB_DESC_MAX=60 "$SCRIPTS/linear.sh" heartbeat >/dev/null 2>>"$hb.2"; done

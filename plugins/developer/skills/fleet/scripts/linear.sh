@@ -574,7 +574,7 @@ write_summary_doc() {
 
 # write_heartbeat: rewrite the heartbeat= line of this machine's label to now (one mutation, none when the line already
 # says now). Sets HB_AT and returns 0; returns 2 when the machine has no label yet. Claim, takeover and heartbeat share it.
-# The summary line costs a newline plus "summary=" (1 + 8) on top of its JSON; the room left for the JSON is cut by that.
+# Room is counted in bytes (the safe side if Linear counts bytes). The summary line costs a newline plus "summary=" (1 + 8) on top of its JSON; the room left for the JSON is cut by that.
 HB_SUMMARY_LINE_OVERHEAD=9
 write_heartbeat() {
   local mine found lid cur sm base room err full hbkey
@@ -590,7 +590,7 @@ write_heartbeat() {
   # rides on the same single write as the heartbeat, fitted to what is left under DESC_CAP (whole teams dropped, never a cut
   # line). A summary that cannot be built, or a document that cannot be written, never stops the heartbeat.
   base="$(describe_with_summary "$(describe_with_claim "$(describe_with_hb "$(describe_with_owner "$cur" "$(owner_name)")" "$HB_AT")" "${CLAIM_LINE:-}")" "")"
-  room=$((DESC_CAP - ${#base} - HB_SUMMARY_LINE_OVERHEAD)); [ "$room" -gt 2 ] || room=2
+  room=$((DESC_CAP - $(LC_ALL=C; printf %s "${base}" | wc -c | tr -d " ") - HB_SUMMARY_LINE_OVERHEAD)); [ "$room" -gt 2 ] || room=2
   if full="$(fleet_summary 2>/dev/null)"; then
     write_summary_doc "$full" || warn "team summary document not written; peers fall back to the label line"
     sm="$(summary_for_label "$room" <<<"$full" 2>/dev/null)" || sm=""
@@ -608,7 +608,7 @@ write_heartbeat() {
       if [ -n "$sm" ] && grep -q 'Argument Validation Error' "$err"; then
         rm -f "$err"
         # Once per cause: the same cap and size warns on the first tick only; a write with the summary clears it.
-        hbkey="cap=$DESC_CAP size=$((${#base} + ${#sm}))"
+        hbkey="cap=$DESC_CAP size=$(printf %s "$base$sm" | wc -c | tr -d " ")"
         if [ "$(cat "$FLEET_STATE_DIR/hb.warned" 2>/dev/null)" != "$hbkey" ]; then
           warn "heartbeat written without the team summary: Linear refused the label description with it"
           { mkdir -p "$FLEET_STATE_DIR" && printf '%s\n' "$hbkey" >"$FLEET_STATE_DIR/hb.warned"; } 2>/dev/null || true
