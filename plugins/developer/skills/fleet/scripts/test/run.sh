@@ -13,6 +13,7 @@
 #   bash scripts/test/run.sh --v4215    only the 4.2.15 cases, test/v4215.sh
 #   bash scripts/test/run.sh --v4218    only the 4.2.18 cases, test/v4218.sh
 #   bash scripts/test/run.sh --v4219    only the 4.2.19 cases, test/v4219.sh
+#   bash scripts/test/run.sh --v4220    only the 4.2.20 cases, test/v4220.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SCRIPTS="$(dirname "$HERE")"
@@ -359,6 +360,8 @@ if [ "${1:-}" = --v4215 ]; then v4215_full; printf '\n%d passed, %d failed\n' "$
 if [ "${1:-}" = --v4218 ]; then v4218_full; printf '\n%d passed, %d failed\n' "$pass" "$failn"; [ "$failn" = 0 ]; exit; fi
 . "$HERE/v4219.sh" # 4.2.19: v4219_smoke and v4219_full
 if [ "${1:-}" = --v4219 ]; then v4219_full; printf '\n%d passed, %d failed\n' "$pass" "$failn"; [ "$failn" = 0 ]; exit; fi
+. "$HERE/v4220.sh" # 4.2.20: v4220_smoke and v4220_full
+if [ "${1:-}" = --v4220 ]; then v4220_full; printf '\n%d passed, %d failed\n' "$pass" "$failn"; [ "$failn" = 0 ]; exit; fi
 if [ "${1:-}" = --v426 ]; then v426_full; printf '\n%d passed, %d failed\n' "$pass" "$failn"; [ "$failn" = 0 ]; exit; fi
 if [ "${1:-}" = --v42x ]; then v42x_full; printf '\n%d passed, %d failed\n' "$pass" "$failn"; [ "$failn" = 0 ]; exit; fi # only the 4.2.x patch cases
 if [ "${1:-}" = --v420 ]; then v420_full; printf '\n%d passed, %d failed\n' "$pass" "$failn"; [ "$failn" = 0 ]; exit; fi # only the 4.2.0 cases
@@ -792,6 +795,7 @@ Merge this one first." "Do not merge until the API ships" "  hold: waiting on de
   v4217_smoke
   v4218_smoke
   v4219_smoke
+  v4220_smoke
   printf '\n%d passed, %d failed\n' "$pass" "$failn"
   [ "$failn" = 0 ]; exit
 fi
@@ -2311,7 +2315,19 @@ mkdir -p "$PLUG/v3/skills/fleet/scripts"; printf '#!/bin/bash\necho "launched fr
 jq -n --arg p "$PLUG/v3" '{plugins: {"developer@cc-marketplace": [{installPath: $p}]}}' >"$FLEET_INSTALLED_PLUGINS"; rm -rf "$PLUG/v2"
 eq "launcher: an update takes effect on the next run, and the swept old dir does not matter" "$(/bin/bash "$LNCH")" "launched from v3"
 echo '{bad json' >"$FLEET_INSTALLED_PLUGINS"
-check "launcher: a corrupt installed_plugins.json falls back to the install-time scripts" bash -c "FLEET_TICK='$FLEET_TICK' /bin/bash '$LNCH' >/dev/null 2>&1; test -f '$FLEET_STATE_DIR/loop.state.json'"
+FC="$T/fakecache"; mkdir -p "$FC/mk/developer/4.2.9/skills/fleet/scripts" "$FC/mk/developer/4.2.10/skills/fleet/scripts"
+for v in 4.2.9 4.2.10; do printf '#!/bin/bash\necho "cache %s"\n' "$v" >"$FC/mk/developer/$v/skills/fleet/scripts/loop-tick.sh"; done
+eq "launcher: a corrupt installed_plugins.json runs the newest cached version" "$(FLEET_PLUGIN_CACHE="$FC" /bin/bash "$LNCH")" "cache 4.2.10"
+rm -f "$FLEET_INSTALLED_PLUGINS"
+eq "launcher: a missing installed_plugins.json runs the newest cached version" "$(FLEET_PLUGIN_CACHE="$FC" /bin/bash "$LNCH")" "cache 4.2.10"
+jq -n '{plugins: {"developer@cc-marketplace": [{installPath: "/nope/gone"}]}}' >"$FLEET_INSTALLED_PLUGINS"
+eq "launcher: a listed but missing installPath runs the newest cached version" "$(FLEET_PLUGIN_CACHE="$FC" /bin/bash "$LNCH")" "cache 4.2.10"
+mkdir -p "$T/emptycache"
+LERR="$(FLEET_PLUGIN_CACHE="$T/emptycache" /bin/bash "$LNCH" 2>&1 >/dev/null)" && LRC=0 || LRC=$?
+eq "launcher: nothing usable exits 1" "$LRC" 1
+eq "launcher: nothing usable prints exactly one stderr line" "$(printf '%s\n' "$LERR" | wc -l | tr -d ' ')" 1
+check "launcher: the one line names the missing plugin" bash -c "printf '%s' '$LERR' | grep -q 'no installed developer plugin found'"
+eq "launcher: no version number is written into it" "$(grep -cE '[0-9]+\.[0-9]+\.[0-9]+' "$LNCH" || true)" 0
 jq -n --arg p "$PLUG/v3" '{plugins: {"developer@cc-marketplace": [{installPath: $p}]}}' >"$FLEET_INSTALLED_PLUGINS"
 rm -f "$FLEET_STATE_DIR/loop.state.json"
 mkdir -p "$PLUG/v4/skills/fleet/scripts"; cp "$SCRIPTS/"*.sh "$PLUG/v4/skills/fleet/scripts/"
@@ -4657,6 +4673,7 @@ v4215_full
 v4217_full
 v4218_full
 v4219_full
+v4220_full
 # ---- end 4.2.0 ----
 
 printf '\n%d passed, %d failed\n' "$pass" "$failn"

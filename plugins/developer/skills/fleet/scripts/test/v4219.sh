@@ -1,22 +1,36 @@
 #!/usr/bin/env bash
-# 4.2.19 (DEV-1114): fleet run start prints its rules from an unquoted heredoc; a backticked `fleet watch` in the text ran
-# as a command substitution ("fleet: command not found", or spliced output when fleet is on PATH). Sourced by run.sh after
-# v420.sh (v420_state, REG, SCRIPTS, eq). Generic names only.
-v4219_run_start() {
-  v420_state rs19; export TZ=UTC DF_GB=100; unset HERDR_PANE_ID
-  "$REG" add '{"name":"orchestrator","team":"orchestrator","tier":"Orchestrator","status":"Working","herdr_ref":"om","pane":"pom"}' >/dev/null
-  printf '2\nparent DEV-9\n\n\nallow\n\n20\n\n07:30\n10:00\n' >"$T/v4219-answers"
-  FLEET_RUN_ANSWERS="$T/v4219-answers" "$SCRIPTS/run.sh" init >/dev/null 2>&1
-  local bin="$T/v4219-bin" out rc
-  rm -rf "$bin"; mkdir -p "$bin"
-  # a `fleet` on PATH that prints a marker: if the text still runs it, the marker is spliced into the rules
-  printf '#!/usr/bin/env bash\necho "# Monitor stops SPLICED"\n' >"$bin/fleet"; chmod +x "$bin/fleet"
-  out="$(PATH="$bin:$PATH" FLEET_NOW=2026-10-29T08:00:00Z "$SCRIPTS/run.sh" start </dev/null 2>&1)"; rc=$?
-  eq "v4219 run start: exit 0 with a fleet on PATH, and no spliced output in the rules" "$rc:$(grep -c 'SPLICED' <<<"$out" || true)" "0:0"
-  out="$(FLEET_NOW=2026-10-29T08:00:00Z "$SCRIPTS/run.sh" start </dev/null 2>&1)"; rc=$?
-  eq "v4219 run start: no 'command not found' when fleet is not on PATH" "$rc:$(grep -c 'command not found' <<<"$out" || true)" "0:0"
-  eq "v4219 run start: the rules name the script by its directory path" "$(grep -c "run $SCRIPTS/fleet watch, start Monitor" <<<"$out" || true)" 1
-  unset TZ DF_GB
+# 4.2.19 (DEV-1112): a builder that idles while its planner has not finished is waiting, not Stalled. Sourced by run.sh
+# after v4218.sh, whose helpers it uses (v4218_team, v4211_state, v4211_end, v420_tick, v420_evn) with run.sh's own
+# (eq, REG, AS, HERDR_LOG, the herdr shim). Generic names only.
+v4219_bst() { "$SCRIPTS/status.sh" "build-$1" --json 2>/dev/null | jq -r '.[] | select(.name == "build-'"$1"'/builder") | .status'; }
+v4219_idle() { local t="$1" r; shift; for r in "$@"; do echo idle >"$AS/build-$t-$r"; done; } # v4219_idle <team> <role>...
+v4219_nudges() { grep -c "^agent prompt build-$1-builder You went idle without running your done step" "$HERDR_LOG" || true; } # stall nudges sent to the team's builder
+
+v4219_planner_wait() {
+  v4211_state pw
+  export FLEET_FORCE=1 # several live teams on one repo
+  local ev
+  # the planner is working: the idle builder is waiting for the plan
+  v4218_team pw1; "$REG" set build-pw1/planner status=Working >/dev/null; "$REG" set build-pw1/builder status=Working >/dev/null; v4219_idle pw1 planner builder
+  eq "v4219 planner Working: the idle builder is Idle, not Stalled" "$(v4219_bst pw1)" Idle
+  v420_tick 2026-10-20T10:05:00Z >/dev/null; ev="$(v420_tick 2026-10-20T10:10:00Z)"
+  eq "v4219 and tick sends no nudge and raises no stalled event" "$(v4219_nudges pw1):$(v420_evn "$ev" stalled)" 0:0
+  # the plan is done: the rule bites again
+  "$REG" set build-pw1/planner status=Done >/dev/null; "$REG" set build-pw1/builder status=Working >/dev/null; v4219_idle pw1 builder
+  eq "v4219 planner Done: the idle builder with no done step is Stalled" "$(v4219_bst pw1)" Stalled
+  # nothing left to wait for
+  v4218_team pw2; v4219_idle pw2 planner builder; "$REG" set build-pw2/planner status=Failed >/dev/null; "$REG" set build-pw2/builder status=Working >/dev/null
+  eq "v4219 planner Failed: the builder is Stalled" "$(v4219_bst pw2)" Stalled
+  "$REG" set build-pw2/planner status=Retired >/dev/null; "$REG" set build-pw2/builder status=Working >/dev/null
+  eq "v4219 planner Retired: the builder is Stalled" "$(v4219_bst pw2)" Stalled
+  # a team with no planner row
+  "$REG" add '{"name":"build-pw3/builder","team":"build-pw3","repo":"'"$QD/repo-rv"'","tier":"Worker","status":"Working","herdr_ref":"build-pw3-builder","pane":"p"}' >/dev/null; v4219_idle pw3 builder
+  eq "v4219 no planner row: the builder is Stalled as before" "$(v4219_bst pw3)" Stalled
+  # only the builder is spared: the tester is not
+  v4218_team pw4; "$REG" set build-pw4/planner status=Working >/dev/null; "$REG" set build-pw4/tester status=Working >/dev/null; v4219_idle pw4 planner tester
+  eq "v4219 the tester is not spared while the planner works" "$("$SCRIPTS/status.sh" build-pw4 --json 2>/dev/null | jq -r '.[] | select(.name == "build-pw4/tester") | .status')" Stalled
+  v4211_end
 }
-v4219_smoke() { v4219_run_start; }
+
+v4219_smoke() { v4219_planner_wait; }
 v4219_full() { v4219_smoke; }
