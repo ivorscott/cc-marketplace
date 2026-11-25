@@ -30,7 +30,8 @@
 #   Needs input  herdr says blocked, or the agent escalated
 #   Done         the agent ran `registry.sh done` (the done contract) — never inferred
 #   Idle         herdr says idle/done and the agent declared it is waiting (status=Idle),
-#                or it is a lead whose team still has live workers
+#                or it is a lead whose team still has live workers,
+#                or it is a builder whose planner has not finished (Done, Retired or Failed): it is waiting for the plan
 #   Stalled      herdr says idle/done, but the agent neither finished nor declared waiting, and it has no
 #                background task running (a task its transcript started, with no notification and no stop
 #                yet, counts as Working; the screen is never read, so with no transcript there is none)
@@ -94,6 +95,13 @@ team_has_live_workers() {
     '[.[] | select(.team == $t and .tier == "Worker" and .status != "Done" and .status != "Retired")] | length > 0' >/dev/null
 }
 
+# team_planner_pending <team>: the team has a planner row that is not Done, Retired or Failed, so its builder is waiting
+# for the plan. Registry only; no pane is read.
+team_planner_pending() {
+  printf '%s' "$rows" | jq -e --arg p "$1/planner" \
+    '[.[] | select(.name == $p and .status != "Done" and .status != "Retired" and .status != "Failed")] | length > 0' >/dev/null
+}
+
 # bg_busy <transcript>: the agent has a background task running, so idle is not Stalled. Only its transcript says
 # (started minus notified or stopped tasks, aged out after bg_task_max_hours); herdr has no field for it, and the
 # screen is never read, so with no readable transcript there is none.
@@ -142,6 +150,7 @@ while IFS=$'\x1f' read -r -u 3 name ref pane tier tm old esc tr sdetail bfa lbri
         if [ -n "$esc" ] && [ "$old" = "Needs input" ]; then new="Needs input"
         elif [ "$old" = "Idle" ]; then new="Idle"
         elif [ "$tier" = "Lead" ] && team_has_live_workers "$tm"; then new="Idle"
+        elif [ "$name" = "$tm/builder" ] && [ "$tier" = "Worker" ] && team_planner_pending "$tm"; then new="Idle"
         elif bg_busy "$tr"; then new="Working"
         else new="Stalled"; fi ;;
       *) new="$old" ;;
