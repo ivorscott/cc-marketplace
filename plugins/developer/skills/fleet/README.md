@@ -501,6 +501,15 @@ and prints the rules it will follow.
 | `/fleet run show` | The saved profile. The Orchestrator re-reads it after a compaction. |
 | `/fleet run stop` | Stop starting new teams. Running teams and their PRs carry on. |
 
+> **After `/clear`, say `/fleet run` again.** `/clear` empties the Orchestrator's conversation, and your request to
+> run the fleet goes with it. The scheduled loop, the ticks, the wakes, the registry and the teams all keep running,
+> but the Orchestrator no longer knows you asked it to drive. Claude Code's permission checks also judge each action
+> against the conversation alone, so a session that starts with `/fleet status` may have its boots blocked as
+> unrequested. Make `/fleet run` your first command after a `/clear`.
+>
+> `/compact` is usually the better habit: it keeps the conversation as a summary, so the run request survives and you
+> don't need to say `/fleet run` again (the Orchestrator re-reads `fleet run show` on its own).
+
 ### 3. What it does without you
 
 - **Fills free slots.** It picks the next issue by your profile and boots it. It never hands you a menu. `fleet

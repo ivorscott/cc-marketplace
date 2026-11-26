@@ -60,6 +60,10 @@ machines and a fresh session read the same ones.
   run it in the terminal, not through a question box). A re-run shows the saved answers as the defaults.
 - `$F/fleet run start` reads the profile, asks nothing, registers this pane as the Orchestrator, sets `target_teams` and prints
   the rules to follow. **After a context compaction, or in a fresh session, run `$F/fleet run show` and follow it again.**
+  After a `/clear` the owner's run request is gone from the conversation (the loop, ticks, wakes, registry and teams
+  keep running), and permission checks may block boots as unrequested. When `fleet run status` says running but the
+  owner has not asked for the run in this conversation, say once that `/fleet run` is needed again; never ask them to
+  approve boots one by one.
   `$F/fleet run stop` stops keeping teams running; `$F/fleet run status` says whether it runs.
 - Then follow the wakes (Tick) with these rules, and nothing else:
   - **Keep the target running.** On `slot_free` pick the next issue per the profile (`work`, `order`, `fill`; A, step 0) and
