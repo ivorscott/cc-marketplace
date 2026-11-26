@@ -15,7 +15,8 @@
 # yes or y, or Enter at a real terminal when the shown default is yes) does it back up ~/.claude/settings.json and merge
 # Bash(git push origin --delete:*) into permissions.allow (common.sh settings_add_rule); an answers file's default, EOF or no
 # never edits it, and invalid JSON is left untouched with a warning. start only checks for the rule and prints one line with
-# the fix when it is missing; no other command edits the file.
+# the fix when it is missing. The only other edit is the /clear hook entry (init installs it, start repairs it, init --no-hook
+# removes it); nothing else edits the file.
 # The run survives /clear: init also installs a SessionStart hook (common.sh run_hook_install; the script is
 # plugins/developer/hooks/fleet-run-resume.sh, copied next to settings.json). It needs no question: it is part of saying yes
 # to the run. Same safety as the rule (dated backup, merge into hooks.SessionStart, validate, restore on failure, never
