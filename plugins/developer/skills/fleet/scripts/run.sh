@@ -2,7 +2,8 @@
 # fleet run: set the self-driving loop up once, then start it with no questions. The rules live in the [run] profile in
 # config.toml, so both machines and a fresh session read the same ones, never the Orchestrator's memory.
 #
-#   run.sh init     ask the profile questions, one at a time, each with a recommended answer; save the answers
+#   run.sh init     ask the profile questions, one at a time, each with a recommended answer; save the answers; install the
+#                   /clear hook (below). init --no-hook asks nothing and only removes that hook's entry
 #   run.sh show     print the saved profile, with the defaults for what is not saved
 #   run.sh start    read the profile and start the loop, asking nothing: register this pane as the Orchestrator, set
 #                   target_teams to the profile's teams, install the launchd loop when it is not installed (not in a
@@ -15,6 +16,11 @@
 # Bash(git push origin --delete:*) into permissions.allow (common.sh settings_add_rule); an answers file's default, EOF or no
 # never edits it, and invalid JSON is left untouched with a warning. start only checks for the rule and prints one line with
 # the fix when it is missing; no other command edits the file.
+# The run survives /clear: init also installs a SessionStart hook (common.sh run_hook_install; the script is
+# plugins/developer/hooks/fleet-run-resume.sh, copied next to settings.json). It needs no question: it is part of saying yes
+# to the run. Same safety as the rule (dated backup, merge into hooks.SessionStart, validate, restore on failure, never
+# replaces other hooks, skipped when an entry already names it). It is silent unless the run is on and the pane is the
+# Orchestrator's, so stop leaves it. start reinstalls it when the entry or its script is missing, with one line.
 # init is the only interactive command. Enter keeps the recommended answer (the saved one on a re-run). Without a
 # terminal on stdin it refuses and prints the questions rather than guess; FLEET_RUN_ANSWERS=<file> reads one answer
 # per line from a file instead (an empty line keeps the default), for scripts and tests. It writes only the [run] table
@@ -82,6 +88,8 @@ can_run() {
 }
 
 cmd_init() {
+  if [ "${1:-}" = --no-hook ]; then run_hook_remove; return; fi
+  [ -z "${1:-}" ] || die "unknown init option: $1" "Run fleet help run"
   local row k d q cur a raw v answers="${FLEET_RUN_ANSWERS:-}" src="" explicit_yes=false
   if [ -n "$answers" ]; then [ -f "$answers" ] || die "no answers file at $answers"; exec 3<"$answers"; src="file"
   elif [ -t 0 ]; then exec 3<&0; src="tty"
@@ -128,6 +136,8 @@ cmd_init() {
     if $explicit_yes; then settings_add_rule || true
     else printf 'Branch deletes stay off: no explicit yes, so %s was not edited. Run fleet run init in a terminal and answer yes, or add %s to permissions.allow yourself.\n' "$(claude_settings)" "$DELETE_RULE"; fi
   fi
+  # The run survives /clear: no question, one line; a failure warns and init still succeeds.
+  run_hook_install || printf 'The run will not survive /clear until the hook installs: run fleet run init again.\n'
   render_line run_saved teams="$ans_teams" can_run="$(can_run "$ans_teams")" installs="$ans_install_policy" path="$FLEET_CONFIG_DIR/config.toml"
 }
 
@@ -161,6 +171,7 @@ cmd_start() {
     *"not installed"*) if [ -n "${FLEET_SANDBOX:-}" ] || [ "${FLEET_TEST:-}" = 1 ]; then sched="not installed (not touched here)"
       else "$FLEET_SCRIPTS/schedule.sh" install >/dev/null 2>&1 && sched="installed" || sched="not installed: run fleet schedule install"; fi ;;
   esac
+  if ! run_hook_ok; then run_hook_install >/dev/null && printf 'Reinstalled the run /clear hook.\n' || printf 'The run /clear hook is missing and could not be reinstalled: run fleet run init.\n'; fi
   render_line run_started teams="$teams" work="$work" order="$order" loop="${sched:-unknown}"
   # Branch deletes: only a check. If the owner wants them and the rule is missing, one line says how to add it; start never edits.
   bdline="Branch deletes: ${bdel}."
@@ -195,7 +206,7 @@ cmd_status() {
 }
 
 case "${1:-}" in
-  init) cmd_init ;;
+  init) shift; cmd_init "$@" ;;
   start) cmd_start ;;
   stop) cmd_stop ;;
   status) cmd_status ;;
