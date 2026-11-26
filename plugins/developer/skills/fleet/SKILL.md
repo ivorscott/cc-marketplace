@@ -61,6 +61,7 @@ machines and a fresh session read the same ones.
 - `$F/fleet run start` reads the profile, asks nothing, registers this pane as the Orchestrator, sets `target_teams` and prints
   the rules to follow. **After a context compaction, or in a fresh session, run `$F/fleet run show` and follow it again.**
   `$F/fleet run stop` stops keeping teams running; `$F/fleet run status` says whether it runs.
+  The run survives `/clear`: init installs a SessionStart hook, start repairs it, `init --no-hook` removes it.
 - Then follow the wakes (Tick) with these rules, and nothing else:
   - **Keep the target running.** On `slot_free` pick the next issue per the profile (`work`, `order`, `fill`; A, step 0) and
     boot it. Retire a team at once on `pr_merged`. After an API merge, do the client bump the repo's rules name, without asking.

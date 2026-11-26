@@ -202,6 +202,12 @@ v428_tick_sweep() { # tick sweeps each repo in repos once a day, never wakes any
 # ---- fleet run init / start: the one place permission settings are edited ------------------------------------------------
 v428_answers() { printf '2\nanything\ncritical-path\nwhole-first\nallow\n10\n15\n10\n08:00\nnever\n%s' "$1" >"$T/v428-answers"; } # the 10 old answers, then the branch_delete line ('' = none)
 v428_init() { FLEET_NOW=2026-10-29T10:00:00Z FLEET_RUN_ANSWERS="$T/v428-answers" "$SCRIPTS/run.sh" init 2>&1; }
+# v428_seed <settings file>: add an installed run /clear hook (entry and script), so init's hook install is a no-op and these
+# cases keep testing only the branch-delete rule. The hook's own cases are in v4221.sh.
+v428_seed() {
+  local d; d="$(dirname "$1")"; mkdir -p "$d/hooks"; : >"$d/hooks/fleet-run-resume.sh"
+  jq --arg c "$d/hooks/fleet-run-resume.sh" '.hooks.SessionStart = ((.hooks.SessionStart // []) + [{matcher: "^clear$", hooks: [{type: "command", command: $c}]}])' "$1" >"$1.seed" && cat "$1.seed" >"$1"; rm -f "$1.seed"
+}
 v428_run() {
   v420_state ri; local S="$T/v428-ri-settings/settings.json" out
   local C="$FLEET_CONFIG_DIR"/config.toml
@@ -209,7 +215,7 @@ v428_run() {
   rule_n() { jq -r --arg r "$DELETE_RULE_T" '[(.permissions.allow // [])[] | select(. == $r)] | length' "$S"; }
   baks() { ls "$S".bak-* 2>/dev/null | wc -l | tr -d ' '; }
   # no explicit yes: an empty answer in a file (the default is yes), a short file (EOF), and no: the file is never touched
-  printf '{"theme":"dark"}\n' >"$S"; cp "$S" "$T/v428-set.orig"
+  printf '{"theme":"dark"}\n' >"$S"; v428_seed "$S"; cp "$S" "$T/v428-set.orig"
   v428_answers $'\n'; v428_init >/dev/null
   eq "v428 init: a default taken from an answers file (empty line) does not edit settings.json" "$(cmp -s "$S" "$T/v428-set.orig" && echo same):$(baks)" "same:0"
   v428_answers ''; v428_init >/dev/null
@@ -224,17 +230,18 @@ v428_run() {
   v428_answers $'y\n'; out="$(v428_init)"
   eq "v428 init: yes again (as y) leaves one rule, no new backup, and says it is already allowed" "$(rule_n):$(baks):$(printf '%s\n' "$out" | grep -c '^Already allowed')" "1:1:1"
   # existing allow entries stay, in order, and a second backup of the same day gets -2
-  jq -n '{permissions: {allow: ["Bash(ls:*)", "Read"], deny: ["Bash(rm:*)"]}, model: "x"}' >"$S"; cp "$S" "$T/v428-set.orig2"
+  jq -n '{permissions: {allow: ["Bash(ls:*)", "Read"], deny: ["Bash(rm:*)"]}, model: "x"}' >"$S"; v428_seed "$S"; cp "$S" "$T/v428-set.orig2"
   v428_answers $'yes\n'; v428_init >/dev/null
   eq "v428 init: the rule is appended after the existing entries, deny and other keys stay, and the same-day backup gets -2" \
     "$(jq -c '.permissions.allow' "$S"):$(jq -c '.permissions.deny' "$S"):$(jq -r .model "$S"):$(cmp -s "$S.bak-20261029-2" "$T/v428-set.orig2" && echo backup2)" "[\"Bash(ls:*)\",\"Read\",\"$DELETE_RULE_T\"]:[\"Bash(rm:*)\"]:x:backup2"
-  # invalid JSON is left untouched, with a warning
+  # invalid JSON is left untouched, with a warning from the rule and one from the hook install
   printf '{ not json' >"$S"; cp "$S" "$T/v428-set.bad"
   v428_answers $'yes\n'; out="$(v428_init)"
-  eq "v428 init: a settings file that is not valid JSON is left untouched, with a warning" "$(cmp -s "$S" "$T/v428-set.bad" && echo same):$(printf '%s\n' "$out" | grep -c 'not valid settings JSON')" "same:1"
+  eq "v428 init: a settings file that is not valid JSON is left untouched, with a warning" "$(cmp -s "$S" "$T/v428-set.bad" && echo same):$(printf '%s\n' "$out" | grep -c 'not valid settings JSON')" "same:2"
   # a missing file is created
   rm -f "$S" "$S".bak-*; v428_answers $'yes\n'; out="$(v428_init)"
-  eq "v428 init: a missing settings file is created with the rule, and nothing to back up" "$(rule_n):$(baks)" "1:0"
+  eq "v428 init: a missing settings file is created with the rule; the hook entry follows in a second step, which backs the new file up" \
+    "$(rule_n):$(baks):$(jq -r '[.hooks.SessionStart[]?.hooks[]?.command? // empty | select(contains("fleet-run-resume.sh"))] | length' "$S")" "1:1:1"
   # a symlink stays a symlink, the target gets the rule, the mode stays
   rm -f "$S" "$S".bak-*; printf '{"a":1}\n' >"$T/v428-real.json"; chmod 600 "$T/v428-real.json"; ln -s "$T/v428-real.json" "$S"
   v428_answers $'yes\n'; v428_init >/dev/null
@@ -245,12 +252,12 @@ v428_run() {
   eq "v428 init: an answer that is not yes or no is refused" "$rc" 1
   # run start: only a check, one fix line, nothing written
   rm -f "$S" "$S".bak-*; "$REG" add '{"name":"orchestrator","team":"orchestrator","tier":"Orchestrator","status":"Working","herdr_ref":"om","pane":"pom"}' >/dev/null
-  v428_answers $'no\n'; v428_init >/dev/null
+  v428_answers $'no\n'; v428_init >/dev/null; cp "$S" "$T/v428-start.orig"
   bash -c '. "$1/common.sh"; cfg_write run branch_delete "\"yes\""' _ "$SCRIPTS"
   export TZ=UTC DF_GB=100; unset HERDR_PANE_ID
   out="$(FLEET_NOW=2026-10-29T08:00:00Z "$SCRIPTS/run.sh" start </dev/null 2>&1)"
-  eq "v428 start: with deletes wanted and no rule it prints the one fix line, and writes no settings file" \
-    "$(printf '%s\n' "$out" | grep -c "^Branch deletes are off: run fleet run init and answer yes, or add Bash(git push origin --delete:\*) to permissions.allow in $S\.\$"):$([ -e "$S" ] && echo exists || echo none)" "1:none"
+  eq "v428 start: with deletes wanted and no rule it prints the one fix line; the rule is not added and start changes nothing (init already put the hook entry there)" \
+    "$(printf '%s\n' "$out" | grep -c "^Branch deletes are off: run fleet run init and answer yes, or add Bash(git push origin --delete:\*) to permissions.allow in $S\.\$"):$(cmp -s "$S" "$T/v428-start.orig" && echo same):$(rule_n)" "1:same:0"
   jq -n --arg r "$DELETE_RULE_T" '{permissions: {allow: [$r]}}' >"$S"
   out="$(FLEET_NOW=2026-10-29T08:00:01Z "$SCRIPTS/run.sh" start </dev/null 2>&1)"
   eq "v428 start: with the rule present there is no fix line" "$(printf '%s\n' "$out" | grep -c '^Branch deletes are off: run fleet')" 0

@@ -444,7 +444,7 @@ a morning report. Your only job is merging. It needs Linear for picking work; se
 
 ### 1. Answer the questions once
 
-`fleet run init` is the one interactive command. Run it in the Orchestrator:
+`fleet run init` is the one interactive command. The run survives `/clear`: init installs a SessionStart hook (`fleet run init --no-hook` removes it). Run it in the Orchestrator:
 
 ```
 /fleet run init
@@ -1021,7 +1021,8 @@ The Orchestrator and agents call these directly, from `scripts/`. You can call t
 | `scripts/queue.sh` | the merge queue: which ready PRs to merge, in which order, and why |
 | `scripts/sandbox.sh` | reproductions away from the live fleet |
 | `scripts/redact-check.sh` | the redact check the house rules require: private terms counted, never printed; it gates public repos only |
-| `scripts/run.sh` | `fleet run`: `init` saves the `[run]` profile, `start` begins the self-driving loop with no questions, `stop`, `status`, `show` |
+| `scripts/run.sh` | `fleet run`: `init` saves the `[run]` profile and installs the `/clear` hook, `start` begins the self-driving loop with no questions (and repairs the hook), `stop`, `status`, `show` |
+| `../../hooks/fleet-run-resume.sh` | the SessionStart hook `fleet run init` copies to `~/.claude/hooks/`: after `/clear` in the Orchestrator pane while the run is on, it tells the session to run `fleet run start` |
 | `scripts/decide.sh`, `defer.sh`, `overlap.sh` | an escalation decided on the owner's behalf (what is the human's parked), a PR's deferred items filed as linked issues, the plan-time overlap check |
 | `scripts/slim.sh`, `styles/slim.toml` | the slim panel style for herdr, between markers in herdr's config |
 | `rules/house.md` | the house rules every brief ends with (a repo's `.claude/fleet-rules.md` follows them); with `installs = "allow"` in config.toml, the install rule says agents install what the work needs themselves and list each install |

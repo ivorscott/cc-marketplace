@@ -815,6 +815,74 @@ settings_add_rule() {
   rm -f "$tmp"; printf 'Added %s to %s. Backup: %s.\n' "$DELETE_RULE" "$f" "$bak"
 }
 
+# ---- the run's SessionStart hook ------------------------------------------------------------------------------------
+# fleet run survives /clear through a SessionStart hook (plugins/developer/hooks/fleet-run-resume.sh). run_hook_install
+# copies it next to the user settings file (hooks/fleet-run-resume.sh) and merges one `^clear$` SessionStart entry that
+# names the copy; nothing is replaced. The settings file is backed up first (settings.json.bak-YYYYMMDD, -N when that
+# exists), merged with jq into a temp file that must parse, written back with cat > file (a symlink stays a symlink),
+# validated again, and restored from the backup on any failure. Invalid JSON is left untouched. An entry that already
+# names fleet-run-resume.sh counts as installed. Paths follow FLEET_CLAUDE_SETTINGS / HOME, so tests never touch ~/.claude.
+RUN_HOOK_NAME="fleet-run-resume.sh"
+run_hook_src() { printf '%s\n' "$FLEET_SCRIPTS/../../../hooks/$RUN_HOOK_NAME"; }
+run_hook_dst() { printf '%s\n' "$(dirname "$(claude_settings)")/hooks/$RUN_HOOK_NAME"; }
+# run_hook_cmd: the command of the first SessionStart entry that names the hook; empty when there is none or no valid file
+run_hook_cmd() {
+  local f; f="$(claude_settings)"; [ -f "$f" ] || return 0
+  jq -r --arg n "$RUN_HOOK_NAME" '[.hooks.SessionStart[]?.hooks[]?.command? // empty | select(type == "string" and contains($n))] | first // empty' "$f" 2>/dev/null || true
+}
+# run_hook_ok: an entry names the hook and the script it runs exists
+run_hook_ok() {
+  local c; c="$(run_hook_cmd)"; [ -n "$c" ] && [ -f "${c%% *}" ]
+}
+# settings_merge <what> <jq filter> [jq args]: backup, merge, validate, restore. 0 done, 1 failed (file as it was).
+settings_merge() {
+  local what="$1" filter="$2" f tmp bak day n; shift 2
+  f="$(claude_settings)"
+  tmp="$(mktemp "${TMPDIR:-/tmp}/fleet-settings.XXXXXX")" || { warn "cannot make a temp file"; return 1; }
+  if [ ! -e "$f" ] && [ ! -L "$f" ]; then
+    mkdir -p "$(dirname "$f")" 2>/dev/null || { rm -f "$tmp"; warn "cannot create $(dirname "$f")"; return 1; }
+    if jq -n "$@" "{} | $filter" >"$tmp" 2>/dev/null && cat "$tmp" >"$f" 2>/dev/null; then rm -f "$tmp"; printf '%s in %s. No backup: the file did not exist.\n' "$what" "$f"; return 0; fi
+    rm -f "$tmp"; warn "cannot write $f"; return 1
+  fi
+  if ! jq -e 'type == "object" and ((.hooks // {}) | type == "object") and ((.hooks.SessionStart // []) | type == "array")' "$f" >/dev/null 2>&1; then
+    rm -f "$tmp"; warn "$f is not valid settings JSON (or its hooks block has an unexpected shape); left untouched"; return 1
+  fi
+  day="${FLEET_NOW:-$(now)}"; day="${day:0:10}"; day="${day//-/}"
+  bak="$f.bak-$day"; n=1; while [ -e "$bak" ]; do n=$((n + 1)); bak="$f.bak-$day-$n"; done
+  cp -p "$f" "$bak" 2>/dev/null || { rm -f "$tmp"; warn "cannot back up $f; left untouched"; return 1; }
+  if ! jq "$@" "$filter" "$f" >"$tmp" 2>/dev/null || ! jq -e . "$tmp" >/dev/null 2>&1; then
+    rm -f "$tmp"; warn "could not merge into $f; left untouched (backup at $bak)"; return 1
+  fi
+  if ! cat "$tmp" >"$f" 2>/dev/null || ! jq -e . "$f" >/dev/null 2>&1; then
+    cat "$bak" >"$f" 2>/dev/null; rm -f "$tmp"; warn "writing $f failed; restored it from $bak"; return 1
+  fi
+  rm -f "$tmp"; printf '%s in %s. Backup: %s.\n' "$what" "$f" "$bak"
+}
+# run_hook_install: copy the script, then add the entry unless one already names it. One line out; 1 on failure.
+run_hook_install() {
+  local src dst c
+  src="$(run_hook_src)"; dst="$(run_hook_dst)"
+  [ -f "$src" ] || { warn "the run hook script is missing from the plugin ($src)"; return 1; }
+  c="$(run_hook_cmd)"
+  if [ -z "$c" ]; then
+    mkdir -p "$(dirname "$dst")" 2>/dev/null && cp "$src" "$dst" 2>/dev/null && chmod +x "$dst" 2>/dev/null || { warn "cannot copy the run hook to $dst"; return 1; }
+    settings_merge "Added the run's /clear hook ($dst)" \
+      '.hooks.SessionStart = ((.hooks.SessionStart // []) + [{matcher: "^clear$", hooks: [{type: "command", command: $c}]}])' --arg c "$dst"
+  elif [ ! -f "${c%% *}" ]; then
+    c="${c%% *}"
+    mkdir -p "$(dirname "$c")" 2>/dev/null && cp "$src" "$c" 2>/dev/null && chmod +x "$c" 2>/dev/null || { warn "cannot copy the run hook to $c"; return 1; }
+    printf 'Restored the run hook script at %s.\n' "$c"
+  else
+    printf 'The run /clear hook is already installed (%s).\n' "$(claude_settings)"
+  fi
+}
+# run_hook_remove: drop the SessionStart entries that name the hook, and only those. The script copy stays.
+run_hook_remove() {
+  if [ -z "$(run_hook_cmd)" ]; then printf 'The run /clear hook is not installed.\n'; return 0; fi
+  settings_merge "Removed the run's /clear hook" \
+    '.hooks.SessionStart |= (map(.hooks |= map(select((.command // "") | contains($n) | not))) | map(select((.hooks // []) | length > 0)))' --arg n "$RUN_HOOK_NAME"
+}
+
 # default_branch <repo>: the repo's default branch as origin says (origin/HEAD, else main, else master); empty when unknown.
 default_branch() {
   local br
