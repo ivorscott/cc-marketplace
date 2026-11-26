@@ -183,9 +183,13 @@ Nothing bootable. What each candidate needs from you:
 
 1. [DEV-1](url): <what it needs>
 2. [DEV-2](url): <what it needs>
+
+<N> parked in Backlog. Move the ones you want to Todo.
 ```
 
-Ranked as the Pick step ranks them (priority, then series order), at most five.
+Ranked as the Pick step ranks them (priority, then series order), at most five. The last line only when `fleet candidates`
+skipped issues as `parked`; they are counted, never listed as candidates, and with no other candidate the reply is that line
+under "Nothing bootable."
 
 ### tell
 
@@ -389,8 +393,10 @@ skipped: <ISSUE> <reason>, <ISSUE> <reason>
 ```
 
 Only the work a team could boot now, one line per issue, by priority (urgent first, none last) then identifier. A reason is one word:
-`ready` (Todo or Backlog) or `in-progress-lapsed` for the bootable ones; `verify`, `done`, `canceled`, `duplicate`, `other-team`,
-`no-role`, `claimed`, `blocked`, `other-state` or `held` (a registry row works on it) for the skipped. With nothing bootable the first
+`ready` (Todo) or `in-progress-lapsed` for the bootable ones; `verify`, `done`, `canceled`, `duplicate`, `other-team`,
+`no-role`, `claimed`, `blocked`, `parked`, `other-state` or `held` (a registry row works on it) for the skipped. `parked` is a
+Backlog issue that could run once the user moves it to Todo (one with no role label or an open blocker keeps that reason);
+with `candidates_allow_backlog = true` it is `ready`. With nothing bootable the first
 line is `Nothing bootable.`; the `skipped:` line stays. The Orchestrator trusts the list and keeps no exclude list of its own.
 
 ### watch

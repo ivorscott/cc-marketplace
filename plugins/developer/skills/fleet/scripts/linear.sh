@@ -15,11 +15,13 @@
 #   linear.sh peers                           JSON: other machines' claims {machine, label, name, issue, heartbeat, summary, source}, for
 #                                             `fleet status` (summary: the machine's summary document, else the parsed `summary=`
 #                                             label line, null when there is neither; source: doc | label)   (read-only; one extra read)
-#   linear.sh candidates [--detail]           JSON: identifiers of the open issues a team could take now: Todo or Backlog, or In
+#   linear.sh candidates [--detail]           JSON: identifiers of the open issues a team could take now: Todo, or In
 #                                             Progress with no fleet label or only lapsed ones, not blocked by an open issue,
-#                                             in a tracker_teams team and with a role label (unless candidates_allow_unlabelled);
+#                                             in a tracker_teams team and with a role label (unless candidates_allow_unlabelled).
+#                                             Backlog is parked, never bootable (unless candidates_allow_backlog);
 #                                             one Linear read (the query is UNVERIFIED against the real API). --detail: JSON
-#                                             {bootable: [{id, priority, title, reason}], skipped: [{id, reason}]}   (read-only)
+#                                             {bootable: [{id, priority, title, reason}], skipped: [{id, reason}]}, with a
+#                                             second read that names Backlog issues as `parked`   (read-only)
 #   linear.sh find-text <text>                the identifier of an issue whose title or description holds the text (exit 1 when
 #                                             none); the morning report's check for a deferred item filed by hand   (read-only)
 #   linear.sh blocks <ISSUE...>               JSON: {"<ISSUE>": [issues it blocks]} from Linear's `blocks` relations,
@@ -238,8 +240,14 @@ q_open_issues_labelled() { # q_open_issues_labelled <label name | prefix> <eq|st
     "$(jq -nc --arg n "$1" '{n: $n}')" | jq -c '.data.issues.nodes // []'
 }
 
-q_candidates() { # q_candidates → open issues with their state, fleet labels and the open issues that block them (UNVERIFIED query)
-  gql_read Candidates 'query Candidates { issues(first: 100, filter: { state: { type: { in: ["backlog", "unstarted", "started"] } } }) { nodes { identifier title priority team { key } state { name type } relations(first: 20) { nodes { type } } labels { nodes { name description } } inverseRelations(first: 20) { nodes { type issue { identifier state { type } } } } } } }' '{}' |
+CAND_NODES='nodes { identifier title priority team { key } state { name type } relations(first: 20) { nodes { type } } labels { nodes { name description } } inverseRelations(first: 20) { nodes { type issue { identifier state { type } } } } }'
+q_candidates() { # q_candidates [backlog] → open Todo and In Progress issues (with `backlog`, Backlog ones too) with their state, fleet labels and the open issues that block them (UNVERIFIED query)
+  local types='"unstarted", "started"'; [ "${1:-}" != backlog ] || types='"backlog", "unstarted", "started"'
+  gql_read Candidates 'query Candidates { issues(first: 100, filter: { state: { type: { in: ['"$types"'] } } }) { '"$CAND_NODES"' } }' '{}' |
+    jq -c '.data.issues.nodes // error("no issues")'
+}
+q_parked() { # q_parked → the Backlog issues, in the shape q_candidates gives; asked on its own so a long Backlog never crowds Todo out of the first 100 (UNVERIFIED query)
+  gql_read Parked 'query Parked { issues(first: 100, filter: { state: { type: { in: ["backlog"] } } }) { '"$CAND_NODES"' } }' '{}' |
     jq -c '.data.issues.nodes // error("no issues")'
 }
 q_find_text() { # q_find_text <text> → the identifier of an issue whose title or description holds the text, empty when none (UNVERIFIED query)
@@ -691,7 +699,15 @@ case "$cmd" in
       tt="$("$FLEET_SCRIPTS/registry.sh" list --with-archived 2>/dev/null | jq -c '[.[] | (.issue // "") | select(test("^[A-Za-z][A-Za-z0-9]*-[0-9]+$")) | sub("-[0-9]+$"; "")] | unique' 2>/dev/null)" || tt="[]"
       [ -n "$tt" ] || tt="[]"
     fi
-    q_candidates | jq -c --arg p "$(label_prefix)" --arg rp "$(cfg_str role_label_prefix 'role:')" --argjson unl "$(cfg_bool candidates_allow_unlabelled false)" \
+    # Work is picked from Todo (and a lapsed In Progress). Backlog is parked: it is asked for only to say so in --detail,
+    # in a query of its own that may fail without harm. candidates_allow_backlog = true picks from Backlog too, as before 4.3.0.
+    bl="$(cfg_bool candidates_allow_backlog false)"
+    if [ "$bl" = true ]; then cn="$(q_candidates backlog)"
+    else
+      cn="$(q_candidates)"
+      if [ "$detail" = 1 ]; then pk="$(q_parked 2>/dev/null)" || pk="[]"; cn="$(jq -c --argjson pk "${pk:-[]}" '. + $pk' <<<"$cn")"; fi
+    fi
+    jq -c --arg p "$(label_prefix)" --arg rp "$(cfg_str role_label_prefix 'role:')" --argjson unl "$(cfg_bool candidates_allow_unlabelled false)" --argjson bl "$bl" \
       --argjson tt "$tt" --arg now "${FLEET_NOW:-$(now)}" --argjson lease "$(lease_hours)" --argjson detail "$detail" '
       def rsn:
         ([.labels.nodes[]? | select(.name | startswith($p))]) as $f
@@ -707,12 +723,13 @@ case "$cmd" in
             and (any($f[]; ([(.description // "") | match("(^|\n)heartbeat=([^\n ]+)").captures[1].string] | first) as $hb
                 | $hb != null and (($now | fromdateiso8601) - ($hb | fromdateiso8601)) <= ($lease * 3600))) then "claimed"
           elif .state.name == "In Progress" then "in-progress-lapsed"
+          elif .state.name == "Backlog" and ($bl | not) then "parked"
           else "ready" end;
       [.[] | {id: .identifier, priority: (.priority // 0), title: (.title // ""), reason: rsn}] as $all
       | if $detail == 1 then
           {bootable: [$all[] | select(.reason == "ready" or .reason == "in-progress-lapsed")],
            skipped: [$all[] | select(.reason != "ready" and .reason != "in-progress-lapsed") | {id, reason}]}
-        else [$all[] | select(.reason == "ready" or .reason == "in-progress-lapsed") | .id] end' ;;
+        else [$all[] | select(.reason == "ready" or .reason == "in-progress-lapsed") | .id] end' <<<"$cn" ;;
 
   find-text)
     READONLY=1
