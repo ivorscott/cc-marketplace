@@ -120,6 +120,7 @@ while IFS=$'\t' read -r cause what; do
   [ -n "$cause" ] || continue
   cause="$(printf '%s' "$cause" | safe)" # what is cut to safe characters per field in jq below
   case "$cause" in
+    parked:*) alert "$cause" "parked escalation $what still waits for you" "Run fleet status, then fleet resolve <name> <id> --note ..." ;;
     esc:*) alert "$cause" "escalation $what needs you" "Run fleet escalations --open" ;;
     disk) alert disk "free disk is low ($what GB)" "Free space, or retire a finished team" ;;
     repo_without_team:*) alert "$cause" "repo $what has no team" "Boot one, or drop it from repos in config.toml" ;;
@@ -129,7 +130,8 @@ while IFS=$'\t' read -r cause what; do
   esac
 done < <(printf '%s' "$out" | jq -r 'def s: (. // "-") | tostring | gsub("[^A-Za-z0-9._:/@#-]"; "") | .[0:80];
   .[] | select(type == "object")
-  | if .type == "escalation" and (.severity | IN("P0", "P1")) and (.id | type == "string") then ["esc:\(.name | s):\(.id | s)", "\(.id | s) from \(.name | s)"]
+  | if .type == "parked_reminder" and (.id | type == "string") then ["parked:\(.name | s):\(.id | s)", "\(.id | s) from \(.name | s)"]
+    elif .type == "escalation" and (.severity | IN("P0", "P1")) and (.id | type == "string") then ["esc:\(.name | s):\(.id | s)", "\(.id | s) from \(.name | s)"]
     elif .type == "disk" then ["disk", (.free_gb | s)]
     elif .type == "repo_without_team" then ["repo_without_team:\(.name | s)", (.name | s)]
     elif .type == "main_red" or .type == "signoff_failed" then ["\(.type):\(.name | s)", (.name | s)]

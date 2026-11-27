@@ -135,14 +135,14 @@ v427_report() { # morning: filed deferred items, hand-resolved parked escalation
   "$REG" escalate dm-a/lead P1 "may I merge the PR to main myself?" yes no >/dev/null 2>&1
   local id; id="$("$REG" escalations --open | jq -r '.[0].id')"
   "$SCRIPTS/decide.sh" dm-a "$id" >/dev/null 2>&1
-  eq "v427 report: decide records the escalation id on the parked note" "$("$REG" get dm-a/lead | jq -r '[.notes[] | select(.kind == "parked") | .message] | first | test("^\\[esc [^]]+\\] ")')" true
+  eq "v427 report: decide parks the escalation itself, still open" "$("$REG" escalations --open | jq -r --arg i "$id" '[.[] | select(.id == $i and .parked == true)] | length')" 1
   "$REG" escalate dm-a/lead P1 "rotate the deploy key by hand?" yes no >/dev/null 2>&1
-  id="$("$REG" escalations --open | jq -r '.[0].id')"
+  id="$("$REG" escalations --open | jq -r '[.[] | select(.parked != true)][0].id')"
   "$REG" note dm-a/lead parked "[esc $id] rotate the deploy key by hand?" >/dev/null
   "$REG" resolve dm-a/lead "$id" --note "done by the owner" >/dev/null
   "$REG" note dm-a/lead parked "an old parked note" >/dev/null
   eq "v427 report: the parked line decide wrote stays, the hand-resolved one goes, the old one without an id stays" \
-    "$(v427_eyes | grep -c 'parked for you (dm-a/lead): may I merge'):$(v427_eyes | grep -c 'rotate the deploy key'):$(v427_eyes | grep -c 'parked for you (dm-a/lead): an old parked note')" "1:0:1"
+    "$(v427_eyes | grep -c 'parked for you (dm-a/lead [^)]*): may I merge'):$(v427_eyes | grep -c 'rotate the deploy key'):$(v427_eyes | grep -c 'parked for you (dm-a/lead): an old parked note')" "1:0:1"
   # defer for a retired team: in the registry, then in the archive
   "$REG" add '{"name":"dr-a/lead","team":"dr-a","tier":"Lead","status":"Working","herdr_ref":"dr-a-lead","pane":"p9","issue":"DEV-1"}' >/dev/null
   v427_db '[]'

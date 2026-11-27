@@ -10,9 +10,11 @@
 # back to the lead). With no options the lead is told to decide inside the issue's scope and note the choice.
 # What stays the human's is never decided here: a P0, or a question that touches merging, production, infrastructure applies,
 # secrets or branch protection. That part is parked: the lead is told to set it aside and carry on with other work, the
-# escalation is resolved as parked, `registry.sh note ... parked` puts it in the morning report's "Needs your eyes", and one
-# push goes out. Nothing human-only is ever approved. Prints one line: `Decided <name>: <question> → <option>.` or
-# `Parked <name>: <question>. Left for the owner.` Orchestrator only.
+# escalation stays open and is marked parked (`registry.sh park-esc`; retire and next leave it, only `resolve` closes it), so
+# status, "Waiting on you" and the morning report show it with its full question until the owner answers, tick reminds
+# every parked_remind_hours, and one push goes out. Nothing human-only is ever approved. Prints one line:
+# `Decided <name>: <question> → <option>.` or `Parked <name> <id> <sev>: <full question>. Recommended: <option>. Needs you:
+# fleet resolve <name> <id> --note "<your answer>".` (a second decide: `Already parked ...`). Orchestrator only.
 # Command: Decide a lead's escalation with the recommended option, or park what is the human's · e.g. fleet decide build-api 20261029T100000Z-1
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
@@ -48,12 +50,17 @@ fi
 printf '%s' "$text" | grep -qiE '\b(merg(e|es|ed|ing)|prod|production|deploy(ing|ment)?s?|release to|infra|infrastructure|terraform|tofu|kubectl|helm|pulumi|ansible|cloudformation|apply|applies|secrets?|credentials?|passwords?|passphrase|tokens?|api[ _-]?keys?|keys?|certs?|certificates?|iam|vault|rotate|rotation|branch[ -]protection|protected branch|force[ -]push|required (checks|reviews)|gh pr ready|close the (pr|issue))\b' && human=true
 
 if $human; then
-  "$registry" note "$lead" parked "[esc $id] $short" >/dev/null # the id lets the morning report drop it once someone else resolves the escalation
-  "$FLEET_SCRIPTS/tell.sh" "$lead" "Decision (taken for the owner, who keeps this one): set that part aside and carry on with the rest of the work; do not wait. It is listed for the owner. Question was: $short" >/dev/null 2>&1 ||
+  if [ "$(jq -r '.parked // false' <<<"$esc")" = true ]; then # a second wake never re-parks or re-pushes
+    printf 'Already parked %s %s. Needs you: fleet resolve %s %s --note "<your answer>".\n' "$name" "$id" "$name" "$id"
+    exit 0
+  fi
+  prec="$(jq -r '(.options // [])[0] // "none"' <<<"$esc")"
+  "$registry" park-esc "$name" "$id" >/dev/null
+  "$FLEET_SCRIPTS/tell.sh" "$lead" "Decision (taken for the owner, who keeps this one): set that part aside and carry on with the rest of the work; do not wait. It stays open for the owner. Question was: $short" >/dev/null 2>&1 ||
     warn "could not tell $lead; the escalation is parked anyway"
-  "$registry" resolve "$name" "$id" --note "parked for the human: $short" >/dev/null
-  notify "Fleet needs you" "$(render_line alert cause="$name parked a decision that is yours: ${short:0:80}" next="It is in the morning report; nothing waits")" request alert || true
-  printf 'Parked %s: %s. Left for the owner.\n' "$name" "$short"
+  line="$(printf 'Parked %s %s %s: %s. Recommended: %s. Needs you: fleet resolve %s %s --note "<your answer>".' "$name" "$id" "$sev" "$msg" "$prec" "$name" "$id")"
+  notify "Fleet needs you" "$(render_line alert cause="$name parked $sev $id: ${msg:0:200}. Recommended: ${prec:0:80}" next="fleet resolve $name $id --note \"<your answer>\"")" request alert || true
+  printf '%s\n' "$line"
   exit 0
 fi
 

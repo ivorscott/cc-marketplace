@@ -515,8 +515,10 @@ and prints the rules it will follow.
 ### 4. What stays yours
 
 Merging, production, infrastructure applies, secrets and branch protection. The fleet never approves these. A question
-that touches one is **parked**: the lead sets it aside and carries on, one push reaches you, and the morning report
-lists it under Needs your eyes. A P0 is parked the same way.
+that touches one is **parked**: the lead sets it aside and carries on, one push reaches you, and the question stays
+open, in `fleet status` (Needs you and Waiting on you) and in the morning report, with its full text and the
+recommendation, until you answer with `fleet resolve <team> <id> --note "<answer>"`. It survives the team's retire.
+Tick reminds you every `parked_remind_hours` (default 6). A P0 is parked the same way.
 
 ### 5. What you hear
 
@@ -959,6 +961,7 @@ ignored with one warning.
 | `chat_channel` | unset | Free text the Orchestrator hands to your chat tool, such as `"#fleet"`. |
 | `chat_allow` | unset | Permission rules for those chat tools. |
 | `overnight` | `false` | The older overnight mode. `fleet run` supersedes it. |
+| `parked_remind_hours` | `6` | How often tick reminds you of an escalation parked for you, until you resolve it. |
 | `archive_after_days` | `0` | A Retired row with its lessons written moves to `fleet-archive.json` after this many days. |
 
 **The `[run]` profile.** `fleet run init` writes it. It changes only that table and two top-level keys: `max_teams`, to

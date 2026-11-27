@@ -729,6 +729,20 @@ add_events "$(jq -cn --slurpfile e <(printf '%s' "$esc") --slurpfile stf "$STATE
 st_upd --slurpfile e <(printf '%s' "$esc") '$e[0] as $e
   | $st + {escalations_emitted: ((($st.escalations_emitted // []) + [$e[] | .name + "|" + .id]) | unique)}'
 
+# A parked escalation (the owner's, still open) is raised again every parked_remind_hours until someone resolves it.
+# Keyed name|id in parked_reminded with the epoch of the last reminder; the first reminder counts from parked_at.
+prem="$(parked_remind_hours)"
+add_events "$(jq -cn --slurpfile e <(printf '%s' "$esc") --slurpfile stf "$STATE_FILE" --argjson now "$now_epoch" --argjson h "$prem" '$e[0] as $e
+  | [$e[] | select(.parked == true) | (.name + "|" + .id) as $k
+    | ((($stf[0].parked_reminded // {})[$k]) // ((.parked_at // "") | if . == "" then $now else (sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) end)) as $last
+    | select($now - $last >= $h * 3600)
+    | {type: "parked_reminder", team, name, id, severity, message, options: (.options // []), at}]')"
+st_upd --slurpfile e <(printf '%s' "$esc") --argjson now "$now_epoch" --argjson h "$prem" '$e[0] as $e
+  | $st + {parked_reminded: (($st.parked_reminded // {}) as $r | reduce ($e[] | select(.parked == true)) as $x ({};
+      ($x.name + "|" + $x.id) as $k
+      | ($r[$k] // (($x.parked_at // "") | if . == "" then $now else (sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) end)) as $last
+      | . + {($k): (if $now - $last >= $h * 3600 then $now else $last end)}))}'
+
 # --- PR discovery: a team's PR found by its head branch -----------------------------------------------------
 # A builder pushes fleet/<slug>, whatever its worktree's branch is called (boot records fleet/<team>/<role>). Each
 # worker's branch is read from its worktree (git branch --show-current, falling back to the row) and written back to

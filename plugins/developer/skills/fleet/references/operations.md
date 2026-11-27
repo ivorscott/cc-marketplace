@@ -319,7 +319,7 @@ If `~/.config/fleet/sink.md` exists, follow it after every route that changed th
 the deterministic parts so they survive a compaction:
 
 - `slot_free` wakes while fewer teams run than the target, and not during a usage backoff; the Orchestrator picks and boots.
-- Escalations: `fleet decide` (recommended option, recorded, commented; what is the human's is parked with one push).
+- Escalations: `fleet decide` (recommended option, recorded, commented; what is the human's is parked: it stays open, one push, a reminder every `parked_remind_hours`, until `fleet resolve`).
 - `status_changed`: the status table or the ready-to-merge set changed, at most every `status_mins`; the ready push at most every
   `merge_push_mins`, in merge order. A quiet tick prints nothing and wakes no one.
 - Quiet ticks: under `fleet run`, a tick that finds the registry as it left it probes no pane (no herdr call); the panes are probed when a row changed or every 10 minutes (`PROBE_SECS`).

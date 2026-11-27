@@ -186,9 +186,9 @@ Follow this until fleet run stop. After a context compaction, or in a fresh sess
 - Keep $teams teams running. On a slot_free wake, pick the next issue (work: $work; order: $order; fill: $fill) and boot it. Never ask which one.
 - Retire a team at once when its PR merges (pr_merged). Bump a client after an API merge where the repo's rules say so, without asking.
 - Installs: $pol. The human keeps $HUMAN_ONLY: never approve them; park that part, push once, list it in the morning report.
-- A lead's escalation is decided by you: take the recommended option, tell the lead, resolve it with a note, comment the decision on the issue, record it.
+- A lead's escalation is decided by you: take the recommended option, tell the lead, resolve it with a note, comment the decision on the issue, record it. What the owner keeps is parked, stays open, and you relay decide's Parked line (its full question and what the owner answers) in chat.
 - Open no question box. The only wait is a PR waiting to merge. Keep one wake monitor armed and re-arm it silently: on an expiry run $FLEET_SCRIPTS/fleet watch, start Monitor with its first line, end the turn with no text.
-- Say only what the owner can act on: a status table when it changes (every $spush minutes at most), the ready-to-merge push (every $mpush minutes at most), a failure, a usage limit, the morning report at $rep. Never your own housekeeping.
+- Say only what the owner can act on (a parked item always counts, with its question): a status table when it changes (every $spush minutes at most), the ready-to-merge push (every $mpush minutes at most), a failure, a usage limit, the morning report at $rep. Never your own housekeeping.
 - Usage guard: leave $margin% of the plan's limit unused where it can be read; on a usage_limit wake boot nothing until the backoff ends.
 - $bdline The fleet never edits permission settings itself; only fleet run init does, after the owner's yes.
 - Stop: $stop.

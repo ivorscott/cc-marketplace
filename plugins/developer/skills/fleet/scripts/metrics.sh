@@ -89,6 +89,7 @@ if $morning; then
       | (.message | capture("^\\[esc (?<id>[^\\]]+)\\] (?<m>.*)$")? // {id: "", m: .}) as $p
       | select($p.id == "" or ([$row | escs[] | select(.id == $p.id and .resolved_at != null and ((.resolution // "") | startswith("parked for the human:") | not))] | length) == 0)
       | "- parked for you (\($n)): \($p.m)"' <<<"$rows"
+    "$FLEET_SCRIPTS/registry.sh" escalations --open --parked 2>/dev/null | jq -r "$RENDER_DEFS"'.[] | "- parked for you (\(.name | md) \(.id)): \(.message | md) Recommended: \((.options // [])[0] // "none" | md). Answer: fleet resolve \(.name | md) \(.id) --note \"...\""' || true
     jq -r '.[] | "- Verify \(.issue) (\(.age_days) days old): check \(.check)\(if .expiry == "ask" then ". Still worth checking? With no answer by the next report it moves to Done" elif .expiry == "close" then ". No answer since the last report: moved to Done with a comment" else "" end)"' <<<"$verify"
   } )"
   opt_section "Failures" "$(jq -r '.[] | select(.type == "failed" or .type == "dead") | "- \(.name // .team): \(.type)\(if (.detail // "") != "" then " (" + .detail + ")" else "" end)"' <<<"$events" | sort -u)"

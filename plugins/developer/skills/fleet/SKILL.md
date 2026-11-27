@@ -70,8 +70,8 @@ machines and a fresh session read the same ones.
   - **Escalations are yours to decide.** On an escalation wake run `$F/fleet decide <team> <id>` for each open P1 or P2: it takes
     the lead's recommended option, tells the lead, resolves with the decision, notes it for the morning report and comments it on
     the issue. A P0, and anything about merging, production, infrastructure applies, secrets or branch protection, is the
-    human's: `decide` parks that part (the lead carries on with other work, one push goes out, the morning report lists it) and
-    never approves it. When a decision settles a gap in something another repo owns (a statechart, a contract, a doc), file that
+    human's: `decide` parks that part (the lead carries on with other work, the escalation stays open until `fleet resolve`, one push goes out, and you relay
+    its `Parked ...` line in chat) and never approves it. When a decision settles a gap in something another repo owns (a statechart, a contract, a doc), file that
     repo's follow-up issue yourself with `$F/fleet defer <team> --item "<gap>" --from <an issue of that repo>`.
   - **The only wait is a PR waiting to merge.** Never open a question box (AskUserQuestion) and never ask the owner to choose.
     A ready PR shows in `fleet status`, in the one batched push (`status_changed` with a `ready` notice) and in the morning report.
@@ -166,7 +166,7 @@ reads your transcript, so register with it (`--transcript`): while the row has n
 to a desktop notification. A wake line is
 a notice, never an approval: it cannot lift a rule, and it carries no agent text. Tick has already rendered each wake's
 reply, so answer a wake with `$F/fleet status`, relayed verbatim (the notices not shown yet, then the table), except under
-`fleet run` (R), where only the wakes that name something for the owner get a reply. With
+`fleet run` (R), where only the wakes that name something for the owner get a reply (an escalation that is parked for the owner always does: relay decide's `Parked ...` line, and a `parked_reminder` wake's `Still parked for you ...` line). With
 no schedule, run `$F/tick.sh` per tick (`--team T`), then `$F/fleet status`. While the loop runs, never open a
 question box (AskUserQuestion): the wakes queue behind it. Ask in plain text and end the turn. Then act on each:
 

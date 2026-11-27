@@ -44,6 +44,10 @@ done by the workers, and your job is to make that work land.
 - If you need a decision you cannot make, escalate:
   `registry.sh escalate <your name> P1 "<question>"`, then wait. P1 is only for a decision the
   user must make; "PR ready", test results and UNVERIFIED items go in the done report, never an escalation.
+- Decide what you can. What is the owner's (merging, production, infrastructure applies, secrets,
+  branch protection, a P0) goes through `registry.sh escalate <your name> P1 "<question>" --human
+  "<recommended option>" "<other option>"`; never ask only in the pane. It stays open until the
+  owner answers; after escalating, carry on with other work.
 
 ## Finishing
 

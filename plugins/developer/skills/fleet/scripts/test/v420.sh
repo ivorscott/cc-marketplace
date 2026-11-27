@@ -446,7 +446,7 @@ v420_decide() { # a lead's escalation is decided, recorded and reported without 
   jq '.issues[0].identifier = "DEV-1"' "$LINEAR_DB" >/dev/null
   "$REG" add '{"name":"dc-a/lead","team":"dc-a","tier":"Lead","status":"Working","herdr_ref":"dc-a-lead","pane":"p1","issue":"DEV-1"}' >/dev/null; echo working >"$AS/dc-a-lead"
   "$REG" escalate dc-a/lead P1 "which database?" "use postgres" sqlite >/dev/null 2>&1
-  local id out; id="$("$REG" escalations --open | jq -r '.[0].id')"; : >"$HERDR_LOG"
+  local id out; id="$("$REG" escalations --open | jq -r '[.[] | select(.parked != true)][0].id')"; : >"$HERDR_LOG"
   out="$("$SCRIPTS/decide.sh" dc-a "$id" 2>&1)"
   eq "v420 decide: the recommended option is taken and said" "$out" "Decided dc-a/lead: which database? → use postgres."
   gold decide "$out"
@@ -455,51 +455,52 @@ v420_decide() { # a lead's escalation is decided, recorded and reported without 
   eq "v420 decide: it is commented on the issue, marked as the fleet's" "$(jq -r '.issues[0].comments[0].body' "$LINEAR_DB" | grep -c '^\[fleet\] Decision taken on the owner.s behalf: which database? → use postgres')" 1
   eq "v420 decide: and the morning report lists it under Decisions taken" "$(TZ=UTC "$SCRIPTS/metrics.sh" --morning 2>/dev/null | awk '/^## Decisions taken/ {on = 1; next} /^## / {on = 0} on' | grep -c 'dc-a/lead: which database? → use postgres')" 1
   "$REG" escalate dc-a/lead P1 "may I merge the PR to main myself?" yes no >/dev/null 2>&1
-  id="$("$REG" escalations --open | jq -r '.[0].id')"; : >"$HERDR_LOG"
+  id="$("$REG" escalations --open | jq -r '[.[] | select(.parked != true)][0].id')"; : >"$HERDR_LOG"
   out="$("$SCRIPTS/decide.sh" dc-a/lead "$id" 2>&1)"
   eq "v420 decide: merging is the human's: parked, not approved, with one push" \
-    "$(printf '%s' "$out" | grep -c '^Parked dc-a/lead: .* Left for the owner.$'):$(grep -c '^notification show' "$HERDR_LOG"):$(grep -c 'yes' "$HERDR_LOG"):$("$REG" get dc-a/lead | jq -r '[.notes[] | select(.kind == "parked")] | length')" "1:1:0:1"
-  eq "v420 decide: the escalation is closed so nothing waits" "$("$REG" escalations --open | jq length)" 0
+    "$(printf '%s' "$out" | grep -c "^Parked dc-a/lead $id P1: may I merge the PR to main myself?\. Recommended: yes\. Needs you: fleet resolve dc-a/lead $id "):$(grep -c '^notification show' "$HERDR_LOG"):$(grep -c 'who can overrule it on the issue): yes' "$HERDR_LOG")" "1:1:0"
+  eq "v420 decide: the escalation stays open, parked, for the owner" "$("$REG" escalations --open | jq -r '[.[] | select(.parked == true)] | length')" 1
+  "$REG" resolve dc-a/lead "$id" --note "owner answered" >/dev/null
   # the human-only gate fails safe: wording the old keyword list missed is parked, innocent words are decided
   local q
   for q in "Should I merge #54 now?" "Rotate the API key" "kubectl apply the manifests"; do
-    "$REG" escalate dc-a/lead P1 "$q" yes no >/dev/null 2>&1; id="$("$REG" escalations --open | jq -r '.[0].id')"
+    "$REG" escalate dc-a/lead P1 "$q" yes no >/dev/null 2>&1; id="$("$REG" escalations --open | jq -r '[.[] | select(.parked != true)][0].id')"
     eq "v420 decide: '$q' is parked" "$("$SCRIPTS/decide.sh" dc-a "$id" 2>&1 | grep -c '^Parked ')" 1
   done
   # a denied plain push of a fleet/ branch is decided, not parked; the human's gates still hold
-  "$REG" escalate dc-a/lead P1 "push of fleet/dev-9-x denied, force push suggested" "push without force" "other" >/dev/null 2>&1; id="$("$REG" escalations --open | jq -r '.[0].id')"
+  "$REG" escalate dc-a/lead P1 "push of fleet/dev-9-x denied, force push suggested" "push without force" "other" >/dev/null 2>&1; id="$("$REG" escalations --open | jq -r '[.[] | select(.parked != true)][0].id')"
   eq "v420 decide: a denied push of a fleet/ branch is decided" "$("$SCRIPTS/decide.sh" dc-a "$id" 2>&1 | grep -c '^Decided ')" 1
-  "$REG" escalate dc-a/lead P1 "push of fleet/dev-9-x denied" >/dev/null 2>&1; id="$("$REG" escalations --open | jq -r '.[0].id')"
+  "$REG" escalate dc-a/lead P1 "push of fleet/dev-9-x denied" >/dev/null 2>&1; id="$("$REG" escalations --open | jq -r '[.[] | select(.parked != true)][0].id')"
   eq "v420 decide: and with no options the lead is told to push without force" "$("$SCRIPTS/decide.sh" dc-a "$id" 2>&1 | grep -c '^Decided .*push without force')" 1
-  "$REG" escalate dc-a/lead P1 "push of fleet/dev-9-x denied" "retry with --force-with-lease" "plain push" >/dev/null 2>&1; id="$("$REG" escalations --open | jq -r '.[0].id')"
+  "$REG" escalate dc-a/lead P1 "push of fleet/dev-9-x denied" "retry with --force-with-lease" "plain push" >/dev/null 2>&1; id="$("$REG" escalations --open | jq -r '[.[] | select(.parked != true)][0].id')"
   out="$("$SCRIPTS/decide.sh" dc-a "$id" 2>&1)"
   eq "v420 decide: a denied push takes the first option that names no force: plain push, never force" "$(printf '%s' "$out" | grep -c '→ plain push\.$'):$(printf '%s' "$out" | grep -ci 'force')" "1:0"
-  "$REG" escalate dc-a/lead P1 "push of fleet/dev-9-x denied" "retry with --force-with-lease" >/dev/null 2>&1; id="$("$REG" escalations --open | jq -r '.[0].id')"
+  "$REG" escalate dc-a/lead P1 "push of fleet/dev-9-x denied" "retry with --force-with-lease" >/dev/null 2>&1; id="$("$REG" escalations --open | jq -r '[.[] | select(.parked != true)][0].id')"
   out="$("$SCRIPTS/decide.sh" dc-a "$id" 2>&1)"
   eq "v420 decide: and with only a force option it is the push-without-force text" "$(printf '%s' "$out" | grep -c '→ push without force, or merge origin/main and push plainly\.$'):$(printf '%s' "$out" | grep -c 'with-lease')" "1:0"
   for q in "push of fleet/dev-9-x denied, may I merge the PR" "push of fleet/dev-9-x denied, deploy to production" "push of main denied, force push it"; do
-    "$REG" escalate dc-a/lead P1 "$q" yes no >/dev/null 2>&1; id="$("$REG" escalations --open | jq -r '.[0].id')"
+    "$REG" escalate dc-a/lead P1 "$q" yes no >/dev/null 2>&1; id="$("$REG" escalations --open | jq -r '[.[] | select(.parked != true)][0].id')"
     eq "v420 decide: '$q' is parked" "$("$SCRIPTS/decide.sh" dc-a "$id" 2>&1 | grep -c '^Parked ')" 1
   done
-  "$REG" escalate dc-a/lead P1 "push of fleet/dev-9-x denied" --human yes >/dev/null 2>&1; id="$("$REG" escalations --open | jq -r '.[0].id')"
+  "$REG" escalate dc-a/lead P1 "push of fleet/dev-9-x denied" --human yes >/dev/null 2>&1; id="$("$REG" escalations --open | jq -r '[.[] | select(.parked != true)][0].id')"
   eq "v420 decide: a --human push question is parked" "$("$SCRIPTS/decide.sh" dc-a "$id" 2>&1 | grep -c '^Parked ')" 1
-  "$REG" escalate dc-a/lead P0 "push of fleet/dev-9-x denied" yes >/dev/null 2>&1; id="$("$REG" escalations --open | jq -r '.[0].id')"
+  "$REG" escalate dc-a/lead P0 "push of fleet/dev-9-x denied" yes >/dev/null 2>&1; id="$("$REG" escalations --open | jq -r '[.[] | select(.parked != true)][0].id')"
   eq "v420 decide: a P0 push question is parked" "$("$SCRIPTS/decide.sh" dc-a "$id" 2>&1 | grep -c '^Parked ')" 1
   for q in "Use a tokenizer lib" "production-ready error handling"; do
-    "$REG" escalate dc-a/lead P1 "$q" "yes, do it" no >/dev/null 2>&1; id="$("$REG" escalations --open | jq -r '.[0].id')"
+    "$REG" escalate dc-a/lead P1 "$q" "yes, do it" no >/dev/null 2>&1; id="$("$REG" escalations --open | jq -r '[.[] | select(.parked != true)][0].id')"
     eq "v420 decide: '$q' is decided" "$("$SCRIPTS/decide.sh" dc-a "$id" 2>&1 | grep -c '^Decided ')" 1
   done
-  "$REG" escalate dc-a/lead P1 "Which colour?" --human red blue >/dev/null 2>&1; id="$("$REG" escalations --open | jq -r '.[0].id')"
+  "$REG" escalate dc-a/lead P1 "Which colour?" --human red blue >/dev/null 2>&1; id="$("$REG" escalations --open | jq -r '[.[] | select(.parked != true)][0].id')"
   eq "v420 decide: a question the filer marked --human is parked whatever its words" "$("$SCRIPTS/decide.sh" dc-a "$id" 2>&1 | grep -c '^Parked ')" 1
-  "$REG" escalate dc-a/lead P0 "something is on fire" >/dev/null 2>&1; id="$("$REG" escalations --open | jq -r '.[0].id')"
+  "$REG" escalate dc-a/lead P0 "something is on fire" >/dev/null 2>&1; id="$("$REG" escalations --open | jq -r '[.[] | select(.parked != true)][0].id')"
   eq "v420 decide: a P0 is parked too" "$("$SCRIPTS/decide.sh" dc-a "$id" 2>&1 | grep -c '^Parked ')" 1
-  eq "v420 decide: the report lists what was parked under Needs your eyes" "$(TZ=UTC "$SCRIPTS/metrics.sh" --morning 2>/dev/null | awk '/^## Needs your eyes/ {on = 1; next} /^## / {on = 0} on' | grep -c '^- parked for you (dc-a/lead)')" 11
+  eq "v420 decide: the report lists what was parked under Needs your eyes" "$(TZ=UTC "$SCRIPTS/metrics.sh" --morning 2>/dev/null | awk '/^## Needs your eyes/ {on = 1; next} /^## / {on = 0} on' | grep -c '^- parked for you (dc-a/lead ')" 10
   v420_nolinear; unset FLEET_NOW
 }
 
 v420_version() { # the version, the changelog, the commands and the config example in step with the code
-  eq "v420 version: plugin.json and the marketplace read 4.3.5" \
-    "$(jq -r .version "$SCRIPTS/../../../.claude-plugin/plugin.json"):$(jq -r '.plugins[] | select(.name == "developer") | .version' "$SCRIPTS/../../../../../.claude-plugin/marketplace.json")" "4.3.5:4.3.5"
+  eq "v420 version: plugin.json and the marketplace read 4.3.6" \
+    "$(jq -r .version "$SCRIPTS/../../../.claude-plugin/plugin.json"):$(jq -r '.plugins[] | select(.name == "developer") | .version' "$SCRIPTS/../../../../../.claude-plugin/marketplace.json")" "4.3.6:4.3.6"
   eq "v420 help: fleet help run names the subcommands" "$("$SCRIPTS/fleet" help run | grep -o 'run.sh \(init\|start\|stop\|status\|show\)' | sort -u | wc -l | tr -d ' ')" 5
   eq "v420 help: and the new commands are listed" "$("$SCRIPTS/fleet" help | grep -c '^| `\(run\|decide\|defer\|overlap\)` ')" 4
   eq "v420 config: every key of [run] that init writes is in config.example.toml" \
