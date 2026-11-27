@@ -318,6 +318,7 @@ Faults noted before this design that it does not settle by itself. Each belongs 
 | Agents left on a login or first-run screen read as API errors; one clear Stalled reason and one restart for all | Lifecycle |
 | `retire` on a name with no live rows leaves its branches and worktrees, and `boot` then refuses the name | Surface |
 | The overlap check tells a team to wait for its own PR | Tick core |
+| The overlap check tells two teams with no PR yet to wait for each other, so neither ever builds. A wait on a team that is itself Waiting is refused; the lower issue number goes first | Lifecycle |
 | Leads cannot post the PR comment on the issue: the tool is not in their session | Surface |
 | Testers commit or push to the PR branch; the guard should refuse it for that role | Surface |
 | The bash guard blocks a file that only names the tracker key variable | Surface |
