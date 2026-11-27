@@ -33,7 +33,7 @@ One day of running it showed the pattern:
 | Part | Size |
 |---|---|
 | Scripts | 39 files, 9,045 lines. `common.sh` 1,628, `tick.sh` 1,288, `linear.sh` 959 |
-| Tests | `test/run.sh` 4,720 lines, plus 18 files named after versions (`v413` … `v436`), 73 golden files |
+| Tests | `test/run.sh` 4,720 lines, plus 24 files named after versions (`v413` … `v436`), 73 golden files |
 | Skill text | `SKILL.md` 287 lines, references 1,578 lines (`output.md` alone 891) |
 | Commands | 37 |
 | Row states | 9 written, 2 more documented or read but never written |
@@ -94,7 +94,7 @@ Transitions:
 | Idle | still idle at the next tick | Stalled |
 | Working, Waiting, Idle | an agent is gone, a brief failed, a prompt blocks | Stalled |
 | Stalled | respawn, re-send or the Orchestrator's message succeeds | Working |
-| Working, Waiting | head signed off, CI green, mergeable | Ready |
+| Working, Waiting, Idle | head signed off, CI green, mergeable | Ready |
 | Ready | conflict, red check, new comment, new head without sign-off | Working |
 | Ready | PR merged | Retired (the loop retires at once) |
 | any but Retired | `park` by a person or the Orchestrator | Parked |
@@ -202,7 +202,7 @@ deletes its team's branches. The loop sweeps stale ones when the run profile all
 ## The Orchestrator may edit code **(Q19)**
 
 In 4.x the Orchestrator never edits code: its edit tools are removed and every change goes through a booted team. That
-makes a one-line fix cost a whole team. In 5.0 the rule is gone. The Orchestrator agent keeps its edit tools, and it
+makes a one-line fix cost a whole team. From 4.4 the rule is gone. The Orchestrator agent keeps its edit tools, and it
 writes code itself when the owner asks for a one-off change, in a worktree, through a pull request like any team. It
 saves switching windows for small jobs. Teams remain the way to run queued issue work in parallel.
 
@@ -477,7 +477,7 @@ waited on merged (events to the lead), the loop ending when a tool cannot answer
 | Q6 | Which events go straight to the lead | All seven: worker done, sign-off, decision or answer, CI result, ready, merged, failed sign-off |
 | Q7 | A failing tick step | Skip, log, carry on; `tick_failing` after two bad ticks |
 | Q8 | Claims between machines | Protocol unchanged; `holder` and `takeover` fold into `claim`, `boot` and `candidates` |
-| Q9 | Unused features | Removed: chat, slim, `[context_window]`, focus, prime, metrics and the weekly summary, `fleet config`, overnight mode |
+| Q9 | Unused features | Removed: chat, slim, `[context_window]`, focus, prime, metrics and the weekly summary, `fleet config`, overnight mode, after-merge parking, the `merger` key |
 | Q10 | Debrief and expertise files | Kept as a step of `retire`; the command goes |
 | Q11 | Team test environments | Kept, internal |
 | Q12 | Release shape | Four pull requests merged to main one at a time (4.4, 4.5, 5.0, 5.0.1); no release branch |

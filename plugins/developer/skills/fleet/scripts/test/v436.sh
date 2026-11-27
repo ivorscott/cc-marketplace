@@ -100,7 +100,6 @@ v436_text() {
     "$(jq -r '.. | strings' "$f" | grep -c 'never ask only in the pane'):$(grep -c 'never ask only in the pane' "$l"):$(grep -c -- '--human' "$l")" "1:1:1"
   eq "v436 text: the run rules tell the Orchestrator to relay the Parked line" "$(grep -c 'you relay decide.s Parked line' "$r")" 1
   eq "v436 text: the worker rules carry the same sentence" "$(grep -c 'never ask only in the pane' "$SCRIPTS/common.sh")" 1
-  eq "v436 text: the plugin and the marketplace are at 4.3.6" "$(jq -r .version "$SCRIPTS/../../../.claude-plugin/plugin.json"):$(jq -r '.plugins[] | select(.name == "developer") | .version' "$SCRIPTS/../../../../../.claude-plugin/marketplace.json")" "4.3.6:4.3.6"
 }
 
 v436_smoke() { v436_parked; v436_next; v436_remind; v436_fixes; v436_text; }

@@ -168,7 +168,7 @@ cmd_start() {
   fi
   "$reg" set orchestrator target_teams="$teams" run_active=true run_started="${FLEET_NOW:-$(now)}" >/dev/null
   # The launchd loop runs tick with no model; install it when it is not there (never in a sandbox or a test).
-  sched="$("$FLEET_SCRIPTS/schedule.sh" status 2>/dev/null | head -n 1)"
+  sched="$("$FLEET_SCRIPTS/schedule.sh" status 2>/dev/null | sed -n 1p || true)"
   case "$sched" in
     *"not installed"*) if [ -n "${FLEET_SANDBOX:-}" ] || [ "${FLEET_TEST:-}" = 1 ]; then sched="not installed (not touched here)"
       else "$FLEET_SCRIPTS/schedule.sh" install >/dev/null 2>&1 && sched="installed" || sched="not installed: run fleet schedule install"; fi ;;

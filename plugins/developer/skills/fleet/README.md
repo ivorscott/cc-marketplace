@@ -107,7 +107,7 @@ team down".
 ![How the fleet fits together: you talk to the Orchestrator, it briefs team leads, leads prompt workers, a scheduled loop watches everything, and you merge the pull request](assets/architecture.svg)
 
 - **You** talk to one session, the Orchestrator. You merge pull requests and answer the few real decisions.
-- **The Orchestrator** boots, watches, steers and retires teams. It never edits code.
+- **The Orchestrator** boots, watches, steers and retires teams, and makes the one-off changes you ask it for.
 - **A team** is a lead and its workers. The lead coordinates and asks questions. Each writer has its own worktree.
 - **The loop** runs on a schedule with no model. It reads what changed, nudges leads, and wakes the Orchestrator.
 - **The code host and the issue tracker** stay the source of truth. The fleet never merges.
@@ -122,7 +122,7 @@ The words you will see:
 
 | Word | What it means |
 |---|---|
-| **Orchestrator** | The Claude Code session you talk to. It boots, watches, steers and retires teams. Its edit tools are removed, so it never writes code. |
+| **Orchestrator** | The Claude Code session you talk to. It boots, watches, steers and retires teams, and makes the one-off changes you ask it for. |
 | **Team** | One herdr workspace named `<template>-<focus>`, such as `build-app-studio`. |
 | **Lead** | The team's coordinator, on Opus, with no edit tools. It is the only agent that escalates. |
 | **Planner** | Writes the plan to `<repo>/.fleet/plan/<team>.md` and nothing else. |
@@ -177,8 +177,8 @@ claude
 
 Your first `/fleet` command makes this session the Orchestrator.
 
-Optional: `claude --agent developer:orchestrator` removes the edit tools, so the Orchestrator can never write code. An
-alias saves typing it, for example `alias ccf='claude --agent developer:orchestrator'`.
+Optional: `claude --agent developer:orchestrator` starts the session with the Orchestrator's instructions already loaded.
+An alias saves typing it, for example `alias ccf='claude --agent developer:orchestrator'`.
 
 The first run asks you two things:
 
@@ -747,9 +747,9 @@ Start with `/fleet status --problems`. It lists only what needs someone, and Nee
 | Boot made no claim | Options were placed after the template. | Options such as `--issue` go before the template. Check with `fleet holder <ISSUE>`. |
 | `Skill <v> is running and <v> is installed` | The plugin updated under a running session. | Restart the session, or run `/reload-plugins`. |
 | Nothing wakes the Orchestrator | No schedule, or the Mac slept. | `fleet schedule status`. Keep the Mac awake. |
-| `fleet schedule status` says `no good tick` and merged PRs are not noticed | A tool the loop calls is installed but not answering, most often Docker with its app closed. One failing step ends the whole tick. | Read the last lines of `loop.log` in the state directory. Start Docker (or fix the named tool), then run `fleet status`. Fixed in 5.0. |
-| A team shows **Idle** for a long time with an open PR | Its lead was not told that a worker finished, a question was answered or CI ended. | `fleet tell <team> "your tester finished: read its report and carry on"`. Fixed in 5.0. |
-| A team shows **Idle** or **Done** while an agent is clearly working | A worker that reported done once keeps that state when its lead starts it again. | Nothing to fix: read the pane with `herdr agent read <agent> --source visible`. Fixed in 5.0. |
+| `Loop failing <step>` in status | One part of the loop failed on two ticks in a row; the rest keeps running. The notice names the error, most often a tool that is installed but not answering, such as Docker with its app closed. | Fix what it names, then `fleet status`. The notice goes once the step passes. |
+| A team shows **Idle** for a long time with an open PR | Its lead was not told that a worker finished, a question was answered or CI ended. | `fleet tell <team> "your tester finished: read its report and carry on"`. Fixed in 4.5. |
+| A team shows **Idle** or **Done** while an agent is clearly working | A worker that reported done once keeps that state when its lead starts it again. | Nothing to fix: read the pane with `herdr agent read <agent> --source visible`. Fixed in 4.5. |
 | The team is hopeless | — | `fleet retire <team> --outcome Abandoned`. Unpushed work is kept and named. |
 
 `fleet tell` exits 1 when a message was not delivered and 2 when the pane or agent is gone. Never treat an undelivered
@@ -788,15 +788,15 @@ fleet with herdr, `gh` and `curl` shimmed.
 ## Coming in 5.0
 
 5.0 is a cleanup. It removes what nobody uses and fixes the two things that hurt most: a loop that could stop without
-telling anyone, and teams that sat idle with work waiting. This guide describes 4.x until 5.0 ships. The full design is
-in the [cleanup spec](https://github.com/ivorscott/cc-marketplace/blob/main/specs/fleet/cleanup.md).
+telling anyone (fixed in 4.4), and teams that sat idle with work waiting (4.5). This guide describes 4.x until 5.0 ships. The full design is
+in the [cleanup spec](../../../../specs/fleet/cleanup.md).
 
 **What you will notice:**
 
 - **Fewer commands.** `fleet help` lists eleven: `status`, `run`, `boot`, `tell`, `retire`, `park`, `candidates`,
   `decide`, `hold`, `claim`, `help`.
 - **Every team state says who moves next.** Idle becomes a fault that the loop acts on every tick.
-- **The loop cannot stop quietly.** A failing step is skipped and reported, and status shows it at the top.
+- **The loop cannot stop quietly.** A failing step is skipped and reported, and status shows it at the top. In 4.4 already.
 - **Parking is yours.** The loop no longer parks or unparks a team. A signed-off team is **Ready**.
 
 **Team states in 5.0:**
@@ -1089,7 +1089,7 @@ The Orchestrator and agents call these directly, from `scripts/`. You can call t
 | `scripts/registry.sh` | registry CLI used by every agent |
 | `references/` | herdr pitfalls, registry format, expertise files, and `output.md`: the one output shape of every command and wake |
 | `scripts/test/golden/` | the expected reply of each output.md entry, compared byte for byte by `run.sh` |
-| `../../agents/lead.md`, `orchestrator.md` | delegate-only agent definitions |
+| `../../agents/lead.md`, `orchestrator.md` | agent definitions (the lead has no edit tools) |
 | `../../hooks/` | context recovery (`prime`) and the worktree and planner scope guard; inert outside fleet panes |
 | `<repo>/.fleet/plan/<team>.md` | the planner's plan, in the team's repo and out of git (`.git/info/exclude`); retire deletes it |
 

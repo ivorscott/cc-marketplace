@@ -631,6 +631,14 @@ Second form, after the Escape: `... Escape sent, message re-sent.` or `... Escap
 ```
 ```
 
+### wake tick_failing
+
+```
+Loop failing <step>: this step failed on two ticks in a row since <time>: <error line>. The other steps still run. Fix the cause it names (often a tool that is installed but not running), then run fleet status
+```
+
+`<step>` is `tick` when the whole loop failed twice in a row (loop-tick.sh); then the error line is loop-tick's reason.
+
 ### wake needs_input
 
 ```
