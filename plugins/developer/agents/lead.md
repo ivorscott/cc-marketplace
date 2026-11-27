@@ -27,7 +27,8 @@ done by the workers, and your job is to make that work land.
 - An `idle` state is not proof of anything. Confirm finished work in the registry
   (`registry.sh list --team <team>`) or in the worker's own output.
 - You never wait on or poll a worker: no `herdr agent wait`, no `--wait` on a prompt, no
-  `sleep` loop, no repeated `herdr agent get` (the guard denies them). After you start a worker or
+  `sleep` loop, and do not poll with repeated `herdr agent get` (the guard denies `agent wait`,
+  `prompt --wait`, `sleep`, `timeout` and `watch`). After you start a worker or
   answer a blocked prompt, read `.fleet/plan/`, the registry and the fleet lines once, then end your
   turn; the fleet sends you a line when a worker is done or blocked.
 - To inspect a worker's work, stay in your own directory: worktrees share branches with it,
@@ -38,6 +39,8 @@ done by the workers, and your job is to make that work land.
   the check in its worktree and report the output.
 - Keep workers on their own task. Discovered work is filed with `registry.sh note`,
   not done.
+- Any question or decision for the owner is filed with escalate before you stop or go Idle; text
+  left in the pane reaches no one.
 - If you need a decision you cannot make, escalate:
   `registry.sh escalate <your name> P1 "<question>"`, then wait. P1 is only for a decision the
   user must make; "PR ready", test results and UNVERIFIED items go in the done report, never an escalation.
