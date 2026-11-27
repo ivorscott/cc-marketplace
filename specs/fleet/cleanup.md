@@ -228,6 +228,35 @@ example file; each is either listed or removed.
 - Help agrees with the skill text. Where they differ, one of them is wrong and is fixed.
 - At most five lines before the options. Detail belongs in the reference, for the Orchestrator.
 
+## User documentation
+
+The guide a person reads is part of the release, with the same weight as the code. Today's README is 1,348 lines and
+teaches 37 commands in three levels. It is rewritten for 5.0, and each pull request updates the part it changes.
+
+What the guide holds, in this order:
+
+1. **What the fleet is, in five lines,** and who it is for.
+2. **Quick start:** install, `fleet run init`, `fleet run`, then what the first status table looks like. One screen.
+3. **Reading status:** the seven team states as a table: what each means, who moves next, what to do. The lifecycle
+   diagram sits here.
+4. **Your day:** the three things an owner does (read status, merge what is ready, answer what is parked for you),
+   each with a real example of the output.
+5. **The eleven commands,** one short entry each: what it does in plain words, one example, what it prints.
+6. **When something is wrong:** a table by symptom ("a team shows Stalled", "status says `tick_failing`", "nothing
+   boots"), each with the cause and the one thing to do.
+7. **Upgrading from 4.x:** every removed or renamed command with what to type now, and what happens to running teams.
+8. **How it works,** last and short, for the curious: the loop, claims between machines, the merge gate. The tick
+   diagram sits here.
+
+Rules for the guide:
+
+- Written for someone who has never opened a script. No script names, no state-file paths, no internal terms.
+- Every command and every state in the guide exists in the release, and the reverse. A test compares the guide's
+  command list and state list with `fleet help` and the state table, so the guide cannot drift.
+- Every example is real output from the release, copied from a golden file.
+- Under 400 lines. Detail for the Orchestrator stays in the skill's references.
+- `fleet help <command>` and the guide say the same thing in the same words.
+
 ## Skill text
 
 `SKILL.md` and its references carry every wake type, every state and every command. They shrink with them. The output
@@ -260,7 +289,10 @@ Fleet teams build them, one team per pull request, in this order. Running teams 
 1. **Tick core:** step isolation, state per step, `tick_failing`.
 2. **Lifecycle:** team state, Waiting, the idle rule, Ready in place of loop parking, events to the lead, one sign-off rule.
 3. **Surface:** commands folded, internal scripts out of help, help text rewritten, features removed, config pruned.
-4. **Tests and docs:** regrouped tests, skill text and references cut to match, statechart and model.
+4. **Tests and docs:** regrouped tests, skill text and references cut to match, statechart and model, and the
+   user guide rewritten end to end, with the upgrade section and the drift test.
+
+Each of the first three pull requests also updates the guide for what it changes, so the guide is never behind main.
 
 A registry written by the old version is read once and rewritten: Done, Failed, Zombie and Needs input rows map to
 team states by the table above; a team the loop parked becomes Ready.
