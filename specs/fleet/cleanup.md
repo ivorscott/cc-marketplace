@@ -245,6 +245,45 @@ expertise pull request per repo is still proposed, never applied, by the Orchest
 **Templates** (build, review, research) are unchanged, except that the lead brief tells the lead to name every wait.
 
 
+## Status format
+
+`fleet status` is what the owner reads most (114 times in 30 days, against 6 for the next command). Today its rows look
+different depending on where a team runs: a team on this machine shows its issue title, a team on the other machine
+often shows the issue key alone. The title only exists when the Orchestrator that booted the team typed it into `boot`,
+and the other machine's summary carries whatever that machine had. Titles are also cut mid-phrase ("escalations that
+need the owner are").
+
+**Rule: every row looks the same, whichever machine runs the team.**
+
+- **The title comes from the tracker, never from a person.** `boot` reads the issue's title itself; no `--issue-title`
+  option. Each machine's published summary carries the title. When a summary has none, status reads it from the tracker
+  once and keeps it for the day.
+- **One way to shorten a title,** used everywhere (status, merge queue, morning report): drop a leading area word
+  ("Web:", "Fleet:", "Marginalia redesign:"), cut at a word boundary at 40 characters, end with "…" when cut.
+- **No blank cells.** An unknown title shows `(title unavailable)`, never just the key.
+
+The table:
+
+| Column | Holds |
+|---|---|
+| Team | Team name |
+| Machine | The machine's name |
+| Issue | `[KEY](link)` and the short title, always both |
+| PR | `[#N](link)`, or `-` |
+| State | One of the seven states |
+| Next | Who moves next and what: "you: merge", "you: answer Q", "waits on CI for a1b2c3d", "waits on #57", "loop nudges", "Orchestrator", or `-` |
+
+Below the table, only what the owner acts on:
+
+- **Merge in this order:** one line per Ready PR, `1. [#55] CAR-63 Editor as one page`, with the reason only when it is
+  not the default order.
+- **Waiting on you:** one line per parked question, with its recommendation.
+- A count of everything else in flight ("6 PRs in progress"), not a "Not ready" line per PR.
+- `tick_failing`, when present, as the first line of the reply.
+
+The column is renamed from "Needs you" to "Next", because it now says who moves next for every state, not only when the
+owner is needed.
+
 ## Morning report
 
 The morning report stays: it is the one place the owner reads what happened overnight. It is written at `report_at`
