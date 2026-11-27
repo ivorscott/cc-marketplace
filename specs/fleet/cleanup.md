@@ -199,6 +199,13 @@ Result: 11 commands in `fleet help`, down from 37.
 `fleet branches` ran `git push origin --delete` over many branches behind a bare noun. The command is removed. `retire`
 deletes its team's branches. The loop sweeps stale ones when the run profile allows it. There is no manual sweep.
 
+## The Orchestrator may edit code **(Q19)**
+
+In 4.x the Orchestrator never edits code: its edit tools are removed and every change goes through a booted team. That
+makes a one-line fix cost a whole team. In 5.0 the rule is gone. The Orchestrator agent keeps its edit tools, and it
+writes code itself when the owner asks it to, in a worktree, through a pull request like any team. Teams remain the way
+to run queued work in parallel.
+
 ## Features to remove **(Q9)**
 
 | Feature | Why |
@@ -479,3 +486,4 @@ waited on merged (events to the lead), the loop ending when a tool cannot answer
 | Q16 | Who builds it | Fleet teams, one per pull request, after this spec merges |
 | Q17 | One sign-off rule | The sign-off names the PR and its head |
 | Q18 | A signed-off team waiting for its merge | Ready, a state of its own; the loop never parks |
+| Q19 | Must the Orchestrator never edit code? | No: the rule is removed; it edits code when asked, through a pull request |
