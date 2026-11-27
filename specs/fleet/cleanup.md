@@ -203,8 +203,8 @@ deletes its team's branches. The loop sweeps stale ones when the run profile all
 
 In 4.x the Orchestrator never edits code: its edit tools are removed and every change goes through a booted team. That
 makes a one-line fix cost a whole team. In 5.0 the rule is gone. The Orchestrator agent keeps its edit tools, and it
-writes code itself when the owner asks it to, in a worktree, through a pull request like any team. Teams remain the way
-to run queued work in parallel.
+writes code itself when the owner asks for a one-off change, in a worktree, through a pull request like any team. It
+saves switching windows for small jobs. Teams remain the way to run queued issue work in parallel.
 
 ## Features to remove **(Q9)**
 
@@ -419,9 +419,10 @@ a team that is not Parked, Ready or Retired is never at rest for two ticks witho
 
 ## Migration and release **(Q12, Q16)**
 
-One major version, 5.0, with a list of breaking changes. Four pull requests land on a release branch and ship together.
-Fleet teams build them, one team per pull request, in this order. Running teams stay on the installed version until
-5.0 ships, so the fleet never runs half-built code.
+Four pull requests, merged to main one at a time, in this order. There is no release branch. Each pull request leaves
+main working and ships as its own version: tick core as 4.4, lifecycle as 4.5, the command surface as 5.0 (it removes
+commands, so it is the breaking one), tests and docs as 5.0.1. Each version reaches running teams the usual way, at
+their next issue once the owner says yes to it.
 
 1. **Tick core:** step isolation, state per step, `tick_failing`.
 2. **Lifecycle:** team state, Waiting, the idle rule, Ready in place of loop parking, events to the lead, one sign-off rule.
@@ -479,11 +480,11 @@ waited on merged (events to the lead), the loop ending when a tool cannot answer
 | Q9 | Unused features | Removed: chat, slim, `[context_window]`, focus, prime, metrics and the weekly summary, `fleet config`, overnight mode |
 | Q10 | Debrief and expertise files | Kept as a step of `retire`; the command goes |
 | Q11 | Team test environments | Kept, internal |
-| Q12 | Release shape | One 5.0, four pull requests on a release branch |
+| Q12 | Release shape | Four pull requests merged to main one at a time (4.4, 4.5, 5.0, 5.0.1); no release branch |
 | Q13 | Tests | Regrouped by area; golden files stay |
 | Q14 | Statechart and model | Lifecycle statechart file, and the model extended with the idle property |
 | Q15 | Earlier notes | Carried over where still true (table above) |
-| Q16 | Who builds it | Fleet teams, one per pull request, after this spec merges |
+| Q16 | Who builds it | The Orchestrator session, on the owner's request |
 | Q17 | One sign-off rule | The sign-off names the PR and its head |
 | Q18 | A signed-off team waiting for its merge | Ready, a state of its own; the loop never parks |
 | Q19 | Must the Orchestrator never edit code? | No: the rule is removed; it edits code when asked, through a pull request |
