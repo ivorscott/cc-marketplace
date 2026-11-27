@@ -20,6 +20,7 @@ commit. You merge it.
 | Work from issues, on several repos or machines | [Level 4: issues, repos and machines](#level-4-issues-repos-and-machines) | 10 min |
 | Use Jira, GitLab, Codex or your own team shape | [Make it yours](#make-it-yours) | 5 min |
 | Fix something | [Troubleshooting](#troubleshooting) | as needed |
+| See what 5.0 changes | [Coming in 5.0](#coming-in-50) | 3 min |
 | Look something up | [Reference](#reference) | as needed |
 
 Each level builds on the one before it and needs nothing from the ones after. Stop at the level that does your job.
@@ -103,19 +104,13 @@ team down".
 
 ## How it works
 
-```
-                  ┌──────────────────────┐
-                  │  ORCHESTRATOR        │  you + /fleet, in a herdr pane
-                  │  never edits code    │  boots · watches · steers · retires
-                  └──────────┬───────────┘
-       ┌─────────────────────┼─────────────────────┐
-  ┌────▼─────┐          ┌────▼─────┐          ┌────▼─────┐
-  │ LEAD     │          │ LEAD     │          │ LEAD     │   one herdr workspace per team
-  │ build-x  │          │ review-y │          │ research │   leads have no edit tools
-  └──┬───┬───┘          └──┬───┬───┘          └──┬───┬───┘
-     W   W                 W   W                 W   W       workers in split panes;
-                                                             each writer has its own worktree
-```
+![How the fleet fits together: you talk to the Orchestrator, it briefs team leads, leads prompt workers, a scheduled loop watches everything, and you merge the pull request](assets/architecture.svg)
+
+- **You** talk to one session, the Orchestrator. You merge pull requests and answer the few real decisions.
+- **The Orchestrator** boots, watches, steers and retires teams. It never edits code.
+- **A team** is a lead and its workers. The lead coordinates and asks questions. Each writer has its own worktree.
+- **The loop** runs on a schedule with no model. It reads what changed, nudges leads, and wakes the Orchestrator.
+- **The code host and the issue tracker** stay the source of truth. The fleet never merges.
 
 A build team's life, start to finish:
 
@@ -752,6 +747,9 @@ Start with `/fleet status --problems`. It lists only what needs someone, and Nee
 | Boot made no claim | Options were placed after the template. | Options such as `--issue` go before the template. Check with `fleet holder <ISSUE>`. |
 | `Skill <v> is running and <v> is installed` | The plugin updated under a running session. | Restart the session, or run `/reload-plugins`. |
 | Nothing wakes the Orchestrator | No schedule, or the Mac slept. | `fleet schedule status`. Keep the Mac awake. |
+| `fleet schedule status` says `no good tick` and merged PRs are not noticed | A tool the loop calls is installed but not answering, most often Docker with its app closed. One failing step ends the whole tick. | Read the last lines of `loop.log` in the state directory. Start Docker (or fix the named tool), then run `fleet status`. Fixed in 5.0. |
+| A team shows **Idle** for a long time with an open PR | Its lead was not told that a worker finished, a question was answered or CI ended. | `fleet tell <team> "your tester finished: read its report and carry on"`. Fixed in 5.0. |
+| A team shows **Idle** or **Done** while an agent is clearly working | A worker that reported done once keeps that state when its lead starts it again. | Nothing to fix: read the pane with `herdr agent read <agent> --source visible`. Fixed in 5.0. |
 | The team is hopeless | — | `fleet retire <team> --outcome Abandoned`. Unpushed work is kept and named. |
 
 `fleet tell` exits 1 when a message was not delivered and 2 when the pane or agent is gone. Never treat an undelivered
@@ -786,6 +784,52 @@ fleet with herdr, `gh` and `curl` shimmed.
   own systemd user timer.
 - **The guards catch mistakes, not attackers.** Agents run as your user. A determined or prompt-injected agent could
   still reach a mode-600 key file. See [Guard residuals](#guard-residuals-41).
+
+## Coming in 5.0
+
+5.0 is a cleanup. It removes what nobody uses and fixes the two things that hurt most: a loop that could stop without
+telling anyone, and teams that sat idle with work waiting. This guide describes 4.x until 5.0 ships. The full design is
+in the [cleanup spec](https://github.com/ivorscott/cc-marketplace/blob/main/specs/fleet/cleanup.md).
+
+**What you will notice:**
+
+- **Fewer commands.** `fleet help` lists eleven: `status`, `run`, `boot`, `tell`, `retire`, `park`, `candidates`,
+  `decide`, `hold`, `claim`, `help`.
+- **Every team state says who moves next.** Idle becomes a fault that the loop acts on every tick.
+- **The loop cannot stop quietly.** A failing step is skipped and reported, and status shows it at the top.
+- **Parking is yours.** The loop no longer parks or unparks a team. A signed-off team is **Ready**.
+
+**Team states in 5.0:**
+
+| State | Means | Who moves next |
+|---|---|---|
+| Working | An agent is mid-turn | The team |
+| Waiting | The lead named what it waits on: CI, a merge, your answer | The loop, when that thing changes |
+| Idle | Nobody is working and no wait is named | The loop nudges the lead, every tick |
+| Stalled | Still idle after a nudge, or an agent is gone | The Orchestrator |
+| Ready | Signed off, CI green, can merge | You merge |
+| Parked | Set aside by you or the Orchestrator | Only you or the Orchestrator |
+| Retired | Closed | Nobody |
+
+**If you type this today, type this in 5.0:**
+
+| 4.x | 5.0 |
+|---|---|
+| `fleet unpark <team>` | `fleet park <team> --undo` |
+| `fleet unhold <PR>` | `fleet hold <PR> --off` |
+| `fleet holder <ISSUE>` | `fleet claim <ISSUE> --who` |
+| `fleet takeover <ISSUE>` | `fleet claim <ISSUE> --take` |
+| `fleet escalations --open` | `fleet decide` |
+| `fleet resolve <team> <id> --note "…"` | `fleet decide <team> <id> --answer "…"` |
+| `fleet watch`, `fleet schedule …` | `fleet run` starts and reports both |
+| `fleet branches` | Gone. `retire` and the loop delete branches |
+| `fleet prime` | `fleet status` |
+| `fleet config` | `fleet run show` |
+| `fleet debrief` | Gone as a command. Lessons are written when a team retires |
+| `fleet focus`, `fleet metrics`, `fleet slim` | Gone |
+
+Commands that only the loop or an agent runs (`catchup`, `respawn`, `revive`, `next`, `overlap`, `defer`, `env`,
+`events`, `redact-check`, `sandbox`, `escalate`) keep working. They leave `fleet help`.
 
 ## Reference
 

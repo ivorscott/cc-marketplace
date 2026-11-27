@@ -97,6 +97,8 @@ Run teams of coding agents from one chat. You say what you want built. `/fleet` 
 writer on its own git worktree. A build team ends in a pull request that a tester has checked at an exact commit. You
 merge it.
 
+![How the fleet fits together](plugins/developer/skills/fleet/assets/architecture.svg)
+
 **For you if** you want several agents working in parallel on one or more repos, through pull requests.
 **Not for you if** you run one-off tasks in a single session, or your work doesn't go through PRs.
 
@@ -174,6 +176,10 @@ Hands-off in three steps, once Linear is set up:
 ```
 
 Merging, production, infrastructure applies, secrets and branch protection always stay yours.
+
+**Coming in 5.0:** eleven commands in place of 37, team states that say who moves next, and a loop that cannot stop
+quietly. See [what changes](plugins/developer/skills/fleet/README.md#coming-in-50) and the
+[cleanup spec](specs/fleet/cleanup.md).
 
 **Everything else** (how it works, troubleshooting, other trackers and agent CLIs, every command and config key, release
 notes) is in the [fleet guide](plugins/developer/skills/fleet/README.md).
