@@ -503,8 +503,8 @@ and prints the rules it will follow.
 
 ### 3. What it does without you
 
-- **Fills free slots.** It picks the next issue by your profile and boots it. It never hands you a menu. `fleet
-  candidates` shows what it can pick and why each other issue was skipped.
+- **Fills free slots.** It picks the next issue from Todo by your profile and boots it. It never hands you a menu, and
+  it never takes an issue from Backlog. `fleet candidates` shows what it can pick and why each other issue was skipped.
 - **Decides escalations.** It takes the lead's recommended option, tells the lead, comments the decision on the issue
   and lists it in the morning report. Reply on the issue to overrule one.
 - **Retires on merge.** The moment a team's PRs have merged, it retires the team and boots the next issue.
@@ -650,8 +650,14 @@ What an issue adds:
 skipped: PROJ-1 no-role, PROJ-11 verify, PROJ-14 claimed, PROJ-15 blocked
 ```
 
-An issue is bootable when it is Todo, Backlog, or In Progress with no live claim, has a `role:` label, and nothing
-blocks it. The skipped line gives one reason per issue.
+An issue is bootable when it is Todo, or In Progress with no live claim, has a `role:` label, and nothing blocks it.
+The skipped line gives one reason per issue.
+
+**Todo is the queue. Backlog is parked.** The fleet never picks from Backlog, whatever the priority or labels, so an
+old idea is never built by accident. Move an issue to Todo to queue it; fill Todo before you leave and that is the
+night's work, by priority. `fleet candidates` lists Backlog issues that could run as `parked`. Issues the fleet files
+for you (`fleet defer`) land in Backlog and wait for you. An issue you name in a boot runs from any state. To pick from
+Backlog too, as before 4.3.0, set `candidates_allow_backlog = true`.
 
 ### A second repo
 
@@ -737,6 +743,7 @@ Start with `/fleet status --problems`. It lists only what needs someone, and Nee
 | `✗ (brief not delivered)` on every agent at boot | herdr's Claude integration is missing. | Install it, then `fleet tell <agent> - --brief-file <path>`, or boot again. |
 | A PR is `conflicting` after another merged | Two PRs touched the same files. | Automatic with the loop. By hand: `fleet catchup <team> <pr-url>`. |
 | The unpark was refused | A cap is full. | Free a slot with `fleet park`. |
+| Teams sit idle while Backlog has work | Backlog is parked: the fleet picks from Todo only. | Move the issues you want to Todo. `fleet candidates` lists them as `parked`. |
 | **Needs input**: `answer its prompt` | A permission prompt blocks an agent. | Answer it. Stop it recurring with a rule in `tracker_allow`, `forge_allow` or the repo's `.claude/settings.json`. |
 | Boot refuses: disk | Free disk is below `min_free_gb` (default 40). | Retire finished teams, empty Docker's cache. |
 | Boot refuses: `leftovers of an earlier boot` | Branches or worktrees of a team with that name remain. | `fleet retire <team>` tidies them, or pick another focus. |
@@ -927,6 +934,7 @@ ignored with one warning.
 | `tracker_teams` | the team keys on registry rows | The tracker teams whose issues a team may boot. |
 | `role_label_prefix` | `"role:"` | An issue needs a label with this prefix to be bootable. |
 | `candidates_allow_unlabelled` | `false` | Lets issues with no role label be picked. |
+| `candidates_allow_backlog` | `false` | Lets Backlog issues be picked too. Off, the fleet picks from Todo only and Backlog is parked. |
 
 **Agents**
 

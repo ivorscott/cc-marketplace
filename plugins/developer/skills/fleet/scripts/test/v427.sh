@@ -28,11 +28,11 @@ v427_candidates() { # only bootable work, the rest in skipped with a reason
   v427_db "[$(v427_issue DEV-10 Todo '["R1"]' '{"priority":2}'),$(v427_issue DEV-11 Verify '["R1"]'),$(v427_issue DEV-12 Duplicate '["R1"]'),$(v427_issue DEV-13 Todo '[]'),
     $(v427_issue ACME-5 Todo '["R1"]'),$(v427_issue DEV-14 'In Progress' '["R1","L2"]'),$(v427_issue DEV-15 Todo '["R1"]' '{"blocked_by":["DEV-16"]}'),
     $(v427_issue DEV-16 Backlog '["R1"]'),$(v427_issue DEV-17 'In Progress' '["R1"]'),$(v427_issue DEV-18 Todo '["R1"]' '{"duplicate_of":["DEV-10"]}')]"
-  eq "v427 candidates: bootable are only the ready ones (Todo and Backlog, a lapsed or unlabelled In Progress)" \
-    "$(v427_cands | jq -r '[.bootable[] | .id + ":" + .reason] | sort | join(",")')" "DEV-10:ready,DEV-16:ready,DEV-17:in-progress-lapsed"
-  eq "v427 candidates: Verify, Duplicate, no role, other team, live claim, blocked are skipped with a reason" \
-    "$(v427_cands | jq -r '[.skipped[] | .id + ":" + .reason] | sort | join(",")')" "ACME-5:other-team,DEV-11:verify,DEV-12:duplicate,DEV-13:no-role,DEV-14:claimed,DEV-15:blocked,DEV-18:duplicate,DEV-1:no-role"
-  eq "v427 candidates: the plain form is the same bootable set as ids" "$("$SCRIPTS/linear.sh" candidates | jq -r 'sort | join(",")')" "DEV-10,DEV-16,DEV-17"
+  eq "v427 candidates: bootable are only the ready ones (Todo, a lapsed or unlabelled In Progress; Backlog is parked since 4.3.0)" \
+    "$(v427_cands | jq -r '[.bootable[] | .id + ":" + .reason] | sort | join(",")')" "DEV-10:ready,DEV-17:in-progress-lapsed"
+  eq "v427 candidates: Verify, Duplicate, no role, other team, live claim, blocked, Backlog are skipped with a reason" \
+    "$(v427_cands | jq -r '[.skipped[] | .id + ":" + .reason] | sort | join(",")')" "ACME-5:other-team,DEV-11:verify,DEV-12:duplicate,DEV-13:no-role,DEV-14:claimed,DEV-15:blocked,DEV-16:parked,DEV-18:duplicate,DEV-1:no-role"
+  eq "v427 candidates: the plain form is the same bootable set as ids" "$("$SCRIPTS/linear.sh" candidates | jq -r 'sort | join(",")')" "DEV-10,DEV-17"
   gcfg 'linear_writes = "on"' 'tracker_teams = ["ACME"]'
   eq "v427 candidates: an explicit tracker_teams wins over the registry" "$(v427_cands | jq -r '[.bootable[].id] | join(",")')" "ACME-5"
   gcfg 'linear_writes = "on"' 'candidates_allow_unlabelled = true'
@@ -40,9 +40,9 @@ v427_candidates() { # only bootable work, the rest in skipped with a reason
   gcfg 'linear_writes = "on"'
   local out; out="$("$SCRIPTS/candidates.sh" 2>&1)"
   eq "v427 candidates: the command prints the bootable lines by priority, then the skipped line" \
-    "$(printf '%s\n' "$out" | head -n 3 | tr '\n' '|')" "- DEV-10 · P2 · title of DEV-10 · ready|- DEV-16 · P3 · title of DEV-16 · ready|- DEV-17 · P3 · title of DEV-17 · in-progress-lapsed|"
+    "$(printf '%s\n' "$out" | head -n 2 | tr '\n' '|')" "- DEV-10 · P2 · title of DEV-10 · ready|- DEV-17 · P3 · title of DEV-17 · in-progress-lapsed|"
   eq "v427 candidates: and says why each other issue was left out" "$(printf '%s\n' "$out" | tail -n 1)" \
-    "skipped: DEV-1 no-role, ACME-5 other-team, DEV-11 verify, DEV-12 duplicate, DEV-13 no-role, DEV-14 claimed, DEV-15 blocked, DEV-18 duplicate"
+    "skipped: DEV-1 no-role, ACME-5 other-team, DEV-11 verify, DEV-12 duplicate, DEV-13 no-role, DEV-14 claimed, DEV-15 blocked, DEV-16 parked, DEV-18 duplicate"
   gold candidates "$out"
   "$REG" add '{"name":"cd-b/lead","team":"cd-b","tier":"Lead","status":"Working","herdr_ref":"cd-b-lead","pane":"p2","issue":"DEV-10"}' >/dev/null
   eq "v427 candidates: an issue a registry row holds is skipped as held" "$("$SCRIPTS/candidates.sh" 2>&1 | tail -n 1 | grep -c 'DEV-10 held')" 1

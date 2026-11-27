@@ -42,7 +42,8 @@ label's description. **No claim, lease or heartbeat comment is ever posted.**
 
 1. **Pick work** without the user (SKILL.md route A, step 0). Skip a live claim: `$F/linear.sh holder <ISSUE>`
    (read-only) says who holds it and whether the claim `lapsed`; `false` is live, and `null` (no heartbeat) is not
-   proven lapsed, so it is skipped too. Skip an issue whose blocked-by issues are not all Done. Order the rest by
+   proven lapsed, so it is skipped too. Skip an issue whose blocked-by issues are not all Done. Skip Backlog: it is
+   parked until the user moves the issue to Todo (`fleet candidates` says `parked`). Order the rest by
    priority, then by series order (its place in its "Part of" or parent sequence, then its identifier). A lapsed
    claim with no open PR is free: take it over (**Takeover**). Right after the boot, record the search with
    `$F/registry.sh note <team>/lead picked "<search and why>"`; the morning report reads it.
@@ -228,7 +229,7 @@ The fleet cleans up as it goes:
 When the user asks to keep N teams running, set `$F/registry.sh set orchestrator target_teams=N`. It is on the
 Orchestrator's row, so it survives a compaction and `registry.sh orchestrator here`. Tick then wakes you with
 `slot_free` while fewer teams run than N and than `max_teams` (Parked teams do not count), a configured repo has room
-(`teams_per_repo`) and a bootable issue exists (`fleet candidates`: unclaimed, unblocked, a `tracker_teams` team, a `role:` label), once per
+(`teams_per_repo`) and a bootable issue exists (`fleet candidates`: in Todo, unclaimed, unblocked, a `tracker_teams` team, a `role:` label), once per
 set of work (again only for a new issue or more free slots). Answer by picking and booting (SKILL.md route A, step 0, noting the pick); never hand the user a menu: an
 issue with a "Decide first" section takes its acceptance default (stated in the PR body), named follow-ups are filed,
 and a requested split is done. When the only blocker is a nearly ready PR, boot plan-first; when nothing is bootable,

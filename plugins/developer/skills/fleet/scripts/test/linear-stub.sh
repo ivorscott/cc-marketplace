@@ -91,11 +91,12 @@ case "$op" in
     ok '{"commentDelete": {"success": true}}' ;;
   FindText)
     ok "$(db --argjson v "$vars" '{issues: {nodes: [.issues[] | select(((.title // "") | ascii_downcase | contains($v.t | ascii_downcase)) or ((.description // "") | ascii_downcase | contains($v.t | ascii_downcase))) | {identifier}][:1]}}')" ;;
-  Candidates)
-    ok "$(db '. as $r | {issues: {nodes: [.issues[] | select(.state.name != "Done" and .state.name != "Canceled") | . as $i
+  Candidates|Parked) # issues whose state type the query's filter names: Backlog is "backlog", In Progress "started", any other "unstarted"
+    ok "$(db --arg q "$query" '. as $r | def ty: if .state.name == "In Progress" then "started" elif .state.name == "Backlog" then "backlog" else "unstarted" end;
+      {issues: {nodes: [.issues[] | select(.state.name != "Done" and .state.name != "Canceled") | select(ty as $t | $q | contains("\"" + $t + "\"")) | . as $i
       | {identifier, title: (.title // ""), priority: (.priority // 0), team: {key: (.identifier | sub("-[0-9]+$"; ""))},
          relations: {nodes: [(.duplicate_of // [])[] | {type: "duplicate"}]},
-         state: {name: .state.name, type: (if .state.name == "In Progress" then "started" else "unstarted" end)},
+         state: {name: .state.name, type: ty},
          labels: {nodes: [$i.labelIds[] as $l | $r.labels[] | select(.id == $l) | {name, description}]},
          inverseRelations: {nodes: [($i.blocked_by // [])[] | {type: "blocks", issue: {identifier: ., state: {type: "started"}}}]}}]}}')" ;;
   IssueComments)

@@ -89,17 +89,20 @@ It replaces your own [ui] lines in herdr's config and keeps a backup. (yes/no)".
 `$F/fleet slim off`. Either records the answer, so it is never asked again.
 
 0. **Pick** the issue yourself when the user names none (or a slot frees, Tick): never ask which one. Run
-   `$F/fleet candidates` and trust it: it lists only bootable work (Todo, Backlog, and In Progress that is unclaimed or
+   `$F/fleet candidates` and trust it: it lists only bootable work (Todo, and In Progress that is unclaimed or
    lapsed; no Verify, Done or Duplicate issue, no other tracker team, no live claim, nothing blocked, no issue without a
-   `role:` label) with a `skipped:` line and each reason. Keep no exclude list of your own. Order what it lists by priority, then by series order (its place in its "Part of" or parent sequence, then its
+   `role:` label) with a `skipped:` line and each reason. **Backlog is parked**: the user moves an issue to Todo to
+   queue it, so never boot a `parked` issue and never move one to Todo yourself, whatever its priority or labels; an
+   issue the user names is the one exception. Keep no exclude list of your own. Order what it lists by priority, then by series order (its place in its "Part of" or parent sequence, then its
    identifier). A lapsed claim with no open PR is free: take it with `$F/fleet takeover <ISSUE>`. Ask the user only
    to override a cap, or for a P0/P1. Never hand the user a menu: an issue with a "Decide first" section takes its
    acceptance default, stated in the PR body; follow-ups it names are filed (Linear, with blocked-by relations as
-   needed); a split it asks for is done. Right after the boot, record the search: `$F/registry.sh note <team>/lead
+   needed) and stay in Backlog for the user; a split it asks for is done, and its parts go to Todo, because the user
+   already queued that work. Right after the boot, record the search: `$F/registry.sh note <team>/lead
    picked "<search and why>"` (the morning report reads it), and start your reply with the `Booting` line from its
    template (`references/output.md`) above boot's output. With nothing bootable, reply "Nothing bootable" from its
    template: each candidate, ranked, with what it truly cannot run on (a blocker, a live claim, a missing key), never
-   a choice you can make yourself.
+   a choice you can make yourself. Queueing parked work is the user's choice: the template's last line counts it.
 1. Pick the template: `build` (plan, build, test one piece of work), `review` (independent read-only reviewers)
    or `research` (problem-first study guide); a path to a custom template JSON also works. Unsure → ask.
 2. With several machines on Linear, claim the issue first (`references/operations.md`, "Claims"); a single machine
@@ -172,7 +175,7 @@ question box (AskUserQuestion): the wakes queue behind it. Ask in plain text and
   When the wake's notice says `Ready to merge: 2 ready: merge #A, then #B.`, send ONE `PushNotification` with that text.
 - `usage_limit`: agents hit the plan's usage limit; no team boots until the time it names. Relay it once.
 - `slot_free`: fewer teams run than the user's target (`$F/registry.sh set orchestrator target_teams=N` when the user
-  asks to keep N teams running). Pick and boot (A, step 0) over Todo, Backlog and unclaimed or lapsed In Progress
+  asks to keep N teams running). Pick and boot (A, step 0) over Todo and unclaimed or lapsed In Progress
   across the repos in `repos`. When the only blocker is an open PR that is nearly ready (signed off, or CI green),
   boot plan-first: the lead's `--brief` says the planner runs and the builder waits for that merge.
 - `pr_merged` (every PR the team opened has merged): retire the team at once (F, step 0), without asking, then pick the
