@@ -35,17 +35,6 @@ set -euo pipefail
 
 rows="$("$FLEET_SCRIPTS/registry.sh" list | jq -c '[.[] | select(type == "object" and .status != "Retired" and .tier != "Orchestrator")]')"
 rowurls="$(jq -c '[.[] | .pr // "" | strings | select(startswith("https://"))] | unique' <<<"$rows")"
-# The repos to read: those of the rows' PR URLs, and of the rows' own repos (their origin remotes), so a PR that no
-# row knows yet is found too.
-slugs="$({ jq -r '.[] | capture("^https?://[^/]+/(?<s>[^/]+/[^/]+)/").s // empty' <<<"$rowurls"
-  jq -r '[.[] | .repo // "" | strings | select(. != "")] | unique[]' <<<"$rows" | while IFS= read -r d; do [ ! -d "$d" ] || repo_slug "$d"; done; } | sort -u)"
-if [ -z "$slugs" ] && [ "$rowurls" = "[]" ]; then echo '{"ready":[],"not_ready":[],"on_hold":[],"notes":[]}'; exit 0; fi
-if ! command -v "$FLEET_GH" >/dev/null 2>&1; then
-  [ "$rowurls" != "[]" ] || { echo '{"ready":[],"not_ready":[],"on_hold":[],"notes":[]}'; exit 0; }
-  jq -c "$RENDER_DEFS"'{ready: [], not_ready: map({url: ., pr: pr_cell(.), missing: ["GitHub unreadable"]}), on_hold: [], notes: ["Merge queue unknown: gh not found"]}' <<<"$rowurls"
-  exit 0
-fi
-
 # The other machines' summaries (linear.sh peers: read-only; status passes what it already read in FLEET_PEERS_JSON):
 # pr URL -> {machine, state, issue, ready} for each PR a fresh summary lists; a stale one lists its PRs not ready.
 me="$(machine_key 2>/dev/null || echo local)"
@@ -57,6 +46,18 @@ psum="$(jq -c --arg now "${FLEET_NOW:-$(now)}" --argjson lease "$(lease_hours)" 
     | (if $c.heartbeat == null then false else ((($now | fromdateiso8601) - ($c.heartbeat | fromdateiso8601)) <= ($lease * 3600)) end) as $fresh
     | $c.summary[] | select((.pr // "") != "") | {key: .pr, value: {machine: $c.machine, state: (.s // ""), issue: (.i // ""), ready: ((.r // false) and $fresh)}}] | from_entries' <<<"$peers" 2>/dev/null)" || psum='{}'
 [ -n "$psum" ] || psum='{}'
+
+# The repos to read: those of the rows' PR URLs, and of the rows' own repos (their origin remotes), so a PR that no
+# row knows yet is found too.
+slugs="$({ jq -r '.[] | capture("^https?://[^/]+/(?<s>[^/]+/[^/]+)/").s // empty' <<<"$rowurls"
+  jq -r 'keys[] | capture("^https?://[^/]+/(?<s>[^/]+/[^/]+)/").s // empty' <<<"$psum"
+  jq -r '[.[] | .repo // "" | strings | select(. != "")] | unique[]' <<<"$rows" | while IFS= read -r d; do [ ! -d "$d" ] || repo_slug "$d"; done; } | sort -u)"
+if [ -z "$slugs" ] && [ "$rowurls" = "[]" ] && [ "$psum" = "{}" ]; then echo '{"ready":[],"not_ready":[],"on_hold":[],"notes":[]}'; exit 0; fi
+if ! command -v "$FLEET_GH" >/dev/null 2>&1; then
+  [ "$rowurls" != "[]" ] || { echo '{"ready":[],"not_ready":[],"on_hold":[],"notes":[]}'; exit 0; }
+  jq -c "$RENDER_DEFS"'{ready: [], not_ready: map({url: ., pr: pr_cell(.), missing: ["GitHub unreadable"]}), on_hold: [], notes: ["Merge queue unknown: gh not found"]}' <<<"$rowurls"
+  exit 0
+fi
 
 noci="$(config_list no_pr_ci)"; fields=number,url,state,title,headRefOid,headRefName,baseRefName,mergeable,isDraft,statusCheckRollup,body,createdAt,files,isCrossRepository
 # One read-only list of the open PRs per repo. A repo GitHub cannot list leaves its rows' PRs "GitHub unreadable".

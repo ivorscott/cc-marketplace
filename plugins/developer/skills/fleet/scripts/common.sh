@@ -648,7 +648,10 @@ PR_DEFS='def pr_noci_ok($noci; $repo; $url): ($repo | split("/") | last) as $bas
 queue_file() { printf '%s\n' "$FLEET_STATE_DIR/queue.json"; }
 queue_sig() {
   { "$FLEET_SCRIPTS/registry.sh" list | jq -c '[.[] | select(.status != "Retired") | [.name, (.pr // ""), (.signoff.sha? // ""), (.issue // ""), (.branch // ""), (.comment_open // "")]] | sort'
-    holds_json; } | cksum | awk '{ print $1 }'
+    holds_json
+    # The other machines' PRs and whether their summaries call them ready (status passes what it read in FLEET_PEERS_JSON):
+    # a queue kept before a peer's summary changed must not be reused.
+    printf '%s' "${FLEET_PEERS_JSON:-[]}" | jq -c '[.[]? | select(.summary != null) | [.machine, (.summary[] | select((.pr // "") != "") | [.pr, (.s // ""), (.r // false)])]] | sort' 2>/dev/null || true; } | cksum | awk '{ print $1 }'
 }
 # Holds: a ready PR the owner keeps back on purpose. holds.json in the state dir, {"<pr url>": {note, at}}; this machine
 # only. A held PR is not ready: the queue, status and the morning report list it as on hold with its note, tick sends
@@ -1193,7 +1196,10 @@ render_table() {
          pr: pr_cell($pr), pr_url: $pr, state: $state, needs: team_needs($g; $e; $state; $pr; $q)}) as $local
     | ([$peers[] | select((.team | shown))
         | {team: .team, machine: .machine, issue: issue_cell(.issue; ""; ""), pr: pr_cell(.pr), pr_url: (.pr // ""), state: .state,
-           needs: ((.needs // "") | if . == "" then "-" else . end)}]) as $other
+           needs: (((.pr // "") as $u | ([($q.ready // [])[] | select(.url == $u)] | first) as $r | ([($q.on_hold // [])[] | select(.url == $u)] | first) as $h
+             | if $u == "" then null elif $h != null then "on hold" + (if ($h.note // "") != "" then ": \($h.note)" else "" end)
+               elif $r != null then (if ($r.after // "—") != "—" then $r.after else "merge the PR" end) else null end)
+             // ((.needs // "") | if . == "" then "-" else . end))}]) as $other
     | ($local + $other | map(. + {n: (qready(.pr_url) | .n // 1000000)}) | sort_by([.n, .team, .machine])) as $t
     | if ($t | length) == 0 then "No teams." else
         [([$t | length | "\(.) team\(if . == 1 then "" else "s" end)"]
