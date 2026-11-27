@@ -19,15 +19,17 @@ done by the workers, and your job is to make that work land.
   it runs done again when that is finished.
 - Name the tier (1-3) in every task you hand out; run the planner only for multi-PR or tier 3
   work, otherwise the builder sends you a plan of 10 lines or fewer.
-- Talk to workers only through herdr: `herdr agent prompt <worker> "<text>" --wait`,
+- Talk to workers only through herdr: `herdr agent prompt <worker> "<text>"`,
   `herdr agent read <worker> --source recent-unwrapped --lines 120`,
   `herdr agent get <worker>`. Run `herdr --skill` once if you need the full command set.
 - Before prompting a worker, check `herdr agent get <worker>`. If it is `blocked`, read
   its screen and decide: answer only what your brief allows, otherwise escalate.
 - An `idle` state is not proof of anything. Confirm finished work in the registry
   (`registry.sh list --team <team>`) or in the worker's own output.
-- After you answer a blocked prompt, wait with `herdr agent wait <worker> --until idle`,
-  never a plain wait: the old `blocked` state is returned first.
+- You never wait on or poll a worker: no `herdr agent wait`, no `--wait` on a prompt, no
+  `sleep` loop, no repeated `herdr agent get` (the guard denies them). After you start a worker or
+  answer a blocked prompt, read `.fleet/plan/`, the registry and the fleet lines once, then end your
+  turn; the fleet sends you a line when a worker is done or blocked.
 - To inspect a worker's work, stay in your own directory: worktrees share branches with it,
   so `git log fleet/<team>/<role>`, `git show fleet/<team>/<role>` and
   `git diff main...fleet/<team>/<role>` work without approval. Never `cd <dir> && git …` or

@@ -22,6 +22,8 @@ those and from the agent's transcript, never from screen text:
 say `claude: current`. The folder-trust dialog (pattern 4) is still read from the screen: it opens
 before any hook runs.
 
+Sections 1 and 2 are for the Orchestrator and humans: a lead does not wait at all (section 5).
+
 ## 1. `idle` is not proof the agent is alive
 
 `agent wait --until idle` can return `idle` for an agent that is exiting, and after a
@@ -66,11 +68,11 @@ you want before pressing Enter. `boot.sh` does this for the trust dialog only, a
 for directories the fleet owns or was given. Every other dialog goes through the
 blocked-prompt policy in `SKILL.md`.
 
-## 5. A foreground `prompt --wait` blocks the lead's turn; queued messages sit behind it
+## 5. A lead's `prompt --wait`, `agent wait` or sleep poll blocks its turn; queued messages sit behind it
 
-A lead that runs a worker prompt with `--wait` holds its own turn until the worker is idle, done or blocked. Anything `tell.sh` sends it queues behind that turn.
+A lead that runs a worker prompt with `--wait`, `herdr agent wait` or a `sleep` loop holds its own turn until the worker is idle, done or blocked. Anything `tell.sh` sends it queues behind that turn. The bash guard denies all three for leads.
 
-**Pattern:** prompt without `--wait`, then wait for the worker's done step or a fleet line and look with `herdr agent get` or `read`. Tick raises `lead_waiting` when a message has been queued too long after the tester signed off; Escape on the lead's pane frees it.
+**Pattern:** a lead prompts the worker, reads the plan, registry and fleet lines once, and ends its turn; the fleet sends a line when a worker is done or blocked. Tick raises `lead_waiting` when a message has been queued too long after the tester signed off: it nudges once, then sends exactly one Escape (a second opens the rewind menu) and the message again.
 
 ## Setup note
 

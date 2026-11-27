@@ -1405,7 +1405,7 @@ render_notice() {
     pr_opened) render_line pr_opened pr="$(pr_link "$url")" issue="$(team_issue "$team")" told="Lead not reached: tell it to start the tester" ;;
     dead) render_line event event=Dead name="$name" what="its agent is gone" next="Tick respawns it once in $(const_int RESPAWN_WINDOW_HOURS 6)h (after herdr's resume window when the server just restarted), then escalates P1" ;;
     failed) render_line event event=Failed name="$name" what="a restart or its brief did not arrive" next="Re-send its brief or re-boot the team" ;;
-    lead_waiting) render_line event event="Lead waiting" name="$name" what="its tester signed off and its queued messages wait behind a long turn, nudged once" next="Send Escape to its pane if it is still stuck, then re-tell it" ;;
+    lead_waiting) render_line event event="Lead waiting" name="$name" what="its tester signed off and its queued messages wait behind a long turn" next="$(jq -r '.next // "Nudged once; if it is still working next tick, tick sends one Escape and the message again"' <<<"$e")" ;;
     stalled) render_line event event=Stalled name="$name" what="idle without its done step, nudged once" next="Ask it for its done step" ;;
     needs_input) d="$(jq -r '.detail // "API error"' <<<"$e")"
       if [ "$d" = "login expired" ]; then render_line event event="Needs input" name="$name" what="$d" next="Run /login in its pane"

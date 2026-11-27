@@ -2,7 +2,7 @@
 # Send text to a fleet agent and check that it arrived. A message that did not arrive is a
 # failure, never a silent success.
 #
-#   tell.sh <team/role | herdr agent> <text> [--no-confirm] [--brief] [--fix]
+#   tell.sh <team/role | herdr agent> <text> [--no-confirm] [--brief] [--fix] [--keep-queue]
 #   tell.sh <team/role> - --brief-file PATH
 #
 # --brief sends the text as a FILE: it is written to $FLEET_STATE_DIR/briefs/<team>/<role>/<id>.md (mode 600)
@@ -41,18 +41,20 @@
 # --fix says the message is rework on the team's open PR (tick sends a new comment on the issue this way): a team that
 # has to be brought back for it comes back as a fix (revive.sh --fix), over the caps and without taking a slot. It
 # changes nothing for a team that is running.
+# --keep-queue (tick's own nudge to a waiting lead): leave the lead's queued_at as it is instead of clearing it.
 # Command: Send a team's lead (or one agent) a message and check it arrived · e.g. fleet tell build-api/lead "focus on token expiry"
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
 require_herdr
 
-usage="usage: tell.sh <team/role | herdr agent> <text> [--no-confirm] [--fix] [--brief | --brief-file PATH]"
+usage="usage: tell.sh <team/role | herdr agent> <text> [--no-confirm] [--fix] [--keep-queue] [--brief | --brief-file PATH]"
 target="${1:?$usage}"; text="${2:?$usage}"; shift 2
-confirm=true; is_brief=false; brief_file=""; fix=false
+confirm=true; is_brief=false; brief_file=""; fix=false; keep_queue=false
 while [ $# -gt 0 ]; do
   case "$1" in
     --no-confirm) confirm=false; shift ;;
     --fix) fix=true; shift ;;
+    --keep-queue) keep_queue=true; shift ;;
     --brief) is_brief=true; shift ;;
     --brief-file) is_brief=true; brief_file="${2:?--brief-file needs a path}"; shift 2 ;;
     *) die "unknown option: $1" ;;
@@ -119,7 +121,7 @@ verdict() { # verdict <delivered true|false> <reason> <exit code>
     case "$target" in */lead)
       if [ "${how:-}" = queued ]; then
         [ -n "$("$FLEET_SCRIPTS/registry.sh" get "$target" 2>/dev/null | jq -r '.queued_at // ""')" ] || "$FLEET_SCRIPTS/registry.sh" set "$target" queued_at="$(now)" >/dev/null 2>&1 || true
-      else "$FLEET_SCRIPTS/registry.sh" set "$target" queued_at= >/dev/null 2>&1 || true; fi ;;
+      elif ! $keep_queue; then "$FLEET_SCRIPTS/registry.sh" set "$target" queued_at= >/dev/null 2>&1 || true; fi ;;
     esac
   fi
   if [ "$1" = true ]; then

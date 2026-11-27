@@ -151,7 +151,7 @@ The fleet sits on top of herdr:
 |---|---|
 | workspaces, panes, 20+ agent CLIs | tiers: Orchestrator → lead → workers |
 | `idle / working / blocked / done` | health: **Stalled** and **Zombie**, from the done contract and process checks |
-| `prompt --wait`, `wait --until`, reads, keys | team templates: build, review, research |
+| `prompt`, reads, keys (a lead never waits or polls) | team templates: build, review, research |
 | persistence, restore, multi-machine | a registry: identity, assignment, outcome, lessons |
 | its own agent skill (`herdr --skill`) | escalations, team caps, the merge queue, the self-driving loop, guards, debriefs |
 

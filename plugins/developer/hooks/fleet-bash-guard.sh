@@ -279,6 +279,36 @@ done < <(printf '%s\n' "$cmd" | awk -v sq="'" '
 
 
 
+# --- a lead never waits on or polls a worker (DEV-1259) -----------------------------------------------------
+# Leads only: `herdr agent wait`, a worker prompt with --wait, `sleep` (a poll loop) and timeout/watch.
+# A single `herdr agent get` or `read` stays allowed. Workers and the Orchestrator are untouched.
+nowait() { deny "fleet bash guard: A lead never waits on or polls a worker ($1). End your turn; the fleet sends you a line when a worker is done or blocked. To look once, use herdr agent get <worker> or the registry."; }
+if [ "${FLEET_ROLE:-}" = lead ]; then
+  while IFS= read -r seg; do
+    read -r -a w <<<"${seg//[\"\'\`]/ }"
+    [ "${#w[@]}" -gt 0 ] || continue
+    first=0
+    while [ "$first" -lt "${#w[@]}" ]; do
+      case "${w[$first]}" in *=* | '{' | do | then | else | '!') first=$((first + 1)) ;; *) break ;; esac
+    done
+    cw="${w[$first]:-}"; cw="$(printf '%s' "${cw##*/}" | tr ABCDEFGHIJKLMNOPQRSTUVWXYZ abcdefghijklmnopqrstuvwxyz)"
+    case "$cw" in
+      sleep | timeout | watch) nowait "$cw" ;;
+      herdr)
+        j=$((first + 1))
+        while [ "$j" -lt "${#w[@]}" ]; do
+          case "${w[$j]}" in --session | --socket) j=$((j + 2)) ;; --*) j=$((j + 1)) ;; *) break ;; esac
+        done
+        if [ "${w[$j]:-}" = agent ]; then
+          case "${w[$((j + 1))]:-}" in
+            wait) nowait "herdr agent wait" ;;
+            prompt) for x in "${w[@]:$j}"; do case "$x" in --wait | --wait=*) nowait "prompt --wait" ;; esac; done ;;
+          esac
+        fi ;;
+    esac
+  done < <(printf '%s\n' "$cmd" | tr ';&|()' '\n\n\n\n\n')
+fi
+
 # --- herdr ---------------------------------------------------------------------------------------------------
 shopt -s nocasematch; case "$cmd" in *herdr*) ;; *) exit 0 ;; esac; shopt -u nocasematch
 team="${FLEET_TEAM:-}"
