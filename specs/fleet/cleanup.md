@@ -1,9 +1,9 @@
 # Fleet cleanup: one design
 
-Status: draft for decision. Every choice marked **(Qn)** is open; the list is at the end.
+Status: decided. Each **(Qn)** points to a row of the decision table at the end.
 Scanned version: developer 4.3.6.
 
-Diagrams of the proposed design: team lifecycle ([svg](diagrams/lifecycle.svg), [html](diagrams/lifecycle.html)) and one
+Diagrams of the design: team lifecycle ([svg](diagrams/lifecycle.svg), [html](diagrams/lifecycle.html)) and one
 tick of the loop ([svg](diagrams/tick.svg), [html](diagrams/tick.html)). The command surface is a table below.
 
 ![Team lifecycle](diagrams/lifecycle.svg)
@@ -68,7 +68,7 @@ Faults in the model itself:
   So "Parked" means two things: set aside by a person, and finished and waiting for a merge.
 - Idle has no owner. Nothing distinguishes "waiting for CI" from "forgot to carry on".
 
-### Proposed **(Q1, Q4, Q5, Q18)**
+### Decided **(Q1, Q4, Q5, Q18)**
 
 The team holds one state. Agent rows keep only liveness: running, at rest, or gone.
 
@@ -128,7 +128,7 @@ signed off, that an escalation was resolved, that CI ended, that the PR is ready
 Two rules decide "signed off". The loop accepts a sign-off from any tester row of the team. The merge queue also
 requires the sign-off to name the PR.
 
-### Proposed **(Q1, Q6, Q7, Q17)**
+### Decided **(Q1, Q6, Q7, Q17)**
 
 - **Steps are isolated.** Each step runs in its own guard. A step that fails is skipped, logged with its error line,
   and the tick carries on.
@@ -152,7 +152,7 @@ Wake types shrink to what the Orchestrator acts on: `ready` (the merge queue cha
 
 37 commands today. Runs in the last 30 days on one machine: by the owner (typed), and by the Orchestrator (Bash).
 
-| Command | Owner | Orchestrator | Proposed | Notes |
+| Command | Owner | Orchestrator | Decided | Notes |
 |---|---|---|---|---|
 | `status` | 114 | 1196 | **Keep** | |
 | `run` | 27 | 39 | **Keep** | Absorbs `watch` and `schedule` |
@@ -163,12 +163,12 @@ Wake types shrink to what the Orchestrator acts on: `ready` (the merge queue cha
 | `candidates` | 0 | 182 | **Keep** | Shows who holds a claimed issue |
 | `decide` | 0 | 126 | **Keep** | No arguments lists open questions; `--answer` closes one |
 | `park` | 0 | 24 | **Keep** | `park --undo` replaces `unpark` |
-| `hold` | 0 | 5 | **Keep (Q2)** | `hold --off` replaces `unhold` |
+| `hold` | 0 | 5 | **Keep** | `hold --off` replaces `unhold` |
 | `unpark` | 0 | 17 | Fold into `park` | |
 | `unhold` | 0 | 4 | Fold into `hold` | |
-| `claim` | 2 | 348 | Fold into `boot` | Always run just before `boot` |
-| `holder` | 0 | 146 | Fold into `candidates` and `boot` | |
-| `takeover` | 0 | 3 | Fold into `boot --take` | |
+| `claim` | 2 | 348 | **Keep (Q2)** | For claiming by hand. `boot` also claims by itself. `claim --who` replaces `holder`, `claim --take` replaces `takeover` |
+| `holder` | 0 | 146 | Fold into `claim --who` and `candidates` | |
+| `takeover` | 0 | 3 | Fold into `claim --take` and `boot --take` | |
 | `escalations` | 0 | 61 | Fold into `decide` | |
 | `resolve` | 0 | 118 | Fold into `decide --answer` | Sends the answer to the lead |
 | `watch` | 0 | 16 | Fold into `run` | |
@@ -184,21 +184,20 @@ Wake types shrink to what the Orchestrator acts on: `ready` (the merge queue cha
 | `sandbox` | 0 | 2 | Internal | Agents and tests run it |
 | `env` | 0 | 0 | Internal **(Q11)** | `boot` and `retire` run it |
 | `events` | 0 | 0 | Internal | The scheduler runs it |
-| `branches` | 0 | 1 | **Delete (Q3)** | `retire` and the loop already sweep |
-| `debrief` | 2 | 13 | Delete or keep **(Q10)** | |
+| `branches` | 0 | 1 | **Delete (Q3)** | `retire` and the loop do all branch deletion |
+| `debrief` | 2 | 13 | Internal **(Q10)** | Lessons are written as a step of `retire` |
 | `slim` | 0 | 7 | Delete **(Q9)** | |
 | `focus` | 0 | 0 | Delete **(Q9)** | |
 | `prime` | 0 | 0 | Delete **(Q9)** | `status` already says everything it says |
 | `metrics` | 0 | 0 | Delete **(Q9)** | The morning report stays, as an internal script |
 | `config` | 0 | 0 | Delete **(Q9)** | `run show` prints the profile and caps |
 
-Result: 10 commands in `fleet help`, down from 37.
+Result: 11 commands in `fleet help`, down from 37.
 
 ### Deleting branches **(Q3)**
 
-`fleet branches` runs `git push origin --delete` over many branches behind a bare noun. Recommended: remove the command.
-`retire` deletes its team's branches. The loop sweeps stale ones when the run profile allows it. If a manual sweep is
-kept, it is `fleet retire --stale-branches`, it prints what it would delete, and it deletes only with `--yes`.
+`fleet branches` ran `git push origin --delete` over many branches behind a bare noun. The command is removed. `retire`
+deletes its team's branches. The loop sweeps stale ones when the run profile allows it. There is no manual sweep.
 
 ## Features to remove **(Q9)**
 
@@ -214,7 +213,8 @@ kept, it is `fleet retire --stale-branches`, it prints what it would delete, and
 | Overnight mode | Superseded by `fleet run` |
 | After-merge parking | The loop no longer parks; a merged PR retires its team |
 
-Open: debrief and the expertise files **(Q10)**, team test environments **(Q11)**, multi-machine claims **(Q8)**.
+Kept: debrief and the expertise files, as a step of `retire` with no command **(Q10)**; team test environments, run by
+`boot` and `retire` with no command **(Q11)**; the claim protocol between machines, unchanged **(Q8)**.
 
 Config follows: every key of a removed feature goes. `events_label` and `merger` are used today and missing from the
 example file; each is either listed or removed.
@@ -235,7 +235,7 @@ reference (891 lines) keeps one shape per kept command and per kept wake.
 
 ## Tests **(Q13)**
 
-Today: one 4,720-line file and 18 files named after the version that added them. Proposed: group by area (lifecycle,
+Today: one 4,720-line file and 18 files named after the version that added them. They are regrouped by area (lifecycle,
 tick, claims, commands, guards), keep the golden files, and add the cases this design rests on:
 
 - a step that fails does not end the tick, and its error becomes `tick_failing` on the second tick,
@@ -247,13 +247,15 @@ tick, claims, commands, guards), keep the golden files, and add the cases this d
 
 ## Model and statechart **(Q14)**
 
-The TLA+ model beside this file covers claims, the merge gate and authority. It does not model team state. Proposed:
-add the lifecycle above as a statechart file, and extend the model with Idle, Waiting and Stalled and one property:
+The TLA+ model beside this file covers claims, the merge gate and authority. It does not model team state. The
+lifecycle pull request will add the lifecycle above as a statechart file, and extends the model with Idle, Waiting and Stalled and one property:
 a team that is not Parked, Ready or Retired is never at rest for two ticks without a named wait.
 
 ## Migration and release **(Q12, Q16)**
 
-Recommended: one major version with a list of breaking changes, built as four pull requests behind it.
+One major version, 5.0, with a list of breaking changes. Four pull requests land on a release branch and ship together.
+Fleet teams build them, one team per pull request, in this order. Running teams stay on the installed version until
+5.0 ships, so the fleet never runs half-built code.
 
 1. **Tick core:** step isolation, state per step, `tick_failing`.
 2. **Lifecycle:** team state, Waiting, the idle rule, Ready in place of loop parking, events to the lead, one sign-off rule.
@@ -270,27 +272,47 @@ team states by the table above; a team the loop parked becomes Ready.
 - The house rules.
 - herdr itself.
 
-## Open questions
+## Carried over from earlier notes **(Q15)**
 
-Recommended answer first.
+Faults noted before this design that it does not settle by itself. Each belongs to the pull request named.
 
-| # | Question | Recommended | Other options |
-|---|---|---|---|
-| Q1 | How deep does this go? | Rebuild the tick's core and the state model; keep claims, boot, retire and the templates | Tidy in place: guard the failing steps, add the nudges, trim help |
-| Q2 | Which commands stay in `fleet help`? | Ten: status, run, boot, tell, retire, park, candidates, decide, hold, help | Nine, with `hold` folded into `park`; or keep `claim` for people |
-| Q3 | `fleet branches` | Delete it; `retire` and the loop sweep | Rename to `fleet retire --stale-branches`, dry run unless `--yes` |
-| Q4 | The idle rule | Nudge every tick; Stalled one tick later | Nudge once, Stalled after a set number of minutes |
-| Q5 | A named wait as its own state | Yes: Waiting, with the thing awaited, watched by the loop | No: one Idle state, with a note |
-| Q6 | Which events go straight to the lead | Worker done, sign-off, decision or answer, CI result, ready, merged, failed sign-off | Only worker done and decisions |
-| Q7 | A failing tick step | Skip, warn once, carry on; `tick_failing` after two bad ticks | Stop the tick and wake at once |
-| Q8 | Claims between machines | Keep the protocol; fold `claim`, `holder`, `takeover` into `boot` and `candidates` | Keep the three commands |
-| Q9 | Remove chat, slim, focus, metrics and weekly summary, prime, `fleet config`, overnight mode, `[context_window]` | Remove all | Keep some: name them |
-| Q10 | Debrief and expertise files | Keep only if the weekly expertise changes are still read; then it is one internal step at retire | Remove; or keep the command |
-| Q11 | Team test environments | Keep, internal | Remove |
-| Q12 | Release shape | One major version, four pull requests | Several minor versions, one area each |
-| Q13 | Tests | Regroup by area; golden files stay | Leave the layout, add the new cases |
-| Q14 | Statechart and model | Add the lifecycle statechart; extend the model with the idle property | Statechart only |
-| Q15 | Earlier bug notes that this design does not settle | List them, carry over the ones still true | Drop them |
-| Q16 | Who builds it | Fleet teams, one per pull request, after this spec merges | One long-lived branch built outside the fleet |
-| Q17 | One sign-off rule | The sign-off names the PR and the head | Any tester sign-off on the head |
-| Q18 | A signed-off team waiting for its merge | Ready, a state of its own; the loop may bring it back | Keep parking it |
+| Fault | Belongs to |
+|---|---|
+| The catch-up counter for a conflicting PR never resets, so a PR that caught up cleanly three times is refused | Lifecycle |
+| A team that opens several PRs is tracked by the first one only: it reads as merged while others are open | Lifecycle |
+| A stacked PR shows as ready while its base is another PR's branch | Lifecycle |
+| `decide` treats any question containing the word "merge" as the owner's, though only merging a PR is | Surface |
+| After `/clear` the Orchestrator row points at the old session and nobody follows the wakes | Tick core |
+| Agents left on a login or first-run screen read as API errors; one clear Stalled reason and one restart for all | Lifecycle |
+| `retire` on a name with no live rows leaves its branches and worktrees, and `boot` then refuses the name | Surface |
+| The overlap check tells a team to wait for its own PR | Tick core |
+| Leads cannot post the PR comment on the issue: the tool is not in their session | Surface |
+| Testers commit or push to the PR branch; the guard should refuse it for that role | Surface |
+| The bash guard blocks a file that only names the tracker key variable | Surface |
+
+Settled by this design: a lead that ran done while waiting on another PR (Waiting), a lead never told that the PR it
+waited on merged (events to the lead), the loop ending when a tool cannot answer (step isolation), the output shape
+(already written down). Left for later, outside 5.0: clickable PR links, a per-repo pause for boots.
+
+## Decisions
+
+| # | Question | Decided |
+|---|---|---|
+| Q1 | How deep does this go? | Rebuild the tick's core and the state model; keep claims, boot, retire and the templates |
+| Q2 | Which commands stay in `fleet help`? | Eleven: status, run, boot, tell, retire, park, candidates, decide, hold, claim, help |
+| Q3 | `fleet branches` | Deleted; `retire` and the loop do all branch deletion |
+| Q4 | The idle rule | Nudge every tick; Stalled one tick later |
+| Q5 | A named wait as its own state | Yes: Waiting, with the thing awaited, watched by the loop |
+| Q6 | Which events go straight to the lead | All seven: worker done, sign-off, decision or answer, CI result, ready, merged, failed sign-off |
+| Q7 | A failing tick step | Skip, log, carry on; `tick_failing` after two bad ticks |
+| Q8 | Claims between machines | Protocol unchanged; `holder` and `takeover` fold into `claim`, `boot` and `candidates` |
+| Q9 | Unused features | Removed: chat, slim, `[context_window]`, focus, prime, metrics and the weekly summary, `fleet config`, overnight mode |
+| Q10 | Debrief and expertise files | Kept as a step of `retire`; the command goes |
+| Q11 | Team test environments | Kept, internal |
+| Q12 | Release shape | One 5.0, four pull requests on a release branch |
+| Q13 | Tests | Regrouped by area; golden files stay |
+| Q14 | Statechart and model | Lifecycle statechart file, and the model extended with the idle property |
+| Q15 | Earlier notes | Carried over where still true (table above) |
+| Q16 | Who builds it | Fleet teams, one per pull request, after this spec merges |
+| Q17 | One sign-off rule | The sign-off names the PR and its head |
+| Q18 | A signed-off team waiting for its merge | Ready, a state of its own; the loop never parks |
