@@ -358,6 +358,8 @@ fix_reason() {
 }
 # teams_per_repo: live teams on one repo, default 1.
 teams_per_repo() { cfg_int teams_per_repo 1; }
+# caps_line: the three caps in one line, so nobody assumes a default: "Caps: max_teams 4, teams_per_repo 4, min_free_gb 40."
+caps_line() { render_line caps max_teams="$(max_teams)" teams_per_repo="$(teams_per_repo)" min_free_gb="$(min_free_gb)"; }
 # teams_on_repo <repo> [exclude-team]: the live teams other than exclude-team that work <repo>, one per line.
 teams_on_repo() {
   "$FLEET_SCRIPTS/registry.sh" list --live | jq -r --arg r "$1" --arg x "${2:-}" \
@@ -1336,6 +1338,7 @@ render_line() {
     restarted) printf 'Restarted %s (%s): %s.\n' "${L_name:-}" "${L_model:-default model}" "${L_state:-}" ;;
     told) printf 'Told %s: "%s" (%s)\n' "${L_name:-}" "${L_text:-}" "${L_how:-delivered}" ;; # delivered, sent or queued
     resolved) printf 'Resolved %s for %s: %s.\n' "${L_id:-}" "${L_name:-}" "${L_decision:-no note}" ;;
+    caps) printf 'Caps: max_teams %s, teams_per_repo %s, min_free_gb %s.\n' "${L_max_teams:-?}" "${L_teams_per_repo:-?}" "${L_min_free_gb:-?}" ;;
     prime) printf 'Fleet on %s: %s teams, %s open escalations, %s problems.\n' "${L_machine:-}" "${L_teams:-0}" "${L_escalations:-0}" "${L_problems:-0}" ;;
     loop) printf 'Fleet loop: %s. Last good tick %s. %s.\n' "${L_loaded:-not loaded}" "${L_when:-never}" "${L_health:-problem}" ;;
     env) printf 'Env %s: %s. Context fleet-%s.\n' "${L_team:-}" "${L_state:-Down}" "${L_team:-}" ;;

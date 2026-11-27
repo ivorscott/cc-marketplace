@@ -1,5 +1,7 @@
 Fleet on fleet:test: 3 teams, 1 open escalations, 1 problems.
 
+Caps: max_teams 3, teams_per_repo 1, min_free_gb 40.
+
 3 teams · 1 working · 1 parked · 1 done
 
 | Team | Machine | Issue | PR | State | Needs you |

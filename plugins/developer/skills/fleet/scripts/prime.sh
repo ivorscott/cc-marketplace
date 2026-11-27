@@ -3,7 +3,8 @@
 #
 #   prime.sh
 #
-# One line, "Fleet on <machine>: <n> teams, <n> open escalations, <n> problems.", then the status output (the team
+# One line, "Fleet on <machine>: <n> teams, <n> open escalations, <n> problems.", then the caps line ("Caps: max_teams 3,
+# teams_per_repo 1, min_free_gb 40."), then the status output (the team
 # table, parked teams, the focus, the open escalations). Teams are those with a row not yet Retired; problems are the
 # agents status.sh flags (Stalled, Zombie, Needs input, or an open escalation). <machine> is machine_name from
 # config.toml, else this machine's label. It writes nothing but what status.sh writes back (each agent's health).
@@ -18,4 +19,4 @@ teams="$("$registry" list | jq '[.[] | select(.tier != "Orchestrator" and .statu
 esc="$("$registry" escalations --open --not-retired | jq length)"
 probs="$("$registry" list --problems | jq '[.[] | select(.tier != "Orchestrator")] | length')"
 who="$(cfg_str machine_name '')"; [ -n "$who" ] || who="$(machine_label)"
-reply "$(render_line prime machine="$who" teams="$teams" escalations="$esc" problems="$probs")" "$st"
+reply "$(render_line prime machine="$who" teams="$teams" escalations="$esc" problems="$probs")" "$(caps_line)" "$st"
