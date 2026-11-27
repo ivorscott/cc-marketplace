@@ -291,25 +291,42 @@ The morning report stays: it is the one place the owner reads what happened over
 in the run profile, as today. It moves out of `metrics.sh` into its own internal script when the metrics command goes.
 The weekly summary is removed.
 
-It is rebuilt around the new states. Every section answers "what do I do?" and is left out when it is empty:
+Today's report is long for what it says. One real night was 61 lines: 13 "Not ready" lines for PRs on the other
+machine, five sections reading `none`, and a merge table too wide to read. Three lines needed the owner.
 
-| Section | Holds |
-|---|---|
-| Needs you | Ready PRs in merge order, then questions parked for you, each with its recommendation |
-| The loop | Only when it failed: each `tick_failing`, the step, the error line, how long it lasted |
-| Merged | What landed, with its issue |
-| Stuck overnight | Teams that went Stalled, why, and what the Orchestrator did about it |
-| Waiting | Teams waiting on something outside the fleet (CI, another PR, you), and since when |
-| Decided for you | Decisions the Orchestrator took on the leads' recommendations, so you can overrule one |
-| Started | Teams booted, each with the issue and why it was picked |
-| Next | What the fleet will pick when a slot frees |
+**Format rules:**
 
-Removed from today's report: UNVERIFIED (a check you must make becomes a question parked for you), Takeovers and
-Branches deleted (lines in status), Merge-order conflicts (shown in the merge queue), Proposed lessons (part of the
-weekly expertise pull request).
+1. **At most 15 lines.** Past that, it says how many more and points to `fleet status`.
+2. **The first line is the night in one sentence:** what merged, what is ready, what needs an answer.
+3. **No tables.** One line per item: `[#N](link)`, the issue key and its short title (the status rule above).
+4. **Only what needs the owner or changed.** No "Not ready" list, only a count of what is in flight. No empty sections.
+   Another machine's items appear only when they need the owner.
+5. **Grouped by what the owner does,** in this order, each group left out when empty:
+   - **Merge, in order:** Ready PRs.
+   - **Answer:** questions parked for the owner, each with its recommendation.
+   - **Look at:** the loop failing (`tick_failing`: step, error, how long), teams that went Stalled and what the
+     Orchestrator did.
+   - **Done for you:** merges seen, teams retired, decisions taken on the leads' recommendations (so one can be
+     overruled), teams started and why.
+   - **Next up:** the next issues to pick.
 
-The first line is one sentence: what merged, what is ready, what needs you. A night with nothing for the owner is one
-line.
+A night with nothing for the owner is the first line only. A night like the one above becomes (example names):
+
+```
+Morning, 12 Nov: 3 ready to merge, nothing to answer, 13 PRs in progress.
+
+Merge, in order
+1. [#191] PROJ-37 Architecture map: diagram facts
+2. [#291] PROJ-38 Seed from a database snapshot
+3. [#65]  PROJ-39 Branch cleanup
+
+Next up: PROJ-43, PROJ-44, PROJ-45
+```
+
+Removed from today's report: the merge table, the "Not ready" lines, UNVERIFIED (a check the owner must make becomes a
+question parked for them), Takeovers and Branches deleted (lines in status), Merge-order conflicts (shown in the merge
+order), Proposed lessons (part of the weekly expertise pull request). The same text is the Orchestrator's reply and the
+report file, and its first line is the push notification.
 
 ## Trackers and code hosts
 
