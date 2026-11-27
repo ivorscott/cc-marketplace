@@ -1,0 +1,79 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg viewBox="0 0 1040 800" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="tick-title tick-desc" id="tick-root">
+      <title id="tick-title">One tick of the loop</title>
+      <desc id="tick-desc">Flowchart of one loop tick: each step runs in its own guard, a failed step is skipped and reported, then team states are derived, leads are told and wakes are written.</desc>
+      <defs>
+      <style>@import url('https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&amp;family=Geist:wght@400;500;600&amp;family=Geist+Mono:wght@400;500;600&amp;family=Noto+Serif:ital@0;1&amp;family=Noto+Sans+KR:wght@400;500;600&amp;family=Noto+Serif+KR:wght@400&amp;family=Noto+Sans+TC:wght@400;500;600&amp;family=Noto+Serif+TC:wght@400&amp;display=swap');
+      #tick-root { font-family: 'Geist', system-ui, sans-serif; color: #2d3142; }
+      #tick-root .scroll { overflow-x: auto; }</style>
+        <marker id="tick-arrow" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#4f5d75"/></marker>
+        <marker id="tick-arrow-accent" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto"><polygon points="0 0, 8 3, 0 6" fill="#bf4520"/></marker>
+      </defs>
+      <rect width="100%" height="100%" fill="#f5f5f5"/>
+      <line x1="300" y1="100" x2="300" y2="140" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#tick-arrow)"/>
+      <line x1="300" y1="200" x2="300" y2="240" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#tick-arrow)"/>
+      <line x1="380" y1="280" x2="520" y2="280" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#tick-arrow)"/>
+      <line x1="300" y1="320" x2="300" y2="360" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#tick-arrow)"/>
+      <line x1="720" y1="280" x2="800" y2="280" stroke="#bf4520" stroke-width="1.2" stroke-dasharray="5,4" marker-end="url(#tick-arrow-accent)"/>
+      <path d="M 620 310 V 392 A 8 8 0 0 1 612 400 H 380" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#tick-arrow)"/>
+      <path d="M 220 400 H 148 A 8 8 0 0 1 140 392 V 178 A 8 8 0 0 1 148 170 H 200" fill="none" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#tick-arrow)"/>
+      <line x1="300" y1="440" x2="300" y2="480" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#tick-arrow)"/>
+      <line x1="300" y1="540" x2="300" y2="580" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#tick-arrow)"/>
+      <line x1="300" y1="640" x2="300" y2="680" stroke="#4f5d75" stroke-width="1.2" marker-end="url(#tick-arrow)"/>
+      <rect x="437" y="262" width="26" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="450" y="271" fill="#4f5d75" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">YES</text>
+      <rect x="310" y="334" width="21" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="315" y="343" fill="#4f5d75" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="start" letter-spacing="0.06em">NO</text>
+      <rect x="722.5" y="262" width="75" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="760" y="271" fill="#bf4520" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">2ND BAD TICK</text>
+      <rect x="473.5" y="382" width="53" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="500" y="391" fill="#4f5d75" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle" letter-spacing="0.06em">CARRY ON</text>
+      <rect x="73" y="280" width="59" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="127" y="289" fill="#4f5d75" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="end" letter-spacing="0.06em">NEXT STEP</text>
+      <rect x="310" y="454" width="53" height="12" rx="2" fill="#f5f5f5"/>
+      <text x="315" y="463" fill="#4f5d75" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="start" letter-spacing="0.06em">ALL DONE</text>
+      <rect x="220" y="60" width="160" height="40" rx="20" fill="#f5f5f5"/>
+      <rect x="220" y="60" width="160" height="40" rx="20" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <text x="300" y="86" fill="#2d3142" font-size="14" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">Tick starts</text>
+      <rect x="200" y="140" width="200" height="60" rx="8" fill="#f5f5f5"/>
+      <rect x="200" y="140" width="200" height="60" rx="8" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <text x="300" y="172" fill="#2d3142" font-size="14" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">Run one step</text>
+      <text x="300" y="188" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">own guard · state saved</text>
+      <polygon points="300,240 380,280 300,320 220,280" fill="#f5f5f5"/>
+      <polygon points="300,240 380,280 300,320 220,280" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <text x="300" y="284" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">Step failed?</text>
+      <rect x="520" y="250" width="200" height="60" rx="8" fill="#f5f5f5"/>
+      <rect x="520" y="250" width="200" height="60" rx="8" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <text x="620" y="282" fill="#2d3142" font-size="14" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">Skip the step</text>
+      <text x="620" y="298" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">log its error line</text>
+      <rect x="800" y="250" width="200" height="60" rx="8" fill="#f5f5f5"/>
+      <rect x="800" y="250" width="200" height="60" rx="8" fill="#bf4520" stroke="#bf4520" stroke-width="1" fill-opacity="0.08"/>
+      <text x="900" y="282" fill="#2d3142" font-size="14" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">Wake: tick_failing</text>
+      <text x="900" y="298" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">step and error, to status</text>
+      <polygon points="300,360 380,400 300,440 220,400" fill="#f5f5f5"/>
+      <polygon points="300,360 380,400 300,440 220,400" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <text x="300" y="404" fill="#2d3142" font-size="12" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">More steps?</text>
+      <rect x="200" y="480" width="200" height="60" rx="8" fill="#f5f5f5"/>
+      <rect x="200" y="480" width="200" height="60" rx="8" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <text x="300" y="512" fill="#2d3142" font-size="14" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">Derive team states</text>
+      <text x="300" y="528" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">one place, one table</text>
+      <rect x="200" y="580" width="200" height="60" rx="8" fill="#f5f5f5"/>
+      <rect x="200" y="580" width="200" height="60" rx="8" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <text x="300" y="612" fill="#2d3142" font-size="14" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">Tell leads</text>
+      <text x="300" y="628" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace" text-anchor="middle">events · nudge idle teams</text>
+      <rect x="200" y="680" width="200" height="40" rx="20" fill="#f5f5f5"/>
+      <rect x="200" y="680" width="200" height="40" rx="20" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <text x="300" y="706" fill="#2d3142" font-size="14" font-weight="600" font-family="'Geist', system-ui, sans-serif" text-anchor="middle">Write wakes</text>
+      <text x="520" y="500" fill="#2d3142" font-size="15" font-style="italic" font-family="'Instrument Serif', serif">Today one failing line ends the tick,</text>
+      <text x="520" y="520" fill="#2d3142" font-size="15" font-style="italic" font-family="'Instrument Serif', serif">loses every event, and wakes nobody.</text>
+      <text x="520" y="600" fill="#2d3142" font-size="15" font-style="italic" font-family="'Instrument Serif', serif">Leads hear at once: worker done, sign-off,</text>
+      <text x="520" y="620" fill="#2d3142" font-size="15" font-style="italic" font-family="'Instrument Serif', serif">decision, CI result, ready, merged.</text>
+      <line x1="32" y1="748" x2="1008" y2="748" stroke="#2d3142" stroke-opacity="0.10" stroke-width="0.8"/>
+      <text x="32" y="768" fill="#4f5d75" font-size="8" font-family="'Geist Mono', ui-monospace, monospace" letter-spacing="0.14em">LEGEND</text>
+      <polygon points="122,758 132,765 122,772 112,765" fill="#ffffff" stroke="#2d3142" stroke-width="1"/>
+      <text x="140" y="768" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">decision</text>
+      <rect x="217" y="759" width="20" height="12" rx="3" fill="#bf4520" stroke="#bf4520" stroke-width="1" fill-opacity="0.08"/>
+      <text x="245" y="768" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">wakes the Orchestrator</text>
+      <line x1="400" y1="765" x2="420" y2="765" stroke="#4f5d75" stroke-width="1.2" stroke-dasharray="5,4"/>
+      <text x="428" y="768" fill="#4f5d75" font-size="9" font-family="'Geist Mono', ui-monospace, monospace">only on the second bad tick</text>
+    </svg>
