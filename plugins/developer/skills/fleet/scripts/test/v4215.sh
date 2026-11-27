@@ -15,20 +15,22 @@ v4215_lead_waiting() {
   "$REG" signoff lw-a/tester https://github.com/acme/app-api/pull/1 aaaaaaa1 >/dev/null
   ev="$(v420_tick 2026-10-29T10:06:00Z)"
   eq "v4215 queued past the limit with the tester signed off: one lead_waiting and one nudge" "$(v420_evn "$ev" lead_waiting):$(v4215_nudges)" "1:1"
+  eq "v4215 the nudge keeps queued_at" "$(v4211_row lw-a/lead '.queued_at // ""')" "2026-10-29T10:00:00Z"
   ev="$(v420_tick 2026-10-29T10:12:00Z)"
   eq "v4215 a second tick sends the one Escape and the message again" "$(v420_evn "$ev" lead_waiting):$(v4215_nudges):$(grep -c "^agent send-keys lw-a-lead escape" "$HERDR_LOG")" "1:2:1"
+  eq "v4215 the Escape records escaped_at" "$([ -n "$(v4211_row lw-a/lead '.escaped_at // ""')" ] && echo set)" set
   ev="$(v420_tick 2026-10-29T10:18:00Z)"
   eq "v4215 a third tick repeats nothing" "$(v420_evn "$ev" lead_waiting):$(v4215_nudges):$(grep -c "^agent send-keys lw-a-lead escape" "$HERDR_LOG")" "0:2:1"
   echo idle >"$AS/lw-a-lead"
   v420_tick 2026-10-29T10:19:00Z >/dev/null
-  eq "v4215 the lead no longer working clears queued_at" "$(v4211_row lw-a/lead '.queued_at // ""')" ""
+  eq "v4215 the lead no longer working clears queued_at, the nudge and the Escape marks" "$(v4211_row lw-a/lead '[.queued_at, .waiting_nudged_at, .waiting_nudged_epoch, .escaped_at] | map(. // "") | join("|")')" "|||"
   v4211_end; unset FLEET_LEAD_QUEUE_MINS
 }
 
 v4215_brief() {
   local f="$SCRIPTS/../templates/build.json"
   eq "v4215 the lead brief forbids --wait on a prompt and has no prompt --wait" \
-    "$(jq -r '.. | strings' "$f" | grep -c 'no `--wait` on a prompt'):$(jq -r '.. | strings' "$f" | grep -c 'prompt [^`]*--wait')" "1:0"
+    "$(jq -r '.. | strings' "$f" | grep -c 'no `--wait` on a prompt'):$(jq -r '.. | strings' "$f" | grep -c 'herdr agent prompt [^`]*--wait')" "1:0"
 }
 
 v4215_smoke() { v4215_brief; v4215_lead_waiting; }
