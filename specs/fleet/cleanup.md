@@ -207,7 +207,7 @@ deletes its team's branches. The loop sweeps stale ones when the run profile all
 | `[context_window]` table | Never read |
 | Slim panel style | Cosmetic, one offer per user, its own command |
 | Focus | Never run. Parking the other teams by hand does the same |
-| Metrics and the weekly summary | Never run by anyone. The morning report covers what is acted on |
+| Metrics and the weekly summary | Never run by anyone. The morning report stays and covers what is acted on |
 | Prime | Duplicates status |
 | `fleet config` | Never run. `run show` covers it |
 | Overnight mode | Superseded by `fleet run` |
@@ -244,6 +244,32 @@ expertise pull request per repo is still proposed, never applied, by the Orchest
 
 **Templates** (build, review, research) are unchanged, except that the lead brief tells the lead to name every wait.
 
+
+## Morning report
+
+The morning report stays: it is the one place the owner reads what happened overnight. It is written at `report_at`
+in the run profile, as today. It moves out of `metrics.sh` into its own internal script when the metrics command goes.
+The weekly summary is removed.
+
+It is rebuilt around the new states. Every section answers "what do I do?" and is left out when it is empty:
+
+| Section | Holds |
+|---|---|
+| Needs you | Ready PRs in merge order, then questions parked for you, each with its recommendation |
+| The loop | Only when it failed: each `tick_failing`, the step, the error line, how long it lasted |
+| Merged | What landed, with its issue |
+| Stuck overnight | Teams that went Stalled, why, and what the Orchestrator did about it |
+| Waiting | Teams waiting on something outside the fleet (CI, another PR, you), and since when |
+| Decided for you | Decisions the Orchestrator took on the leads' recommendations, so you can overrule one |
+| Started | Teams booted, each with the issue and why it was picked |
+| Next | What the fleet will pick when a slot frees |
+
+Removed from today's report: UNVERIFIED (a check you must make becomes a question parked for you), Takeovers and
+Branches deleted (lines in status), Merge-order conflicts (shown in the merge queue), Proposed lessons (part of the
+weekly expertise pull request).
+
+The first line is one sentence: what merged, what is ready, what needs you. A night with nothing for the owner is one
+line.
 
 ## Help text rules
 
