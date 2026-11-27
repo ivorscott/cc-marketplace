@@ -255,9 +255,10 @@ need the owner are").
 
 **Rule: every row looks the same, whichever machine runs the team.**
 
-- **The title comes from the tracker, never from a person.** `boot` reads the issue's title itself; no `--issue-title`
-  option. Each machine's published summary carries the title. When a summary has none, status reads it from the tracker
-  once and keeps it for the day.
+- **The title comes from the tracker, not from memory.** With Linear, `boot` reads the issue's title itself. With
+  another tracker, `boot` requires `--issue-title` whenever `--issue` is given, so a row can never be booted without one;
+  the Orchestrator reads the title from that tracker's own tools. Each machine's published summary carries the title.
+  When a summary has none, status reads it from Linear once and keeps it for the day.
 - **One way to shorten a title,** used everywhere (status, merge queue, morning report): drop a leading area word
   ("Web:", "Fleet:", "Marginalia redesign:"), cut at a word boundary at 40 characters, end with "…" when cut.
 - **No blank cells.** An unknown title shows `(title unavailable)`, never just the key.
@@ -309,6 +310,27 @@ weekly expertise pull request).
 
 The first line is one sentence: what merged, what is ready, what needs you. A night with nothing for the owner is one
 line.
+
+## Trackers and code hosts
+
+5.0 keeps today's support, no more and no less:
+
+| Setup | What works |
+|---|---|
+| Linear | Everything: picking work (`candidates`), claims between machines (`claim`), state moves on retire, comments, the shared status across machines |
+| Jira or another tracker | One machine. The agents read and update issues through that tracker's own tools (`tracker_allow`). `boot --issue KEY --issue-title "…"` links the team to the issue. No `candidates`, no claims, no shared status |
+| No tracker | The task text is the whole assignment. No issue cell, no claim |
+| GitHub, GitLab or another code host | Pull requests, CI and the merge gate through the host's CLI (`forge_allow`); `no_pr_ci` for a repo without CI |
+
+Every 5.0 change that touches the tracker keeps this split:
+
+- `candidates` and `claim` stay Linear-only, as today. Without Linear, they say so in one line and exit.
+- The idle nudge, team states, events to the lead, the tick, the status format and the morning report do not depend on
+  the tracker.
+- A test runs the lifecycle and the status table with no tracker configured, so a Linear-only path cannot slip into
+  them.
+
+Wider tracker support (claims or `candidates` for Jira) is out of scope.
 
 ## Help text rules
 
