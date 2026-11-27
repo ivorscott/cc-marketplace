@@ -194,7 +194,8 @@ no summary are rows with `status` `Claimed` (`Claimed (heartbeat lapsed)`, `Clai
 `heartbeat` and `heartbeat_age`.
 
 **Summary document.** Each machine keeps its summary in a Linear document titled `Fleet summary · <machine key>`: a
-`name=<machine name>` line, then the compact JSON array in a fenced `json` block: `[{"t": team, "i": issue key, "pr": PR
+`name=<machine name>` line, then the compact JSON array in a fenced `json` block: `[{"t": team, "i": issue key, "it": short issue
+title, "iu": short issue URL (an older summary has neither; its peer rows show the bare key), "pr": PR
 url, "s": state word, "n": needs you, "r": true when its PR is ready, "f": plan files}]`, keys with no value left out, every
 live team, no size limit. Rewritten only when it changed. `linear.sh peers` returns it as `summary` with `source: doc`.
 For one release (4.2.10) the label description also holds the old thin `summary=<JSON array>` line (the 12 teams changed
