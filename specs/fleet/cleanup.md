@@ -96,7 +96,7 @@ Transitions:
 | Stalled | respawn, re-send or the Orchestrator's message succeeds | Working |
 | Working, Waiting, Idle | head signed off, CI green, mergeable | Ready |
 | Ready | conflict, red check, new comment, new head without sign-off | Working |
-| Ready | PR merged | Retired (the loop retires at once) |
+| Ready | PR merged | Retired (the loop retires at once, with no model; a worktree with unpushed work is kept and the team goes Stalled with that reason) |
 | any but Retired | `park` by a person or the Orchestrator | Parked |
 | Parked | `park --undo` by a person or the Orchestrator | Working |
 | any | `retire` | Retired |
@@ -147,6 +147,11 @@ requires the sign-off to name the PR.
 Wake types shrink to what the Orchestrator acts on: `ready` (the merge queue changed), `merged`, `slot_free`,
 `escalation`, `stalled` (with its reason), `tick_failing`, `usage_limit`, `claim` (lost or taken over), `report`
 (morning). The rest become lines in status **(Q1)**.
+
+**Who retires on a merge (Q20).** The loop does, on the tick that sees the merge. It needs no judgement, and a retire
+that waits for a model is a slot that stays taken when the Orchestrator is busy, cleared or asleep. The `merged` wake
+tells the Orchestrator it happened. It asks for the follow-up the repo's rules name (a client bump after an API merge)
+and nothing else; the refill comes from `slot_free`.
 
 ## Command surface
 
@@ -488,3 +493,4 @@ waited on merged (events to the lead), the loop ending when a tool cannot answer
 | Q17 | One sign-off rule | The sign-off names the PR and its head |
 | Q18 | A signed-off team waiting for its merge | Ready, a state of its own; the loop never parks |
 | Q19 | Must the Orchestrator never edit code? | No: the rule is removed; it edits code when asked, through a pull request |
+| Q20 | Who retires a team when its PR merges? | The loop, at once. `merged` is a notice for follow-up work, never a request to retire |
