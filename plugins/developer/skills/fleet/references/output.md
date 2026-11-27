@@ -621,7 +621,12 @@ Stalled <team/role>: idle without its done step, nudged once. Ask it for its don
 ### wake lead_waiting
 
 ```
-Lead waiting <team/lead>: its tester signed off and its queued messages wait behind a long turn, nudged once. Send Escape to its pane if it is still stuck, then re-tell it.
+Lead waiting <team/lead>: its tester signed off and its queued messages wait behind a long turn. Nudged once; if it is still working next tick, tick sends one Escape and the message again.
+```
+
+Second form, after the Escape: `... Escape sent, message re-sent.` or `... Escape sent, message not confirmed.`
+
+```
 ```
 
 ### wake needs_input

@@ -16,9 +16,9 @@ render() { # render <text> <name> <worktree> <workers>
 }
 
 claude_args() { # claude_args <model> <tier> <worktree> <allow-json>
-  local settings extra="${4:-[]}" herdr_allow='["Bash(herdr agent get:*)", "Bash(herdr agent read:*)", "Bash(herdr agent list:*)", "Bash(herdr agent wait:*)"]'
+  local settings extra="${4:-[]}" herdr_allow='["Bash(herdr agent get:*)", "Bash(herdr agent read:*)", "Bash(herdr agent list:*)"]'
   # Leads drive their own workers; fleet-bash-guard.sh holds them to their own team.
-  [ "$2" != "Lead" ] || herdr_allow='["Bash(herdr agent get:*)", "Bash(herdr agent read:*)", "Bash(herdr agent list:*)", "Bash(herdr agent wait:*)", "Bash(herdr agent prompt:*)", "Bash(herdr agent send-keys:*)"]'
+  [ "$2" != "Lead" ] || herdr_allow='["Bash(herdr agent get:*)", "Bash(herdr agent read:*)", "Bash(herdr agent list:*)", "Bash(herdr agent prompt:*)", "Bash(herdr agent send-keys:*)"]'
   extra="${extra//\{\{scripts\}\}/$FLEET_SCRIPTS}"
   extra="${extra//\{\{team\}\}/$team}"; extra="${extra//\{\{worktree\}\}/$3}"
   settings="$(jq -cn --arg r "$registry" --argjson extra "$extra" --argjson tools "$tool_allow" --argjson h "$herdr_allow" \

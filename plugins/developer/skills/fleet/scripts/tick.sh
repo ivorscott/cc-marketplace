@@ -13,7 +13,7 @@
 # Events (each has type, team, name; url where a PR exists). Each is reported once; what has
 # been reported lives in $FLEET_STATE_DIR/tick.state.json.
 #   stalled         still Stalled a tick after the nudge (a newly Stalled agent gets one nudge, no event)
-#   lead_waiting    a lead has had a message queued (queued_at) for LEAD_QUEUE_MINS while its tester has signed off: one nudge, one event
+#   lead_waiting    a lead has had a message queued (queued_at) for LEAD_QUEUE_MINS (3) while its tester has signed off: one nudge; if it is still working on a later tick, one Escape and the message again
 #   failed          a row went Failed (a restart or a brief that did not arrive), once on the transition
 #   dead            status.sh says Zombie, on the transition; the row is also respawned (respawn.sh) within
 #                   a budget, and the second death inside the window escalates P1 instead
@@ -519,20 +519,30 @@ elif rows="$("$FLEET_SCRIPTS/status.sh" ${targs[@]+"${targs[@]}"} --json 2>/dev/
     "$registry" set "$sname" nudged_at= >/dev/null || true
     st_upd --arg n "$sname" '$st + {stalled_emitted: (($st.stalled_emitted // []) - [$n])}'
   done < <(printf '%s' "$rows" | jq -r '.[] | select(.tier != "Orchestrator" and .status != "Stalled" and ((.nudged_at // "") != "")) | .name')
-  # DEV-1117: a lead still in one long turn while a message waits behind it. queued_at is stamped by tell.sh; it is cleared
-  # here once the lead is no longer working. Past LEAD_QUEUE_MINS with the team's tester signed off: ONE queued tell and one
-  # lead_waiting event per (lead, queued_at). Tick never sends Escape; the notice tells the Orchestrator to.
-  while IFS=$'\t' read -r lname lref lq lnudged; do
+  # DEV-1117/DEV-1259: a lead still in one long turn while a message waits behind it. queued_at is stamped by tell.sh; it is
+  # cleared here once the lead is no longer working. Past LEAD_QUEUE_MINS with the team's tester signed off: ONE queued tell and
+  # one lead_waiting event per (lead, queued_at). On a later tick, if the lead is still working: exactly ONE Escape
+  # (a second opens Claude Code's rewind menu), then the message again. Never a second Escape for the same queued_at.
+  while IFS=$'\t' read -r lname lref lq lnudged lepoch lescaped; do
     [ -n "$lname" ] || continue
     lstate="$(hd agent get "$lref" 2>/dev/null | jq -r '.result.agent.agent_status // "gone"' 2>/dev/null || echo gone)"
-    if [ "$lstate" != working ]; then "$registry" set "$lname" queued_at= waiting_nudged_at= >/dev/null 2>&1 || true; continue; fi
-    [ "$lnudged" != "$lq" ] || continue
-    [ $((now_epoch - $(jq -rn --arg t "$lq" '$t | fromdateiso8601? // 0'))) -ge $(($(const_int LEAD_QUEUE_MINS 10) * 60)) ] || continue
+    if [ "$lstate" != working ]; then "$registry" set "$lname" queued_at= waiting_nudged_at= waiting_nudged_epoch= escaped_at= >/dev/null 2>&1 || true; continue; fi
+    if [ "$lnudged" = "$lq" ]; then
+      [ -z "$lescaped" ] || continue
+      [ -n "$lepoch" ] && [ "$now_epoch" -gt "$lepoch" ] || continue
+      hd agent send-keys "$lref" escape >/dev/null 2>&1 || warn "could not send Escape to $lname"
+      "$registry" set "$lname" escaped_at="$now_iso" >/dev/null || true
+      if "$FLEET_SCRIPTS/tell.sh" "$lname" "The tester has signed off: stop waiting and read its report." --keep-queue >/dev/null 2>&1; then lnext="Escape sent, message re-sent"
+      else lnext="Escape sent, message not confirmed"; fi
+      add_events "$(jq -cn --arg t "${lname%%/*}" --arg n "$lname" --arg q "$lq" --arg x "$lnext" '[{type: "lead_waiting", team: $t, name: $n, queued_at: $q, next: $x}]')"
+      continue
+    fi
+    [ $((now_epoch - $(jq -rn --arg t "$lq" '$t | fromdateiso8601? // 0'))) -ge $(($(const_int LEAD_QUEUE_MINS 3) * 60)) ] || continue
     [ -n "$(tester_sha "${lname%%/*}")" ] || continue
-    "$FLEET_SCRIPTS/tell.sh" "$lname" "The tester has signed off: stop waiting and read its report. Your messages are queued." --no-confirm >/dev/null 2>&1 || warn "could not nudge $lname"
-    "$registry" set "$lname" waiting_nudged_at="$lq" >/dev/null || true
+    "$FLEET_SCRIPTS/tell.sh" "$lname" "The tester has signed off: stop waiting and read its report. Your messages are queued." --no-confirm --keep-queue >/dev/null 2>&1 || warn "could not nudge $lname"
+    "$registry" set "$lname" waiting_nudged_at="$lq" waiting_nudged_epoch="$now_epoch" >/dev/null || true
     add_events "$(jq -cn --arg t "${lname%%/*}" --arg n "$lname" --arg q "$lq" '[{type: "lead_waiting", team: $t, name: $n, queued_at: $q}]')"
-  done < <("$registry" list | jq -r '.[] | select(type == "object" and .tier == "Lead" and (.status | IN("Retired", "Done", "Parked") | not) and ((.queued_at // "") != "")) | [.name, (.herdr_ref // ""), .queued_at, (.waiting_nudged_at // "")] | @tsv')
+  done < <("$registry" list | jq -r '.[] | select(type == "object" and .tier == "Lead" and (.status | IN("Retired", "Done", "Parked") | not) and ((.queued_at // "") != "")) | [.name, (.herdr_ref // ""), .queued_at, (.waiting_nudged_at // ""), ((.waiting_nudged_epoch // "") | tostring), (.escaped_at // "")] | @tsv')
   # An agent stopped by an API error (an expired login) shows Needs input with the reason (status.sh) and
   # is never nudged for stalling; it gets at most one "continue" every 30 minutes, which works as soon
   # as the user has run /login.
