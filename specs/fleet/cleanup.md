@@ -216,8 +216,34 @@ deletes its team's branches. The loop sweeps stale ones when the run profile all
 Kept: debrief and the expertise files, as a step of `retire` with no command **(Q10)**; team test environments, run by
 `boot` and `retire` with no command **(Q11)**; the claim protocol between machines, unchanged **(Q8)**.
 
-Config follows: every key of a removed feature goes. `events_label` and `merger` are used today and missing from the
-example file; each is either listed or removed.
+## Config, rules and expertise files
+
+**`config.toml`** keeps its shape and its file. Most keys stay as they are. What changes:
+
+| Key | 5.0 |
+|---|---|
+| `chat_channel`, `chat_allow` | Removed with the chat feature |
+| `[context_window]` | Removed: never read |
+| `overnight` | Removed: `fleet run` replaces it. A file that still sets it gets one warning naming `fleet run` |
+| `events_label` | Listed in the example file (read today, missing from it) |
+| `merger` | Removed (named in the house rules and the guard, read by no script) |
+| `[run]` profile | Unchanged: `teams`, `work`, `order`, `fill`, `install_policy`, `usage_margin`, `merge_push_mins`, `status_mins`, `report_at`, `stop`, `branch_delete` |
+
+No new key is needed: the idle nudge runs every tick, and `tick_failing` fires after two bad ticks. An old key in a 5.0
+config is a warning, never an error, so both machines can switch one at a time.
+
+**House rules** (`rules/house.md`, appended to every brief) stay. Their text changes only where a rule names something
+5.0 renames: an agent records a wait (`registry.sh note … waiting "<what>"`) when it stops for something outside the
+team, and the reference to `merger` goes.
+
+**Repo rules** (each repo's `.claude/fleet-rules.md`) stay where they are and need no change: none of them names a
+removed command. The upgrade note asks owners to search their own rules files for the commands in the upgrade table.
+
+**Expertise files** (each repo's `.claude/experts/<role>.md`) stay. Lessons are still written at retire and the weekly
+expertise pull request per repo is still proposed, never applied, by the Orchestrator. Only the `fleet debrief` command goes.
+
+**Templates** (build, review, research) are unchanged, except that the lead brief tells the lead to name every wait.
+
 
 ## Help text rules
 
