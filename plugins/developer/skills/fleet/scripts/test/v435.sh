@@ -54,7 +54,7 @@ v435_text() {
   eq "v435 text: the build lead brief, house.md and lead.md each carry the escalate-before-idle rule" \
     "$(jq -r '.. | strings' "$f" | grep -c 'filed with escalate before you stop or go Idle'):$(grep -c 'filed with escalate before a lead stops or goes Idle' "$SCRIPTS/../rules/house.md"):$(grep -c 'filed with escalate before you stop or go Idle' "$l")" "1:1:1"
   eq "v435 text: the brief and lead.md name what the guard denies, and neither says it denies repeated agent get" \
-    "$(jq -r '.. | strings' "$f" | grep -c 'guard denies `agent wait`, `prompt --wait`, `sleep`, `timeout` and `watch`'):$(grep -c 'guard denies `agent wait`' "$l"):$(jq -r '.. | strings' "$f" | grep -c 'repeated `herdr agent get` (the guard')" "1:1:0"
+    "$(jq -r '.. | strings' "$f" | grep -c 'guard denies `agent wait`, `prompt --wait`, `sleep`, `timeout` and `watch`'):$(grep -c 'guard denies `agent wait`' "$l"):$(jq -r '.. | strings' "$f" | grep -c 'guard denies[^)]*agent get')" "1:1:0"
   eq "v435 text: no role's herdr allow-list carries agent wait" "$(grep -c 'herdr agent wait' "$a")" 0
 }
 
