@@ -6,6 +6,11 @@ on:
 permissions:
   contents: read
 
+# A new push to a pull request cancels the runs of its older heads.
+concurrency:
+  group: fleet-tests-${{ github.ref }}
+  cancel-in-progress: true
+
 # CI is a smoke test: the critical cases (run.sh --smoke) and a parse check of every script. The full suite
 # (run.sh with no flag) is for local runs.
 jobs:

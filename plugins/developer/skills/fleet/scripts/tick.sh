@@ -147,17 +147,18 @@ FLEET_TICK_ID="$(now)-$$"; export FLEET_TICK_ID # one tick, one Linear viewer re
 # State and events live in files, never in argv (ARG_MAX). st_upd <jq args> '<program using $st>'
 # replaces the state with the program's result.
 # They sit in the state dir (private to this machine's fleet) and the trap is set before they exist.
-STATE_FILE=""; EVENTS_FILE=""; QUEUE_FILE=""
+STATE_FILE=""; EVENTS_FILE=""; QUEUE_FILE=""; STEP_ERR=""
 cleanup() {
   rm -rf "$lockdir"
   [ -z "$STATE_FILE" ] || rm -f "$STATE_FILE" "$STATE_FILE.new"
   [ -z "$EVENTS_FILE" ] || rm -f "$EVENTS_FILE" "$EVENTS_FILE.new"
   [ -z "$QUEUE_FILE" ] || rm -f "$QUEUE_FILE"
+  [ -z "$STEP_ERR" ] || rm -f "$STEP_ERR"
   if [ -n "$ghtmp" ]; then rm -f "$ghtmp"; fi
 }
 trap cleanup EXIT; trap 'exit 130' INT; trap 'exit 143' TERM HUP
 STATE_FILE="$(mktemp "$FLEET_STATE_DIR/.tick-state.XXXXXX")"; EVENTS_FILE="$(mktemp "$FLEET_STATE_DIR/.tick-events.XXXXXX")"
-QUEUE_FILE="$(mktemp "$FLEET_STATE_DIR/.tick-queue.XXXXXX")"
+QUEUE_FILE="$(mktemp "$FLEET_STATE_DIR/.tick-queue.XXXXXX")"; STEP_ERR="$(mktemp "$FLEET_STATE_DIR/.tick-step.XXXXXX")"
 tick_state >"$STATE_FILE"; echo '[]' >"$EVENTS_FILE"
 st_upd() {
   local n=$# prog; prog="${!n}"; set -- "${@:1:$((n - 1))}"
@@ -171,23 +172,24 @@ add_events() { jq -c --slurpfile b <(printf '%s' "$1") '. + $b[0]' "$EVENTS_FILE
 # fails. A failed step's error is printed (loop.log) and counted in the state (step_fails, per step, reset when it
 # passes). A tool that is installed but does not answer fails its step the same way, never the tick.
 step_test_fail() { false; echo "ran past a failed command" >&2; }
+# A step that passes costs no extra process: one error file serves every step, and the steps that failed on the last
+# tick are read once (STEP_FAILED), so only those clear their count.
+STEP_FAILED=""
 step() { # step <name> <function>
-  local name="$1" rc=0 errf line; shift
-  errf="$(mktemp "$FLEET_STATE_DIR/.tick-step.XXXXXX")"
+  local name="$1" rc=0 line; shift
+  [ -n "$STEP_FAILED" ] || STEP_FAILED=" $(jq -r '(.step_fails // {}) | keys | join(" ")' "$STATE_FILE" 2>/dev/null || true) "
   [ "${FLEET_TEST:-}" != 1 ] || [ "${FLEET_FAIL_STEP:-}" != "$name" ] || set -- step_test_fail # tests only: make this step fail
   # Not `( ... ) || rc=$?`: bash ignores set -e on the left of ||, and the step would run on past a failed command.
-  set +e; ( set -euo pipefail; "$@" ) 2>"$errf"; rc=$?; set -e
-  cat "$errf" >&2
+  set +e; ( set -euo pipefail; "$@" ) 2>"$STEP_ERR"; rc=$?; set -e
+  [ ! -s "$STEP_ERR" ] || cat "$STEP_ERR" >&2
   if [ "$rc" = 0 ]; then
-    [ "$(jq --arg n "$name" '(.step_fails // {}) | has($n)' "$STATE_FILE" 2>/dev/null)" != true ] ||
-      st_upd --arg n "$name" '$st + {step_fails: (($st.step_fails // {}) | del(.[$n]))}' || true
+    case "$STEP_FAILED" in *" $name "*) st_upd --arg n "$name" '$st + {step_fails: (($st.step_fails // {}) | del(.[$n]))}' || true ;; esac
   else
-    line="$({ grep -v '^[[:space:]]*$' "$errf" || true; } | tail -n 1 | tr -d '\000-\037' | cut -c1-200)"
+    line="$({ grep -v '^[[:space:]]*$' "$STEP_ERR" || true; } | tail -n 1 | tr -d '\000-\037' | cut -c1-200)"
     printf 'fleet: warning: tick step %s failed (exit %s)%s\n' "$name" "$rc" "${line:+: $line}" >&2
     st_upd --arg n "$name" --arg l "${line:-exit $rc}" --arg at "${FLEET_NOW:-$(now)}" \
       '(($st.step_fails // {})[$n] // {}) as $o | $st + {step_fails: (($st.step_fails // {}) + {($n): ($o + {count: (($o.count // 0) + 1), line: $l, since: ($o.since // $at)})})}' || true
   fi
-  rm -f "$errf"
   return 0
 }
 # tick_failing: a step that failed on this tick and the one before raises one event per run of failures, carrying the
