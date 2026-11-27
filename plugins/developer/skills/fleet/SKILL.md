@@ -160,7 +160,8 @@ timer and appends a line `fleet tick: <type> <team> <name> <issue> <PR url> <esc
 state dir for every event someone must act on (P2 escalations, `stalled` and `weekly_summary` included; low disk and a
 repo with no team go to the user as alerts). A dead or blocked agent reaches the same file at once from the herdr event subscriber (`events.sh`, the `fleet.events` job that `fleet schedule install` adds); tick writes those lines itself when the subscriber is down (`fleet events status`). Nothing is typed into your pane. Once per session, in your own pane: run
 `$F/registry.sh orchestrator here` (it prints your row and `wakes`, the log's path), then start `Monitor` in the
-background on `tail -n 0 -F <wakes>`, so each new line wakes you. When a Monitor expires, run `$F/fleet watch`, start
+background on `tail -n 0 -F <wakes>`, so each new line wakes you. A Monitor armed before a `/clear` keeps running: when a wake
+arrives twice, stop the older task (TaskStop) and keep one. When a Monitor expires, run `$F/fleet watch`, start
 Monitor with its first line and end the turn with no text. Unregistered, nobody follows the log: wakes go to
 desktop notifications only, and `status` says so (under `fleet run`, keep it armed and re-arm it without a word). No reply within 15 minutes of a wake alerts the user; that check
 reads your transcript, so register with it (`--transcript`): while the row has none that exists, every wake also goes
