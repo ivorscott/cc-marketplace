@@ -4,7 +4,7 @@
 #
 #   run.sh init     ask the profile questions, one at a time, each with a recommended answer; save the answers; install the
 #                   /clear hook (below). init --no-hook asks nothing and only removes that hook's entry
-#   run.sh show     print the saved profile, with the defaults for what is not saved
+#   run.sh show     print the caps line (max_teams, teams_per_repo, min_free_gb), then the saved profile, with the defaults for what is not saved
 #   run.sh start    read the profile and start the loop, asking nothing: register this pane as the Orchestrator, set
 #                   target_teams to the profile's teams, install the launchd loop when it is not installed (not in a
 #                   sandbox or a test), and print the loop's rules, made from the profile, for the Orchestrator to follow
@@ -144,6 +144,7 @@ cmd_init() {
 
 cmd_show() {
   local row k d
+  caps_line
   for row in "${RUN_KEYS[@]}"; do
     k="$(rkey "$row")"; d="$(rdef "$row")"
     printf '%s: %s\n' "$k" "$(shown "$k" "$(rsaved "$k" "$d")")"

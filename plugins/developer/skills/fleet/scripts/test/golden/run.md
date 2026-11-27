@@ -1,3 +1,4 @@
+Caps: max_teams 3, teams_per_repo 1, min_free_gb 40.
 teams: 3
 work: anything
 order: critical-path

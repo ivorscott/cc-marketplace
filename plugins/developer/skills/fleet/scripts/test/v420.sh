@@ -43,7 +43,7 @@ v420_run_init() { # fleet run init writes the [run] profile; a re-run shows the 
   eq "v420 run init: max_teams follows the team count, installs is allowed, and the rest of the file is as it was" \
     "$(grep -c '^max_teams = 2$' "$C"):$(grep -c '^max_teams = 5' "$C"):$(grep -c '^installs = "allow"$' "$C"):$(grep -c '^# my notes$' "$C"):$(grep -c '^label_prefix = "fleet:"$' "$C"):$(grep -c '^"claude-opus-5-5" = 200000$' "$C")" "1:0:1:1:1:1"
   eq "v420 run init: the top-level keys sit above the first table" "$(awk '/^\[/ {t = 1} !t && /^(max_teams|installs)/ {n++} END {print n}' "$C")" 2
-  eq "v420 run show: prints the saved answers" "$("$SCRIPTS/run.sh" show | sed -n '1,2p;9,10p' | paste -sd, -)" "teams: 2,work: parent DEV-9,report_at: 07:30,stop: 17:00"
+  eq "v420 run show: prints the saved answers" "$("$SCRIPTS/run.sh" show | sed -n '2,3p;10,11p' | paste -sd, -)" "teams: 2,work: parent DEV-9,report_at: 07:30,stop: 17:00"
   printf '\n\n\n\n\n\n\n\n\n\n' >"$T/v420-answers"; cp "$C" "$T/v420-before"
   FLEET_RUN_ANSWERS="$T/v420-answers" "$SCRIPTS/run.sh" init >"$T/v420-out" 2>&1
   eq "v420 run init: a re-run shows the saved answers as the defaults, and Enter keeps them" "$(grep -c 'Teams to keep running \[2\]' "$T/v420-out"):$(grep -c 'Morning report time (local, HH:MM) \[07:30\]' "$T/v420-out"):$(cmp -s "$C" "$T/v420-before" && echo same)" "1:1:same"
@@ -411,7 +411,7 @@ v420_run_start() { # fleet run start reads the profile and asks nothing; the sto
   eq "v420 run start: and the human-only list is in them" "$(printf '%s' "$out" | grep -c 'merging, production, infrastructure applies, secrets and branch protection')" 1
   eq "v420 run status: running, with the target" "$("$SCRIPTS/run.sh" status)" "Run: running. Target 2 teams, 0 live. Profile: saved."
   (cd "$T" && HERDR_PANE_ID=pt "$REG" orchestrator here >/dev/null 2>&1) || true
-  eq "v420 run start: after a context compaction run show gives the rules back, and the mark survives a re-registration" "$("$SCRIPTS/run.sh" show | head -n 1):$("$REG" get orchestrator | jq -r .run_active)" "teams: 2:true"
+  eq "v420 run start: after a context compaction run show gives the rules back, and the mark survives a re-registration" "$("$SCRIPTS/run.sh" show | sed -n 2p):$("$REG" get orchestrator | jq -r .run_active)" "teams: 2:true"
   FLEET_NOW=2026-10-29T09:59:00Z "$SCRIPTS/tick.sh" >/dev/null 2>&1
   eq "v420 run start: before the stop time it keeps going" "$("$REG" get orchestrator | jq -r '[.target_teams, .run_active] | join(",")')" "2,true"
   FLEET_NOW=2026-10-29T10:00:00Z "$SCRIPTS/tick.sh" >/dev/null 2>&1
@@ -498,8 +498,8 @@ v420_decide() { # a lead's escalation is decided, recorded and reported without 
 }
 
 v420_version() { # the version, the changelog, the commands and the config example in step with the code
-  eq "v420 version: plugin.json and the marketplace read 4.3.2" \
-    "$(jq -r .version "$SCRIPTS/../../../.claude-plugin/plugin.json"):$(jq -r '.plugins[] | select(.name == "developer") | .version' "$SCRIPTS/../../../../../.claude-plugin/marketplace.json")" "4.3.2:4.3.2"
+  eq "v420 version: plugin.json and the marketplace read 4.3.3" \
+    "$(jq -r .version "$SCRIPTS/../../../.claude-plugin/plugin.json"):$(jq -r '.plugins[] | select(.name == "developer") | .version' "$SCRIPTS/../../../../../.claude-plugin/marketplace.json")" "4.3.3:4.3.3"
   eq "v420 help: fleet help run names the subcommands" "$("$SCRIPTS/fleet" help run | grep -o 'run.sh \(init\|start\|stop\|status\|show\)' | sort -u | wc -l | tr -d ' ')" 5
   eq "v420 help: and the new commands are listed" "$("$SCRIPTS/fleet" help | grep -c '^| `\(run\|decide\|defer\|overlap\)` ')" 4
   eq "v420 config: every key of [run] that init writes is in config.example.toml" \

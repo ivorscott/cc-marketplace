@@ -808,6 +808,7 @@ prints one command's full usage.
 | `candidates` | List the work a team could boot now, and what was skipped and why | `fleet candidates` |
 | `catchup` | Bring a finished team back to merge main into its conflicting PR | `fleet catchup build-api https://github.com/acme/app-api/pull/12` |
 | `claim` | Claim an issue on Linear for this machine | `fleet claim DEV-123` |
+| `config` | Print the effective config: every key, set or default, and the file path | `fleet config` |
 | `debrief` | List the retired teams and their lessons, the ones still due marked | `fleet debrief` |
 | `decide` | Decide a lead's escalation with the recommended option, or park what is the human's | `fleet decide build-api 20261029T100000Z-1` |
 | `defer` | File what a PR defers to the owner as linked issues | `fleet defer build-api` |

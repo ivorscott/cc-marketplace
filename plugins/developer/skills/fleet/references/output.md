@@ -321,7 +321,15 @@ agent that has it open (the lead first); an id open on more than one agent is an
 Fleet on <machine>: <n> teams, <n> open escalations, <n> problems.
 ```
 
-Then the status output.
+then the caps line (`Caps: max_teams <n>, teams_per_repo <n>, min_free_gb <n>.`, the effective values, defaults filled
+in), then the status output.
+
+### config
+
+`fleet config` prints `Config: <config.toml path>` (or `Config: (no file: all defaults) <path>`), a `| Key | Value | Source |`
+table of every top-level key, then a `[run]` heading and the same table for the profile keys, then
+`Tables: context_window (<n> set), machine_names (<n> set)`. Source is `set` (the key is in the file) or `default`
+(it is not; the value is what the scripts use). A key with no default and no value shows `-`.
 
 ### debrief
 
@@ -449,7 +457,7 @@ Run profile saved: <n> teams (<k> can run), installs <allow|ask>. Written to <co
 (or `Already allowed: …`; a file that is not valid JSON is left alone with a warning). `fleet run start` prints one
 `Branch deletes are off: run fleet run init and answer yes, or add Bash(git push origin --delete:*) to permissions.allow in <path>.`
 line after its first line when the profile wants deletes and the rule is missing. `fleet run show`
-prints the saved profile, one `key: value` line per answer (the defaults for what is not saved), then `human-only: <list>`.
+prints the caps line first, then the saved profile, one `key: value` line per answer (the defaults for what is not saved), then `human-only: <list>`.
 
 `fleet run start` prints, and then the rules to follow, made from the profile:
 
