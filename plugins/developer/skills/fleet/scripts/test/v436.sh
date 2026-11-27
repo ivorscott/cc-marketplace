@@ -74,6 +74,26 @@ v436_remind() { # tick raises parked_reminder after parked_remind_hours, once pe
   eq "v436 tick: none after resolve, and the state key is pruned" "$(n 2099-02-01T00:00:00Z):$(jq -r '(.parked_reminded // {}) | length' "$FLEET_STATE_DIR/tick.state.json")" "0:0"
 }
 
+v436_fixes() { # fix round 1: park-esc restores Working; a parked lead stuck on a prompt is still detected; --team tick keeps other teams' keys
+  v436_state fixes
+  "$REG" add '{"name":"pk-b/lead","team":"pk-b","tier":"Lead","status":"Working","herdr_ref":"pk-b-lead","pane":"p2","issue":"DEV-2"}' >/dev/null; echo working >"$AS/pk-b-lead"
+  "$REG" escalate pk-a/lead P1 "may I merge it?" --human yes no >/dev/null 2>&1
+  local id; id="$("$REG" escalations --open | jq -r '.[0].id')"
+  eq "v436 fix: before parking the escalation holds the lead at Needs input" "$("$REG" get pk-a/lead | jq -r .status)" "Needs input"
+  FLEET_NOW=2026-11-27T10:00:00Z "$REG" park-esc pk-a "$id" >/dev/null
+  eq "v436 fix: park-esc restores the lead to Working" "$("$REG" get pk-a/lead | jq -r .status)" Working
+  # the lead is now stuck on a permission prompt: Needs input, no detail, only a parked escalation open
+  "$REG" set pk-a/lead status="Needs input" >/dev/null; echo blocked >"$AS/pk-a-lead"
+  FLEET_NOW=2026-11-27T10:00:00Z "$SCRIPTS/tick.sh" >/dev/null 2>&1; FLEET_NOW=2026-11-27T10:05:00Z "$SCRIPTS/tick.sh" >/dev/null 2>&1
+  eq "v436 fix: tick still raises the blocked-on-a-prompt escalation for a lead with only a parked item" \
+    "$("$REG" escalations --open | jq '[.[] | select(.message | startswith("blocked on a permission prompt"))] | length')" 1
+  # reminder keys survive a --team tick for another team
+  local before; before="$(FLEET_NOW=2099-01-01T10:00:00Z "$SCRIPTS/tick.sh" >/dev/null 2>&1; jq -c '.parked_reminded' "$FLEET_STATE_DIR/tick.state.json")"
+  FLEET_NOW=2099-01-01T10:30:00Z "$SCRIPTS/tick.sh" --team pk-b >/dev/null 2>&1
+  eq "v436 fix: a --team tick for another team keeps this team's reminder key and timestamp" \
+    "$(jq -c '.parked_reminded' "$FLEET_STATE_DIR/tick.state.json")" "$before"
+}
+
 v436_text() {
   local f="$SCRIPTS/../templates/build.json" l="$SCRIPTS/../../../agents/lead.md" r="$SCRIPTS/run.sh"
   eq "v436 text: the lead brief and lead.md name --human and never ask only in the pane" \
@@ -83,5 +103,5 @@ v436_text() {
   eq "v436 text: the plugin and the marketplace are at 4.3.6" "$(jq -r .version "$SCRIPTS/../../../.claude-plugin/plugin.json"):$(jq -r '.plugins[] | select(.name == "developer") | .version' "$SCRIPTS/../../../../../.claude-plugin/marketplace.json")" "4.3.6:4.3.6"
 }
 
-v436_smoke() { v436_parked; v436_next; v436_remind; v436_text; }
+v436_smoke() { v436_parked; v436_next; v436_remind; v436_fixes; v436_text; }
 v436_full() { v436_smoke; }

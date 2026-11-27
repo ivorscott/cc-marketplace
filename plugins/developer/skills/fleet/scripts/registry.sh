@@ -268,7 +268,7 @@ case "$cmd" in
     seq="$(jq -r --arg n "$name" --arg a "$ref" "$ESC_DEFS"'.agents[$n] | [escs[] | select((.id == $a or .at == $a) and .resolved_at == null)] | (first // {seq: 0}) | .seq' "$FLEET_REGISTRY")"
     [ "$seq" != 0 ] || die "no open escalation '$ref' on $name (see: escalations --open)"
     update --arg n "$name" --argjson i "$((seq - 1))" --arg note "$note" --arg t "$(now)" \
-      '.agents[$n] |= (.escalations[$i] += {parked: true, parked_at: (.escalations[$i].parked_at // $t)} + (if $note != "" then {park_note: $note} else {} end) | .updated_at = $t)'
+      '.agents[$n] |= (.escalations[$i] += {parked: true, parked_at: (.escalations[$i].parked_at // $t)} + (if $note != "" then {park_note: $note} else {} end) | if .status == "Needs input" then .status = "Working" else . end | .updated_at = $t)'
     ev_log escalation_parked team="$(jq -r --arg n "$name" '.agents[$n].team // ""' "$FLEET_REGISTRY")" name="$name" detail="$ref"
     ;;
   resolve)

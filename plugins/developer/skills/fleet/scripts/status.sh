@@ -159,7 +159,7 @@ while IFS=$'\x1f' read -r -u 3 name ref pane tier tm old esc tr sdetail bfa lbri
   [ "$new" != "$old" ] && "$registry" set "$name" status="$new" >/dev/null
   [ "$detail" = "$sdetail" ] || "$registry" set "$name" status_detail="$detail" >/dev/null
 done 3< <(jq -r '.[] | select(.tier != "Orchestrator") | [.name, (.herdr_ref // ""), (.pane // ""), (.tier // ""), (.team // ""), (.status // ""),
-  (.escalation // ""), (.transcript // ""), (.status_detail // ""), (.brief_failed_at // ""), (.last_brief // ""),
+  (if ([(.escalations // [])[]? | select(type == "object" and .resolved_at == null and (.parked // false) != true)] | length) > 0 then (.escalation // "") else "" end), (.transcript // ""), (.status_detail // ""), (.brief_failed_at // ""), (.last_brief // ""),
   (.brief_failed_line // "" | tostring | select(test("^[0-9]+$")) // "")]
   | map(tostring | gsub("[\u001f\n]"; " ")) | join("\u001f")' <<<"$rows")
 
