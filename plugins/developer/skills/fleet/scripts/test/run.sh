@@ -15,6 +15,7 @@
 #   bash scripts/test/run.sh --v4219    only the 4.2.19 cases, test/v4219.sh
 #   bash scripts/test/run.sh --v4220    only the 4.2.20 cases, test/v4220.sh
 #   bash scripts/test/run.sh --v4221    only the 4.2.21 cases, test/v4221.sh
+#   bash scripts/test/run.sh --v430     only the 4.3.0 cases, test/v430.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SCRIPTS="$(dirname "$HERE")"
@@ -365,6 +366,8 @@ if [ "${1:-}" = --v4219 ]; then v4219_full; printf '\n%d passed, %d failed\n' "$
 if [ "${1:-}" = --v4220 ]; then v4220_full; printf '\n%d passed, %d failed\n' "$pass" "$failn"; [ "$failn" = 0 ]; exit; fi
 . "$HERE/v4221.sh" # 4.2.21: v4221_smoke and v4221_full
 if [ "${1:-}" = --v4221 ]; then v4221_full; printf '\n%d passed, %d failed\n' "$pass" "$failn"; [ "$failn" = 0 ]; exit; fi
+. "$HERE/v430.sh" # 4.3.0: v430_smoke and v430_full
+if [ "${1:-}" = --v430 ]; then v430_full; printf '\n%d passed, %d failed\n' "$pass" "$failn"; [ "$failn" = 0 ]; exit; fi
 if [ "${1:-}" = --v426 ]; then v426_full; printf '\n%d passed, %d failed\n' "$pass" "$failn"; [ "$failn" = 0 ]; exit; fi
 if [ "${1:-}" = --v42x ]; then v42x_full; printf '\n%d passed, %d failed\n' "$pass" "$failn"; [ "$failn" = 0 ]; exit; fi # only the 4.2.x patch cases
 if [ "${1:-}" = --v420 ]; then v420_full; printf '\n%d passed, %d failed\n' "$pass" "$failn"; [ "$failn" = 0 ]; exit; fi # only the 4.2.0 cases
@@ -800,6 +803,7 @@ Merge this one first." "Do not merge until the API ships" "  hold: waiting on de
   v4219_smoke
   v4220_smoke
   v4221_smoke
+  v430_smoke
   printf '\n%d passed, %d failed\n' "$pass" "$failn"
   [ "$failn" = 0 ]; exit
 fi
@@ -4679,6 +4683,7 @@ v4218_full
 v4219_full
 v4220_full
 v4221_full
+v430_full
 # ---- end 4.2.0 ----
 
 printf '\n%d passed, %d failed\n' "$pass" "$failn"
