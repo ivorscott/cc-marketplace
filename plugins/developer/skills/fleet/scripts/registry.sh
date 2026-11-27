@@ -13,7 +13,8 @@
 #   registry.sh escalate <name> P0|P1|P2 TEXT [OPTION...]  severity-routed escalation (+ notification + inbox line); the
 #                                                          options are the answers to choose from, the recommended one
 #                                                          first. Prints the decision form (references/output.md)
-#   registry.sh escalations [--open] [--team T] [--not-retired]  every escalation, Done and Retired rows included unless --not-retired
+#   registry.sh escalations [--open] [--team T] [--not-retired] [--parked]  every escalation, Done and Retired rows included unless --not-retired
+#   registry.sh park-esc <name> <id|team id> [--note TEXT]  keep an open escalation for the owner: parked, still open; retire and next leave it, only resolve closes it
 #   registry.sh resolve <name> <id|at> [--note TEXT]       close one escalation (the Orchestrator does this; <id> is unique across the registry, <at> is the legacy form;
 #                                                          a team name for <name> means the team's agent that has the open <id>, the lead first);
 #                                                          prints "Resolved <id> for <name>: <note>."
@@ -116,7 +117,7 @@ cmd="${1:-}"; shift || true
 # Agents (FLEET_ROLE set in their pane) can report on themselves (set, done, escalate, note, signoff for the
 # tester) but cannot create, retire, archive, move or resolve: those are the Orchestrator's.
 case "$cmd" in
-  add | retire | archive | reassign | resolve | close-stale | orchestrator | park | park-mark | pref)
+  add | retire | archive | reassign | resolve | park-esc | close-stale | orchestrator | park | park-mark | pref)
     [ -z "${FLEET_ROLE:-}" ] || die "$cmd is the Orchestrator's; an agent (FLEET_ROLE=$FLEET_ROLE) may not run it" ;;
 esac
 case "$cmd" in
@@ -230,20 +231,45 @@ case "$cmd" in
     render_decision "$sev" "$name" "$msg" "$@"
     ;;
   escalations)
-    team=""; open=false; live=false
+    team=""; open=false; live=false; parked=false
     while [ $# -gt 0 ]; do
       case "$1" in
         --open) open=true; shift ;;
         --not-retired) live=true; shift ;;
+        --parked) parked=true; shift ;;
         --team) team="$2"; shift 2 ;;
         *) die "unknown escalations option: $1" ;;
       esac
     done
-    jq --arg t "$team" --argjson open "$open" --argjson live "$live" "$ESC_DEFS"'
-      [.agents[] | select(($t == "" or .team == $t) and (($live | not) or .status != "Retired")) | . as $a | escs[]
+    jq --arg t "$team" --argjson open "$open" --argjson live "$live" --argjson pk "$parked" "$ESC_DEFS"'
+      [.agents[] | select(($t == "" or .team == $t)) | . as $a | escs[]
+        | select((($live | not) or $a.status != "Retired" or ((.parked // false) and .resolved_at == null)) and (($pk | not) or ((.parked // false) and .resolved_at == null)))
         | select(($open | not) or .resolved_at == null)
-        | {name: $a.name, team: $a.team, id, at, severity, message, options: (.options // []), resolved_at: (.resolved_at // null), resolution: (.resolution // null)} + (if .human == true then {human: true} else {} end)]
+        | {name: $a.name, team: $a.team, id, at, severity, message, options: (.options // []), resolved_at: (.resolved_at // null), resolution: (.resolution // null)}
+          + (if .human == true then {human: true} else {} end) + (if (.parked // false) then {parked: true, parked_at: (.parked_at // null)} else {} end)]
       | sort_by(.at)' "$FLEET_REGISTRY"
+    ;;
+  park-esc)
+    usage="usage: park-esc <name|team> <id> [--note TEXT]"
+    name="${1:?$usage}"; ref="${2:?$usage}"; shift 2
+    note=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --note) note="${2:?--note needs text}"; shift 2 ;;
+        *) die "unknown park-esc option: $1" ;;
+      esac
+    done
+    if ! jq -e --arg n "$name" '.agents[$n] != null' "$FLEET_REGISTRY" >/dev/null; then
+      cands="$(jq -r --arg t "$name" --arg a "$ref" "$ESC_DEFS"'[.agents[] | select(type == "object" and .team == $t)
+        | select([escs[] | select((.id == $a or .at == $a) and .resolved_at == null)] | length > 0) | .name] | sort_by(if endswith("/lead") then 0 else 1 end) | .[]' "$FLEET_REGISTRY")"
+      [ -z "$cands" ] || name="$(printf '%s\n' "$cands" | head -1)"
+    fi
+    exists "$name"
+    seq="$(jq -r --arg n "$name" --arg a "$ref" "$ESC_DEFS"'.agents[$n] | [escs[] | select((.id == $a or .at == $a) and .resolved_at == null)] | (first // {seq: 0}) | .seq' "$FLEET_REGISTRY")"
+    [ "$seq" != 0 ] || die "no open escalation '$ref' on $name (see: escalations --open)"
+    update --arg n "$name" --argjson i "$((seq - 1))" --arg note "$note" --arg t "$(now)" \
+      '.agents[$n] |= (.escalations[$i] += {parked: true, parked_at: (.escalations[$i].parked_at // $t)} + (if $note != "" then {park_note: $note} else {} end) | if .status == "Needs input" then .status = "Working" else . end | .updated_at = $t)'
+    ev_log escalation_parked team="$(jq -r --arg n "$name" '.agents[$n].team // ""' "$FLEET_REGISTRY")" name="$name" detail="$ref"
     ;;
   resolve)
     name="${1:?usage: resolve <name> <id|at> [--note TEXT]}"; ref="${2:?usage: resolve <name> <id|at> [--note TEXT]}"; shift 2

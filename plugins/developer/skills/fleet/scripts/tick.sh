@@ -712,7 +712,7 @@ fi
 # blocked. No screen is read. Always on, overnight or not; a fleet-wide view, so tick --team skips it.
 if [ -z "$team" ]; then
   blocked_now="$("$registry" list --live | jq -c '[.[] | select(.tier != "Orchestrator" and .status == "Needs input"
-    and (.status_detail // "") == "" and (.escalation // "") == "") | .name]')"
+    and (.status_detail // "") == "" and ([(.escalations // [])[]? | select(type == "object" and .resolved_at == null and (.parked // false) != true)] | length) == 0) | .name]')"
   for bn in $(jq -r --argjson p "$(jq -c '.blocked_prev // []' "$STATE_FILE")" --argjson t "$(jq -c '.blocked_told // []' "$STATE_FILE")" \
     '.[] | select(. as $n | ($p | index($n)) != null and ($t | index($n)) == null)' <<<"$blocked_now"); do
     "$registry" escalate "$bn" P1 "blocked on a permission prompt: look at its pane" >/dev/null 2>&1 || warn "could not escalate $bn, blocked on a prompt"
@@ -728,6 +728,21 @@ add_events "$(jq -cn --slurpfile e <(printf '%s' "$esc") --slurpfile stf "$STATE
     | {type: "escalation", team, name, id, severity, message, options: (.options // []), at}]')"
 st_upd --slurpfile e <(printf '%s' "$esc") '$e[0] as $e
   | $st + {escalations_emitted: ((($st.escalations_emitted // []) + [$e[] | .name + "|" + .id]) | unique)}'
+
+# A parked escalation (the owner's, still open) is raised again every parked_remind_hours until someone resolves it.
+# Keyed name|id in parked_reminded with the epoch of the last reminder; the first reminder counts from parked_at.
+prem="$(parked_remind_hours)"
+add_events "$(jq -cn --slurpfile e <(printf '%s' "$esc") --slurpfile stf "$STATE_FILE" --argjson now "$now_epoch" --argjson h "$prem" '$e[0] as $e
+  | [$e[] | select(.parked == true) | (.name + "|" + .id) as $k
+    | ((($stf[0].parked_reminded // {})[$k]) // ((.parked_at // "") | if . == "" then $now else (sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) end)) as $last
+    | select($now - $last >= $h * 3600)
+    | {type: "parked_reminder", team, name, id, severity, message, options: (.options // []), at}]')"
+allpk="$("$registry" escalations --open --parked)" # global: a --team tick must not drop another team's keys
+st_upd --slurpfile e <(printf '%s' "$allpk") --argjson seen "$(jq -c '[.[] | .name + "|" + .id]' <<<"$esc")" --argjson now "$now_epoch" --argjson h "$prem" '$e[0] as $e
+  | $st + {parked_reminded: (($st.parked_reminded // {}) as $r | reduce ($e[] | select(.parked == true)) as $x ({};
+      ($x.name + "|" + $x.id) as $k
+      | ($r[$k] // (($x.parked_at // "") | if . == "" then $now else (sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601) end)) as $last
+      | . + {($k): (if ($seen | index($k)) != null and $now - $last >= $h * 3600 then $now else $last end)}))}'
 
 # --- PR discovery: a team's PR found by its head branch -----------------------------------------------------
 # A builder pushes fleet/<slug>, whatever its worktree's branch is called (boot records fleet/<team>/<role>). Each

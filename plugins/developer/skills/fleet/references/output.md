@@ -54,10 +54,10 @@ The summary line counts the teams by State, in words, and names only the states 
 working`; blocked is Stalled, Failed and Zombie together). One row per team that has a row not yet Retired, parked
 teams included. State is the worst agent state as one word: `Working`, `Idle`, `Waiting` (an agent that needs input;
 the Needs you cell says why), `Stalled`, `Failed`, `Zombie`, `Parked` or `Done`. Needs you is the team's most severe open escalation (`**P1**:
-<question>`), else what its state needs (`answer its prompt`, `ask for its done step`, `agent gone: respawn or
+<question>`; a parked one reads `**P1** parked: <full question> (rec: <option>)`), else what its state needs (`answer its prompt`, `ask for its done step`, `agent gone: respawn or
 retire`, `brief not delivered`, `merge the PR` or the queue's `rebase after #N`, `retire the team`), else `-`. A
 parked team with an open PR the queue lists says what a Done team says; with no PR in the queue it is `-`. `Waiting on
-you` appears only while a P0 or P1 is open (this machine's escalations). With no team: `No teams.`
+you` appears while a P0 or P1 or any parked escalation is open (this machine's escalations; a parked one of a retired team too). With no team: `No teams.`
 
 One table for every machine: Machine is this machine's name (`machine_name`, else its host name) on its own rows and the other machine's own name, from its label description (its key when it has none), on the rows read
 from its published summary (a summary older than `lease_hours` stays in the table, and its PR is never counted ready). The rows whose PR is in the merge queue come first, in the queue's order, then the rest by team; there
@@ -474,14 +474,16 @@ Follow this until fleet run stop. After a context compaction, or in a fresh sess
 
 ```
 Decided <team/lead>: <question> → <option>.
-Parked <team/lead>: <question>. Left for the owner.
+Parked <team/lead> <id> <P0|P1|P2>: <full question>. Recommended: <first option>. Needs you: fleet resolve <team/lead> <id> --note "<your answer>".
+Already parked <team/lead> <id>. Needs you: fleet resolve <team/lead> <id> --note "<your answer>".
+Still parked for you: <team/lead> <id> <sev>: <full question>. Recommended: <option>. Needs you: fleet resolve <team/lead> <id> --note "<your answer>".
 ```
 
 `fleet decide <team> <id>` is how the Orchestrator answers an escalation under `fleet run`: the first (recommended) option is taken,
 the lead is told, the escalation resolved with it, the decision noted (the morning report lists it under Decisions taken) and
 commented on the issue as `[fleet] Decision taken on the owner's behalf: ... Reply on this issue to overrule it.` A P0, and a
 question about merging, production, infrastructure applies, secrets or branch protection, is parked instead: the lead is told to
-set it aside and carry on, one push goes out, and the morning report lists it under Needs your eyes. Nothing human-only is approved.
+set it aside and carry on, and the escalation stays open and marked parked (`registry.sh park-esc`): retire and a team's next issue leave it, only `fleet resolve` closes it. One push goes out, the Orchestrator relays the `Parked ...` line, tick repeats it as `Still parked for you ...` every `parked_remind_hours` (default 6), and the morning report lists it under Needs your eyes until it is resolved. Nothing human-only is approved.
 
 ### overlap
 
@@ -818,7 +820,7 @@ without one) to `reports/fleet-morning-<date>.md`, covering the time since the l
 ## Needs your eyes
 
 - deferred (<team/lead>): <item> → <ISSUE> <url>
-- parked for you (<team/lead>): <the human-only step that was set aside>
+- parked for you (<team/lead> <id>): <full question> Recommended: <option>. Answer: fleet resolve <team/lead> <id> --note "..."
 - Verify <ISSUE> (<n> days old): check <what>. Still worth checking? With no answer by the next report it moves to Done
 
 ## Failures

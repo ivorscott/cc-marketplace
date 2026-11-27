@@ -34,6 +34,7 @@ CONFIG_KEYS=(
   "candidates_allow_backlog|bool|false"
   "overnight|bool|false"
   "archive_after_days|int|0"
+  "parked_remind_hours|int|6"
   "brief_idle_secs|int|60"
   "tick_secs|int|300"
   "schedule_label|str|fleet.tick"

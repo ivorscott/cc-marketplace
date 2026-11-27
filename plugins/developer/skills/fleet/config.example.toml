@@ -48,6 +48,7 @@ permission_mode = "auto"   # the Claude Code permission mode every agent starts 
 overnight = false
 
 # Registry
+parked_remind_hours = 6  # tick reminds you of an escalation parked for you every this many hours until you resolve it
 archive_after_days = 0   # a Retired row with its lessons written moves to fleet-archive.json after this many days
 
 # Briefs and agent panes
