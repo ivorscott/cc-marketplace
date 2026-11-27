@@ -689,7 +689,7 @@ fleet_queue() {
 }
 # fleet_summary: this machine's teams as one compact JSON array, the body of its Linear summary document (linear.sh
 # write_heartbeat), which is how another machine's `fleet status` sees them: [{t: team, i: issue key, pr: PR URL, s: state
-# word, n: what it needs from you, r: true when the merge queue lists its PR as ready, f: plan files}], every live team,
+# word, it/iu: the issue's short title and URL, n: what it needs from you, r: true when the merge queue lists its PR as ready, f: plan files}], every live team,
 # the ones changed last first, with no size limit (a document has room). Built from the registry and the queue tick kept
 # (never from GitHub); keys with no value are left out.
 # summary_for_label <room>: the summary array on stdin fitted to <room> characters for the old `summary=` label line (the
@@ -699,7 +699,7 @@ summary_for_label() {
   jq -c --argjson cap "$1" '
     def fit: if length > 0 and (tojson | length) > $cap then .[:-1] | fit else . end;
     def idt: if ((.i // "") != "") then {i} elif ((.t // "") != "") then {t: .t[0:12]} else {} end;
-    def tiers: [., map(del(.pr, .n, .f)), map(idt + {s} | with_entries(select(.value != null))), map(idt)] | map(fit);
+    def tiers: [., map(del(.it, .iu, .pr, .n, .f)), map(idt + {s} | with_entries(select(.value != null))), map(idt)] | map(fit);
     def best: tiers | reduce .[] as $x (null; if . == null or ($x | length) > length then $x else . end);
     .[:12] | best'
 }
@@ -740,7 +740,9 @@ fleet_summary() {
       | team_state($g) as $state
       | ($g | map(.pr // "") | map(select(. != "")) | first // "") as $pr
       | (team_needs($g; $e; $state; $pr; $q) | if . == "-" then "" else .[0:60] end) as $n
-      | {u: ($g | map(.updated_at // "") | max), t: $t, i: ($g | map(.issue // "") | map(select(. != "")) | first // ""), pr: $pr, s: $state, n: $n,
+      | {u: ($g | map(.updated_at // "") | max), t: $t, i: ($g | map(.issue // "") | map(select(. != "")) | first // ""),
+         it: ($g | map(.issue_title // "") | map(select(. != "")) | first // "" | short_title),
+         iu: ($g | map(.issue_url // "") | map(select(. != "")) | first // "" | short_issue_url), pr: $pr, s: $state, n: $n,
          r: (([($q.ready // [])[] | select(.url == $pr)] | length) > 0 and $pr != ""), f: ($pfm[$t] // [])})
     | sort_by(.u) | reverse | map(del(.u) | with_entries(select(.value != "" and .value != false and .value != [])))'
 }
@@ -1195,7 +1197,7 @@ render_table() {
            ($g | map(.issue_title // "") | map(select(. != "")) | first // "")),
          pr: pr_cell($pr), pr_url: $pr, state: $state, needs: team_needs($g; $e; $state; $pr; $q)}) as $local
     | ([$peers[] | select((.team | shown))
-        | {team: .team, machine: .machine, issue: issue_cell(.issue; ""; ""), pr: pr_cell(.pr), pr_url: (.pr // ""), state: .state,
+        | {team: .team, machine: .machine, issue: issue_cell(.issue; .issue_url // ""; .issue_title // ""), pr: pr_cell(.pr), pr_url: (.pr // ""), state: .state,
            needs: (((.pr // "") as $u | ([($q.ready // [])[] | select(.url == $u)] | first) as $r | ([($q.on_hold // [])[] | select(.url == $u)] | first) as $h
              | if $u == "" then null elif $h != null then "on hold" + (if ($h.note // "") != "" then ": \($h.note)" else "" end)
                elif $r != null then (if ($r.after // "—") != "—" then $r.after else "merge the PR" end) else null end)

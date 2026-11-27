@@ -10,7 +10,8 @@ added later adds its entry here and its golden file, or the "every command has a
 `<angle brackets>` are filled in. `[DEV-1](url) <title>` is an Issue cell: the key as a link to the issue's short URL
 (the issue URL up to its key, the slug dropped), then its title cut short (one leading `Web:`-style prefix dropped,
 cut at a word boundary within 40 characters; from the row's `issue_title`, never a tracker call); the bare key when
-there is no URL, no title when the row has none, `-` when there is no issue. When the reply goes to a terminal
+there is no URL, no title when the row has none, `-` when there is no issue. The other machine's rows read the same, from
+the `it`/`iu` of its published summary (an older summary has neither: the bare key). When the reply goes to a terminal
 (`FLEET_TTY=1`, set once by the command) the key is an OSC 8 hyperlink (`ESC]8;;<short url>ESC\DEV-1ESC]8;;ESC\`)
 instead of markdown: Ghostty, iTerm2, WezTerm, kitty and recent GNOME Terminal show it as a link; herdr passing it
 through is UNVERIFIED. `<PR url>` is the PR's full URL as it is, never shortened or relabelled (`-` when there is

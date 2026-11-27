@@ -76,7 +76,7 @@ if $want_peers; then
     (group_by(.machine) | map(select(any(.[]; .summary != null)) | . as $g | ($g | map(select(.summary != null)) | first) as $c
       | (if $c.heartbeat == null then null else (($now | fromdateiso8601) - ($c.heartbeat | fromdateiso8601)) end) as $age
       | ($age != null and $age > ($lease * 3600)) as $stale
-      | $c.summary[] | {machine: $c.machine, team: (if (.t // "") != "" then .t else (.i // "") end), issue: (.i // ""), pr: (.pr // ""), needs: (.n // ""), ready: ((.r // false) and ($stale | not)),
+      | $c.summary[] | {machine: $c.machine, team: (if (.t // "") != "" then .t else (.i // "") end), issue: (.i // ""), issue_url: (.iu // ""), issue_title: (.it // ""), pr: (.pr // ""), needs: (.n // ""), ready: ((.r // false) and ($stale | not)),
           state: (.s // (if .t == null then "-" else "Idle" end)), heartbeat: $c.heartbeat, stale: $stale})) as $teams
     | ([.[] | select(.machine as $m | ($teams | map(.machine) | index($m)) == null)]) as $claims
     | {teams: ($teams | map(select(.team != ""))), claims: $claims,
@@ -168,7 +168,7 @@ out="$("$registry" list "${list_args[@]}" | jq "$filter")"
 if $all && $want_peers; then
   me="$(machine_key 2>/dev/null || echo local)"
   peer_rows="$(jq -cn --arg now "${FLEET_NOW:-$(now)}" --argjson lease "$(lease_hours)" --argjson t "$peer_teams" --argjson c "$peer_claims" '
-    [$t[] | {name: .team, team: .team, tier: "-", source: "tracker", machine: .machine, status: .state, escalation: "", herdr_ref: "-", issue: .issue,
+    [$t[] | {name: .team, team: .team, tier: "-", source: "tracker", machine: .machine, status: .state, escalation: "", herdr_ref: "-", issue: .issue, issue_url: .issue_url, issue_title: .issue_title,
        pr: .pr, needs: .needs, ready: .ready, heartbeat: .heartbeat, assignment: ""}]
     + [$c[] | . as $c
       | (if $c.heartbeat == null then null else (($now | fromdateiso8601) - ($c.heartbeat | fromdateiso8601)) end) as $age

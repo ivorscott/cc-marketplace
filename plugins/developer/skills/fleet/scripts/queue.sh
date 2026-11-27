@@ -44,7 +44,7 @@ printf '%s' "$peers" | jq -e 'type == "array"' >/dev/null 2>&1 || peers='[]'
 psum="$(jq -c --arg now "${FLEET_NOW:-$(now)}" --argjson lease "$(lease_hours)" '
   [group_by(.machine)[] | map(select(.summary != null)) | select(length > 0) | first | . as $c
     | (if $c.heartbeat == null then false else ((($now | fromdateiso8601) - ($c.heartbeat | fromdateiso8601)) <= ($lease * 3600)) end) as $fresh
-    | $c.summary[] | select((.pr // "") != "") | {key: .pr, value: {machine: $c.machine, state: (.s // ""), issue: (.i // ""), ready: ((.r // false) and $fresh)}}] | from_entries' <<<"$peers" 2>/dev/null)" || psum='{}'
+    | $c.summary[] | select((.pr // "") != "") | {key: .pr, value: {machine: $c.machine, state: (.s // ""), issue: (.i // ""), issue_url: (.iu // ""), issue_title: (.it // ""), ready: ((.r // false) and $fresh)}}] | from_entries' <<<"$peers" 2>/dev/null)" || psum='{}'
 [ -n "$psum" ] || psum='{}'
 
 # The repos to read: those of the rows' PR URLs, and of the rows' own repos (their origin remotes), so a PR that no
@@ -88,7 +88,7 @@ all="$(jq -cn --slurpfile rows <(printf '%s' "$rows") --slurpfile open <(printf 
       | if $t != null then entry($t; $g.url) as $p
           | ($p | del(.comment)) + ($g | gh_fields) + {other: false, machine: $me, missing: ($g | pr_missing($p.signoff; pr_noci_ok($noci; $p.repo_dir; $p.url); $p.comment))}
         elif ($g.headRefName // "" | startswith("fleet/")) then ($psum[$g.url]) as $ps
-          | {url: $g.url, team: "", issue: ($ps.issue // ""), issue_url: "", issue_title: ""} + ($g | gh_fields)
+          | {url: $g.url, team: "", issue: ($ps.issue // ""), issue_url: ($ps.issue_url // ""), issue_title: ($ps.issue_title // "")} + ($g | gh_fields)
             + {other: true, machine: ($ps.machine // "other machine"),
                missing: (if $ps.ready == true then [] else ["other machine" + (if ($ps.state // "") != "" then " (\($ps.state))" else "" end)] end)}
         else empty end]
