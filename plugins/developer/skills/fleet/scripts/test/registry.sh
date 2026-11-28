@@ -81,8 +81,9 @@ registry_schema() {
   "$REG" escalate cs/legacy P2 repair >/dev/null 2>&1
   eq "schema: escalate repairs the malformed row" "$("$REG" get cs/legacy | jq -r '.escalations | type')" array
   # concurrent writers: the lock serialises them, nothing is lost
-  for i in 1 2 3 4 5 6 7 8; do "$REG" append cs/a transcripts "$HOME/.claude/projects/p/$i.jsonl" >/dev/null 2>&1 & done; wait
-  eq "lock: eight concurrent appends all land" "$("$REG" get cs/a | jq '.transcripts | length')" 8
+  : >"$T/rg-append.err"
+  for i in 1 2 3 4 5 6 7 8; do "$REG" append cs/a transcripts "$HOME/.claude/projects/p/$i.jsonl" >/dev/null 2>>"$T/rg-append.err" & done; wait
+  eq "lock: eight concurrent appends all land" "$("$REG" get cs/a | jq '.transcripts | length')$(sort -u "$T/rg-append.err" | tr '\n' ' ' | sed 's/^/ errors: /;s/ errors: $//')" 8
   check "lock: the file is valid JSON afterwards" jq -e '.agents' "$FLEET_REGISTRY"
 }
 
