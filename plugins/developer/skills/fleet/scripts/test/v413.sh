@@ -107,7 +107,7 @@ v413_parked_needs() {
   eq "v413-4 table: and for a Done team" "$(cell "$(rt --queue "$Q3")" dn-b)" "merge after #1"
   o="$(rt)"
   eq "v413-4 table: with no queue a parked team shows merge the PR when it was parked at sign-off" "$(cell "$o" pk-a):$(cell "$o" pk-d)" "merge the PR:-"
-  eq "v413-4 table: the State column still says Parked" "$(printf '%s\n' "$o" | awk -F' *\\| *' '$2 == "pk-a" {print $6}')" "Parked"
+  eq "v413-4 table: a team parked at sign-off reads Ready (5.0)" "$(printf '%s\n' "$o" | awk -F' *\\| *' '$2 == "pk-a" {print $6}')" "Ready"
 }
 
 . "$HERE/v413-status.sh"

@@ -594,7 +594,7 @@ EOF")" "deny:deny:deny:deny"
   st="$("$SCRIPTS/status.sh" 2>&1)"; sa="$("$SCRIPTS/status.sh" build-api 2>&1)"
   eq "smoke: dev512-18 State is a word: no symbol on the summary line or a row of the team table, agent table or queue" \
     "$(printf '%s\n%s\n' "$st" "$sa" | grep -E '^[0-9]+ teams? ·|^\| ' | grep -c '[●○◐✗‖✓]')" 0
-  eq "smoke: dev512-18 the summary line counts in words" "$(printf '%s\n' "$st" | head -n 1)" "3 teams · 1 working · 1 parked · 1 done"
+  eq "smoke: dev512-18 the summary line counts in words" "$(printf '%s\n' "$st" | head -n 1)" "3 teams · 1 working · 1 ready · 1 parked"
   eq "smoke: dev512-19 the Issue cell is the short link, then the title without its prefix" \
     "$(printf '%s\n' "$st" | grep '^| build-api ' | cut -d'|' -f4)" " [DEV-12](https://linear.app/acme/issue/DEV-12) export "
   eq "smoke: dev512-19 a long title is cut at a word boundary within 40 characters" \
@@ -738,8 +738,8 @@ Merge this one first." "Do not merge until the API ships" "  hold: waiting on de
       '{name: $n, team: "build-p530", tier: $t, status: $s, herdr_ref: ($n | sub("/"; "-")), pane: "p", repo: $r, issue: "DEV-1", workspace: "w0", cwd: $r, harness: "claude", template: "build", assignment: "task", machine: "test"}')" >/dev/null
   done
   "$SCRIPTS/park.sh" build-p530 --reason signed-off >/dev/null 2>"$SM/p530.err"; rc=$?
-  eq "smoke: dev530-2 park --reason signed-off: lead Done, builder Idle, tester Done all end Parked with the reason" \
-    "$rc:$("$REG" list --team build-p530 | jq -r '[.[] | .status + "/" + .parked_reason] | unique | join(",")'):$("$SCRIPTS/status.sh" 2>&1 | grep -c '1 parked')" "0:Parked/signed-off:1"
+  eq "smoke: dev530-2 park --reason signed-off: lead Done, builder Idle, tester Done all end Parked with the reason, and the team reads Ready" \
+    "$rc:$("$REG" list --team build-p530 | jq -r '[.[] | .status + "/" + .parked_reason] | unique | join(",")'):$("$SCRIPTS/status.sh" 2>&1 | grep -c '1 ready')" "0:Parked/signed-off:1"
   "$SCRIPTS/unpark.sh" build-p530 >/dev/null 2>"$SM/u530.err"
   eq "smoke: dev530-2 unpark takes the team that park left Parked" "$?:$("$REG" list --team build-p530 | jq -r '[.[].status] | map(select(. == "Parked")) | length')" "0:0"
   "$REG" add '{"name": "build-p530b/builder", "team": "build-p530b", "tier": "Worker", "status": "Done", "herdr_ref": "p530b", "pane": "p"}' >/dev/null

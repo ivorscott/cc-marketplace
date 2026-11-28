@@ -743,9 +743,9 @@ fleet_summary() {
     [$rows[0][] | select(.tier != "Orchestrator" and .status != "Retired" and (.team // "") != "")]
     | group_by(.team) | map(. as $g | $g[0].team as $t
       | ([$esc[0][] | select(.team == $t)] | sort_by({"P0": 0, "P1": 1, "P2": 2}[.severity] // 3) | first) as $e
-      | team_state($g) as $state
       | ($g | map(.pr // "") | map(select(. != "")) | first // "") as $pr
-      | (team_needs($g; $e; $state; $pr; $q) | if . == "-" then "" else .[0:60] end) as $n
+      | team_life($g; $e; $pr; $q) as $life | $life.state as $state
+      | (team_needs($g; $e; $life; $pr; $q) | if . == "-" then "" else .[0:60] end) as $n
       | {u: ($g | map(.updated_at // "") | max), t: $t, i: ($g | map(.issue // "") | map(select(. != "")) | first // ""),
          it: ($g | map(.issue_title // "") | map(select(. != "")) | first // "" | short_title),
          iu: ($g | map(.issue_url // "") | map(select(. != "")) | first // "" | short_issue_url), pr: $pr, s: $state, n: $n,
@@ -1095,6 +1095,28 @@ reply() {
   done
 }
 
+# --- team lifecycle (5.0) ---------------------------------------------------------------------------------
+# One state per team, and every state says who moves next (specs/fleet/cleanup.md, "Team lifecycle";
+# specs/fleet/lifecycle.statechart.json). LIFECYCLE_JQ is the one place that derives it, from facts about the team:
+#   {retired, parked, ready, nudged: bool, wait: "<what the lead named>" | "",
+#    agents: [{live: "running" | "rest" | "gone", brief_failed, blocked: bool}]}
+# The order is the rule: a person's choice first (Retired, Parked), then a fault only the Orchestrator clears (Stalled),
+# then work in progress, then what the team is at rest for. It returns {state, reason, next}.
+LIFECYCLE_JQ='def lifecycle:
+  (.agents // []) as $a
+  | if .retired == true then {state: "Retired", reason: "", next: "-"}
+    elif .parked == true then {state: "Parked", reason: "", next: "you or the Orchestrator"}
+    elif any($a[]; .live == "gone") then {state: "Stalled", reason: "an agent is gone", next: "Orchestrator"}
+    elif any($a[]; .brief_failed == true) then {state: "Stalled", reason: "a brief did not arrive", next: "Orchestrator"}
+    elif any($a[]; .blocked == true) then {state: "Stalled", reason: "a prompt blocks an agent", next: "Orchestrator"}
+    elif any($a[]; .live == "running") then {state: "Working", reason: "", next: "the team"}
+    elif .ready == true then {state: "Ready", reason: "", next: "you: merge"}
+    elif (.wait // "") != "" then {state: "Waiting", reason: .wait, next: ("waits on " + .wait)}
+    elif .nudged == true then {state: "Stalled", reason: "idle after a nudge", next: "Orchestrator"}
+    else {state: "Idle", reason: "", next: "loop nudges"} end;'
+# team_lifecycle <facts json>: the team state for those facts, as {state, reason, next}.
+team_lifecycle() { jq -c "$LIFECYCLE_JQ"' lifecycle' <<<"$1"; }
+
 # RENDER_DEFS: jq definitions the tables share. md makes text safe in a table cell. issue_cell($key; $url; $title) is
 # the Issue cell, "DEV-12 <short title>" with DEV-12 the link: [DEV-12](<short url>) in markdown, an OSC 8 hyperlink
 # when the reply goes to a terminal (FLEET_TTY=1, set once by common.sh), the bare key with no URL, - with no key.
@@ -1117,10 +1139,29 @@ RENDER_DEFS='def md: tostring | gsub("[\r\n\t]+"; " ") | gsub("\\|"; "\\|");
     "Zombie": "Zombie", "Failed": "Failed", "Done": "Done", "Parked": "Parked"}[.] // "Idle";
   def rank: {"Parked": 0, "Done": 1, "Idle": 2, "Working": 3, "Waiting": 4, "Stalled": 5, "Failed": 6, "Zombie": 7}[.] // 2;
   def group: {"Working": "working", "Idle": "idle", "Waiting": "waiting", "Stalled": "blocked", "Failed": "blocked",
-    "Zombie": "blocked", "Parked": "parked", "Done": "done"}[.] // "idle";
+    "Zombie": "blocked", "Ready": "ready", "Parked": "parked", "Done": "done"}[.] // "idle";
   def sev: if . == "P0" or . == "P1" then "**\(.)**" else . end;
-  def team_state($g): if any($g[]; .status == "Parked") then "Parked" else ($g | map(.status | word) | sort_by(rank) | last) end;
-  def team_needs($g; $e; $state; $pr; $q):
+  # team_life: the lifecycle state of a team from its rows, its open escalation, its PR and the merge queue (lifecycle, above).
+  # A row parked at sign-off (4.x) is a team at rest whose PR is ready, not a parked one. A lead that reported done waits
+  # on its PR, or to be retired when it has none.
+  def team_life($g; $e; $pr; $q):
+    ([$g[] | select(.tier == "Lead")] | first) as $lead
+    | ([($q.ready // [])[] | select(.url == $pr)] | first) as $qr
+    | ([($q.on_hold // [])[] | select(.url == $pr)] | first) as $qh
+    | {parked: any($g[]; .status == "Parked" and (.parked_reason // "") != "signed-off"),
+       ready: (if $q != null then ($pr != "" and $qr != null) else any($g[]; .parked_reason == "signed-off") end),
+       agents: [$g[] | {live: (if .status == "Working" or .status == "Booting" then "running" elif .status == "Zombie" then "gone" else "rest" end),
+                        brief_failed: (.status == "Failed"), blocked: (.status == "Needs input" and $e == null)}],
+       nudged: any($g[]; .status == "Stalled" and (.nudged_at // "") != ""),
+       wait: (if ($lead.waiting // "") != "" then $lead.waiting
+              elif $e != null and any($g[]; .status == "Needs input") then "an answer"
+              elif $pr != "" and $qh != null then "the hold on its PR"
+              elif ($lead.status // "") == "Done" or all($g[]; .status == "Done" or .status == "Parked") then (if $pr != "" then "its PR" else "retire" end)
+              else "" end)}
+    | lifecycle;
+  def team_state($g): team_life($g; null; ($g | map(.pr // "") | map(select(. != "")) | first // ""); null).state;
+  def team_needs($g; $e; $l; $pr; $q):
+    $l.state as $state |
     def qready($u): ([($q.ready // [])[] | select(.url == $u)] | first);
     def held($u): ([($q.on_hold // [])[] | select(.url == $u)] | first);
     def hold_cell($u): "on hold" + (if (held($u).note // "") != "" then ": \(held($u).note)" else "" end);
@@ -1128,11 +1169,12 @@ RENDER_DEFS='def md: tostring | gsub("[\r\n\t]+"; " ") | gsub("\\|"; "\\|");
     if $e != null and ($e.parked // false) then "\($e.severity | sev) parked: \($e.message) (rec: \(($e.options // [])[0] // "none"))"
     elif $e != null then "\($e.severity | sev): \($e.message | .[0:60])"
     elif any($g[]; .status == "Needs input") then ($g | map(.status_detail // "") | map(select(. != "")) | first // "answer its prompt")
-    elif $state == "Zombie" then "agent gone: respawn or retire"
-    elif $state == "Stalled" then "ask for its done step"
-    elif $state == "Failed" then "brief not delivered"
+    elif $state == "Stalled" then ({"an agent is gone": "agent gone: respawn or retire", "a brief did not arrive": "brief not delivered",
+        "a prompt blocks an agent": "answer its prompt"}[$l.reason] // "ask for its done step")
     elif any($g[]; (.input_flag // "") != "") then "unsent text in \([$g[] | select((.input_flag // "") != "") | .name][0] | split("/")[1:] | join("/"))'"'"'s input box"
-    elif $state == "Done" then (if $pr != "" then merge_cell($pr) else "retire the team" end)
+    elif $state == "Ready" then merge_cell($pr)
+    elif $state == "Waiting" and $l.reason == "retire" then "retire the team"
+    elif $state == "Waiting" and $pr != "" and held($pr) != null then hold_cell($pr)
     elif $state == "Parked" and $pr != "" then
       (if $q != null then (if qready($pr) != null or held($pr) != null then merge_cell($pr) else "-" end)
        elif any($g[]; .parked_reason == "signed-off") then "merge the PR" else "-" end)
@@ -1141,6 +1183,8 @@ RENDER_DEFS='def md: tostring | gsub("[\r\n\t]+"; " ") | gsub("\\|"; "\\|");
     else ([(($now - (sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601)) / 60 | floor), 0] | max) as $m
       | if $m < 60 then "\($m)m ago" elif $m < 2880 then "\($m / 60 | floor)h ago" else "\($m / 1440 | floor)d ago" end end;
   '
+
+RENDER_DEFS="$LIFECYCLE_JQ $RENDER_DEFS"
 
 # issue_link <key> [url] [title] and pr_link <url>: the Issue and PR cells as a reply line writes them (nothing for
 # no key).
@@ -1197,12 +1241,12 @@ render_table() {
     [$rows[] | select(.tier != "Orchestrator" and .status != "Retired" and (.team // "") != "" and (.team | shown))]
     | group_by(.team) | map(. as $g | $g[0].team as $t
       | ([$esc[] | select(.team == $t)] | sort_by({"P0": 0, "P1": 1, "P2": 2}[.severity] // 3) | first) as $e
-      | team_state($g) as $state
       | ($g | map(.pr // "") | map(select(. != "")) | first // "") as $pr
+      | team_life($g; $e; $pr; $q) as $life | $life.state as $state
       | {team: $t, machine: $me,
          issue: issue_cell(($g | map(.issue // "") | map(select(. != "")) | first // ""); ($g | map(.issue_url // "") | map(select(. != "")) | first // "");
            ($g | map(.issue_title // "") | map(select(. != "")) | first // "")),
-         pr: pr_cell($pr), pr_url: $pr, state: $state, needs: team_needs($g; $e; $state; $pr; $q)}) as $local
+         pr: pr_cell($pr), pr_url: $pr, state: $state, needs: team_needs($g; $e; $life; $pr; $q)}) as $local
     | ([$peers[] | select((.team | shown))
         | {team: .team, machine: .machine, issue: issue_cell(.issue; .issue_url // ""; .issue_title // ""), pr: pr_cell(.pr), pr_url: (.pr // ""), state: .state,
            needs: (((.pr // "") as $u | ([($q.ready // [])[] | select(.url == $u)] | first) as $r | ([($q.on_hold // [])[] | select(.url == $u)] | first) as $h
@@ -1215,7 +1259,7 @@ render_table() {
           | if length > 0 then "Waiting on you: " + join("; ") else null end) as $wait
     | if ($t | length) == 0 then ["No teams.", ($esc | map(select(.parked // false)) | if length > 0 then ($wait // empty) else empty end)] | join("\n\n") else
         [([$t | length | "\(.) team\(if . == 1 then "" else "s" end)"]
-          + ([$t[].state | sub(" \\(stale .*$"; "")] as $s | ["Working", "Idle", "Waiting", "Stalled", "Parked", "Done"]
+          + ([$t[].state | sub(" \\(stale .*$"; "")] as $s | ["Working", "Idle", "Waiting", "Stalled", "Ready", "Parked", "Done"]
             | map(. as $w | group as $g | ([$s[] | select(group == $g)] | length) as $n | select($n > 0) | "\($n) \($g)"))
           | join(" · ")
           + ([$rows[] | select(.tier != "Orchestrator" and .status != "Retired" and .fixing == "true" and (.team | shown)) | .team] | unique | length | if . > 0 then " · \(.) fixing" else "" end)),
@@ -1460,28 +1504,6 @@ render_notice() {
     *) return 1 ;;
   esac
 }
-
-# --- team lifecycle (5.0) ---------------------------------------------------------------------------------
-# One state per team, and every state says who moves next (specs/fleet/cleanup.md, "Team lifecycle";
-# specs/fleet/lifecycle.statechart.json). LIFECYCLE_JQ is the one place that derives it, from facts about the team:
-#   {retired, parked, ready, nudged: bool, wait: "<what the lead named>" | "",
-#    agents: [{live: "running" | "rest" | "gone", brief_failed, blocked: bool}]}
-# The order is the rule: a person's choice first (Retired, Parked), then a fault only the Orchestrator clears (Stalled),
-# then work in progress, then what the team is at rest for. It returns {state, reason, next}.
-LIFECYCLE_JQ='def lifecycle:
-  (.agents // []) as $a
-  | if .retired == true then {state: "Retired", reason: "", next: "-"}
-    elif .parked == true then {state: "Parked", reason: "", next: "you or the Orchestrator"}
-    elif any($a[]; .live == "gone") then {state: "Stalled", reason: "an agent is gone", next: "Orchestrator"}
-    elif any($a[]; .brief_failed == true) then {state: "Stalled", reason: "a brief did not arrive", next: "Orchestrator"}
-    elif any($a[]; .blocked == true) then {state: "Stalled", reason: "a prompt blocks an agent", next: "Orchestrator"}
-    elif any($a[]; .live == "running") then {state: "Working", reason: "", next: "the team"}
-    elif .ready == true then {state: "Ready", reason: "", next: "you: merge"}
-    elif (.wait // "") != "" then {state: "Waiting", reason: .wait, next: ("waits on " + .wait)}
-    elif .nudged == true then {state: "Stalled", reason: "idle after a nudge", next: "Orchestrator"}
-    else {state: "Idle", reason: "", next: "loop nudges"} end;'
-# team_lifecycle <facts json>: the team state for those facts, as {state, reason, next}.
-team_lifecycle() { jq -c "$LIFECYCLE_JQ"' lifecycle' <<<"$1"; }
 
 # WAKE_TYPES: the tick events that wake the Orchestrator (loop-tick.sh) and get a notice (tick.sh); each has an entry
 # in references/output.md. An escalation wakes at any severity, pr_opened only when the lead could not be told.

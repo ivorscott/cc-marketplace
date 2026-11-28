@@ -35,5 +35,19 @@ lifecycle_chart() { # the statechart names the same seven states, and only those
     "$(grep -o 'state: "[A-Za-z]*"' "$SCRIPTS/common.sh" | sort -u | sed 's/state: "\(.*\)"/\1/' | while read -r st; do jq -e --arg s "$st" '.states | has($s)' "$c" >/dev/null || echo "$st"; done | wc -l | tr -d ' ')" 0
 }
 
-lifecycle_smoke() { lifecycle_states; lifecycle_chart; }
+lifecycle_restarted() { # a worker that reported done and was started again shows Working, and keeps its report
+  export FLEET_STATE_DIR="$T/lc-restart" FLEET_REGISTRY="$T/lc-restart/fleet.json" FLEET_INBOX="$T/lc-restart/escalations.jsonl" FLEET_WORKTREES="$T/lc-restart/worktrees"
+  rm -rf "$FLEET_STATE_DIR"; mkdir -p "$FLEET_STATE_DIR"; rm -f "$AS"/*; gcfg
+  "$REG" add '{"name":"lc-a/lead","team":"lc-a","tier":"Lead","status":"Idle","herdr_ref":"lc-a-lead","pane":"p1"}' >/dev/null
+  "$REG" add '{"name":"lc-a/tester","team":"lc-a","tier":"Worker","status":"Idle","herdr_ref":"lc-a-tester","pane":"p2"}' >/dev/null
+  FLEET_NAME=lc-a/tester FLEET_ROLE=worker "$REG" done lc-a/tester Shipped "signed off abc" >/dev/null 2>&1 || "$REG" set lc-a/tester status=Done outcome=Shipped summary="signed off abc" >/dev/null
+  echo idle >"$AS/lc-a-lead"; echo working >"$AS/lc-a-tester"
+  "$SCRIPTS/status.sh" >/dev/null 2>&1
+  eq "lifecycle: a Done worker that herdr says is working again is Working, and keeps its done report" \
+    "$("$REG" get lc-a/tester | jq -r '.status + ":" + (.outcome // "-")')" "Working:Shipped"
+  echo idle >"$AS/lc-a-tester"; "$SCRIPTS/status.sh" >/dev/null 2>&1
+  eq "lifecycle: a Done worker at rest stays Done" "$("$REG" set lc-a/tester status=Done >/dev/null; "$SCRIPTS/status.sh" >/dev/null 2>&1; "$REG" get lc-a/tester | jq -r .status)" "Done"
+}
+
+lifecycle_smoke() { lifecycle_states; lifecycle_chart; lifecycle_restarted; }
 lifecycle_full() { lifecycle_smoke; }
