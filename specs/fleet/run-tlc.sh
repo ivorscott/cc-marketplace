@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Run the fleet protocol model with TLC.
-#   run-tlc.sh            every configuration: the must-hold ones pass, each expected-failing one reports
+#   run-tlc.sh            every configuration (fleet.tla, and team.tla for the team lifecycle): the must-hold ones pass, each expected-failing one reports
 #                         exactly its violation (a vanished counterexample fails too)
 #   run-tlc.sh fleet-gate one configuration by name
 # TLA2TOOLS points at tla2tools.jar (default ~/.local/share/tla/tla2tools.jar).
@@ -17,17 +17,21 @@ expect() {
     fleet-label) echo LabelAtMostOne ;;
     fleet-draft) echo Authority ;;
     fleet-relay) echo RelayRule ;;
-    fleet|fleet-2x2|fleet-gate|fleet-authority) echo "" ;;
+    team-nonudge) echo NoSilentIdle ;;
+    fleet|fleet-2x2|fleet-gate|fleet-authority|team) echo "" ;;
     *) echo "run-tlc: unknown configuration $1" >&2; return 2 ;;
   esac
 }
+
+# module <config>: the model a configuration checks (team*.cfg check team.tla, the rest fleet.tla).
+module() { case "$1" in team*) echo team ;; *) echo fleet ;; esac; }
 
 run_one() {
   local name=$1 want out meta rc=0 line
   want=$(expect "$name")
   meta=$(mktemp -d)
   out=$(cd "$here" && java -XX:+UseParallelGC -cp "$jar" tlc2.TLC -workers auto -deadlock \
-    -metadir "$meta" -config "$name.cfg" fleet.tla 2>&1) || rc=$?
+    -metadir "$meta" -config "$name.cfg" "$(module "$name").tla" 2>&1) || rc=$?
   rm -rf "$meta"
   line=$(printf '%s\n' "$out" | grep -E 'states generated' | tail -1 || true)
   if [ -z "$want" ]; then
@@ -55,7 +59,7 @@ if [ $# -gt 0 ]; then
 fi
 
 bad=0
-for n in fleet fleet-2x2 fleet-gate fleet-authority fleet-stale fleet-label fleet-draft fleet-relay; do
+for n in fleet fleet-2x2 fleet-gate fleet-authority fleet-stale fleet-label fleet-draft fleet-relay team team-nonudge; do
   run_one "$n" || bad=1
 done
 exit "$bad"

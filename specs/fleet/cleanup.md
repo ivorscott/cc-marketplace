@@ -419,8 +419,9 @@ tick, claims, commands, guards), keep the golden files, and add the cases this d
 ## Model and statechart **(Q14)**
 
 The TLA+ model beside this file covers claims, the merge gate and authority. It does not model team state. The
-lifecycle part adds the lifecycle above as a statechart file ([lifecycle.statechart.json](lifecycle.statechart.json)), and extends the model with Idle, Waiting and Stalled and one property:
-a team that is not Parked, Ready or Retired is never at rest for two ticks without a named wait.
+lifecycle part adds the lifecycle above as a statechart file ([lifecycle.statechart.json](lifecycle.statechart.json)) and a second model,
+[team.tla](team.tla), with one property (NoSilentIdle): a team that is not Parked, Ready or Retired is never at rest for two
+ticks without a named wait. `team.cfg` must pass; `team-nonudge.cfg` (the loop never nudges) must fail it, so the check bites.
 
 ## Migration and release **(Q12, Q16)**
 
