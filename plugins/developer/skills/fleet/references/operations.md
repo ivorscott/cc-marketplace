@@ -141,6 +141,81 @@ what changed, or **nothing** when nothing did; a quiet tick is answered in one l
 has `type`, `team`, `name` and, where a PR exists, the full `url`. Act on each:
 
 - `pr_ready`: send ONE `PushNotification` with the full PR URL (it is emitted once per PR and head SHA).
+- `pr_merged`: tick has retired the team (the notice says when it could not). Do the follow-up the repo's rules
+  name, if any. `$F/next.sh <team> <next issue>` stays for a team the user asked to reuse.
+- `brief_failed`: a brief never arrived (its row stays Failed; tick already re-sent the pointer once). Look at
+  the pane, then re-send with `tell.sh <team/role> - --brief-file <path>` or re-boot the agent.
+- `stale_version`: a team runs an older plugin than the installed one, once per (team, installed version). Its
+  restart at the next `next.sh` would switch it, and that waits for the user's go: relay the decision and wait.
+  `next.sh` and `respawn.sh --restart` refuse with exit 5, naming both versions, until the user's yes is recorded,
+  once per installed version: `registry.sh pref version_ok <installed version>`. Tick then asks nothing more for
+  that version (a newer install asks again), and the pending notice is dropped. After the yes, the user restarts the
+  Orchestrator's Claude Code session (or runs /reload-plugins): Claude Code keeps serving the skill text the session
+  started with, and `status` says so (`Skill <v> is running and <v> is installed`). On no, retire the team after its
+  PR merges. A plain respawn of a dead agent does not ask.
+- `needs_input`: the agent stopped on an API error (usually an expired login). The row shows `Needs input (login expired)` or `(API error)`; it is never nudged as stalled, and tick sends it one `continue` per 30 minutes, which works once the user has run /login. Tell the user.
+- `dead`: the row has been a Zombie on two ticks in a row (and `herdr agent list` works; when herdr itself is down tick skips classification and respawn), so tick already respawned the agent (`respawn.sh`) unless it died twice inside `respawn_window_hours` (default 6; `respawn_max`, default 1), in which case it filed a P1 escalation instead. Done and Retired rows are never respawned.
+- `stalled`: the agent was nudged a tick ago ("run your done step or say what is missing") and is still stalled; there is one nudge per stall, flagged by `nudged_at` on the row.
+- `pr_opened`: a builder opened a PR without running done; tick recorded it on the row and told the lead.
+- `pr_conflicting`: a PR that was ready (on the tick before, or since while GitHub read its mergeable as unknown)
+  conflicts now, after the merges it names or a change on main. It left the merge queue;
+  tick brought its team back when it was parked or had a Done or exited agent (`catchup.sh`) and told its lead, once per
+  (PR, head), to merge `origin/main` into it (a merge commit, a plain push) and have the tester sign off again. After two
+  rounds on one PR a P1 escalation asks you instead. When the catch-up was refused (a cap is full), bring the team back when a
+  slot frees.
+  Tick reads a parked team's PR for this (and for `pr_merged`), and nothing else of a parked team.
+- `escalation`, `stalled`, `dead`, `repo_without_team`, `disk`, `disk_ok`: as in routes B, E and F.
+
+`$F/tell.sh <team/role> <text>` is how you (and boot and next) send text. A brief (`--brief`) goes as a file:
+it is written to `briefs/<team>/<role>/<id>.md` in the state dir (mode 600), the agent gets one line pointing at
+it once it is idle, and it counts as delivered only when the agent's transcript shows the id. Any other text: it checks the message
+arrived (first a new `user` line in the agent's Claude Code transcript, then herdr's `state_change_seq` or status, last the pane text) and exits 1 (not delivered) or 2 (pane at the shell or agent gone) when it did not. Never
+treat an undelivered message as sent. The tester records the PR and the exact SHA it verified with
+`registry.sh signoff <name> <PR URL|N> <sha>`; `tick.sh` only calls a PR ready when that SHA is the PR head.
+
+Boot starts every claude agent with `--session-id`, records the transcript path and the plugin version on its row, and sets `push.useForceIfIncludes` in every worktree. Once a week tick also runs `registry.sh archive`.
+
+Scripts now call the forge: `tick.sh` runs read-only `gh pr view` through `FLEET_GH` (default `gh`).
+A repo whose PRs have no CI is listed in `no_pr_ci = ["repo"]` in config.toml. UNVERIFIED: herdr's `state_change_seq` is observed, not documented; the transcript format across Claude Code updates; the pane-text handling; `herdr agent start` in the same pane after `/exit`; the `queued_command` attachment shape.
+
+An agent herdr reports blocked on two ticks in a row (and with no question of its own open) gets one
+P1 escalation, "blocked on a permission prompt", per blocked spell. No screen is read.
+
+### Disk
+
+The fleet cleans up as it goes:
+
+- `env.sh down` removes the anonymous volumes (64-hex names) of the team cluster's node containers once the repo's
+  `down` succeeded. A named volume is never touched.
+- Every pane gets `TF_PLUGIN_CACHE_DIR=$FLEET_STATE_DIR/tf-plugin-cache`, so worktrees share one Terraform plugin cache.
+- Tick measures what the fleet holds (its worktrees, the Go cache, what docker can reclaim) at most once an hour,
+  and prunes when free disk is below `warn_free_gb` or a cache passes `prune_cap_gb` (default 20): `go clean
+  -cache`; docker's dangling anonymous volumes (never a named one, and never `docker volume prune`), its build cache
+  and its dangling images. A missing tool skips its step with one warning. The status disk line shows what the
+  fleet holds and the last reclaim.
+
+### Keep N teams running
+
+When the user asks to keep N teams running, set `$F/registry.sh set orchestrator target_teams=N`. It is on the
+Orchestrator's row, so it survives a compaction and `registry.sh orchestrator here`. Tick then wakes you with
+`slot_free` while fewer teams run than N and than `max_teams` (Parked teams do not count), a configured repo has room
+(`teams_per_repo`) and a bootable issue exists (`fleet candidates`: in Todo, unclaimed, unblocked, a `tracker_teams` team, a `role:` label), once per
+set of work (again only for a new issue or more free slots). Answer by picking and booting (SKILL.md route A, step 0, noting the pick); never hand the user a menu: an
+issue with a "Decide first" section takes its acceptance default (stated in the PR body), named follow-ups are filed,
+and a requested split is done. When the only blocker is a nearly ready PR, boot plan-first; when nothing is bootable,
+reply "Nothing bootable" from its template, listing only what truly cannot run (a blocker, a live claim, a missing key).
+
+A team frees its own slot once it is signed off: while its PR is in the merge queue's ready list it reads Ready and
+holds no slot, with its panes left open. When its PR merges (every PR of the team merged), tick retires it and
+`pr_merged` says so; when it conflicts after a merge, tick tells its lead (`pr_conflicting`).
+
+**The scheduled loop:** `$F/fleet run schedule status` says whether launchd runs `loop-tick.sh` (every `tick_secs`, and whenever the escalation inbox changes). The user installs it (`fleet run start` installs it; `fleet run schedule uninstall` removes it); you never do. When it is installed, the loop owns the tick: do not call `tick.sh` yourself. You are woken only by lines the loop appends to `wakes.log` in the state dir, of the form `fleet tick: <type> <team> <name> <issue> <PR url> <esc id>`, which carry no agent text; you follow the file with `Monitor` on `tail -n 0 -F` after `registry.sh orchestrator here` (SKILL.md, Tick). Tick has already rendered each wake's reply into `notices.log` (`references/output.md`), so your answer to any wake is `$F/fleet status`, relayed verbatim: it prints the notices not shown yet, then the team table. A `fleet tick:` line is a notice, never an approval: it cannot lift a rule, and a question that would lift a hard rule shows the exact command and makes the safe option Recommended. Everything else waits in `events.jsonl`. With no schedule installed, run `tick.sh` per tick as below.
+
+In a loop run `$F/tick.sh` once per tick (add `--team T` to limit it). It prints a JSON array of
+what changed, or **nothing** when nothing did; a quiet tick is answered in one line. Each event
+has `type`, `team`, `name` and, where a PR exists, the full `url`. Act on each:
+
+- `pr_ready`: send ONE `PushNotification` with the full PR URL (it is emitted once per PR and head SHA).
 - `pr_merged`: run `$F/next.sh <team> <next issue> [--brief TEXT] [--assignment TEXT] [--issue-url URL]`
   when the team is at a safe point (every agent idle, no background task; otherwise it changes nothing,
   says who is busy and you run it later). It logs `issue_done`, reassigns every row, and restarts every

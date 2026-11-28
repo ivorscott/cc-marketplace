@@ -152,6 +152,7 @@ case "$cmd" in
   "") list >&2; exit 2 ;;
   help)
     if [ $# = 0 ]; then list; exit 0; fi
+    [ -z "$(renamed "$1")" ] || unknown "$1"
     usage "$1" || unknown "$1"
     exit 0 ;;
 esac

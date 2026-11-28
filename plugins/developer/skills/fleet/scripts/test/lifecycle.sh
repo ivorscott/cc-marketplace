@@ -41,8 +41,13 @@ lifecycle_restarted() { # a worker that reported done and was started again show
   "$REG" add '{"name":"lc-a/lead","team":"lc-a","tier":"Lead","status":"Idle","herdr_ref":"lc-a-lead","pane":"p1"}' >/dev/null
   "$REG" add '{"name":"lc-a/tester","team":"lc-a","tier":"Worker","status":"Idle","herdr_ref":"lc-a-tester","pane":"p2"}' >/dev/null
   FLEET_NAME=lc-a/tester FLEET_ROLE=worker "$REG" done lc-a/tester Shipped "signed off abc" >/dev/null 2>&1 || "$REG" set lc-a/tester status=Done outcome=Shipped summary="signed off abc" >/dev/null
-  echo idle >"$AS/lc-a-lead"; echo working >"$AS/lc-a-tester"
+  "$REG" set lc-a/lead status=Done >/dev/null; "$REG" set lc-a/tester done_at="${FLEET_NOW:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}" >/dev/null
+  echo working >"$AS/lc-a-lead"; echo working >"$AS/lc-a-tester"
   "$SCRIPTS/status.sh" >/dev/null 2>&1
+  eq "lifecycle: a worker still ending the turn it reported done in stays Done" "$("$REG" get lc-a/tester | jq -r .status)" Done
+  "$REG" set lc-a/tester done_at=2026-10-24T09:00:00Z >/dev/null
+  "$SCRIPTS/status.sh" >/dev/null 2>&1
+  eq "lifecycle: a Done lead that herdr says is working stays Done" "$("$REG" get lc-a/lead | jq -r .status)" Done
   eq "lifecycle: a Done worker that herdr says is working again is Working, and keeps its done report" \
     "$("$REG" get lc-a/tester | jq -r '.status + ":" + (.outcome // "-")')" "Working:Shipped"
   echo idle >"$AS/lc-a-tester"; "$SCRIPTS/status.sh" >/dev/null 2>&1

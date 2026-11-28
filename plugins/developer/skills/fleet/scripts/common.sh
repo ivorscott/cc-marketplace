@@ -1380,7 +1380,6 @@ render_line() {
       "$([ -n "${L_archived:-}" ] && printf 'Archived to %s.' "$L_archived" || printf 'Nothing archived.')" \
       "${L_kept:+ Kept: $L_kept.}${L_branches:+ Branches: $L_branches.}" "${L_issue_state:+ Issue → $L_issue_state.}${L_note:+ $L_note}" ;;
     parked) printf 'Parked %s: slot free, worktrees and claim kept.\n' "${L_team:-}" ;;
-    park_marked) printf 'Marked %s: it parks when its PR merges.\n' "${L_team:-}" ;;
     unparked) printf 'Unparked %s: %s back.\n' "${L_team:-}" "${L_agents:-}" ;;
     focused) printf 'Focused on %s: parked %s.%s\n' "${L_team:-}" "${L_parked:-none}" "${L_refused:+ Refused: $L_refused.}" ;;
     focus_marked) printf 'Focused on %s: %s park when their PRs merge.%s\n' "${L_team:-}" "${L_marked:-none}" "${L_refused:+ Refused: $L_refused.}" ;;
@@ -1451,8 +1450,8 @@ render_notice() {
   type="$(jq -r .type <<<"$e")"; team="$(jq -r '.team // ""' <<<"$e")"; name="$(jq -r '.name // ""' <<<"$e")"; url="$(jq -r '.url // ""' <<<"$e")"
   case "$type" in
     pr_ready) render_line pr_ready pr="$(pr_link "$url")" issue="$(team_issue "$team")" sha="$(jq -r '.sha // ""' <<<"$e" | cut -c1-7)" ci="$(jq -r '.ci // "green"' <<<"$e")" ;;
-    pr_merged) d="move $team to its next issue, or retire it"; [ -z "$(jq -r '.parks // ""' <<<"$e")" ] || d="$team parked"
-      [ "$(jq -r '.parked // false' <<<"$e")" != true ] || d="unpark $team and move it to its next issue, or retire it"
+    pr_merged) d="the loop retired $team; do the follow-up its repo's rules name, if any"
+      [ "$(jq -r '.retired' <<<"$e")" != false ] || d="the loop could not retire $team: ask its lead to push, then run fleet retire $team"
       render_line pr_merged pr="$(pr_link "$url")" next="$d" ;;
     pr_conflicting) d="$(jq -r '.catchup_refused // .unpark_refused // ""' <<<"$e")"
       o="$(jq -r '.merged // ""' <<<"$e" | tr ',' '\n' | sed 's/^ *//' | while IFS= read -r u; do [ -z "$u" ] || pr_link "$u"; done | paste -sd, - | sed 's/,/, /g')"

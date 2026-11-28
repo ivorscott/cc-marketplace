@@ -23,8 +23,6 @@
 #   stale_version   a team has an agent on an older plugin version than the one installed (its row's
 #                   plugin_version); switching it at the next `next.sh` waits for the user's go (a decision).
 #                   Once per (team, installed version)
-#   (weekly_summary is gone in 5.0: the morning report says what happened)
-#                   the first tick ever only records the week
 #   escalation      an open escalation not yet reported (keyed by agent name and escalation id)
 #   pr_opened       a team with no PR on any row has an open PR whose head branch it pushed (one gh pr list --state
 #                   open per repo, common.sh head_team; even when the builder skipped its done step): recorded on the
@@ -36,8 +34,8 @@
 #                   ("Merge after #N", "Depends on <url>", "Stacked on #N") is no longer open. Once per (PR, head SHA).
 #                   While a team's PR is ready and every agent of the team is Done or Idle, on that tick or a later one,
 #                   the team reads Ready and holds no slot; nothing parks it.
-#   pr_merged       the row's PR was merged; the Orchestrator answers with next.sh. Once per PR. A team marked
-#                   the loop retires the team at once (retire.sh --outcome Shipped).
+#   pr_merged       every PR of the team was merged. Once per PR. The loop retires the team at once (retire.sh
+#                   --outcome Shipped); the event says whether it could (`retired`).
 #   pr_conflicting  a PR that was ready (the tick before, or since while mergeable read unknown), or has a sign-off, is
 #                   CONFLICTING: it leaves the merge queue and its lead is told to bring it up to date by merging
 #                   main into it (a merge commit) and have the tester sign off again, naming the PRs merged since the
@@ -973,21 +971,24 @@ step_pull_requests() {
           st_upd --arg k "$url@$phead" '$st + {head_nudged: ((($st.head_nudged // []) + [$k]) | unique)}'
         fi
         [ "$ev" != "null" ] || continue
+        if [ "$(printf '%s' "$ev" | jq -r .type)" = pr_merged ]; then
+          rteam="$(printf '%s' "$ev" | jq -r .team)"
+          for fn in $("$registry" list --team "$rteam" | jq -r '.[] | select(.fixing == "true") | .name'); do "$registry" set "$fn" fixing= >/dev/null 2>&1 || true; done
+          st_upd --arg u "$url" --argjson all "$(printf '%s' "$prs" | jq -c --arg t "$rteam" '[.[] | select(.team == $t) | .pr]')" \
+            '$st + {pr_merged_emitted: ((($st.pr_merged_emitted // []) + [$u] + $all) | unique)}'
+          # The loop retires the team at once: a merge needs no judgement, and a retire that waits for a model keeps a slot
+          # taken. The event says whether it did, so the notice names the next step when it could not.
+          if "$FLEET_SCRIPTS/retire.sh" "$rteam" --outcome Shipped >/dev/null 2>"$FLEET_STATE_DIR/retire.err"; then
+            ev_log retired team="$rteam" detail="retired by the loop after its PR merged"
+            ev="$(printf '%s' "$ev" | jq -c '. + {retired: true}')"
+          else
+            warn "could not retire $rteam after its merge: $(grep -v '^fleet: warning:' "$FLEET_STATE_DIR/retire.err" | sed -n 1p | sed 's/^fleet: //')"
+            ev="$(printf '%s' "$ev" | jq -c '. + {retired: false}')"
+          fi
+          rm -f "$FLEET_STATE_DIR/retire.err"
+        fi
         add_events "[$ev]"
         case "$(printf '%s' "$ev" | jq -r .type)" in
-          pr_merged)
-            for fn in $("$registry" list --team "$(printf '%s' "$ev" | jq -r .team)" | jq -r '.[] | select(.fixing == "true") | .name'); do "$registry" set "$fn" fixing= >/dev/null 2>&1 || true; done
-            st_upd --arg u "$url" --argjson all "$(printf '%s' "$prs" | jq -c --arg t "$(printf '%s' "$ev" | jq -r .team)" '[.[] | select(.team == $t) | .pr]')" \
-              '$st + {pr_merged_emitted: ((($st.pr_merged_emitted // []) + [$u] + $all) | unique)}'
-            # The loop retires the team at once (5.0, Q20): a merge needs no judgement, and a retire that waits for a model
-            # keeps a slot taken. A worktree with unpushed work is kept by retire, and the team then reads Stalled.
-            rteam="$(printf '%s' "$ev" | jq -r .team)"
-            if "$FLEET_SCRIPTS/retire.sh" "$rteam" --outcome Shipped >/dev/null 2>"$FLEET_STATE_DIR/retire.err"; then
-              ev_log retired team="$rteam" detail="retired by the loop after its PR merged"
-            else
-              warn "could not retire $rteam after its merge: $(grep -v '^fleet: warning:' "$FLEET_STATE_DIR/retire.err" | head -n 1 | sed 's/^fleet: //')"
-            fi
-            rm -f "$FLEET_STATE_DIR/retire.err" ;;
           pr_ready)
             lead_event "$(printf '%s' "$ev" | jq -r .team)" "ready|$(printf '%s' "$ev" | jq -r '.url + "|" + (.sha // "")')" \
               "$(printf '%s' "$ev" | jq -r .url) is ready: signed at its head, CI green, mergeable. The owner merges it; nothing more to do. Your team reads Ready and holds no slot."
@@ -1251,8 +1252,6 @@ step_archive() {
   fi
 }
 step archive step_archive
-
-# --- weekly summary ---------------------------------------------------------------------------------
 
 # --- herdr's panel ---------------------------------------------------------------------------------------------
 # A team whose state, PR or issue changed since the last tick shows it on herdr's panel again (common.sh herdr_meta);

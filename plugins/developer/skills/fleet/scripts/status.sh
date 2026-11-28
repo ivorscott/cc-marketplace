@@ -168,12 +168,15 @@ done 3< <(jq -r '.[] | select(.tier != "Orchestrator") | [.name, (.herdr_ref // 
 
 # A worker that reported done and was started again by its lead: herdr says it is working, so it is Working. Its done
 # report (outcome, summary) stays on the row. Only this one move is made for a Done row; anything else leaves it Done.
+# A worker is still working while it ends the turn it reported done in, so a report under two minutes old is left alone.
+# A lead stays Done: a message that reaches it after its report starts no work.
 while IFS=$'\x1f' read -r -u 3 name ref; do
   [ -n "$name" ] || continue
   [ "$(hd agent get "$ref" 2>/dev/null | jq -r '.result.agent.agent_status // "gone"' || echo gone)" = working ] || continue
   "$registry" set "$name" status=Working >/dev/null
   ev_log restarted team="${name%%/*}" name="$name" detail="working again after its done report"
-done 3< <("$registry" list ${team:+--team "$team"} | jq -r '.[] | select(.tier != "Orchestrator" and .status == "Done" and (.herdr_ref // "") != "") | [.name, .herdr_ref] | join("\u001f")')
+done 3< <("$registry" list ${team:+--team "$team"} | jq -r --arg now "${FLEET_NOW:-$(now)}" '.[] | select(.tier == "Worker" and .status == "Done" and (.herdr_ref // "") != ""
+  and (($now | fromdateiso8601) - ((.done_at // "") | fromdateiso8601? // 0)) >= 120) | [.name, .herdr_ref] | join("\u001f")')
 
 filter='.'; $problems && filter='[.[] | select(.status == "Stalled" or .status == "Zombie" or .status == "Needs input" or (.escalation // "") != "")]'
 out="$("$registry" list "${list_args[@]}" | jq "$filter")"

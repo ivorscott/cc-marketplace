@@ -31,7 +31,6 @@
 #                                                          clears the old outcome, PR and sign-off, rewrites the assignment;
 #                                                          workers go Idle, the lead Working
 #   registry.sh park <team> <reason>                       one write: every unfinished row of the team becomes Parked (park.sh, which also closes the panes)
-#   registry.sh park-mark <team> <reason|->                 mark the team to park when its PR merges (reason park-after-merge or focus:<team>); - clears it
 #   registry.sh unsynced                                   rows changed since the sink last mirrored them
 #   registry.sh synced <name> [name ...]                   mark rows as mirrored
 #   registry.sh env-claim <team> <max> <cluster> [busy-slots]  atomically take the lowest free port slot
@@ -119,7 +118,7 @@ cmd="${1:-}"; shift || true
 # Agents (FLEET_ROLE set in their pane) can report on themselves (set, done, escalate, note, signoff for the
 # tester) but cannot create, retire, archive, move or resolve: those are the Orchestrator's.
 case "$cmd" in
-  add | retire | archive | reassign | resolve | park-esc | close-stale | orchestrator | park | park-mark | pref)
+  add | retire | archive | reassign | resolve | park-esc | close-stale | orchestrator | park | pref)
     [ -z "${FLEET_ROLE:-}" ] || die "$cmd is the Orchestrator's; an agent (FLEET_ROLE=$FLEET_ROLE) may not run it" ;;
 esac
 case "$cmd" in
@@ -474,14 +473,6 @@ case "$cmd" in
       | .agents |= with_entries(
         if .value.team == $t and .value.tier != "Orchestrator" and .value.status != "Retired" then
           .value |= (.status = "Parked" | .parked_at = $now | .parked_reason = $r | del(.park_after_merge) | del(.fixing) | .updated_at = $now)
-        else . end)'
-    ;;
-  park-mark)
-    team="${1:?usage: park-mark <team> <reason|->}"; reason="${2:?usage: park-mark <team> <reason|->}"
-    update --arg t "$team" --arg r "$reason" --arg now "$(now)" '
-      .agents |= with_entries(
-        if .value.team == $t and .value.tier != "Orchestrator" and .value.status != "Retired" then
-          .value |= ((if $r == "-" then del(.park_after_merge) else .park_after_merge = $r end) | .updated_at = $now)
         else . end)'
     ;;
   unsynced)

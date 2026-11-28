@@ -12,7 +12,6 @@
 # It refuses at once, changing nothing, when herdr does not answer, when a worktree of the team has changes
 # that are not committed (an untracked file under reports/, where the tester keeps its report, does not count), or
 # when it has commits that are on no remote. It never waits.
-# Internal: --reason signed-off (tick, after a sign-off) sets the parked_reason.
 # It prints "Parked <team>: slot free, worktrees and claim kept.", then the team table (references/output.md).
 # Command: Free a team's slot and keep its work · e.g. fleet park build-api
 set -euo pipefail
@@ -22,7 +21,7 @@ require_herdr
 registry="$FLEET_SCRIPTS/registry.sh"
 
 team="${1:?usage: park.sh <team> [--undo]}"; shift
-after=0; reason=""
+reason=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --undo) exec "$FLEET_SCRIPTS/unpark.sh" "$team" ;;
@@ -35,13 +34,6 @@ done
 rows="$("$registry" list --team "$team" | jq -c '[.[] | select(.tier != "Orchestrator" and .status != "Retired")]')"
 [ "$(printf '%s' "$rows" | jq length)" != 0 ] || die "no live rows for team '$team'"
 [ "$(printf '%s' "$rows" | jq '[.[] | select(.status == "Parked")] | length')" = 0 ] || die "team '$team' is already parked"
-
-if [ "$after" = 1 ]; then
-  "$registry" park-mark "$team" "$reason" >/dev/null
-  ev_log park_marked team="$team" detail="$reason"
-  reply "$(render_line park_marked team="$team")" "$(render_table)"
-  exit 0
-fi
 
 # herdr first: with it down the panes cannot be closed, and rows must not say Parked while the panes live on.
 hd agent list >/dev/null 2>&1 || die "herdr is not answering; $team is not parked and no row changed"

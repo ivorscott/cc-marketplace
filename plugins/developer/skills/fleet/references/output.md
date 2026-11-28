@@ -570,10 +570,10 @@ once, above the table and the merge queue, so the answer to any wake is one `fle
 ### wake pr_merged
 
 ```
-Merged <PR url>. Next: <move <team> to its next issue, or retire it|<team> parked>.
+Merged <PR url>. Next: the loop retired <team>; do the follow-up its repo's rules name, if any.
 ```
 
-`Next: unpark <team> and move it to its next issue, or retire it.` for a parked team.
+`Next: the loop could not retire <team>: ask its lead to push, then run fleet retire <team>.` when the retire failed.
 
 ### wake pr_conflicting
 
