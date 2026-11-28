@@ -576,7 +576,7 @@ step_agents() {
       [ -n "$r" ] || continue
       sname="$(printf '%s' "$r" | jq -r .name)"
       if [ -z "$(printf '%s' "$r" | jq -r '.nudged_at // ""')" ]; then
-        "$FLEET_SCRIPTS/tell.sh" "$sname" "You went idle without running your done step. Run it now, or say what is missing." >/dev/null 2>&1 ||
+        "$FLEET_SCRIPTS/tell.sh" "$sname" "You went idle without running your done step and without naming a wait. Run done now; or, if you wait on something outside your team, name it: $registry set $sname waiting=\"<what>\"." >/dev/null 2>&1 ||
           warn "could not nudge $sname"
         "$registry" set "$sname" nudged_at="$now_iso" >/dev/null || true
       elif [ "$(jq --arg n "$sname" '(.stalled_emitted // []) | index($n) == null' "$STATE_FILE")" = true ]; then
