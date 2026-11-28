@@ -238,7 +238,20 @@ commands_golden() { # every reply of the golden fixture: status, the team agents
       END { for (i = 1; i <= NR; i++) if (row[i] && ((i > 1 && !row[i - 1] && !blank[i - 1]) || (i < NR && !row[i + 1] && !blank[i + 1]))) { print f; exit } }' "$f"; done)" ""
 }
 
+commands_growth() { # the counts 5.0 cut to: growing one is a decision, made in the same change as the new count here
+  local cmds wakes keys runkeys ex="$SCRIPTS/../config.example.toml"
+  cmds="$("$SCRIPTS/fleet" help | tail -n +3 | grep -c '^| ')"
+  wakes="$(bash -c '. "$1/common.sh"; printf "%s\n" $WAKE_TYPES' _ "$SCRIPTS" | grep -c .)"
+  keys="$(awk '/^\[run\]/{exit} /^#? ?[a-z_]+ *=/{print}' "$ex" | sed 's/^# *//' | cut -d= -f1 | tr -d ' ' | sort -u | grep -c .)"
+  runkeys="$(awk '/^\[run\]/{f=1;next} f && /^\[/{exit} f && /^#? ?[a-z_]+ *=/{print}' "$ex" | sed 's/^# *//' | cut -d= -f1 | tr -d ' ' | sort -u | grep -c .)"
+  eq "growth: commands, wake types, config keys, [run] keys and team states stay at the 5.0 counts (raise one only with a decision; see CLAUDE.md)" \
+    "$cmds:$wakes:$keys:$runkeys:$(jq '.states | length' "$SCRIPTS/../../../../../specs/fleet/lifecycle.statechart.json")" "11:27:33:11:7"
+  eq "growth: no test file is named after a version" "$(ls "$HERE" | grep -cE '^v[0-9]')" 0
+  eq "growth: the skill README stays under 400 lines" "$([ "$(wc -l <"$SCRIPTS/../README.md")" -lt 400 ] && echo yes)" yes
+}
+
 commands_suite() {
+  commands_growth
   GD="$HERE/golden"
   commands_dispatcher
   commands_decide
