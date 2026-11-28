@@ -748,8 +748,8 @@ Start with `/fleet status --problems`. It lists only what needs someone, and Nee
 | `Skill <v> is running and <v> is installed` | The plugin updated under a running session. | Restart the session, or run `/reload-plugins`. |
 | Nothing wakes the Orchestrator | No schedule, or the Mac slept. | `fleet schedule status`. Keep the Mac awake. |
 | `Loop failing <step>` in status | One part of the loop failed on two ticks in a row; the rest keeps running. The notice names the error, most often a tool that is installed but not answering, such as Docker with its app closed. | Fix what it names, then `fleet status`. The notice goes once the step passes. |
-| A team shows **Idle** for a long time with an open PR | Its lead was not told that a worker finished, a question was answered or CI ended. | `fleet tell <team> "your tester finished: read its report and carry on"`. Fixed in 4.5. |
-| A team shows **Idle** or **Done** while an agent is clearly working | A worker that reported done once keeps that state when its lead starts it again. | Nothing to fix: read the pane with `herdr agent read <agent> --source visible`. Fixed in 4.5. |
+| A team shows **Idle** for a long time with an open PR | Its lead was not told that a worker finished, a question was answered or CI ended. | `fleet tell <team> "your tester finished: read its report and carry on"`. Fixed in 5.0. |
+| A team shows **Idle** or **Done** while an agent is clearly working | A worker that reported done once keeps that state when its lead starts it again. | Nothing to fix: read the pane with `herdr agent read <agent> --source visible`. Fixed in 5.0. |
 | The team is hopeless | — | `fleet retire <team> --outcome Abandoned`. Unpushed work is kept and named. |
 
 `fleet tell` exits 1 when a message was not delivered and 2 when the pane or agent is gone. Never treat an undelivered
@@ -788,7 +788,7 @@ fleet with herdr, `gh` and `curl` shimmed.
 ## Coming in 5.0
 
 5.0 is a cleanup. It removes what nobody uses and fixes the two things that hurt most: a loop that could stop without
-telling anyone (fixed in 4.4), and teams that sat idle with work waiting (4.5). This guide describes 4.x until 5.0 ships. The full design is
+telling anyone, and teams that sat idle with work waiting. This guide describes 4.x until 5.0 ships. The full design is
 in the [cleanup spec](../../../../specs/fleet/cleanup.md).
 
 **What you will notice:**
@@ -796,7 +796,7 @@ in the [cleanup spec](../../../../specs/fleet/cleanup.md).
 - **Fewer commands.** `fleet help` lists eleven: `status`, `run`, `boot`, `tell`, `retire`, `park`, `candidates`,
   `decide`, `hold`, `claim`, `help`.
 - **Every team state says who moves next.** Idle becomes a fault that the loop acts on every tick.
-- **The loop cannot stop quietly.** A failing step is skipped and reported, and status shows it at the top. In 4.4 already.
+- **The loop cannot stop quietly.** A failing step is skipped and reported, and status shows it at the top.
 - **Parking is yours.** The loop no longer parks or unparks a team. A signed-off team is **Ready**.
 
 **Team states in 5.0:**

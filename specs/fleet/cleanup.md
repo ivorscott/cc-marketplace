@@ -207,7 +207,7 @@ deletes its team's branches. The loop sweeps stale ones when the run profile all
 ## The Orchestrator may edit code **(Q19)**
 
 In 4.x the Orchestrator never edits code: its edit tools are removed and every change goes through a booted team. That
-makes a one-line fix cost a whole team. From 4.4 the rule is gone. The Orchestrator agent keeps its edit tools, and it
+makes a one-line fix cost a whole team. In 5.0 the rule is gone. The Orchestrator agent keeps its edit tools, and it
 writes code itself when the owner asks for a one-off change, in a worktree, through a pull request like any team. It
 saves switching windows for small jobs. Teams remain the way to run queued issue work in parallel.
 
@@ -424,10 +424,10 @@ a team that is not Parked, Ready or Retired is never at rest for two ticks witho
 
 ## Migration and release **(Q12, Q16)**
 
-Four pull requests, merged to main one at a time, in this order. There is no release branch. Each pull request leaves
-main working and ships as its own version: tick core as 4.4, lifecycle as 4.5, the command surface as 5.0 (it removes
-commands, so it is the breaking one), tests and docs as 5.0.1. Each version reaches running teams the usual way, at
-their next issue once the owner says yes to it.
+One release, 5.0, in four parts built in this order on one branch: the branch of the pull request that holds this
+spec. That pull request stays a draft until all four parts are on it, then merges once. Running teams stay on the
+installed version until 5.0 ships, and get it the usual way, at their next issue once the owner says yes to it. The
+version on the branch reads 4.4.0 while the parts are built and becomes 5.0.0 with the last one.
 
 1. **Tick core:** step isolation, state per step, `tick_failing`.
 2. **Lifecycle:** team state, Waiting, the idle rule, Ready in place of loop parking, events to the lead, one sign-off rule.
@@ -435,7 +435,7 @@ their next issue once the owner says yes to it.
 4. **Tests and docs:** regrouped tests, skill text and references cut to match, statechart and model, and the
    user guide rewritten end to end, with the upgrade section and the drift test.
 
-Each of the first three pull requests also updates the guide for what it changes, so the guide is never behind main.
+Each of the first three parts also updates the guide for what it changes, so the guide is never behind the code.
 
 A registry written by the old version is read once and rewritten: Done, Failed, Zombie and Needs input rows map to
 team states by the table above; a team the loop parked becomes Ready.
@@ -485,11 +485,11 @@ waited on merged (events to the lead), the loop ending when a tool cannot answer
 | Q9 | Unused features | Removed: chat, slim, `[context_window]`, focus, prime, metrics and the weekly summary, `fleet config`, overnight mode, after-merge parking, the `merger` key |
 | Q10 | Debrief and expertise files | Kept as a step of `retire`; the command goes |
 | Q11 | Team test environments | Kept, internal |
-| Q12 | Release shape | Four pull requests merged to main one at a time (4.4, 4.5, 5.0, 5.0.1); no release branch |
+| Q12 | Release shape | One 5.0: four parts stacked on one branch, merged once |
 | Q13 | Tests | Regrouped by area; golden files stay |
 | Q14 | Statechart and model | Lifecycle statechart file, and the model extended with the idle property |
 | Q15 | Earlier notes | Carried over where still true (table above) |
-| Q16 | Who builds it | The Orchestrator session, on the owner's request |
+| Q16 | Who builds it | The Orchestrator session or a fleet team, part by part |
 | Q17 | One sign-off rule | The sign-off names the PR and its head |
 | Q18 | A signed-off team waiting for its merge | Ready, a state of its own; the loop never parks |
 | Q19 | Must the Orchestrator never edit code? | No: the rule is removed; it edits code when asked, through a pull request |
