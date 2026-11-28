@@ -192,6 +192,39 @@ step() { # step <name> <function>
   fi
   return 0
 }
+# lead_event <team> <key> <text>: tell the team's lead something that just happened (5.0, events to the lead), once per key.
+# The send is --no-confirm (herdr took it), so a tick never waits on a delivery check; a send that fails is not recorded
+# and goes again next tick. Never for a Parked team, or one whose lead is gone.
+lead_event() {
+  local t="$1" k="$2" txt="$3" ls
+  [ -n "$t" ] && [ "$t" != null ] || return 0
+  [ "$(jq --arg k "$k" '(.lead_told // []) | index($k) != null' "$STATE_FILE")" != true ] || return 0
+  ls="$("$registry" get "$t/lead" 2>/dev/null | jq -r '.status // ""')" || ls=""
+  case "$ls" in "" | Parked | Retired | Zombie) return 0 ;; esac
+  if "$FLEET_SCRIPTS/tell.sh" "$t/lead" "$txt" --no-confirm >/dev/null 2>&1; then
+    st_upd --arg k "$k" '$st + {lead_told: ((($st.lead_told // []) + [$k]) | unique)}'
+    ev_log lead_told team="$t" detail="${k%%|*}"
+  fi
+}
+# step_lead_events: a worker's done report and a tester's sign-off go to the lead on the tick they appear. The first tick
+# with no record only notes what is there (nothing old is re-sent after an upgrade).
+step_lead_events() {
+  local rows first k t txt
+  rows="$("$registry" list ${team:+--team "$team"})"
+  first=false; [ "$(jq 'has("lead_told")' "$STATE_FILE")" = true ] || first=true
+  while IFS=$'\x1f' read -r k t txt; do
+    [ -n "$k" ] || continue
+    if $first; then st_upd --arg k "$k" '$st + {lead_told: ((($st.lead_told // []) + [$k]) | unique)}'; continue; fi
+    lead_event "$t" "$k" "$txt"
+  done < <(jq -r '.[] | select(.tier == "Worker" and .status != "Retired") | . as $r
+      | ((select(.status == "Done" and (.done_at // "") != "")
+          | ["done|\(.name)|\(.done_at)", .team, "\(.name | split("/")[1:] | join("/")) reported done (\(.outcome // "no outcome")): \((.summary // "") | .[0:300])"]),
+         (select((.signoff | objects | .sha) != null)
+          | ["signoff|\(.name)|\(.signoff.sha)", .team, "\(.name | split("/")[1:] | join("/")) signed \(.signoff.pr // "the PR") off at \(.signoff.sha | .[0:7])."]))
+      | map(tostring | gsub("[\u001f\n]"; " ")) | join("\u001f")' <<<"$rows")
+  $first && [ "$(jq 'has("lead_told")' "$STATE_FILE")" != true ] && st_upd '$st + {lead_told: []}' || true
+}
+
 # tick_failing: a step that failed on this tick and the one before raises one event per run of failures, carrying the
 # step and its last error line (no agent text). It is emitted again only after the step has passed once.
 step_health() {
@@ -912,10 +945,15 @@ step_pull_requests() {
           done < <(printf '%s' "$prs" | jq -r --arg u "$url" --arg t "$(printf '%s' "$p" | jq -r .team)" '.[] | select(.team == $t and .pr != $u) | .pr')
         fi
         # \x1f, not a tab: a tab read collapses an empty field (a null mergeable), shifting the ones after it.
-        IFS=$'\x1f' read -r pst pready pmerge phead < <(jq -rn --argjson p "$p" --slurpfile g <(printf '%s' "$j") --argjson noci "$no_ci" "$PR_DEFS"'
-          $g[0] | [.state, ((pr_missing($p.signoff; pr_noci_ok($noci; $p.repo; $p.pr); $p.comment) | length) == 0), (.mergeable // ""), ((.headRefOid // "") | ascii_downcase)]
+        IFS=$'\x1f' read -r pst pready pmerge phead pci < <(jq -rn --argjson p "$p" --slurpfile g <(printf '%s' "$j") --argjson noci "$no_ci" "$PR_DEFS"'
+          $g[0] | [.state, ((pr_missing($p.signoff; pr_noci_ok($noci; $p.repo; $p.pr); $p.comment) | length) == 0), (.mergeable // ""), ((.headRefOid // "") | ascii_downcase),
+            pr_ci(pr_noci_ok($noci; $p.repo; $p.pr))]
           | map(tostring) | join("\u001f")')
         read_now+=("$url")
+        # 5.0: CI ending on the PR head goes to the lead when it happens (once per PR, head and result).
+        if [ "$pst" = OPEN ] && [ -n "$phead" ] && { [ "$pci" = green ] || [ "$pci" = red ]; }; then
+          lead_event "$(printf '%s' "$p" | jq -r .team)" "ci|$url|$phead|$pci" "CI on $url at ${phead:0:7} is $pci."
+        fi
         [ "$pready" != true ] || ready_now+=("$url")
         # GitHub still computing (mergeable unknown, e.g. right after a merge): a ready PR keeps its place in ready_prev.
         [ "$pst" != OPEN ] || [ "$pmerge" = MERGEABLE ] || [ "$pmerge" = CONFLICTING ] || unknown_now+=("$url")
@@ -950,6 +988,8 @@ step_pull_requests() {
             fi
             rm -f "$FLEET_STATE_DIR/retire.err" ;;
           pr_ready)
+            lead_event "$(printf '%s' "$ev" | jq -r .team)" "ready|$(printf '%s' "$ev" | jq -r '.url + "|" + (.sha // "")')" \
+              "$(printf '%s' "$ev" | jq -r .url) is ready: signed at its head, CI green, mergeable. The owner merges it; nothing more to do. Your team reads Ready and holds no slot."
             # What the PR leaves for the owner becomes linked issues (defer.sh files each once; quiet when there is none).
             "$FLEET_SCRIPTS/defer.sh" "$(printf '%s' "$ev" | jq -r .team)" --pr "$(printf '%s' "$ev" | jq -r .url)" >/dev/null 2>&1 || true
             # The PR is ready again: the team's fix is done, so it no longer goes over the slot limits.
@@ -1025,6 +1065,7 @@ step_pull_requests() {
     '($st.ready_prev // []) as $prev | $st + {ready_prev: (($prev - $read) + $ready + ($prev - ($prev - $unknown)) | unique)}'
 }
 step pull_requests step_pull_requests
+step lead_events step_lead_events
 
 # --- keep N teams running ------------------------------------------------------------------------------
 # target_teams on the orchestrator row (registry.sh set orchestrator target_teams=N). One slot_free wake, once per change,
@@ -1339,15 +1380,15 @@ step_state_rebuild() {
   # waiting on its merge keeps its claim), not --live: a Done row's key pruned each tick re-emitted the event every tick.
   claim_keys="$("$registry" list | jq -c '[.[] | select((.issue // "") != "" and .tier != "Orchestrator" and .status != "Retired") | .team + "|" + .issue]')"
   live_names="$("$registry" list --live | jq -c '[.[] | .name]')"
+  row_names="$("$registry" list | jq -c '[.[] | select(.status != "Retired") | .name]')"
   live_teams="$("$registry" list --live | jq -c '[.[] | .team // empty] | unique')"
   held_issues="$("$registry" list | jq -c '[.[] | select(.status != "Retired") | .issue // empty | strings | select(. != "")] | unique')"
   retired_prs="$("$registry" list | jq -c '[.[] | select(.status == "Retired") | .pr // empty | strings | select(. != "")] | unique')"
-  st_upd --argjson held "$held_issues" --argjson rprs "$retired_prs" --argjson holds "$(holds_json)" --argjson prs "$live_prs" --argjson esc "$live_esc" --argjson ck "$claim_keys" --argjson live_names "$live_names" --argjson live_teams "$live_teams" --argjson now "$now_epoch" --argjson w "$(const_int RESPAWN_WINDOW_HOURS 6)" '
+  st_upd --argjson held "$held_issues" --argjson rprs "$retired_prs" --argjson holds "$(holds_json)" --argjson prs "$live_prs" --argjson esc "$live_esc" --argjson ck "$claim_keys" --argjson live_names "$live_names" --argjson row_names "$row_names" --argjson live_teams "$live_teams" --argjson now "$now_epoch" --argjson w "$(const_int RESPAWN_WINDOW_HOURS 6)" '
     def inrecent: map(select(. > $now - $w * 3600));
     $st
     + (if .pr_ready_emitted then {pr_ready_emitted: [.pr_ready_emitted[] | select(split("@")[0] as $u | ($prs | index($u)) and ($holds | has($u) | not))]} else {} end)
     + (if .head_nudged then {head_nudged: [.head_nudged[] | select(split("@")[0] as $u | $prs | index($u))]} else {} end)
-    + (if .park_refused then {park_refused: [.park_refused[] | select(split("@")[0] as $u | $prs | index($u))]} else {} end)
     + (if .pr_merged_emitted then {pr_merged_emitted: [.pr_merged_emitted[] | select(. as $u | $prs | index($u))]} else {} end)
     + (if .pr_opened_emitted then {pr_opened_emitted: [.pr_opened_emitted[] | select(. as $u | $prs | index($u))]} else {} end)
     + (if .ready_prev then {ready_prev: [.ready_prev[] | select(. as $u | $prs | index($u))]} else {} end)
@@ -1358,6 +1399,7 @@ step_state_rebuild() {
     + (if .retired_pr_closed then {retired_pr_closed: [.retired_pr_closed[] | select(. as $u | $rprs | index($u))]} else {} end)
     + (if .lost_emitted then {lost_emitted: [.lost_emitted[] | select(. as $k | $ck | index($k))]} else {} end)
     + (if .stale_emitted then {stale_emitted: [.stale_emitted[] | select(split("|")[0] as $t | $live_teams | index($t))]} else {} end)
+    + (if .lead_told then {lead_told: [.lead_told[] | select((split("|")[1]) as $x | ($row_names | index($x)) != null or ($prs | index($x)) != null)]} else {} end)
     + (if .brief_failed_emitted then {brief_failed_emitted: [.brief_failed_emitted[] | select(split("|")[0] as $n | $live_names | index($n))]} else {} end)
     + (if .respawns then {respawns: (.respawns | with_entries(.value |= inrecent) | with_entries(select(.value | length > 0)))} else {} end)'
 }

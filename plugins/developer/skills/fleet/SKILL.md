@@ -143,6 +143,8 @@ retire (F) or re-boot; **Failed**, re-send with `$F/fleet tell <team/role> - --b
 - `agent_blocked` → read the screen first, apply the policy, then wait with `--until idle --until blocked`, never on
   idle alone. A wait that times out: check the agent again with `herdr agent get` and its row before waiting again.
 - A lead never waits on or polls a worker (no `herdr agent wait`, no `--wait` on a prompt, no `sleep`): the bash guard denies them for leads and the lead ends its turn instead. If one is stuck anyway, tick sees a message queued for `LEAD_QUEUE_MINS` (3) while the tester has signed off: it nudges once, and on a later tick, if the lead is still working, sends exactly one Escape and the message again (`lead_waiting`).
+- Tick tells a lead, once each and on the tick it happens, when a worker reports done, a tester signs off, CI ends on
+  the PR head (green or red) and the PR turns ready (5.0, events to the lead), so a lead never waits on news.
 - Tick nudges a lead once per PR head when the builder is idle and the tester has not signed that head ("head is now
   <sha> and the builder is idle"); the lead starts the tester.
 - **Add a worker:** split a pane in the team's workspace, start the agent, `$F/registry.sh add '<json>'`; respect caps.

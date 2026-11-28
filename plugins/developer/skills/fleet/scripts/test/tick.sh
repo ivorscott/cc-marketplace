@@ -280,6 +280,27 @@ tick_opened() { # a PR found by its head branch when the builder skipped its don
   eq "pr_opened: never again for the same PR" "$(tkn "$(tk)" pr_opened)" 0
 }
 
+tick_lead_events() { # 5.0: what happened goes to the lead on the tick it happens, once; nothing old is re-sent
+  tk_fresh leadev
+  tk_row le/lead Lead Idle '{"issue":"DEV-1"}'
+  tk_row le/builder Worker Working '{"issue":"DEV-1","pr":"https://github.com/acme/app/pull/81"}'
+  tk_row le/tester Worker Done '{"issue":"DEV-1","done_at":"2026-10-24T07:00:00Z","outcome":"Shipped","summary":"old"}'
+  tk_pr 81 OPEN MERGEABLE '[{"__typename":"CheckRun","status":"IN_PROGRESS","conclusion":null}]' abc1234def
+  told() { grep -c "^agent prompt le-lead .*$1" "$HERDR_LOG" || true; }
+  tk >/dev/null
+  eq "lead events: the first tick only notes what is there, nothing old is sent" "$(told 'reported done')" 0
+  "$REG" set le/builder status=Done done_at=2026-10-24T09:00:00Z outcome=Shipped summary="PR 81 open" >/dev/null; echo idle >"$AS/le-builder"
+  tk >/dev/null
+  eq "lead events: a worker's done report reaches the lead" "$(told 'builder reported done')" 1
+  "$REG" signoff le/tester https://github.com/acme/app/pull/81 abc1234 >/dev/null
+  tk_pr 81 OPEN MERGEABLE "$TK_GREEN" abc1234def
+  tk >/dev/null
+  eq "lead events: a sign-off and CI ending green reach the lead" "$(told 'signed .* off at'):$(told 'is green')" "1:1"
+  eq "lead events: the PR turning ready reaches the lead" "$(told 'is ready')" 1
+  tk >/dev/null
+  eq "lead events: nothing is sent twice" "$(told 'builder reported done'):$(told 'signed .* off at'):$(told 'is green'):$(told 'is ready')" "1:1:1:1"
+}
+
 tick_suite() {
   tick_opened
   tick_misc
@@ -298,4 +319,5 @@ tick_suite() {
   tick_morning
   tick_queue
   tick_health
+  tick_lead_events
 }
