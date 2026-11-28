@@ -23,6 +23,7 @@
 #   bash scripts/test/run.sh --v435     only the 4.3.5 cases, test/v435.sh
 #   bash scripts/test/run.sh --v436     only the 4.3.6 cases, test/v436.sh
 #   bash scripts/test/run.sh --v440     only the 4.4.0 cases, test/v440.sh
+#   bash scripts/test/run.sh --lifecycle   only the team lifecycle cases, test/lifecycle.sh
 set -uo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 SCRIPTS="$(dirname "$HERE")"
@@ -388,6 +389,8 @@ if [ "${1:-}" = --v435 ]; then v435_full; printf '\n%d passed, %d failed\n' "$pa
 . "$HERE/v436.sh" # 4.3.6: v436_smoke and v436_full
 if [ "${1:-}" = --v436 ]; then v436_full; printf '\n%d passed, %d failed\n' "$pass" "$failn"; [ "$failn" = 0 ]; exit; fi
 . "$HERE/v440.sh" # 4.4.0: v440_smoke and v440_full
+. "$HERE/lifecycle.sh" # 5.0 team lifecycle: lifecycle_smoke and lifecycle_full
+if [ "${1:-}" = --lifecycle ]; then lifecycle_full; printf '\n%d passed, %d failed\n' "$pass" "$failn"; [ "$failn" = 0 ]; exit; fi
 if [ "${1:-}" = --v440 ]; then v440_full; printf '\n%d passed, %d failed\n' "$pass" "$failn"; [ "$failn" = 0 ]; exit; fi
 if [ "${1:-}" = --v426 ]; then v426_full; printf '\n%d passed, %d failed\n' "$pass" "$failn"; [ "$failn" = 0 ]; exit; fi
 if [ "${1:-}" = --v42x ]; then v42x_full; printf '\n%d passed, %d failed\n' "$pass" "$failn"; [ "$failn" = 0 ]; exit; fi # only the 4.2.x patch cases
@@ -832,6 +835,7 @@ Merge this one first." "Do not merge until the API ships" "  hold: waiting on de
   v435_smoke
   v436_smoke
   v440_smoke
+  lifecycle_smoke
   printf '\n%d passed, %d failed\n' "$pass" "$failn"
   [ "$failn" = 0 ]; exit
 fi
@@ -4719,6 +4723,7 @@ v434_full
 v435_full
 v436_full
 v440_full
+lifecycle_full
 # ---- end 4.2.0 ----
 
 printf '\n%d passed, %d failed\n' "$pass" "$failn"

@@ -1461,6 +1461,28 @@ render_notice() {
   esac
 }
 
+# --- team lifecycle (5.0) ---------------------------------------------------------------------------------
+# One state per team, and every state says who moves next (specs/fleet/cleanup.md, "Team lifecycle";
+# specs/fleet/lifecycle.statechart.json). LIFECYCLE_JQ is the one place that derives it, from facts about the team:
+#   {retired, parked, ready, nudged: bool, wait: "<what the lead named>" | "",
+#    agents: [{live: "running" | "rest" | "gone", brief_failed, blocked: bool}]}
+# The order is the rule: a person's choice first (Retired, Parked), then a fault only the Orchestrator clears (Stalled),
+# then work in progress, then what the team is at rest for. It returns {state, reason, next}.
+LIFECYCLE_JQ='def lifecycle:
+  (.agents // []) as $a
+  | if .retired == true then {state: "Retired", reason: "", next: "-"}
+    elif .parked == true then {state: "Parked", reason: "", next: "you or the Orchestrator"}
+    elif any($a[]; .live == "gone") then {state: "Stalled", reason: "an agent is gone", next: "Orchestrator"}
+    elif any($a[]; .brief_failed == true) then {state: "Stalled", reason: "a brief did not arrive", next: "Orchestrator"}
+    elif any($a[]; .blocked == true) then {state: "Stalled", reason: "a prompt blocks an agent", next: "Orchestrator"}
+    elif any($a[]; .live == "running") then {state: "Working", reason: "", next: "the team"}
+    elif .ready == true then {state: "Ready", reason: "", next: "you: merge"}
+    elif (.wait // "") != "" then {state: "Waiting", reason: .wait, next: ("waits on " + .wait)}
+    elif .nudged == true then {state: "Stalled", reason: "idle after a nudge", next: "Orchestrator"}
+    else {state: "Idle", reason: "", next: "loop nudges"} end;'
+# team_lifecycle <facts json>: the team state for those facts, as {state, reason, next}.
+team_lifecycle() { jq -c "$LIFECYCLE_JQ"' lifecycle' <<<"$1"; }
+
 # WAKE_TYPES: the tick events that wake the Orchestrator (loop-tick.sh) and get a notice (tick.sh); each has an entry
 # in references/output.md. An escalation wakes at any severity, pr_opened only when the lead could not be told.
 WAKE_TYPES="pr_ready pr_merged pr_opened pr_conflicting input_pending dead failed stalled lead_waiting needs_input brief_failed claim_takeover claim_lost claim_released claim_held_pr claim_lapsed comment_pending stale_version slot_free usage_limit status_changed main_red signoff_failed weekly_summary morning_report escalation parked_reminder tick_failing"
