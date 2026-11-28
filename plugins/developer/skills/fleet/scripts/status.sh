@@ -113,7 +113,7 @@ bg_busy() {
 
 # Each row's fields in one jq pass (\x1f-separated: a tab read would merge the empty ones), read on fd 3 so nothing
 # in the loop reads the list.
-while IFS=$'\x1f' read -r -u 3 name ref pane tier tm old esc tr sdetail bfa lbrief bfl; do
+while IFS=$'\x1f' read -r -u 3 name ref pane tier tm old esc tr sdetail bfa lbrief bfl wt; do
   [ -n "$name" ] || continue
   ! booting "$tm" || continue # boot is still starting this team's agents and sets their states itself
   # A brief that arrived after tell gave up on it (a session slow to start writes the prompt minutes later): its id in
@@ -150,6 +150,7 @@ while IFS=$'\x1f' read -r -u 3 name ref pane tier tm old esc tr sdetail bfa lbri
         if [ -n "$esc" ] && [ "$old" = "Needs input" ]; then new="Needs input"
         elif [ "$old" = "Idle" ]; then new="Idle"
         elif [ "$tier" = "Lead" ] && team_has_live_workers "$tm"; then new="Idle"
+        elif [ "$tier" = "Lead" ] && [ -n "$wt" ]; then new="Idle" # it named what it waits on: the team reads Waiting
         elif [ "$name" = "$tm/builder" ] && [ "$tier" = "Worker" ] && team_planner_pending "$tm"; then new="Idle"
         elif bg_busy "$tr"; then new="Working"
         else new="Stalled"; fi ;;
@@ -157,10 +158,12 @@ while IFS=$'\x1f' read -r -u 3 name ref pane tier tm old esc tr sdetail bfa lbri
     esac
   fi
   [ "$new" != "$old" ] && "$registry" set "$name" status="$new" >/dev/null
+  # A lead that works again has carried on: the wait it named is over (5.0 lifecycle, Waiting).
+  if [ "$tier" = Lead ] && [ "$new" = Working ] && [ -n "$wt" ]; then "$registry" set "$name" waiting= >/dev/null; fi
   [ "$detail" = "$sdetail" ] || "$registry" set "$name" status_detail="$detail" >/dev/null
 done 3< <(jq -r '.[] | select(.tier != "Orchestrator") | [.name, (.herdr_ref // ""), (.pane // ""), (.tier // ""), (.team // ""), (.status // ""),
   (if ([(.escalations // [])[]? | select(type == "object" and .resolved_at == null and (.parked // false) != true)] | length) > 0 then (.escalation // "") else "" end), (.transcript // ""), (.status_detail // ""), (.brief_failed_at // ""), (.last_brief // ""),
-  (.brief_failed_line // "" | tostring | select(test("^[0-9]+$")) // "")]
+  (.brief_failed_line // "" | tostring | select(test("^[0-9]+$")) // ""), (.waiting // "")]
   | map(tostring | gsub("[\u001f\n]"; " ")) | join("\u001f")' <<<"$rows")
 
 # A worker that reported done and was started again by its lead: herdr says it is working, so it is Working. Its done

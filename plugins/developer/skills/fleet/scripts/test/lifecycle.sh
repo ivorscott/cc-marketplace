@@ -49,6 +49,19 @@ lifecycle_restarted() { # a worker that reported done and was started again show
   eq "lifecycle: a Done worker at rest stays Done" "$("$REG" set lc-a/tester status=Done >/dev/null; "$SCRIPTS/status.sh" >/dev/null 2>&1; "$REG" get lc-a/tester | jq -r .status)" "Done"
 }
 
-lifecycle_smoke() { lifecycle_states; lifecycle_chart; lifecycle_restarted; }
+lifecycle_waiting() { # a lead names its wait: the team reads Waiting with it, never Stalled; working again clears it
+  export FLEET_STATE_DIR="$T/lc-wait" FLEET_REGISTRY="$T/lc-wait/fleet.json" FLEET_INBOX="$T/lc-wait/escalations.jsonl" FLEET_WORKTREES="$T/lc-wait/worktrees"
+  rm -rf "$FLEET_STATE_DIR"; mkdir -p "$FLEET_STATE_DIR"; rm -f "$AS"/*; gcfg
+  "$REG" add '{"name":"lw-a/lead","team":"lw-a","tier":"Lead","status":"Working","herdr_ref":"lw-a-lead","pane":"p1"}' >/dev/null
+  FLEET_ROLE=lead FLEET_NAME=lw-a/lead "$REG" set lw-a/lead waiting="CI on a1b2c3d" >/dev/null
+  echo idle >"$AS/lw-a-lead"; "$SCRIPTS/status.sh" >/dev/null 2>&1
+  eq "lifecycle: a lead at rest with a named wait is not Stalled" "$("$REG" get lw-a/lead | jq -r .status)" Idle
+  eq "lifecycle: and its team reads Waiting in the table" "$(bash -c '. "$1/common.sh"; render_table' _ "$SCRIPTS" | awk -F' *\\| *' '$2 == "lw-a" {print $6}')" Waiting
+  echo working >"$AS/lw-a-lead"; "$SCRIPTS/status.sh" >/dev/null 2>&1
+  eq "lifecycle: working again clears the wait" "$("$REG" get lw-a/lead | jq -r '.waiting // ""')" ""
+  eq "lifecycle: an agent may name only its own wait" "$(FLEET_ROLE=worker FLEET_NAME=lw-a/builder "$REG" set lw-a/lead waiting=x >/dev/null 2>&1; echo $?)" 1
+}
+
+lifecycle_smoke() { lifecycle_states; lifecycle_chart; lifecycle_restarted; lifecycle_waiting; }
 lifecycle_full() { lifecycle_smoke; }
 lifecycle_suite() { lifecycle_full; }

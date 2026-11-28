@@ -14,6 +14,7 @@ House rules (fleet). They apply to every agent on every team. A rule here is a f
 - A tester verifies and signs off; it never commits and never pushes. Fixes go back to the builder.
 - Planners only plan. "Go with your recommendation" approves the plan, nothing more. A plan is only for multi-PR or tier 3 work; otherwise the builder sends a plan of 10 lines or fewer.
 - Any question or decision for the owner is filed with escalate before a lead stops or goes Idle; text left in the pane reaches no one.
+- A lead that stops for something outside its team (CI on a head, another PR to merge, an answer from the owner) names it before it ends its turn: `registry.sh set <your name> waiting="<what>"`, such as `waiting="CI on a1b2c3d"`. The team then reads Waiting, not Idle. The wait clears itself when you work again; a lead at rest with no wait named is nudged.
 - Before escalating, check for a duplicate. Use the tracker's "blocked by" relation for dependencies. A CI change is allowed in the PR and is flagged when the plan is made.
 - One test run per PR head, and it is CI. No agent re-runs locally what CI runs. While iterating, a builder runs only the test sections it touched, then pushes.
 - Test sizing: tooling and skills get smoke tests plus shellcheck in CI; app code touching data, auth or billing gets the full suite plus e2e. The CI budget is about 5 minutes. Tests use no wall-clock assertions and no real timeouts.
