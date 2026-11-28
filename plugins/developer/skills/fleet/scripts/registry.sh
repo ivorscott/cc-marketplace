@@ -139,6 +139,7 @@ case "$cmd" in
       # An agent (FLEET_ROLE set in its pane) may set only these keys of its row; the Orchestrator and the
       # scripts (FLEET_ROLE unset) may set any other, and the schema check still applies to the result.
       if [ -n "${FLEET_ROLE:-}" ]; then
+        [ "$name" = "${FLEET_NAME:-}" ] || die "cannot set $name from an agent: an agent may set only its own row ($FLEET_NAME)"
         case "$k" in status | status_detail | summary | nudged_at | branch | worktree) ;; *) die "cannot set $k from an agent: agents may set only status, status_detail, summary, nudged_at, branch and worktree" ;; esac
       fi
       args+=(--arg "k$i" "$k" --arg "v$i" "$v"); prog="$prog | .[\$k$i] = \$v$i"; i=$((i + 1))

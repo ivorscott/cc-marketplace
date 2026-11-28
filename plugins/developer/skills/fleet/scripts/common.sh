@@ -1226,6 +1226,9 @@ render_table() {
     shift 2
   done
   me="$(machine_key 2>/dev/null || echo local)"
+  # With no queue given (boot, park and retire replies), the last queue tick or status kept, so a team reads the same here
+  # as in fleet status (Ready when its PR is in the queue's ready list).
+  if [ "$q" = null ] && [ -s "$(queue_file)" ]; then q="$(jq -c '.queue // null' "$(queue_file)" 2>/dev/null)" || q='null'; [ -n "$q" ] || q='null'; fi
   rows="$("$FLEET_SCRIPTS/registry.sh" list)" || return 1
   esc="$("$FLEET_SCRIPTS/registry.sh" escalations --open --not-retired 2>/dev/null)" || esc='[]'
   only="$(printf '%s\n' "$@" | jq -Rsc 'split("\n") | map(select(. != ""))')"

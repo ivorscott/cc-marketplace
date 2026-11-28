@@ -795,6 +795,14 @@ Morning report <YYYY-MM-DD>: <path>. Relay it as it is.
 ```
 
 
+### wake parked_reminder
+
+```
+Still parked for you: <team/lead> <id> <sev>: <full question>. Recommended: <option>. Needs you: fleet decide <team/lead> <id> --answer "<your answer>".
+```
+
+Every `parked_remind_hours` while a question parked for the owner stays open.
+
 ### wake escalation
 
 The decision form of the escalation, with its options.

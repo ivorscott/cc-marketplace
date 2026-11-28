@@ -54,6 +54,7 @@ archive_after_days = 0   # a Retired row with its lessons written moves to fleet
 # The loop (schedule.sh) and alerts
 tick_secs = 300
 # schedule_label = "fleet.tick"
+# events_label = "fleet.events"   # the launchd job of the herdr event subscriber (events.sh)
 # alert_cmd = "/path/to/script"           # run with the alert text as its one argument
 
 # The self-driving loop's profile, written by `fleet run init` (it changes only this table, max_teams and installs).

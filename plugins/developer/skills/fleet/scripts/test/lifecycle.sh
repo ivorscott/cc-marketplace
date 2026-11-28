@@ -51,3 +51,4 @@ lifecycle_restarted() { # a worker that reported done and was started again show
 
 lifecycle_smoke() { lifecycle_states; lifecycle_chart; lifecycle_restarted; }
 lifecycle_full() { lifecycle_smoke; }
+lifecycle_suite() { lifecycle_full; }

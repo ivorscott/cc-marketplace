@@ -1036,7 +1036,7 @@ The Orchestrator and agents call these directly, from `scripts/`. You can call t
 | `scripts/retire.sh` | safe teardown: archives reports to `reports/fleet-archive/`, removes worktrees, removes the team's test cluster |
 | `scripts/branches.sh` | `branches.sh [<repo>] [--dry-run]` (internal: the daily sweep and retire run it): deletes a repo's stale remote branches by `common.sh branch_verdict` (merged or closed PR, or no PR and every commit in the default branch; never the default branch, `release/*`, `renovate/*`, an open PR, another machine's live claim or a live team); `tick` runs it once a day per repo in `repos`, `retire` runs the same rules on a retired team's branches |
 | `scripts/env.sh` | per-team disposable test cluster, declared by the repo's `.claude/fleet-env.json` |
-| `scripts/test/run.sh` | offline tests (stub `up`/`down`, docker, df and herdr; no kind, no live fleet) |
+| `scripts/test/run.sh [area...]` | offline tests by area (lifecycle, commands, registry, tick, teams), one case per behaviour; `lib.sh` is the harness (shims for herdr, gh, docker, df and Linear; no kind, no live fleet) |
 | `scripts/registry.sh` | registry CLI used by every agent |
 | `references/` | herdr pitfalls, registry format, expertise files, and `output.md`: the one output shape of every command and wake |
 | `scripts/test/golden/` | the expected reply of each output.md entry, compared byte for byte by `run.sh` |
