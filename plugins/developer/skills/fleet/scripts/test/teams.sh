@@ -46,7 +46,7 @@ teams_boot() {
   eq "boot: each agent gets one pointer line to its brief, never the brief text" \
     "$(grep -c '^agent prompt build-bt-[a-z]* Read your brief: ' "$HERDR_LOG"):$(grep -c 'House rules (fleet)' "$HERDR_LOG" || true)" "$n:0"
   bf="$("$REG" get build-bt/builder | jq -r .last_brief)"
-  eq "boot: the brief is a mode-600 file" "$(stat -f %Lp "$bf" 2>/dev/null || stat -c %a "$bf")" 600
+  eq "boot: the brief is a mode-600 file" "$(stat -c %a "$bf" 2>/dev/null || stat -f %Lp "$bf")" 600
   eq "boot: the brief carries the done contract, the house rules once, then the repo's rules" \
     "$(grep -c 'registry.sh done' "$bf" | awk '{print ($1 > 0)}'):$(grep -c '^House rules (fleet)' "$bf"):$(awk '/^House rules/ {h = NR} /Repo rule: run make check/ {r = NR} END {print (h && r > h)}' "$bf")" "1:1:1"
   check "boot: --issue puts the exact Fixes line in the builder's brief" grep -q 'Fixes https://tracker.example/issue/DEV-7' "$bf"
