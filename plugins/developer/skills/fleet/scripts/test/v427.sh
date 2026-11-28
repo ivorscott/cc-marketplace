@@ -19,7 +19,8 @@ v427_watch() { # fleet watch prints the one command; help lists it and candidate
   eq "v427 watch: the first line is the tail command on wakes.log, the second a comment" \
     "$(printf '%s\n' "$out" | sed -n 1p):$(printf '%s\n' "$out" | wc -l | tr -d ' '):$(printf '%s\n' "$out" | sed -n 2p | cut -c1-1)" "tail -n 0 -F $FLEET_STATE_DIR/wakes.log:2:#"
   gold watch "$out"
-  eq "v427 watch: fleet help lists watch and candidates" "$("$SCRIPTS/fleet" help | grep -c '^| `\(watch\|candidates\)` ')" 2
+  eq "v427 watch: fleet run watch prints the same; help lists candidates, not watch (5.0)" \
+    "$([ "$("$SCRIPTS/fleet" run watch)" = "$out" ] && echo same):$("$SCRIPTS/fleet" help | grep -c '^| `candidates` '):$("$SCRIPTS/fleet" help | grep -c '^| `watch` ')" "same:1:0"
 }
 
 v427_candidates() { # only bootable work, the rest in skipped with a reason
@@ -108,7 +109,7 @@ v427_idle_day() { # 24 hours idle with one parked PR: no wake but the morning re
   qteam id-a app-api 30 DEV-30 aaaaaaa30
   "$REG" set orchestrator target_teams=2 >/dev/null
   v427_db "[$(v427_issue DEV-40 Todo '["R1"]')]"
-  gcfg 'linear_writes = "on"' 'overnight = true'
+  gcfg 'linear_writes = "on"' '[run]' 'report_at = "07:00"' # the morning report's time (overnight mode is gone in 5.0)
   local h ev types=""
   v420_tick 2026-10-29T10:00:00Z >/dev/null # the first look announces what is new (the ready PR, the free slot, the day's report)
   for h in 11 12 14 17 20 23; do ev="$(v420_tick "2026-10-29T$h:00:00Z")"; types+="$(printf '%s' "$ev" | jq -r '[.[]? | .type] | join(",")'),"; done

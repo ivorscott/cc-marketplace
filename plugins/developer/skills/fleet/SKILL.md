@@ -1,7 +1,7 @@
 ---
 name: fleet
-description: Orchestrate a fleet of coding agents in herdr — "boot a team", "fleet status", "what's the fleet doing", "tell <team> …", "retire <team>", "park <team>", "escalate", "debrief the fleet". Boots teams from templates (build, review, research), tracks every agent in a registry, flags stalled or dead agents, and turns finished work into lessons.
-argument-hint: "run init|start|stop|show | boot <template> <focus> <dir> [task] | status [--problems] | tell <agent|team> <msg> | park|unpark|focus <team> | escalate <name> <P0|P1|P2> <msg> | resolve <name> <id> | retire <team|agent> | prime | debrief | help [command]"
+description: Orchestrate a fleet of coding agents in herdr — "boot a team", "fleet status", "what's the fleet doing", "tell <team> …", "retire <team>", "park <team>", "what needs me", "keep this PR back". Boots teams from templates (build, review, research), tracks every agent in a registry, flags stalled or dead agents, and turns finished work into lessons.
+argument-hint: "status | run init|start|stop|show|watch | boot <template> <focus> <dir> [task] | tell <agent|team> <msg> | retire <team|agent> | park <team> [--undo] | candidates | decide [<team> <id> [--answer <text>]] | hold <PR> --note <why>|--off | claim <ISSUE> [--who|--take] | help [command]"
 allowed-tools: Read, Glob, Grep, Monitor, Bash(herdr:*), Bash(jq:*), Bash(git status:*), Bash(git log:*), Bash(git worktree list:*)
 ---
 
@@ -44,13 +44,12 @@ done contract, escalation, caps, guards and debrief; mechanics that are not rout
 | `/fleet status`, "how is the fleet", "any problems" | **B. Status** |
 | `/fleet tell …`, "ask the build team to …", "add a worker" | **C. Steer** |
 | a loop wake (`fleet tick: …`), "run the fleet", `watch` | **Tick** |
-| `/fleet escalate …`, `/fleet escalations`, `/fleet resolve …` | **E. Escalate** |
+| `/fleet decide …`, "any questions for me", an agent's escalation | **E. Escalate** |
 | `/fleet retire …`, "shut the team down" | **F. Retire** |
-| `/fleet branches …`, "clean up stale branches" | `$F/fleet branches [<repo>] [--dry-run]`; relay its reply as it is (it deletes only with the permission rule; never add the rule yourself, `fleet run init` does after the owner's yes) |
-| `/fleet park …`, `/fleet unpark …`, `/fleet focus …`, "pause the team", "just work on X" | **F2. Park** |
-| `/fleet prime`, or you lost track after a compaction | **G. Prime** |
-| `/fleet debrief`, "what did we learn" | **H. Debrief** |
-| `/fleet help [command]`, or any other `/fleet <command>` | run `$F/fleet <command> [args]` and relay its output |
+| `/fleet park …`, `/fleet hold …`, "pause the team", "keep this PR back" | **F2. Park** |
+| you lost track after a compaction | **G. Prime** |
+| "what did we learn" | **H. Debrief** |
+| `/fleet help [command]`, `/fleet candidates`, `/fleet claim …`, or any other `/fleet <command>` | run `$F/fleet <command> [args]` and relay its output; a 4.x name (unpark, escalations, resolve, holder, takeover, watch, schedule, prime, focus, slim, branches, debrief, metrics, config) answers with its 5.0 command: run that |
 
 ## R. Run
 
@@ -71,7 +70,7 @@ machines and a fresh session read the same ones.
   - **Escalations are yours to decide.** On an escalation wake run `$F/fleet decide <team> <id>` for each open P1 or P2: it takes
     the lead's recommended option, tells the lead, resolves with the decision, notes it for the morning report and comments it on
     the issue. A P0, and anything about merging, production, infrastructure applies, secrets or branch protection, is the
-    human's: `decide` parks that part (the lead carries on with other work, the escalation stays open until `fleet resolve`, one push goes out, and you relay
+    human's: `decide` parks that part (the lead carries on with other work, the escalation stays open until `fleet decide <team> <id> --answer`, one push goes out, and you relay
     its `Parked ...` line in chat) and never approves it. When a decision settles a gap in something another repo owns (a statechart, a contract, a doc), file that
     repo's follow-up issue yourself with `$F/fleet defer <team> --item "<gap>" --from <an issue of that repo>`.
   - **The only wait is a PR waiting to merge.** Never open a question box (AskUserQuestion) and never ask the owner to choose.
@@ -79,17 +78,12 @@ machines and a fresh session read the same ones.
   - **Keep one wake monitor armed** (Tick) and re-arm it silently when it expires.
   - **Usage guard:** on `usage_limit` boot nothing until the backoff ends (`boot` refuses); running teams finish. Report it once.
 - **Output rules.** A reply holds only what the owner can act on or asked for. Never report your own housekeeping: re-arming
-  or restarting the wake monitor, scheduling the next check, "nothing bootable", a heartbeat age, an expired monitor (re-arm it with `$F/fleet watch` and end the turn with no text), a
+  or restarting the wake monitor, scheduling the next check, "nothing bootable", a heartbeat age, an expired monitor (re-arm it with `$F/fleet run watch` and end the turn with no text), a
   `slot_free` that changes nothing, a quiet tick. A tick with nothing for the owner gets no reply at all. What does reach the
   owner: the status table when `status_changed` wakes you (relayed verbatim, no commentary; the ready-to-merge push only when its
   notice is there), a failure, a usage limit, a decision parked for the human, and the morning report when it is written.
 
 ## A. Boot
-
-Before the first boot of a session, run `$F/fleet slim status`. When it says `Offer: due`, ask once, in plain text
-(never a question box): "Turn on slim, the fleet's panel style for herdr, and install herdr's Claude integration?
-It replaces your own [ui] lines in herdr's config and keeps a backup. (yes/no)". Yes → `$F/fleet slim on`; no →
-`$F/fleet slim off`. Either records the answer, so it is never asked again.
 
 0. **Pick** the issue yourself when the user names none (or a slot frees, Tick): never ask which one. Run
    `$F/fleet candidates` and trust it: it lists only bootable work (Todo, and In Progress that is unclaimed or
@@ -97,7 +91,7 @@ It replaces your own [ui] lines in herdr's config and keeps a backup. (yes/no)".
    `role:` label) with a `skipped:` line and each reason. **Backlog is parked**: the user moves an issue to Todo to
    queue it, so never boot a `parked` issue and never move one to Todo yourself, whatever its priority or labels; an
    issue the user names is the one exception. Keep no exclude list of your own. Order what it lists by priority, then by series order (its place in its "Part of" or parent sequence, then its
-   identifier). A lapsed claim with no open PR is free: take it with `$F/fleet takeover <ISSUE>`. Ask the user only
+   identifier). A lapsed claim with no open PR is free: take it with `$F/fleet claim <ISSUE> --take`. Ask the user only
    to override a cap, or for a P0/P1. Never hand the user a menu: an issue with a "Decide first" section takes its
    acceptance default, stated in the PR body; follow-ups it names are filed (Linear, with blocked-by relations as
    needed) and stay in Backlog for the user; a split it asks for is done, and its parts go to Todo, because the user
@@ -124,7 +118,7 @@ It replaces your own [ui] lines in herdr's config and keeps a backup. (yes/no)".
 `$F/fleet status [<team>] [--problems] [--json]` recomputes health, writes it back and prints the status reply of
 `references/output.md`: the wake notices not shown yet, then the team table (a summary line, then Team, Machine, Issue
 as the key and a short title, PR as its full URL, State as one word, Needs you), then the merge queue when a PR is open
-(every ready PR in the order to merge them, as tick built it in the last minute, then `Not ready: …`), then the focus,
+(every ready PR in the order to merge them, as tick built it in the last minute, then `Not ready: …`), then
 the disk line (below `warn_free_gb`), the loop line and the skill line when they apply. Status shows every machine by
 default: one table with a Machine column and one queue, the other machines' teams read from the summaries they publish
 on Linear (a machine with no summary is one `Other machines:` line; with no Linear key the line says they are unknown).
@@ -155,13 +149,13 @@ retire (F) or re-boot; **Failed**, re-send with `$F/fleet tell <team/role> - --b
 
 ## Tick
 
-The scheduled loop (`$F/fleet schedule status`; the user installs it with `fleet schedule install`) runs `tick.sh` on a
+The scheduled loop (`$F/fleet run schedule status`; `fleet run start` installs it) runs `tick.sh` on a
 timer and appends a line `fleet tick: <type> <team> <name> <issue> <PR url> <esc id>` to `wakes.log` in the fleet
-state dir for every event someone must act on (P2 escalations, `stalled` and `weekly_summary` included; low disk and a
-repo with no team go to the user as alerts). A dead or blocked agent reaches the same file at once from the herdr event subscriber (`events.sh`, the `fleet.events` job that `fleet schedule install` adds); tick writes those lines itself when the subscriber is down (`fleet events status`). Nothing is typed into your pane. Once per session, in your own pane: run
+state dir for every event someone must act on (P2 escalations and `stalled` included; low disk and a
+repo with no team go to the user as alerts). A dead or blocked agent reaches the same file at once from the herdr event subscriber (`events.sh`, the `fleet.events` job that `fleet run start` installs); tick writes those lines itself when the subscriber is down (`fleet events status`). Nothing is typed into your pane. Once per session, in your own pane: run
 `$F/registry.sh orchestrator here` (it prints your row and `wakes`, the log's path), then start `Monitor` in the
 background on `tail -n 0 -F <wakes>`, so each new line wakes you. A Monitor armed before a `/clear` keeps running: when a wake
-arrives twice, stop the older task (TaskStop) and keep one. When a Monitor expires, run `$F/fleet watch`, start
+arrives twice, stop the older task (TaskStop) and keep one. When a Monitor expires, run `$F/fleet run watch`, start
 Monitor with its first line and end the turn with no text. Unregistered, nobody follows the log: wakes go to
 desktop notifications only, and `status` says so (under `fleet run`, keep it armed and re-arm it without a word). No reply within 15 minutes of a wake alerts the user; that check
 reads your transcript, so register with it (`--transcript`): while the row has none that exists, every wake also goes
@@ -186,8 +180,7 @@ question box (AskUserQuestion): the wakes queue behind it. Ask in plain text and
   across the repos in `repos`. When the only blocker is an open PR that is nearly ready (signed off, or CI green),
   boot plan-first: the lead's `--brief` says the planner runs and the builder waits for that merge.
 - `pr_merged` (every PR the team opened has merged): retire the team at once (F, step 0), without asking, then pick the
-  next issue (A, step 0) and boot it as a fresh team. A team marked `--after-merge` was parked by tick instead
-  (`parks` on the event). `$F/fleet next` stays for a team the user asked to reuse.
+  next issue (A, step 0) and boot it as a fresh team. `$F/next.sh` stays for a team the user asked to reuse.
 - `needs_input`, `brief_failed`: look at the pane; tick already re-sent them.
 - `stale_version`: a decision for the user (a newer plugin is installed). Relay it and wait. On yes, record it once
   for that version, `$F/registry.sh pref version_ok <installed version>`: every team then switches at its next
@@ -197,16 +190,13 @@ question box (AskUserQuestion): the wakes queue behind it. Ask in plain text and
 - `dead`: tick respawned the agent, or filed a P1 escalation after a second death inside the window.
 - `failed`: a row turned Failed (a restart or a brief that did not arrive); look at it.
 - `stalled`: nudged once and still stalled. `pr_opened`: a builder opened a PR without `done`; tick told the lead.
-- `weekly_summary`: its notice is the metrics table and the report it wrote (`reports/fleet-metrics-<date>.md`).
-- `morning_report` (the `report_at` time of the `[run]` profile, or overnight mode's 07:00): read the report it names and relay it
-  as it is. Overnight (`overnight = true`, the older switch `fleet run` supersedes), leads decide inside the issue's scope (they note each decision), installs, cloud, production, branch
-  protection, `gh pr ready` and closing stay P1 for the user (branches catch up with merge commits in every mode, not only overnight).
+- `morning_report` (the `report_at` time of the `[run]` profile): read the report it names and relay it as it is.
 - An agent blocked on a permission prompt for two ticks gets a P1 escalation ("blocked on a permission prompt"),
-  overnight or not: look at its pane and apply the blocked-prompt policy.
+  look at its pane and apply the blocked-prompt policy.
 - `claim_takeover`: stop or hand off the team (F), tell the user, escalate P1; never fight back (operations.md). When the
   notice says the PR already merged (`merged`), it is a note: nothing to stop or hand off, no P1; retire the team (F).
 - `claim_lost`: another machine released this machine's lapsed claim on the team's issue (this one slept past
-  lease_hours). Check `$F/fleet holder <ISSUE>`: with no holder, claim it again (`$F/fleet claim <ISSUE>`); with
+  lease_hours). Check `$F/fleet claim <ISSUE> --who`: with no holder, claim it again (`$F/fleet claim <ISSUE>`); with
   another machine's, treat it as `claim_takeover`.
 - `claim_released`: tick freed another machine's lapsed claim; the issue can be picked (A, step 0). `claim_held_pr`
   and `claim_lapsed`: tick left another machine's claim alone (an open PR, writes off, or no heartbeat); relay it.
@@ -234,8 +224,8 @@ Under `fleet run` (R) none of these waits: run `$F/fleet decide <team> <id>`, wh
 it, except for what is the human's (a P0, merging, production, infrastructure applies, secrets, branch protection), which it
 parks with one push.
 
-An escalation stays open, even after its agent is Done, until you run `$F/fleet resolve <name> <id> --note
-"<decision>"` once the decision has reached the agent. `$F/fleet escalations --open` lists them.
+An escalation stays open, even after its agent is Done, until it is decided. `$F/fleet decide` with no arguments lists the
+open ones; `$F/fleet decide <name> <id> --answer "<answer>"` gives the owner's answer: it tells the lead, then closes it.
 
 ## F. Retire
 
@@ -253,7 +243,7 @@ An escalation stays open, even after its agent is Done, until you run `$F/fleet 
    worktree with unpushed, untracked or uncommitted work and names it: ask the agent to push, then retire again.
    A team name with no live rows but leftovers of an earlier boot (its `fleet/<team>/*` branches or worktrees) is
    tidied the same way; boot refuses such a name until then. A boot that fails or is interrupted undoes what it made.
-3. Show the final summary, then offer a debrief (H).
+3. Show the final summary, then write its lessons (H).
 
 ## F2. Park
 
@@ -261,19 +251,17 @@ An escalation stays open, even after its agent is Done, until you run `$F/fleet 
 worktrees, branches, plans, reports and the Linear claim (no Linear write). Tick leaves a Parked team alone.
 
 - `park` refuses, changing nothing, when herdr is down or a worktree has unpushed work: ask the lead to push.
-- `$F/fleet park <team> --after-merge`: nothing changes now; when the PR merges, tick parks the team.
-- `$F/fleet unpark <team>` restarts the agents with the resume brief; it refuses when a cap is full (never queue).
-- `$F/fleet hold <PR> --note "<why>"` keeps a ready PR out of the merge queue (it shows as On hold, new work branches from main); `$F/fleet unhold <PR>` lets it go.
-- `$F/fleet focus <team> [--now]` parks every other live team; `$F/fleet focus --clear` unparks only those.
+- `$F/fleet park <team> --undo` restarts the agents with the resume brief; it refuses when a cap is full (never queue).
+- `$F/fleet hold <PR> --note "<why>"` keeps a ready PR out of the merge queue (it shows as On hold, new work branches from main); `$F/fleet hold <PR> --off` lets it go.
 
 ## G. Prime
 
-Run `$F/fleet prime` (the counts, then the status table) and answer with it. The registry is the memory: read rows,
-plans or reports only for what that does not answer. Then make the slim offer (A, before the first boot) if it is due.
+Run `$F/fleet status` and answer with it. The registry is the memory: read rows, plans or reports only for what that
+does not answer.
 
 ## H. Debrief
 
-`$F/fleet debrief` lists the retired teams whose lessons are due. For each: read its rows and `issue_done` events,
+After a retire, `$F/debrief.sh` lists the retired teams whose lessons are due (internal; the debrief command is gone). For each: read its rows and `issue_done` events,
 write one or two lessons per agent (`$F/registry.sh set <name> lessons="<text>"`), propose (never apply) a diff to
 `<repo>/.claude/experts/<role>.md` (`references/experts.md`), and list discovered work.
 
@@ -285,7 +273,7 @@ user. With `~/.config/fleet/sink.md`, push `registry.sh unsynced` after each reg
 
 ## References
 
-- `references/operations.md`: claims on Linear, chat, tick details, sandbox, retire summary, team environments,
+- `references/operations.md`: claims on Linear, tick details, sandbox, retire summary, team environments,
   the blocked-prompt policy and the sink
 - `references/output.md`: the one output shape of every command and wake, which you relay as it is
 - `references/registry.md`: row fields, the done contract, events · `references/experts.md`: expertise files

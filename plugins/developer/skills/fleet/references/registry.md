@@ -28,8 +28,7 @@ restarted, compacted or replaced agent picks up from the row, not from memory.
 | `transcripts` | earlier transcript paths of the agent (a list), appended by `respawn.sh` (also when `next.sh` restarts the agent); `metrics.sh` counts tokens only from these and `transcript` |
 | `status_detail` | "login expired" or "API error" while the newest assistant line of the transcript is an API error (status.sh); empty otherwise |
 | `continued_at` | when tick last sent a `continue` to an agent stopped by an API error (at most one per 30 minutes) |
-| `parked_at`, `parked_reason` | set for the whole team by `park.sh` (`registry.sh park`, one write): when, and why (`park`, `after-merge` or `focus:<team>`). Done rows keep their status. The panes are closed; rows, worktrees, branches and the claim stay. `unpark.sh` empties both |
-| `park_after_merge` | the reason the team parks with once its PR merges (`park.sh --after-merge`, `focus.sh` without `--now`); `tick.sh` parks the team then. `unpark.sh` and `focus.sh --clear` clear it |
+| `parked_at`, `parked_reason` | set for the whole team by `park.sh` (`registry.sh park`, one write): when, and why (`park`, or `signed-off` when tick parked a signed-off team). Done rows keep their status. The panes are closed; rows, worktrees, branches and the claim stay. `unpark.sh` empties both |
 | `nudged_at` | set by `tick.sh` when it nudged a Stalled agent; cleared when the agent stops being Stalled |
 | `input_flag` | set by `tick.sh` to the first 80 characters of text left unsent in an idle agent's input box; cleared when the box is empty (status shows it; tell clears the box before it types) |
 | `plugin_version`, `issue_url`, `issue_title` | the plugin version that booted (or last restarted) the agent, for tick's `stale_version`; the issue's full URL, for the brief's `Fixes` line; the issue's title (`boot.sh --issue-title`, `next.sh --issue-title`, `registry.sh reassign --issue-title`), which the team table's Issue cell shortens, so status never calls the tracker for it |
@@ -38,7 +37,7 @@ restarted, compacted or replaced agent picks up from the row, not from memory.
 | `comment_open`, `comment_signed`, `comment_answer` | on a lead's row, set by `tick.sh` when it forwards a new comment on the team's issue: the id of the newest comment that waits for an answer, the head the tester had signed then (empty when none), and the lead's answer (`registry.sh answer <name> TEXT`: a lead for its own row, the Orchestrator for any). While `comment_open` is set the team's PR is not ready. Tick clears the three once the answer is there, or the tester has signed another head, and posts the outcome on the issue; `registry.sh reassign` clears them too |
 | `escalation`, `escalations[]` | `escalation` is derived: the highest severity among open entries, `""` when none. Each entry is `{severity, message, at}` plus `resolved_at` and `resolution` once `registry.sh resolve` closes it; `(name, at)` identifies one. Open entries survive `done` and `retire` |
 | `discovered[]` | unrelated work the agent filed instead of doing |
-| `notes[]` | `{kind, message, at}` from `registry.sh note <name> decision\|picked TEXT`: `decision` is an option an agent took on its own (overnight mode), `picked` the search behind a boot (the Orchestrator, on the lead's row); the morning report reads both |
+| `notes[]` | `{kind, message, at}` from `registry.sh note <name> decision\|picked TEXT`: `decision` is an option an agent took on its own (fleet run), `picked` the search behind a boot (the Orchestrator, on the lead's row); the morning report reads both |
 | `cwd`, `target_teams` (the `orchestrator` row) | where the Orchestrator's session runs, recorded by `registry.sh orchestrator here`, which replaces the rest of the row but keeps `target_teams`, the "keep N teams running" goal |
 | `expertise_file` | the role's expertise file, if the repo has one |
 | `started`, `done_at`, `ended` | lifecycle timestamps (UTC) |
@@ -46,8 +45,7 @@ restarted, compacted or replaced agent picks up from the row, not from memory.
 | `updated_at`, `synced_at` | change tracking for the sink |
 
 Beside the rows, the top-level `prefs` object keeps the user's fleet-wide choices, written and read with
-`registry.sh pref <key> [value]` (the Orchestrator's only): `slim` (`on` or `off`, the answer to the slim offer) and
-`version_ok` (the installed plugin version the user said yes to switching to: tick asks no `stale_version` and `next`
+`registry.sh pref <key> [value]` (the Orchestrator's only): `version_ok` (the installed plugin version the user said yes to switching to: tick asks no `stale_version` and `next`
 and `respawn --restart` switch teams while it equals the version installed; a newer install asks again).
 
 ## Escalation inbox
@@ -90,8 +88,7 @@ mistakes, not against an adversary.
 `events.jsonl` in the state dir is append-only, one JSON object per line:
 `{at, type, team, name, issue, pr, sha, detail}` (empty fields are null). Types: `boot`, `brief_delivered`,
 `brief_failed`, `signoff`, `escalation_raised`, `escalation_resolved`, `next`, `pr_opened`, `pr_ready`,
-`pr_merged`, `stalled`, `dead`, `respawned`, `retired`, `parked`, `unparked`, `park_marked`, `focus_set`,
-`focus_cleared`, `hold`, `unhold`, `comment_pending`, `comment_answered` and `issue_done`. `detail` is a short reason (cut at 120 characters), never brief text and
+`pr_merged`, `stalled`, `dead`, `respawned`, `retired`, `parked`, `unparked`, `hold`, `unhold`, `comment_pending`, `comment_answered` and `issue_done`. `detail` is a short reason (cut at 120 characters), never brief text and
 never the Linear key. `issue_done` is the one type with more fields: `outcome`, `summary` and `lessons`, one
 event per row, written by `registry.sh reassign` (`next.sh`) before it clears the old issue's row, so a debrief
 still finds them. `metrics.sh` reads the log.

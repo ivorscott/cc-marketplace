@@ -163,7 +163,7 @@ down".
 | Level | You get | Guide |
 |---|---|---|
 | 1. Your first team | Booting, watching, answering a question, merging, retiring | [Lv1](plugins/developer/skills/fleet/README.md#level-1-your-first-team) |
-| 2. Daily driving | Several teams, the merge queue, park, focus and hold, conflict repair | [Lv2](plugins/developer/skills/fleet/README.md#level-2-daily-driving) |
+| 2. Daily driving | Several teams, the merge queue, park and hold, conflict repair | [Lv2](plugins/developer/skills/fleet/README.md#level-2-daily-driving) |
 | 3. Hands-off | `fleet run`: it keeps teams running, picks the next issue, decides routine questions and writes a morning report | [Lv3](plugins/developer/skills/fleet/README.md#level-3-hands-off-with-fleet-run) |
 | 4. Issues, repos, machines | Linear issues and claims, several repos, a second machine | [Lv4](plugins/developer/skills/fleet/README.md#level-4-issues-repos-and-machines) |
 

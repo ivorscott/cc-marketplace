@@ -65,7 +65,7 @@ v440_loop_failing() { # loop-tick: two failed runs in a row wake once; a good ru
 
 v440_text() {
   eq "v440 text: tick_failing is a wake type" "$(bash -c ". '$SCRIPTS/common.sh'; printf '%s' \"\$WAKE_TYPES\"" | tr ' ' '\n' | grep -cx tick_failing)" 1
-  eq "v440 text: every part of the tick runs as a step" "$(grep -c '^step [a-z_]* [a-z_]*$' "$SCRIPTS/tick.sh")" 29
+  eq "v440 text: every part of the tick runs as a step" "$(grep -c '^step [a-z_]* [a-z_]*$' "$SCRIPTS/tick.sh")" 28
   eq "v440 text: the plugin and the marketplace are at 4.4.0" "$(jq -r .version "$SCRIPTS/../../../.claude-plugin/plugin.json"):$(jq -r '.plugins[] | select(.name == "developer") | .version' "$SCRIPTS/../../../../../.claude-plugin/marketplace.json")" "4.4.0:4.4.0"
 }
 

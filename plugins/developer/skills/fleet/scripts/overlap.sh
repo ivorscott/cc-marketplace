@@ -25,7 +25,7 @@
 # `Files:` block, gh cannot list the PRs): never "none" by default.
 # The Orchestrator's, not an agent's (it reads the other machines through linear.sh): tick runs it once when a team's
 # planner is done, and tells the lead the answer.
-# Command: Check a plan's files against open PRs and live teams in the same repo · e.g. fleet overlap build-api
+# Internal command: Check a plan's files against open PRs and live teams in the same repo · e.g. fleet overlap build-api
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
 

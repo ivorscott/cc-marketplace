@@ -533,11 +533,11 @@ EOF")" "deny:deny:deny:deny"
     + [{name: "build-live/lead", team: "build-live", tier: "Lead", status: "Working", herdr_ref: "d16-lead", pane: "p16", issue: "DEV-12",
       discovered: [], escalations: []}]) | map({(.name): .}) | add)}' >"$FLEET_REGISTRY"
   r16=""
-  for c in "status.sh" "status.sh --json" "prime.sh" "debrief.sh" "metrics.sh --morning" "fleet escalations"; do
+  for c in "status.sh" "status.sh --json" "debrief.sh" "metrics.sh --morning" "fleet decide"; do
     # shellcheck disable=SC2086
     FLEET_NOW=2026-10-24T09:00:00Z "$SCRIPTS"/$c >/dev/null 2>"$SM/d16.err"; r16="$r16 ${c%% *}:$?:$(grep -c 'Argument list too long' "$SM/d16.err")"
   done
-  eq "smoke: dev512-16 a 1.2 MB registry: every reply exits 0, no argument list too long" "$r16" " status.sh:0:0 status.sh:0:0 prime.sh:0:0 debrief.sh:0:0 metrics.sh:0:0 fleet:0:0"
+  eq "smoke: dev512-16 a 1.2 MB registry: every reply exits 0, no argument list too long" "$r16" " status.sh:0:0 status.sh:0:0 debrief.sh:0:0 metrics.sh:0:0 fleet:0:0"
   kb16=$((($(wc -c <"$FLEET_REGISTRY" | tr -d ' ') + 1023) / 1024)); FLEET_NOW=2026-10-24T09:00:00Z "$SCRIPTS/tick.sh" >/dev/null 2>"$SM/d16.err"
   eq "smoke: dev512-16 tick archives the rows past the cap, each with the archive lesson" \
     "$?:$(grep -c 'Argument list too long' "$SM/d16.err"):$([ "$(wc -c <"$FLEET_REGISTRY")" -lt 524288 ] && echo under):$(jq '[.agents[] | select(.lessons == "Archived 24 Oct 2026 without a debrief (fleet.json over 512 KB)")] | length' "$FLEET_STATE_DIR/fleet-archive.json" 2>/dev/null)" "0:0:under:340"
@@ -548,8 +548,7 @@ EOF")" "deny:deny:deny:deny"
   # `| grep -q` reader's producer with SIGPIPE under pipefail
   dfresh 4; { echo 'claude: current (v10) (hooks installed)'; for i in $(seq 1 8000); do echo "codex: not installed, padding line $i ......."; done; } >"$SM/integ.txt"
   o4="$(HERDR_INTEGRATION_FILE="$SM/integ.txt" "$SCRIPTS/status.sh" 2>&1)"
-  eq "smoke: dev512-4 a long integration status reads current: no status line, slim status says current" \
-    "$(printf '%s\n' "$o4" | grep -c 'herdr Claude integration'):$(HERDR_INTEGRATION_FILE="$SM/integ.txt" FLEET_HERDR_CONFIG="$FLEET_STATE_DIR/herdr.toml" "$SCRIPTS/slim.sh" status 2>&1 | sed -n 's/.*integration: \([a-z]*\)\..*/\1/p')" "0:current"
+  eq "smoke: dev512-4 a long integration status reads current: no status line" "$(printf '%s\n' "$o4" | grep -c 'herdr Claude integration')" "0"
   # dev512-5: the panel metadata puts the id first and clears an empty token; a herdr that refuses it is warned
   # about once, and not asked again while the same herdr version runs
   dfresh 5; "$REG" add '{"name": "build-m5/lead", "team": "build-m5", "tier": "Lead", "status": "Working", "herdr_ref": "m5-lead", "pane": "pm5", "workspace": "wm5", "issue": "DEV-12"}' >/dev/null
@@ -630,14 +629,6 @@ EOF")" "deny:deny:deny:deny"
   a3="$(FLEET_NOW=2026-10-18T09:00:00Z "$SCRIPTS/status.sh" --all 2>&1 | grep '^Other machines')"; rm -f "$FLEET_CONFIG_DIR/$kf"
   eq "smoke: dev512-3 status --all lists a peer's claim with no flag, and says unknown without a key" \
     "$a3|$("$SCRIPTS/status.sh" --all 2>&1 | grep '^Other machines')" "Other machines: DEV-2 on other (claim only: no summary).|Other machines: unknown (no Linear key)."
-  # dev512-6: slim takes over a hand-written style: backup, the conflicting tables out, the block in; [keys] stays
-  dfresh 6; H6="$FLEET_STATE_DIR/herdr.toml"
-  printf '[keys]\nprefix = "ctrl-b"\n\n[ui]\nsidebar_width = 30\n\n[ui.sidebar.agents]\nrows = ["$name"]\n' >"$H6"; cp "$H6" "$SM/h6.orig"
-  o6="$(FLEET_HERDR_CONFIG="$H6" "$SCRIPTS/slim.sh" on 2>&1)"; rc=$?; b6="$(printf '%s\n' "$o6" | sed -n 's/.*Backup at \(.*\)\. Replaced.*/\1/p')"
-  eq "smoke: dev512-6 slim on replaces a hand-written [ui]: exit 0, one [ui] inside the markers, [keys] kept, the backup is the original" \
-    "$rc:$(grep -c '^\[ui\]' "$H6"):$(awk '/^# fleet slim:begin/ { on = 1 } /^# fleet slim:end/ { on = 0 } on && /^\[ui\]/' "$H6" | grep -c .):$(grep -c '^\[keys\]' "$H6"):$(cmp -s "$b6" "$SM/h6.orig" && echo same)" "0:1:1:1:same"
-  cp "$SM/h6.orig" "$H6"; RELOAD_FAIL=1 FLEET_HERDR_CONFIG="$H6" "$SCRIPTS/slim.sh" on >/dev/null 2>&1; rc=$?
-  eq "smoke: dev512-6 a reload herdr refuses puts the original back" "$rc:$(cmp -s "$H6" "$SM/h6.orig" && echo same)" "1:same"
   # dev512-7: a message to an agent busy in a long turn is queued, and that counts as delivered; idle and silent does not
   dfresh 7; "$REG" add '{"name": "build-t7/lead", "team": "build-t7", "tier": "Lead", "status": "Working", "herdr_ref": "t7-lead", "pane": "p"}' >/dev/null
   echo working >"$AS/t7-lead"; : >"$HERDR_LOG"; o7="$(PROMPT_NOSTATE=1 "$SCRIPTS/tell.sh" build-t7/lead "focus on the export" 2>/dev/null)"; rc=$?
@@ -1310,11 +1301,10 @@ eq "machine-id: Linux maps to Linux" "$(mid "$d" description | cut -d' ' -f3)" L
 shim "$d" uname 'echo CYGWIN_NT'; eq "machine-id: CYGWIN maps to Windows" "$(jf "$(mid "$d" show)" os)" Windows
 shim "$d" uname 'echo Plan9'; eq "machine-id: anything else maps to unknown OS" "$(jf "$(mid "$d" show)" os)" "unknown OS"
 
-# status names no machine (prime does); a team without an issue shows - in its Issue cell
+# status names no machine; a team without an issue shows - in its Issue cell
 cp "$FLEET_CONFIG_DIR/config.toml" "$T/config.bak2"
 eq "status: no machine footer" "$(DF_GB=100 "$SCRIPTS/status.sh" 2>/dev/null | grep -c '^machine:')" 0
 echo 'machine_name = "laptop-a"' >>"$FLEET_CONFIG_DIR/config.toml"
-eq "prime: names the machine by machine_name" "$(DF_GB=100 "$SCRIPTS/prime.sh" 2>/dev/null | head -n 1 | cut -d: -f1)" "Fleet on laptop-a"
 eq "status --json has no machine footer" "$(DF_GB=100 "$SCRIPTS/status.sh" build-nope --json 2>/dev/null | grep -c machine:)" 0
 eq "status: a team without an issue shows - in its Issue cell" "$(DF_GB=100 "$SCRIPTS/status.sh" 2>/dev/null | grep -c '^| build-plain | laptop-a | - |')" 1
 cp "$T/config.bak2" "$FLEET_CONFIG_DIR/config.toml"
@@ -1417,26 +1407,15 @@ DF_GB=100 pst >"$T/all3.out" 2>/dev/null; check "status without a Linear key say
 eq "status: --claims is gone (an unknown option)" "$("$SCRIPTS/status.sh" --all --claims "$T/x.json" >/dev/null 2>&1; echo $?)" 1
 eq "status: FLEET_STATUS_LOCAL=1 has no Other machines line, and reads no Linear" "$(DF_GB=100 FLEET_STATUS_LOCAL=1 "$SCRIPTS/status.sh" 2>/dev/null | grep -c '^Other machines')" 0
 
-# chat.sh: settings and format only, never the network
-CH="$SCRIPTS/chat.sh"
-eq "chat channel: empty when unset" "$("$CH" channel)" ""
-eq "chat allow: [] when unset" "$("$CH" allow)" "[]"
-printf 'chat_channel = "#fleet"\nchat_allow = ["chat__send", "chat__read"]\n' >>"$FLEET_CONFIG_DIR/config.toml"
-eq "chat channel: from config" "$("$CH" channel)" "#fleet"
-eq "chat allow: the list from config" "$("$CH" allow)" '["chat__send","chat__read"]'
-eq "chat format: one stable line" "$("$CH" format claim DEV-317 build-d lease=2026-10-18T11:00:00Z)" "fleet[test] claim DEV-317 build-d lease=2026-10-18T11:00:00Z"
-eq "chat format: every event" "$(for e in claim pr merge escalation takeover rebase; do "$CH" format $e x; done | wc -l | tr -d ' ')" 6
-eq "chat format: an unknown event dies" "$("$CH" format nope >/dev/null 2>&1; echo $?)" 1
-cp "$T/config.bak2" "$FLEET_CONFIG_DIR/config.toml"
+# claim.sh: settings only, never the network
 cat >"$T/bin/curl" <<'S'
 #!/usr/bin/env bash
 echo "curl $*" >>"$NETLOG"; exit 1
 S
 chmod +x "$T/bin/curl"; export NETLOG="$T/net.log"; : >"$NETLOG"
-"$CH" format claim DEV-1 >/dev/null; "$CH" channel >/dev/null; "$CL" lease >/dev/null
-eq "chat.sh and claim.sh never touch the network" "$(wc -l <"$NETLOG" | tr -d ' ')" 0
-check "no pure helper calls a chat or tracker tool" test -z "$(grep -lE 'slack|curl|linear|gh ' "$CH" "$CL")"
-eq "boot adds no chat_allow to agent settings" "$(grep -c chat_allow "$SCRIPTS/boot.sh")" 0
+"$CL" lease >/dev/null
+eq "claim.sh never touches the network" "$(wc -l <"$NETLOG" | tr -d ' ')" 0
+check "no pure helper calls a tracker tool" test -z "$(grep -lE 'slack|curl|linear|gh ' "$CL")"
 
 # docs
 SKD="$SCRIPTS/.."
@@ -1445,9 +1424,9 @@ for k in label_prefix machine_name machine_legacy_label claimed-by; do
 done
 for k in linear_writes; do check "fleet README mentions $k" grep -q "$k" "$SKD/README.md"; check "SKILL.md mentions $k" grep -q "$k" "$SKD/SKILL.md" "$SKD/references/operations.md"; done
 for k in label_prefix machine_name machine_legacy_label; do check "fleet README mentions $k" grep -q "$k" "$SKD/README.md"; done
-for k in lease_hours chat_channel chat_allow FLEET_STATUS_LOCAL linear.sh claim.sh chat.sh; do check "SKILL.md documents $k" grep -q -- "$k" "$SKD/SKILL.md" "$SKD/references/operations.md"; done
+for k in lease_hours FLEET_STATUS_LOCAL linear.sh claim.sh; do check "SKILL.md documents $k" grep -q -- "$k" "$SKD/SKILL.md" "$SKD/references/operations.md"; done
 check "SKILL.md no longer lists the follow-ups as not yet done" test -z "$(grep 'Not yet' "$SKD/SKILL.md")"
-for k in lease_hours chat_channel chat_allow claim.sh chat.sh FLEET_STATUS_LOCAL; do check "README documents $k" grep -q -- "$k" "$SKD/README.md"; done
+for k in lease_hours claim.sh FLEET_STATUS_LOCAL; do check "README documents $k" grep -q -- "$k" "$SKD/README.md"; done
 check "README tracker_allow example omits save_issue_label" test -z "$(grep -E 'tracker_allow.*save_issue_label' "$SKD/README.md")"
 check "README documents the cloned machine id risk" grep -qi 'cloned' "$SKD/README.md"
 check "machine-id.sh documents the cloned machine id risk" grep -qi 'cloned' "$SCRIPTS/machine-id.sh"
@@ -1507,10 +1486,10 @@ check "escalate logs 'notification failed'" grep -q 'notification failed' <<<"$e
 err="$(NOTIFY_FAIL=1 "$REG" done esc/solo --outcome Shipped --summary s 2>&1 >/dev/null)"
 check "done logs 'notification failed'" grep -q 'notification failed' <<<"$err"
 eq "a working notification logs nothing" "$("$REG" escalate esc/builder P2 "n2" 2>&1 >/dev/null)" ""
-for f in events.sh registry.sh status.sh retire.sh common.sh boot.sh tell.sh tick.sh next.sh linear.sh claim.sh respawn.sh metrics.sh agent-lib.sh schedule.sh loop-tick.sh sandbox.sh park.sh unpark.sh focus.sh; do check "bash -n $f" bash -n "$SCRIPTS/$f"; done
+for f in events.sh registry.sh status.sh retire.sh common.sh boot.sh tell.sh tick.sh next.sh linear.sh claim.sh respawn.sh metrics.sh agent-lib.sh schedule.sh loop-tick.sh sandbox.sh park.sh unpark.sh; do check "bash -n $f" bash -n "$SCRIPTS/$f"; done
 SKD0="$SCRIPTS/.."
 eq "SKILL.md no longer routes through escalation-wait.sh" "$(grep -c 'escalation-wait' "$SKD0/SKILL.md" || true)" 0
-check "SKILL.md documents resolve" grep -q 'fleet resolve' "$SKD0/SKILL.md" "$SKD0/references/operations.md"
+check "SKILL.md documents decide --answer" grep -q 'fleet decide .*--answer' "$SKD0/SKILL.md" "$SKD0/references/operations.md"
 check "SKILL.md has the Orchestrator send a push" grep -q 'PushNotification' "$SKD0/SKILL.md" "$SKD0/references/operations.md"
 check "build lead brief says P1 is only for a user decision" grep -q 'P1 is only for a decision the user must make' "$SKD0/templates/build.json"
 check "build lead brief no longer files an escalation for UNVERIFIED" test -z "$(grep 'UNVERIFIED with an escalation filed' "$SKD0/templates/build.json")"
@@ -1582,7 +1561,7 @@ done
 printf '%s' "$saved" >"$FLEET_REGISTRY"
 check "SKILL.md documents 'closed at retire'" grep -q 'closed at retire' "$SKD0/SKILL.md" "$SKD0/references/operations.md"
 check "registry.md documents 'closed at retire'" grep -q 'closed at retire' "$SKD0/references/registry.md"
-check "README documents resolve <id|at>" grep -q '<id|at>' "$SKD0/README.md"
+check "README documents decide --answer" grep -q 'fleet decide .*--answer' "$SKD0/README.md"
 
 # ---- DEV-368 C: esc_close, registry schema check, archive ----------------------------------------
 _cstate="$FLEET_STATE_DIR"; _creg="$FLEET_REGISTRY"; _cinbox="${FLEET_INBOX:-}"
@@ -2531,7 +2510,7 @@ eq "failed runs: junk output counts up to an alert (no reset in between)" "$(jq 
 jq '.last_good = 1000' "$FLEET_STATE_DIR/loop.state.json" >"$T/ls.tmp" && mv "$T/ls.tmp" "$FLEET_STATE_DIR/loop.state.json"
 touch "$FTFAIL"; lt >/dev/null 2>&1; lt >/dev/null 2>&1; rm -f "$FTFAIL"
 eq "unhealthy: no good tick within 2x tick_secs alerts once" "$(grep -c 'no good fleet tick in' "$ALERTLOG")" 1
-check "alert: the text is the Alert form, with its next step" grep -Eq '^Alert: no good fleet tick in [0-9]+ min\. Run fleet schedule status\.$' "$ALERTLOG"
+check "alert: the text is the Alert form, with its next step" grep -Eq '^Alert: no good fleet tick in [0-9]+ min\. Run fleet run schedule status\.$' "$ALERTLOG"
 # herdr down: one alert, no wake
 rm -f "$FLEET_STATE_DIR/loop.state.json"; : >"$ALERTLOG"; newwake; echo "fleet: warning: herdr agent list failed; no classification or respawn this tick" >"$FTERR"
 echo '[{"type":"dead","team":"t","name":"t/builder"}]' >"$FTJ"; lt >/dev/null 2>&1; lt >/dev/null 2>&1
@@ -3038,15 +3017,6 @@ eq "events: tick logs pr_ready with the url and head sha" "$(grep '"type":"pr_re
 ghset 31 MERGED UNKNOWN "$GREEN" "$H1" ok; "$SCRIPTS/tick.sh" >/dev/null 2>&1
 eq "events: tick logs pr_merged" "$(evn pr_merged)" 1
 
-# -- weekly_summary: once per ISO week; the first tick only records the week
-rm -f "$FLEET_STATE_DIR/tick.state.json"
-w1="$("$SCRIPTS/tick.sh" 2>/dev/null)"
-eq "weekly: the first ever tick emits no summary" "$(evc "$w1" weekly_summary)" 0
-eq "weekly: and records the week" "$(jq -r .summary_week "$FLEET_STATE_DIR/tick.state.json")" "$(date +%G-W%V)"
-jq '.summary_week = "2000-W01"' "$FLEET_STATE_DIR/tick.state.json" >"$T/ts.tmp" && mv "$T/ts.tmp" "$FLEET_STATE_DIR/tick.state.json"
-w2="$("$SCRIPTS/tick.sh" 2>/dev/null)"; w3="$("$SCRIPTS/tick.sh" 2>/dev/null)"
-eq "weekly: a new week emits weekly_summary once" "$(evc "$w2" weekly_summary)$(evc "$w3" weekly_summary)" 10
-
 # -- respawn: a Zombie row is started again from the row, within a budget
 export FLEET_STATE_DIR="$T/rsp" FLEET_REGISTRY="$T/rsp/fleet.json" FLEET_INBOX="$T/rsp/escalations.jsonl"; mkdir -p "$FLEET_STATE_DIR"; EVF="$FLEET_STATE_DIR/events.jsonl"
 rm -f "${AS:?}"/*; : >"$HERDR_LOG"
@@ -3527,11 +3497,11 @@ check "registry.md documents last_brief and plugin_version" bash -c "grep -q 'la
 
 # version and docs
 
-# ---- DEV-368 E: park, focus, unpark; caps; the config budget; issue_done -----------------------------------
+# ---- DEV-368 E: park, unpark; caps; the config budget; issue_done -----------------------------------
 _estate="$FLEET_STATE_DIR"; _ereg="$FLEET_REGISTRY"; _einbox="${FLEET_INBOX:-}"; _eforce="${FLEET_FORCE:-}"
 export FLEET_STATE_DIR="$T/estate" FLEET_REGISTRY="$T/estate/fleet.json" FLEET_INBOX="$T/estate/escalations.jsonl"; mkdir -p "$FLEET_STATE_DIR"
 EVF="$FLEET_STATE_DIR/events.jsonl"; unset FLEET_NOW; export FLEET_FORCE=
-PARK="$SCRIPTS/park.sh"; UNPARK="$SCRIPTS/unpark.sh"; FOCUS="$SCRIPTS/focus.sh"
+PARK="$SCRIPTS/park.sh"; UNPARK="$SCRIPTS/unpark.sh"
 : >"$FLEET_CONFIG_DIR/config.toml"
 for r in er er2 er3 er4; do
   git init -q -b main "$T/$r"; git -C "$T/$r" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init
@@ -3635,45 +3605,16 @@ sha5="$(rows_sha)"; "$UNPARK" ep-a >/dev/null 2>&1; rc=$?
 eq "unpark: run twice, the second is refused" "$rc" 1
 eq "unpark: and changes nothing" "$(rows_sha)" "$sha5"
 
-# -- after merge
-"$PARK" ep-b --after-merge >/dev/null 2>&1; eq "park --after-merge: parks nothing now" "$(stat_of ep-b/lead)" Idle
-eq "park --after-merge: the team is marked" "$("$REG" get ep-b/builder | jq -r .park_after_merge)" after-merge
-"$REG" set ep-b/builder pr=https://github.com/o/r/pull/61 >/dev/null
-ghset 61 MERGED UNKNOWN "$GREEN" "$H1" ok; : >"$HERDR_LOG"
-m1="$("$SCRIPTS/tick.sh" 2>/dev/null)"
-eq "after-merge: the merge is reported and says the team parks" "$(printf '%s' "$m1" | jq -s -c '[.[][]? | select(.type == "pr_merged") | .parks]')" '["after-merge"]'
-eq "after-merge: on pr_merged the team parks instead of taking the next issue" "$("$REG" list --team ep-b | jq -c '[.[] | [.status, .parked_reason]] | unique')" '[["Parked","after-merge"]]'
+# -- a parked team gets no next issue
+"$PARK" ep-b >/dev/null 2>&1; eq "park: ep-b parks for the next checks" "$(stat_of ep-b/lead)" Parked
 "$SCRIPTS/next.sh" ep-b DEV-10 >/dev/null 2>"$T/n.err"; rc=$?
 eq "next: a parked team is not given the next issue" "$rc" 1
 check "next: and says to unpark" grep -q 'is parked' "$T/n.err"
 "$REG" reassign ep-b DEV-10 >/dev/null 2>&1; eq "reassign: refuses a parked team too" "$?" 1
 
-# -- focus
-"$UNPARK" ep-b >/dev/null 2>&1; eq "focus setup: ep-b is back" "$(stat_of ep-b/lead)" Working
-"$PARK" ep-c >/dev/null 2>&1                       # parked by hand: focus --clear must leave it alone
-echo wip >"$T/ewt/fleet-ep-b-b/wip.txt"
-fo="$("$FOCUS" ep-a --now 2>/dev/null)"
-eq "focus --now: parks the other live team, refuses the dirty one" "$(printf '%s\n' "$fo" | head -n 1)" "Focused on ep-a: parked none. Refused: ep-b."
-rm -f "$T/ewt/fleet-ep-b-b/wip.txt"
-"$FOCUS" ep-a --now >/dev/null 2>&1; eq "focus: a second focus is refused until cleared" "$?" 1
-"$FOCUS" --clear >/dev/null 2>&1
-fo="$("$FOCUS" ep-a --now 2>/dev/null)"
-eq "focus --now: now ep-b parks too" "$(printf '%s\n' "$fo" | head -n 1)" "Focused on ep-a: parked ep-b."
-eq "focus: the reason names the focus" "$("$REG" get ep-b/lead | jq -r .parked_reason)" focus:ep-a
-check "focus: the status has one focus line" bash -c "'$SCRIPTS/status.sh' 2>/dev/null | grep -qx 'Focus: ep-a.'"
-eq "focus: focus_set is logged" "$(evn focus_set)" 2
-fc="$("$FOCUS" --clear 2>/dev/null)"
-eq "focus --clear: unparks only the teams focus parked" "$(printf '%s\n' "$fc" | head -n 1)" "Focus cleared: unparked ep-b."
-eq "focus --clear: the team parked by hand stays parked" "$(stat_of ep-c/lead)" Parked
-eq "focus --clear: the focus line is gone" "$(test -f "$FLEET_STATE_DIR/focus" && echo yes || echo no)" no
-eq "focus: focus_cleared is logged" "$(evn focus_cleared)" 2
-"$FOCUS" --clear >/dev/null 2>&1; eq "focus --clear: run twice, nothing to clear is refused" "$?" 1
-"$FOCUS" ep-nosuch >/dev/null 2>&1; eq "focus: an unknown team is refused" "$?" 1
-# focus without --now: the other teams park when their PRs merge
-"$FOCUS" ep-a >/dev/null 2>&1
-eq "focus: without --now the others are marked focus:<team>" "$("$REG" get ep-b/lead | jq -r .park_after_merge)" focus:ep-a
-"$FOCUS" --clear >/dev/null 2>&1
-eq "focus --clear: the marks go" "$("$REG" list | jq '[.[] | select((.park_after_merge // "") != "")] | length')" 0
+# -- park --undo is unpark
+"$PARK" ep-b --undo >/dev/null 2>&1; eq "park --undo: ep-b is back" "$(stat_of ep-b/lead)" Working
+"$PARK" ep-c >/dev/null 2>&1                       # parked by hand, for the caps below
 
 # -- caps: max_teams, one team per repo, Parked teams not counted
 "$REG" retire ep-c >/dev/null
@@ -3704,7 +3645,7 @@ eq "reassign: run twice logs nothing more (the row holds no outcome now)" "$("$R
 KEYS_CODE="$(cd "$SCRIPTS" && grep -ohE "(cfg_int|cfg_str|cfg_bool|config_list) '?[a-z_]+" *.sh | awk '{print $2}' | tr -d "'" | sort -u)"
 KEYS_EX="$(bash -c ". '$SCRIPTS/common.sh'; config_pairs '$SCRIPTS/../config.example.toml' 1" | cut -f1 | grep -v '^\[' | sort -u)"
 eq "config: the keys the code reads are the keys config.example.toml lists" "$KEYS_CODE" "$KEYS_EX"
-check "config: the context_window table is listed" grep -q '^\[context_window\]' "$SCRIPTS/../config.example.toml"
+check "config: the context_window table is gone (5.0)" test -z "$(grep '^\[context_window\]' "$SCRIPTS/../config.example.toml")"
 eq "config: no hard rule is a setting" "$(grep -ciE 'cloud_writes|allow_bypass|issue_url_template|branch_prefix_swap|branch_prefix' "$SCRIPTS/../config.example.toml" "$SCRIPTS"/*.sh | grep -v ':0' | grep -vc 'run.sh' || true)" 0
 printf 'max_teams = 4\nmax_agents = 9\nfoo_bar = "x"\n' >"$FLEET_CONFIG_DIR/config.toml"
 "$SCRIPTS/tick.sh" >/dev/null 2>"$T/c.err"
@@ -3725,7 +3666,7 @@ eq "config: a timing in config.toml no longer applies" "$(printf 'respawn_max = 
 : >"$FLEET_CONFIG_DIR/config.toml"
 
 # -- bash 3.2 / BSD: no bash 4 features in the new scripts, and the scripts run under the system bash
-for f in park.sh unpark.sh focus.sh; do
+for f in park.sh unpark.sh; do
   eq "bash 3.2: $f uses no bash 4 feature" "$(grep -cE 'declare -A|mapfile|readarray|\$\{[a-zA-Z_]+(,,|\^\^)\}|&>>|coproc' "$SCRIPTS/$f" || true)" 0
   check "bash -n $f" bash -n "$SCRIPTS/$f"
 done
@@ -3941,8 +3882,8 @@ bad=""; while IFS= read -r row; do
   case "$ex" in "\`fleet $c\`"* | "\`fleet $c "*) ;; *) bad="$bad $c" ;; esac
 done < <(sed -n '3,$p' "$D4/help.out")
 eq "dev408-16 commands: every row has an example that runs that command" "$bad" ""
-eq "dev408-16 commands: no internal script is listed" "$(printf '%s\n' "$cmds" | grep -cxE 'common|agent-lib|loop-tick|registry|tick|linear|machine-id|chat|fleet')" 0
-eq "dev408-16 commands: the commands (scripts with a Command line, the aliases, help)" "$(printf '%s\n' "$cmds" | paste -sd' ' -)" "boot branches candidates catchup claim debrief decide defer env escalate escalations focus help holder metrics next overlap park prime redact-check resolve respawn retire revive run sandbox schedule slim status takeover tell unpark watch"
+eq "dev408-16 commands: no internal script is listed" "$(printf '%s\n' "$cmds" | grep -cxE 'common|agent-lib|loop-tick|registry|tick|linear|machine-id|fleet|catchup|defer|env|events|next|overlap|redact-check|respawn|revive|sandbox|escalate|branches|metrics|debrief|watch|schedule|unpark')" 0
+eq "dev408-16 commands: help lists exactly the eleven 5.0 commands" "$(printf '%s\n' "$cmds" | paste -sd' ' -)" "boot candidates claim decide help hold park retire run status tell"
 bad=""; for f in "$SCRIPTS"/*.sh; do
   grep -q '^# Command: ' "$f" || continue; n="$(basename "$f" .sh)"
   awk 'NR == 1 { next } !/^#/ { exit } { print }' "$f" | grep -qE "^#   $n\.sh( |$)" || bad="$bad $n:usage"
@@ -3951,11 +3892,11 @@ done
 eq "dev408-16 commands: every command script's header has its usage line and its Command line" "$bad" ""
 check "dev408-16 commands: fleet help status prints status.sh's header unchanged" diff <("$FL" help status) <(sed -n '2,/^set -euo/p' "$SCRIPTS/status.sh" | sed '$d' | sed 's/^# \{0,1\}//')
 eq "dev408-16 commands: help for an alias prints its script's usage line and the Command line" "$("$FL" help escalate | grep -c '^  registry.sh escalate <name> P0|P1|P2 TEXT'):$("$FL" help escalate | grep -c '^Command: Raise a question')" "1:1"
-eq "dev408-16 commands: an alias's help keeps the usage line's continuation lines" "$("$FL" help holder | grep -c '^ ')" 3
+eq "dev408-16 commands: an alias's help keeps the usage line's continuation lines" "$("$FL" help claim | grep -c '^ ')" 1
 routes="$(awk '/^## Step 0/ { on = 1; next } on && /^## / { exit } on' "$SCRIPTS/../SKILL.md" | grep -o '`/fleet [a-z][a-z-]*' | sed 's#`/fleet ##' | sort -u)"
 missing=""; for r in $routes; do printf '%s\n' "$cmds" | grep -qx "$r" || missing="$missing $r"; done
 eq "dev408-16 commands: every SKILL.md Step 0 route is a command" "$missing" ""
-eq "dev408-16 commands: the Step 0 routes" "$(printf '%s\n' "$routes" | paste -sd' ' -)" "boot debrief escalate escalations focus help park prime resolve retire run status tell unpark"
+eq "dev408-16 commands: the Step 0 routes are commands of the eleven" "$(for r in $routes; do printf ' %s ' "boot candidates claim decide help hold park retire run status tell" | grep -q " $r " || echo "$r"; done | paste -sd' ' -)" ""
 check "dev408-16 commands: the README's Commands table is fleet help's output" diff <("$FL" help) <(awk '/^\| Command \| What it does \| Example \|$/ { on = 1 } on && !/^\|/ { exit } on' "$SCRIPTS/../README.md")
 "$FL" bogus >"$D4/u.out" 2>"$D4/u.err"; rc=$?
 eq "dev408-16 commands: an unknown command exits 2, nothing on stdout, the list on stderr" "$rc:$(wc -c <"$D4/u.out" | tr -d ' '):$(grep -c '^| `status` |' "$D4/u.err")" "2:0:1"
@@ -3972,25 +3913,31 @@ check "dev408-16 commands: and that output is a team table" grep -q '^| Team |' 
 eq "dev408-16 commands: arguments pass through unchanged" "$("$FL" status --json | jq -c '[.[].name] | sort')" "$("$SCRIPTS/status.sh" --json | jq -c '[.[].name] | sort')"
 "$FL" escalate g4/lead P2 "which port?" >/dev/null 2>&1
 eid="$("$REG" escalations --open | jq -r '[.[] | select(.message == "which port?")][0].id')"
-eq "dev408-16 commands: fleet escalations lists it in its table" "$("$FL" escalations --open | grep -c "^| $eid | P2 | g4/lead | which port? |")" 1
-"$FL" resolve g4/lead "$eid" --note 8080 >/dev/null 2>&1
-eq "dev408-16 commands: escalate, escalations and resolve run registry.sh's" "$("$REG" escalations --team g4 | jq -r '[.[] | select(.message == "which port?")][0] | [.resolution, (.resolved_at != null)] | map(tostring) | join("|")')" "8080|true"
+eq "dev408-16 commands: fleet decide with no arguments lists it in its table" "$("$FL" decide | grep -c "^| $eid | P2 | g4/lead | which port? |")" 1
+"$REG" resolve g4/lead "$eid" --note 8080 >/dev/null 2>&1
+eq "dev408-16 commands: escalate runs registry.sh's, and a resolve closes it" "$("$REG" escalations --team g4 | jq -r '[.[] | select(.message == "which port?")][0] | [.resolution, (.resolved_at != null)] | map(tostring) | join("|")')" "8080|true"
 d4cfg 'linear_writes = "on"'; d4db
-eq "dev408-16 commands: fleet holder runs linear.sh holder and says it in one line" "$(FLEET_NOW=2026-10-18T09:00:00Z "$FL" holder DEV-2)" "DEV-2: held by fleet:other, heartbeat lapsed."
+eq "dev408-16 commands: fleet claim --who runs linear.sh holder and says it in one line" "$(FLEET_NOW=2026-10-18T09:00:00Z "$FL" claim DEV-2 --who)" "DEV-2: held by fleet:other, heartbeat lapsed."
 d4cfg
-# prime: the counts, then the status output
 "$REG" escalate g4/lead P1 "need a decision" >/dev/null 2>&1
-FLEET_NOW=2026-10-24T09:00:00Z "$FL" prime >"$D4/prime.out" 2>/dev/null; rc=$?
-eq "dev408-16 commands: prime counts teams, open escalations and problems" "$rc:$(head -n 1 "$D4/prime.out")" "0:Fleet on fleet:test: 2 teams, 1 open escalations, 1 problems."
-eq "dev408-16 commands: then, after a blank line, prints the status output" "$(sed -n 2p "$D4/prime.out"):$(sed 1,2d "$D4/prime.out")" ":$(FLEET_NOW=2026-10-24T09:00:00Z "$SCRIPTS/status.sh" 2>/dev/null)"
-d4cfg 'machine_name = "test box"'; eq "dev408-16 commands: prime names the machine by machine_name when set" "$("$FL" prime 2>/dev/null | head -n 1 | cut -d: -f1)" "Fleet on test box"; d4cfg
+# 5.0: a 4.x command answers with the one to use now, and exits 2
+bad=""; for c in unpark:"park <team> --undo" unhold:"hold <PR> --off" holder:"claim <ISSUE> --who" takeover:"claim <ISSUE> --take" escalations:"decide" resolve:"decide <team> <id> --answer" \
+  watch:"run watch" schedule:"run schedule" prime:"status" config:"run show"; do
+  n="${c%%:*}"; w="${c#*:}"; o="$("$FL" "$n" x 2>&1)"; rc=$?
+  [ "$rc" = 2 ] && printf '%s' "$o" | grep -qF "Run fleet $w" || bad="$bad $n"
+done
+eq "5.0 commands: each renamed 4.x command exits 2 and names its 5.0 command" "$bad" ""
+bad=""; for n in branches debrief focus metrics slim; do o="$("$FL" "$n" 2>&1)"; rc=$?; [ "$rc" = 2 ] && printf '%s' "$o" | grep -q "is gone in 5.0: " || bad="$bad $n"; done
+eq "5.0 commands: each removed 4.x command exits 2 and says what replaced it" "$bad" ""
+eq "5.0 commands: an internal command still runs for the loop and the agents, and help still prints its usage" \
+  "$("$FL" overlap nope >/dev/null 2>&1; [ $? != 2 ] && echo ran):$("$FL" help env | grep -c 'test environment')" "ran:1"
 # debrief: the retired teams whose lessons are due
-eq "dev408-16 commands: debrief with nothing waiting" "$("$FL" debrief)" "Nothing to debrief."
+eq "dev408-16 commands: debrief with nothing waiting" "$("$SCRIPTS/debrief.sh")" "Nothing to debrief."
 for r in lead builder tester; do "$REG" add "$(jq -cn --arg r "$r" '{name: ("r4/" + $r), team: "r4", tier: (if $r == "lead" then "Lead" else "Worker" end), status: "Working", herdr_ref: ("r4-" + $r), pane: ("pr4-" + $r)}')" >/dev/null; done
 "$REG" note r4/builder discovered "flaky ci" >/dev/null
 "$REG" retire r4/lead --outcome Shipped >/dev/null; "$REG" retire r4/builder --outcome Partial >/dev/null; "$REG" retire r4/tester --outcome Shipped >/dev/null
 "$REG" set r4/tester lessons="sign the exact head" >/dev/null
-eq "dev408-16 commands: debrief lists the team, its outcomes and each agent's lesson or that it is due, then discovered work" "$("$FL" debrief)" "r4 (Partial/Shipped): lead: lesson due; builder: lesson due; tester: sign the exact head
+eq "dev408-16 commands: debrief lists the team, its outcomes and each agent's lesson or that it is due, then discovered work" "$("$SCRIPTS/debrief.sh")" "r4 (Partial/Shipped): lead: lesson due; builder: lesson due; tester: sign the exact head
 
 Discovered work: flaky ci (r4/builder)"
 
@@ -4016,11 +3963,10 @@ gold help "$("$FL" help)"
 gold status "$("$FL" status 2>&1)"
 gold status-team "$("$FL" status build-api 2>&1)"
 gold disk "$(DF_GB=40 "$FL" status 2>&1 | grep '^Disk:')"
-gold escalations "$("$FL" escalations --open 2>&1)"
-gold prime "$("$FL" prime 2>&1)"
-gold debrief "$("$FL" debrief 2>&1)"
+gold escalations "$("$FL" decide 2>&1)"
+gold debrief "$("$SCRIPTS/debrief.sh" 2>&1)"
 gold env "$("$FL" env status build-api 2>&1)"
-gold metrics "$("$FL" metrics 2>&1)"
+gold metrics "$("$SCRIPTS/metrics.sh" 2>&1)"
 WAKES="$(bash -c '. "$1/common.sh"; printf "%s" "$WAKE_TYPES"' _ "$SCRIPTS")"
 for w in $WAKES; do
   case "$w" in
@@ -4030,7 +3976,6 @@ for w in $WAKES; do
     needs_input) ev='{"type":"needs_input","team":"build-api","name":"build-api/builder","detail":"login expired"}' ;;
     claim_takeover) ev='{"type":"claim_takeover","team":"build-api","name":"build-api/lead","issue":"DEV-12","holder":"fleet:other"}' ;;
     claim_lost) ev='{"type":"claim_lost","team":"build-api","name":"build-api/lead","issue":"DEV-12"}' ;;
-    weekly_summary) ev='{"type":"weekly_summary","team":"","name":"","week":"2026-W43"}' ;;
     escalation) ev='{"type":"escalation","team":"build-api","name":"build-api/lead","id":"20261024T080000Z-1","severity":"P1","message":"which database?","options":["postgres","sqlite"]}' ;;
     pr_conflicting) ev='{"type":"pr_conflicting","team":"build-api","name":"build-api/lead","url":"https://github.com/acme/app-api/pull/214","merged":"https://github.com/acme/app-web/pull/121","lead_told":true}' ;;
     stale_version) ev='{"type":"stale_version","team":"build-api","name":"build-api/lead","from":"4.0.0","to":"4.1.0","detail":"runs 4.0.0, installed 4.1.0; waits for the go"}' ;;
@@ -4052,11 +3997,11 @@ done
 gold retire-ask "$("$FL" retire --summary build-web 2>&1)"
 mkdir -p "$G/la"; : >"$G/la/fleet.tick.plist"; printf '#!/bin/sh\n[ "$1" = print ]\n' >"$G/lctl"; chmod +x "$G/lctl"
 jq -n --argjson g "$(jq -rn '"2026-10-24T08:57:00Z" | fromdateiso8601')" '{last_good: $g}' >"$FLEET_STATE_DIR/loop.state.json"
-gold schedule "$(FLEET_LAUNCH_AGENTS="$G/la" FLEET_LAUNCHCTL="$G/lctl" "$FL" schedule status 2>&1)"
+gold schedule "$(FLEET_LAUNCH_AGENTS="$G/la" FLEET_LAUNCHCTL="$G/lctl" "$FL" run schedule status 2>&1)"
 gcfg 'linear_writes = "on"'; d4db
-gold holder "$(FLEET_NOW=2026-10-18T09:00:00Z "$FL" holder DEV-2 2>&1)"
+gold holder "$(FLEET_NOW=2026-10-18T09:00:00Z "$FL" claim DEV-2 --who 2>&1)"
 gold claim "$("$FL" claim DEV-1 2>&1)"
-gold takeover "$(FLEET_GH="$G4" FLEET_NOW=2026-10-18T09:00:00Z "$FL" takeover DEV-2 2>&1)"
+gold takeover "$(FLEET_GH="$G4" FLEET_NOW=2026-10-18T09:00:00Z "$FL" claim DEV-2 --take 2>&1)"
 gcfg
 gold sandbox "$("$FL" sandbox -- true 2>&1 | sed -E 's#at .*/fleet-sandbox\.[A-Za-z0-9]+:#at <sandbox>:#')"
 gold error "$("$FL" status build-nosuch 2>&1 >/dev/null)"
@@ -4064,15 +4009,12 @@ gold tell "$("$FL" tell build-api/tester "hello there" 2>&1)"
 gold decision "$("$FL" escalate build-api/tester P2 "rename the flag?" 2>&1)"
 gold escalate "$("$FL" escalate build-api/builder P1 "which port?" 8080 9090 "decide later" 2>&1)"
 eid="$("$REG" escalations --open --team build-api | jq -r '[.[] | select(.message == "which port?")][0].id')"
-gold resolve "$("$FL" resolve build-api/builder "$eid" --note "use 8080" 2>&1 | sed "s#$eid#<id>#")"
+gold resolve "$("$REG" resolve build-api/builder "$eid" --note "use 8080" 2>&1 | sed "s#$eid#<id>#")"
 gold respawn "$("$FL" respawn build-api/tester 2>&1)"
 gold boot "$(FLEET_FORCE=1 "$FL" boot --issue DEV-50 --issue-url https://linear.app/acme/issue/DEV-50/gold --issue-title "Web: the gold standard" build gold "$G/repo" "gold task" 2>/dev/null)"
 gold next "$("$FL" next build-web DEV-14 --issue-url https://linear.app/acme/issue/DEV-14/next --issue-title "API: the next one, with a title well past forty characters" 2>/dev/null)"
 gold park "$("$FL" park build-gold 2>&1)"
-gold unpark "$(FLEET_FORCE=1 "$FL" unpark build-old 2>&1)"
-gold focus "$(FLEET_FORCE=1 "$FL" focus build-api --now 2>&1)"
-gold focus-show "$("$FL" focus 2>&1)"
-gold focus-clear "$(FLEET_FORCE=1 "$FL" focus --clear 2>&1)"
+gold unpark "$(FLEET_FORCE=1 "$FL" park build-old --undo 2>&1)"
 gold retire "$("$FL" retire build-gold --outcome Abandoned 2>&1)"
 printf '#!/usr/bin/env bash\necho "fleet: warning: herdr agent list failed; no classification or respawn this tick" >&2\necho "[]"\n' >"$G/fake-tick"
 printf '#!/bin/sh\necho "$1" >>"%s"\n' "$G/alert.log" >"$G/alert-cmd"; chmod +x "$G/fake-tick" "$G/alert-cmd"
@@ -4577,14 +4519,11 @@ qfresh tf; mkdir -p "$QD/p12"; FLEET_FORCE=1 bt build tf "$QD/p12" task
 eq "dev408-12 boot: every pane gets the shared TF_PLUGIN_CACHE_DIR, and the directory exists" \
   "$(grep -c "^workspace create.*TF_PLUGIN_CACHE_DIR=$FLEET_STATE_DIR/tf-plugin-cache" "$HERDR_LOG"):$(grep -c "^pane split.*TF_PLUGIN_CACHE_DIR=$FLEET_STATE_DIR/tf-plugin-cache" "$HERDR_LOG"):$([ -d "$FLEET_STATE_DIR/tf-plugin-cache" ] && echo dir)" "1:3:dir"
 
-# -- dev408-11: overnight mode: the brief block, merge commits, a blocked agent's P1, the morning report
+# -- dev408-11: merge commits, a blocked agent's P1, the morning report (overnight mode is gone in 5.0)
 qfresh night; "$REG" add '{"name":"n1/lead","team":"n1","tier":"Lead","status":"Working","herdr_ref":"n1-l","pane":"pn1"}' >/dev/null
 hrules() { bash -c '. "$1/common.sh"; house_rules n1/lead' _ "$SCRIPTS"; }
-gcfg; eq "dev408-11 overnight: off, a brief has no overnight block" "$(hrules | grep -c '^Overnight mode')" 0
-gcfg 'overnight = true'
-eq "dev408-11 overnight: on, the block follows the house rules, with the lead's decision note" "$(hrules | grep -c '^Overnight mode'):$(hrules | grep -c 'registry.sh note n1/lead decision')" "1:1"
-check "dev408-11 overnight: the house rules and the block agree: a merge commit, never a force-push" bash -c \
-  "grep -q 'when your lead tells you another PR merged ahead of yours' '$SCRIPTS/../rules/house.md' && printf '%s' \"\$1\" | grep -q 'with a merge commit, never a force-push'" _ "$(hrules)"
+gcfg 'overnight = true'; eq "5.0 overnight: a brief never has an overnight block, even with the old key set" "$(hrules | grep -c '^Overnight mode')" 0
+gcfg; check "dev408-11 the house rules say to catch up with a merge commit when another PR merged ahead" grep -q 'when your lead tells you another PR merged ahead of yours' "$SCRIPTS/../rules/house.md"
 # R15: the builder's brief and the fleet rules say the same thing as the overnight block, never the opposite.
 qfresh night15; mkdir -p "$QD/p15"; FLEET_FORCE=1 bt build n15 "$QD/p15" task
 b15() { cat "$("$REG" get "build-n15/$1" | jq -r '.last_brief // "/nonexistent"')" 2>/dev/null; }
@@ -4616,14 +4555,14 @@ qpr app-api 85 fleet/dev-85 main 2026-10-23T20:00:00Z '["a.go"]' x CONFLICTING; 
   printf '{"at":"2026-10-24T05:00:00Z","type":"pr_conflicting","team":"mo3","name":"mo3/lead","pr":"https://github.com/acme/app-api/pull/86","detail":"after https://github.com/acme/app-api/pull/50"}\n'
 } >"$FLEET_STATE_DIR/events.jsonl"
 gold morning-report "$(TZ=UTC FLEET_NOW=2026-10-24T09:00:00Z FLEET_GH="$QD/gh-shim" "$SCRIPTS/metrics.sh" --morning 2>/dev/null)"
-gcfg 'overnight = true'; MR="$QD/ocwd/reports/fleet-morning-2026-10-24.md"
+gcfg '[run]' 'report_at = "07:00"'; MR="$QD/ocwd/reports/fleet-morning-2026-10-24.md"
 mt() { TZ=UTC FLEET_NOW="$1" FLEET_GH="$QD/gh-shim" "$SCRIPTS/tick.sh" 2>/dev/null; }
 m1="$(mt 2026-10-24T06:59:00Z)"; eq "dev408-11 morning: before 07:00 no report" "$(evc "$m1" morning_report):$([ -e "$MR" ] && echo written || echo none)" "0:none"
 m2="$(mt 2026-10-24T07:00:00Z)"
 eq "dev408-11 morning: the first tick from 07:00 writes it under the Orchestrator's cwd and wakes with its path" "$(evc "$m2" morning_report):$(head -n 1 "$MR"):$(printf '%s' "$m2" | jq -r '.[] | select(.type == "morning_report") | .path')" "1:# Morning report 2026-10-24:$MR"
 eq "dev408-11 morning: once per date" "$(evc "$(mt 2026-10-24T08:00:00Z)" morning_report)" 0
 eq "dev408-11 morning: and the next date again" "$(evc "$(mt 2026-10-25T07:30:00Z)" morning_report)" 1
-gcfg; eq "dev408-11 morning: never with overnight off" "$(evc "$(mt 2026-10-26T08:00:00Z)" morning_report)" 0
+gcfg 'overnight = true'; eq "dev408-11 morning: never without report_at, the old overnight key does nothing" "$(evc "$(mt 2026-10-26T08:00:00Z)" morning_report)" 0
 
 # -- dev408-14: the team on herdr's panel: workspace tokens issue, pr, state; pane tokens role, state (best effort)
 qfresh meta; mkdir -p "$QD/p14"
@@ -4638,39 +4577,6 @@ eq "dev408-14 meta: a new PR is reported on the next tick" "$(grep -c '^workspac
 META_FAIL=1 FLEET_FORCE=1 bt build mf "$QD/p14" task
 eq "dev408-14 meta: herdr refusing the metadata warns once and never fails the boot" "$BTRC:$(grep -c 'herdr did not take the panel metadata of build-mf' "$T/bt.err")" "0:1"
 rm -f "$FLEET_STATE_DIR/herdr_meta.refused" # the refusal is per herdr version; later cases' herdr takes it
-
-# -- dev408-15: slim, the fleet's panel style for herdr: written between markers, offered once, nothing else touched
-qfresh slim; HC="$QD/herdr.toml"; printf '# mine\n[keys]\nquit = "q"\n' >"$HC"; cp "$HC" "$QD/mine.toml"
-sl() { FLEET_HERDR_CONFIG="$HC" "$SCRIPTS/slim.sh" "$@"; }
-PV15="$(jq -r .version "$SCRIPTS/../../../.claude-plugin/plugin.json")"
-eq "dev408-15 slim: status before anything: off, the integration missing, the offer due" "$(HERDR_INTEGRATION="claude: not installed" sl status)" "Slim: off. herdr Claude integration: missing. Offer: due."
-gold slim "$(HERDR_INTEGRATION="claude: not installed" sl status)"
-: >"$HERDR_LOG"; o15="$(HERDR_INTEGRATION="claude: not installed" sl on)"; rc=$?
-eq "dev408-15 slim: on keeps the user's lines and adds the style between markers carrying the plugin version" \
-  "$rc:$(head -n 3 "$HC" | cmp -s - "$QD/mine.toml" && echo kept):$(grep -c "^# fleet slim:begin (developer $PV15)\$" "$HC"):$(grep -c '^# fleet slim:end$' "$HC"):$(grep -c '^sidebar_width = 40$' "$HC")" "0:kept:1:1:1"
-eq "dev408-15 slim: on backs up first, installs the missing integration, reloads herdr and records the choice" \
-  "$(ls "$HC".fleet-bak.* 2>/dev/null | wc -l | tr -d ' '):$(grep -c '^integration install claude' "$HERDR_LOG"):$(grep -c '^server reload-config' "$HERDR_LOG"):$("$REG" pref slim)" "1:1:1:on"
-eq "dev408-15 slim: and says so with the backup" "$(printf '%s' "$o15" | sed 's/fleet-bak\.[0-9TZ]*/fleet-bak.X/')" "Slim: on. Backup at $HC.fleet-bak.X."
-sl on >/dev/null; eq "dev408-15 slim: a second on replaces the block, never two" "$(grep -c '^# fleet slim:begin' "$HC")" 1
-eq "dev408-15 slim: status once on" "$(sl status)" "Slim: on. herdr Claude integration: current. Offer: done."
-sl off >/dev/null; eq "dev408-15 slim: off removes only the block and records the choice" "$(grep -c 'fleet slim' "$HC"):$(grep -c '^quit = "q"$' "$HC"):$("$REG" pref slim)" "0:1:off"
-eq "dev408-15 slim: with a choice recorded the offer is never due again" "$(sl status)" "Slim: off. herdr Claude integration: current. Offer: done."
-printf '[ui]\nsidebar_width = 30\n' >>"$HC"; cp "$HC" "$QD/before.toml"
-eq "dev408-15 slim: a hand-written [ui] outside the markers: status says conflict" "$(sl status | cut -d. -f1)" "Slim: conflict"
-o15="$(sl on 2>"$T/sl.err")"; rc=$?
-eq "dev512-6 slim: on replaces it: exit 0, one [ui] and the fleet's width, the user's other lines kept, and it says what went" \
-  "$rc:$(grep -c '^\[ui\]' "$HC"):$(grep -c '^sidebar_width = ' "$HC"):$(grep -c '^quit = "q"$' "$HC"):$(printf '%s' "$o15" | sed 's/.*Replaced //')" "0:1:1:1:[ui], sidebar_width."
-cp "$QD/mine.toml" "$HC"; RELOAD_FAIL=1 sl on >/dev/null 2>"$T/sl.err"; rc=$?
-eq "dev408-15 slim: a reload herdr refuses puts the config back as it was, exit 1" "$rc:$(cmp -s "$HC" "$QD/mine.toml" && echo restored)" "1:restored"
-FLEET_ROLE=worker sl status >/dev/null 2>"$T/sl.err"; eq "dev408-15 slim: an agent is refused" "$?:$(grep -c "slim.sh is the Orchestrator's" "$T/sl.err")" "1:1"
-env -u FLEET_TEST FLEET_HERDR_CONFIG="$QD/elsewhere.toml" "$SCRIPTS/slim.sh" on >/dev/null 2>&1
-eq "dev408-15 slim: without FLEET_TEST=1 the override is ignored: herdr's own config (here under the test HOME)" \
-  "$([ -e "$QD/elsewhere.toml" ] && echo used || echo ignored):$(grep -c '^# fleet slim:begin' "$HOME/.config/herdr/config.toml")" "ignored:1"
-rm -rf "$HOME/.config/herdr"
-check "dev408-15 slim: the style holds only the fleet's [ui] keys and its rows" bash -c \
-  "! grep -vE '^(#.*|\[ui(\.sidebar\.(agents|spaces))?\]|sidebar_width = 40|status_indicators = \"symbols\"|agent_panel_sort = \"spaces\"|rows = .*|)\$' '$SCRIPTS/../styles/slim.toml'"
-check "dev408-15 slim: SKILL.md offers it once, in plain text, before the first boot and at prime" bash -c \
-  "grep -q 'fleet slim status' '$SCRIPTS/../SKILL.md' && grep -q 'Turn on slim, the fleet' '$SCRIPTS/../SKILL.md'"
 
 # -- dev408-19: the planner's plan file: <repo>/.fleet/plan/<team>.md, out of git through .git/info/exclude
 qfresh plan19; R19="$QD/r19"; git init -q -b main "$R19"; git -C "$R19" -c user.email=t@t -c user.name=t commit -q --allow-empty -m init

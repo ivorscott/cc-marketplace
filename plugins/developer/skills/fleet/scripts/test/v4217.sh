@@ -165,7 +165,7 @@ v4217_connect() { # events.alive means connected: an nc that never acknowledges 
 v4217_status_line() {
   local ne; export FLEET_NOW=2026-10-29T10:00:00Z; ne="$(jq -rn --arg t "$FLEET_NOW" '$t | fromdateiso8601')"
   v4217_state sl; export FLEET_NC="$T/v4217.nc"
-  eq "v4217 status: never run" "$("$SCRIPTS/events.sh" status)" "Event subscriber: not running (tick polls). Run fleet schedule install."
+  eq "v4217 status: never run" "$("$SCRIPTS/events.sh" status)" "Event subscriber: not running (tick polls). Run fleet run start."
   : >"$FLEET_STATE_DIR/events.alive"; v4217_touch "$FLEET_STATE_DIR/events.alive" $((ne - 60))
   eq "v4217 status: up when events.alive is under 2 minutes old" "$("$SCRIPTS/events.sh" status)" "Event subscriber: up."
   v4217_touch "$FLEET_STATE_DIR/events.alive" $((ne - 121))
@@ -192,7 +192,7 @@ v4217_job() { # the launchd job: KeepAlive, its own launcher, installed next to 
 v4217_docs() {
   local R="$SCRIPTS/../README.md"
   eq "v4217 the README says how the event subscriber works" "$(grep -c '`fleet.events`' "$R")" 1
-  check "v4217 the fleet command index lists events" bash -c "'$SCRIPTS/fleet' help | grep -q 'fleet events status'"
+  check "v4217 events is internal in 5.0: not in the index, its help still prints" bash -c "! '$SCRIPTS/fleet' help | grep -q '^| \`events\`' && '$SCRIPTS/fleet' help events | grep -q 'fleet events status'"
 }
 
 v4217_smoke() { v4217_events; v4217_dedupe; v4217_lost; v4217_run; v4217_connect; v4217_status_line; v4217_job; v4217_docs; }

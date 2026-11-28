@@ -9,7 +9,7 @@
 # the work those agents filed, or "Nothing to debrief." (references/output.md). A "lesson due" is the Orchestrator's
 # to write (registry.sh set <name> lessons="<text>", SKILL.md route H); once every row of a team has its lessons,
 # `registry.sh archive` moves the team out of the live registry, and out of this list. This script writes nothing.
-# Command: List the retired teams and their lessons, the ones still due marked · e.g. fleet debrief
+# Internal command: List the retired teams and their lessons, the ones still due marked · e.g. debrief.sh
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
 [ $# = 0 ] || die "usage: debrief.sh"

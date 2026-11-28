@@ -17,7 +17,7 @@
 # it nothing is deleted and one line says how to add it. Only `fleet run init` adds that rule, after the owner's yes.
 # tick runs this once a day per configured repo (the Branches deleted section of the morning report); retire runs the
 # same rules on a retired team's own branches.
-# Command: Delete a repo's stale remote branches that are safe to delete · e.g. fleet branches --dry-run
+# Internal command: Delete a repo's stale remote branches that are safe to delete · e.g. branches.sh --dry-run
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
 
@@ -36,7 +36,7 @@ done
 # resolve_repo <arg>: a directory, or the `repos` entry whose path, folder name or owner/name is <arg>
 resolve_repo() {
   local a="$1" r
-  if [ -z "$a" ]; then git rev-parse --show-toplevel 2>/dev/null || die "not in a git repo" "Run it from a repo or name one: fleet branches <repo>"; return; fi
+  if [ -z "$a" ]; then git rev-parse --show-toplevel 2>/dev/null || die "not in a git repo" "Run it from a repo or name one: branches.sh <repo>"; return; fi
   if [ -d "$a" ]; then (cd "$a" && git rev-parse --show-toplevel 2>/dev/null) || die "$a is not a git repo"; return; fi
   while IFS= read -r r; do
     [ -n "$r" ] || continue

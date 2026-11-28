@@ -24,7 +24,7 @@
 # cycle, no backoff sleep: tests), FLEET_NOW (the clock).
 # UNVERIFIED until run against a real herdr: the frame shapes (event name and pane fields are read from several likely
 # keys), the events_lost frame, the socket path of a named session, and launchd KeepAlive (schedule.sh install).
-# Command: Check the herdr event subscriber · e.g. fleet events status
+# Internal command: Check the herdr event subscriber · e.g. fleet events status
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
 
@@ -160,8 +160,8 @@ case "${1:-}" in
   status)
     if ! command -v "$NC" >/dev/null 2>&1; then echo "Event subscriber: down (nc is not installed; tick polls)."; exit 0; fi
     if events_alive "$(epoch)"; then echo "Event subscriber: up."
-    elif [ -f "$ALIVE" ]; then echo "Event subscriber: down (events.alive is stale; tick polls). Run fleet schedule install."
-    else echo "Event subscriber: not running (tick polls). Run fleet schedule install."; fi
+    elif [ -f "$ALIVE" ]; then echo "Event subscriber: down (events.alive is stale; tick polls). Run fleet run start."
+    else echo "Event subscriber: not running (tick polls). Run fleet run start."; fi
     ;;
   *) sed -n '2,6p' "$0" | sed 's/^# \{0,1\}//'; exit 2 ;;
 esac

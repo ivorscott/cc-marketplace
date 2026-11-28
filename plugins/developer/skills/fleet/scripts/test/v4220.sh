@@ -15,7 +15,7 @@ v4220_run_start() {
   eq "v4220 run start: exit 0 with a fleet on PATH, and no spliced output in the rules" "$rc:$(grep -c 'SPLICED' <<<"$out" || true)" "0:0"
   out="$(FLEET_NOW=2026-10-29T08:00:00Z "$SCRIPTS/run.sh" start </dev/null 2>&1)"; rc=$?
   eq "v4220 run start: no 'command not found' when fleet is not on PATH" "$rc:$(grep -c 'command not found' <<<"$out" || true)" "0:0"
-  eq "v4220 run start: the rules name the script by its directory path" "$(grep -c "run $SCRIPTS/fleet watch, start Monitor" <<<"$out" || true)" 1
+  eq "v4220 run start: the rules name the script by its directory path" "$(grep -c "run $SCRIPTS/fleet run watch, start Monitor" <<<"$out" || true)" 1
   unset TZ DF_GB
 }
 v4220_smoke() { v4220_run_start; }

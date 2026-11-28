@@ -19,7 +19,7 @@ v436_parked() {
   id="$("$REG" escalations --open | jq -r '.[0].id')"; : >"$HERDR_LOG"
   out="$("$SCRIPTS/decide.sh" pk-a "$id" 2>&1)"
   eq "v436 decide: a parked item prints its full question, the recommendation and how to answer" \
-    "$(printf '%s' "$out" | grep -c "^Parked pk-a/lead $id P1: $q\. Recommended: yes\. Needs you: fleet resolve pk-a/lead $id --note"):$(printf '%s\n' "$out" | wc -l | tr -d ' ')" "1:1"
+    "$(printf '%s' "$out" | grep -c "^Parked pk-a/lead $id P1: $q\. Recommended: yes\. Needs you: fleet decide pk-a/lead $id --answer"):$(printf '%s\n' "$out" | wc -l | tr -d ' ')" "1:1"
   eq "v436 decide: it stays open and marked parked, with one push and the lead told to carry on" \
     "$("$REG" escalations --open | jq -r '[.[] | select(.parked == true and .resolved_at == null)] | length'):$(grep -c '^notification show' "$HERDR_LOG"):$(grep -c 'carry on with the rest of the work' "$HERDR_LOG")" "1:1:1"
   : >"$HERDR_LOG"
@@ -102,5 +102,20 @@ v436_text() {
   eq "v436 text: the worker rules carry the same sentence" "$(grep -c 'never ask only in the pane' "$SCRIPTS/common.sh")" 1
 }
 
-v436_smoke() { v436_parked; v436_next; v436_remind; v436_fixes; v436_text; }
+v436_answer() { # 5.0: fleet decide <team> <id> --answer tells the lead and closes the question; with no arguments it lists them
+  v436_state answer; export FLEET_NOW=2026-11-27T10:00:00Z
+  local id out
+  "$REG" escalate pk-a/lead P1 "rotate the deploy key?" yes no >/dev/null 2>&1
+  id="$("$REG" escalations --open | jq -r '.[0].id')"
+  eq "v436 decide: with no arguments it lists the open question" "$("$SCRIPTS/fleet" decide | grep -c "^| $id | ")" 1
+  : >"$HERDR_LOG"; echo idle >"$AS/pk-a-lead"
+  out="$("$SCRIPTS/fleet" decide pk-a "$id" --answer "yes, rotate it" 2>&1)"
+  eq "v436 decide --answer: the lead is told, the question closes with the answer as its note" \
+    "$(printf '%s' "$out" | grep -c "^Answered pk-a/lead $id: yes, rotate it"):$(grep -c "The owner answered your question $id: yes, rotate it" "$HERDR_LOG"):$("$REG" escalations --open | jq length):$("$REG" escalations | jq -r --arg i "$id" '.[] | select(.id == $i) | .resolution')" \
+    "1:1:0:yes, rotate it"
+  "$SCRIPTS/fleet" decide pk-a "$id" --answer "again" >/dev/null 2>&1; eq "v436 decide --answer: a closed question is refused" "$?" 1
+  unset FLEET_NOW
+}
+
+v436_smoke() { v436_parked; v436_answer; v436_next; v436_remind; v436_fixes; v436_text; }
 v436_full() { v436_smoke; }

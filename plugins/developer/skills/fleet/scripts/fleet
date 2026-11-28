@@ -7,11 +7,12 @@
 #   fleet help <command>          that command's usage: its script's # header, unchanged
 #
 # A command is a script in this directory whose header has the line `# Command: <what it does> · e.g. fleet <example>`.
-# help reads those lines, so the list is what the scripts say and cannot drift from them. A script without the line
-# (common.sh, agent-lib.sh, loop-tick.sh, registry.sh, tick.sh, linear.sh, ...) is internal and stays out of it.
-# A few commands have no script of their own and run a subcommand of an internal script: escalate, escalations and
-# resolve (registry.sh), claim, takeover and holder (linear.sh), unhold (hold.sh); their help is that script's usage lines for the
-# subcommand, and escalations, claim, takeover and holder turn the script's JSON into their reply line or table.
+# help reads those lines, so the list is what the scripts say and cannot drift from them. There are eleven: status, run,
+# boot, tell, retire, park, candidates, decide, hold, claim and help. A script whose line says `# Internal command:` runs
+# the same way for the loop and the agents but is never listed; a script with neither line (common.sh, registry.sh,
+# tick.sh, linear.sh, ...) is not a command at all. Two commands have no script of their own: claim (linear.sh: claim,
+# `--who` for holder, `--take` for takeover) and the internal escalate (registry.sh); claim turns the JSON into its line.
+# A 4.x command that 5.0 renamed or removed answers with the one to use now and exits 2.
 # A command that fails ends with the error form, "<command>: <what failed>. <the one next step>." (references/
 # output.md), made from its last line on stderr, with "Run fleet help <command>." when that line names no next step;
 # its other stderr lines come first, unchanged, and the exit status is the command's. An unknown command exits 2 and
@@ -26,16 +27,45 @@ D="$(cd "$(dirname "$src")" && pwd)"
 
 aliases() { # <name> <script> <subcommand> <what it does · e.g. example>, for the commands with no script of their own
   printf '%s\t%s\t%s\t%s\n' \
-    escalate registry escalate 'Raise a question by severity; it stays open until resolved · e.g. fleet escalate build-api/lead P1 "which database?" postgres sqlite' \
-    escalations registry escalations 'List escalations, the open ones or all · e.g. fleet escalations --open' \
-    resolve registry resolve 'Close an escalation once its answer reached the agent · e.g. fleet resolve build-api/lead 20261024T090000Z-1 --note "use pg"' \
-    claim linear claim 'Claim an issue on Linear for this machine · e.g. fleet claim DEV-123' \
-    takeover linear takeover 'Take an issue over from a machine whose claim lapsed · e.g. fleet takeover DEV-123' \
-    holder linear holder 'Say which machine holds an issue, and whether its claim lapsed · e.g. fleet holder DEV-123' \
-    unhold hold unhold 'Let a held PR go back to the merge queue · e.g. fleet unhold #12'
+    claim linear claim 'Claim an issue on Linear for this machine; --who says who holds it, --take takes a lapsed claim · e.g. fleet claim DEV-123 --who'
+}
+internal_aliases() { # the same, for the internal commands
+  printf '%s\t%s\t%s\t%s\n' \
+    escalate registry escalate 'Raise a question by severity; it stays open until decided · e.g. fleet escalate build-api/lead P1 "which database?" postgres sqlite'
 }
 
-commands() { # one line per command, by name: <name> TAB <script> TAB <subcommand or -> TAB <what it does · e.g. example>
+# renamed <4.x command>: what to run in 5.0, or nothing for a command that still exists.
+renamed() {
+  case "$1" in
+    unpark) echo "fleet park <team> --undo" ;;
+    unhold) echo "fleet hold <PR> --off" ;;
+    holder) echo "fleet claim <ISSUE> --who" ;;
+    takeover) echo "fleet claim <ISSUE> --take" ;;
+    escalations) echo "fleet decide (no arguments lists the open questions)" ;;
+    resolve) echo "fleet decide <team> <id> --answer \"<answer>\"" ;;
+    watch) echo "fleet run watch" ;;
+    schedule) echo "fleet run schedule <install|status|uninstall>" ;;
+    prime) echo "fleet status" ;;
+    config) echo "fleet run show" ;;
+    branches) echo "nothing: retire and the loop delete branches" ;;
+    debrief) echo "nothing: lessons are written when a team retires" ;;
+    focus) echo "fleet park <team> for each team to set aside" ;;
+    metrics) echo "nothing: the morning report says what happened" ;;
+    slim) echo "nothing: the panel style is gone" ;;
+  esac
+}
+
+internal_commands() { # the internal commands, the same four fields
+  local f n line
+  for f in "$D"/*.sh; do
+    line="$(awk 'NR == 1 { next } !/^#/ { exit } sub(/^# Internal command: /, "") { print; exit }' "$f")"
+    n="$(basename "$f" .sh)"
+    [ -z "$line" ] || printf '%s\t%s\t-\t%s\n' "$n" "$n" "$line"
+  done
+  internal_aliases
+}
+
+commands() { # one line per command, by name: <name> TAB <script> TAB <subcommand or -> TAB <what it does · e.g. example>; `commands all` adds the internal ones
   local f n line
   {
     for f in "$D"/*.sh; do
@@ -44,6 +74,7 @@ commands() { # one line per command, by name: <name> TAB <script> TAB <subcomman
       [ -z "$line" ] || printf '%s\t%s\t-\t%s\n' "$n" "$n" "$line"
     done
     aliases
+    [ "${1:-}" != all ] || internal_commands
     printf '%s\t-\t-\t%s\n' help "List the commands, or show one command's usage · e.g. fleet help status"
   } | LC_ALL=C sort -t "$(printf '\t')" -k1,1
 }
@@ -61,7 +92,7 @@ header() { awk 'NR == 1 { next } !/^#/ { exit } { sub(/^# ?/, ""); print }' "$1"
 
 usage() { # usage <command>: 1 when there is no such command
   local row n s sub line
-  row="$(commands | awk -F'\t' -v c="$1" '$1 == c')"
+  row="$(commands all | awk -F'\t' -v c="$1" '$1 == c')"
   [ -n "$row" ] || return 1
   IFS=$'\t' read -r n s sub line <<<"$row"
   if [ "$n" = help ]; then header "$D/fleet"
@@ -81,7 +112,6 @@ present() {
   j="$(cat "$2")"
   who="$(cfg_str machine_name '')"; [ -n "$who" ] || who="$(machine_label)"
   case "$1" in
-    escalations) render_escalations "$j" ;;
     claim) if [ "$(jq -r '.claimed // false' <<<"$j")" = true ]; then render_line claimed issue="$(jq -r .issue <<<"$j")" machine="$who"; else printf '%s\n' "$j"; fi ;;
     takeover) render_line took_over issue="$(jq -r .issue <<<"$j")" machine="$(jq -r .from <<<"$j")" ;;
     holder) h="$(jq -r '.heartbeat // ""' <<<"$j")" # no heartbeat age is printed: only "lapsed" or "no heartbeat"
@@ -107,7 +137,15 @@ relay() {
   esac
 }
 
-unknown() { printf "fleet: unknown command '%s'. Run fleet help.\n\n" "$1" >&2; list >&2; exit 2; }
+unknown() {
+  local r; r="$(renamed "$1")"
+  case "$r" in
+    "") ;;
+    nothing:*) printf "fleet: '%s' is gone in 5.0: %s.\n" "$1" "${r#nothing: }" >&2; exit 2 ;;
+    *) printf "fleet: '%s' is gone in 5.0. Run %s.\n" "$1" "$r" >&2; exit 2 ;;
+  esac
+  printf "fleet: unknown command '%s'. Run fleet help.\n\n" "$1" >&2; list >&2; exit 2
+}
 
 cmd="${1:-}"; [ $# = 0 ] || shift
 case "$cmd" in
@@ -117,20 +155,27 @@ case "$cmd" in
     usage "$1" || unknown "$1"
     exit 0 ;;
 esac
-row="$(commands | awk -F'\t' -v c="$cmd" '$1 == c')"
+[ -z "$(renamed "$cmd")" ] || unknown "$cmd" # a 4.x name points to its 5.0 command, even when its script lives on as internal
+row="$(commands all | awk -F'\t' -v c="$cmd" '$1 == c')"
 [ -n "$row" ] || unknown "$cmd"
 IFS=$'\t' read -r n s sub line <<<"$row"
 run=("$D/$s.sh"); [ "$sub" = - ] || run+=("$sub")
+# claim --who and claim --take are linear.sh holder and takeover, with their own reply lines.
+present_as=$cmd
+if [ "$cmd" = claim ]; then
+  args=(); for a in "$@"; do case "$a" in --who) run=("$D/linear.sh" holder); present_as=holder ;; --take) run=("$D/linear.sh" takeover); present_as=takeover ;; *) args+=("$a") ;; esac; done
+  set -- ${args[@]+"${args[@]}"}
+fi
 # The sandbox can be an interactive shell, whose prompt is on stderr: it runs as it is and prints its own line.
 [ "$cmd" != sandbox ] || exec "${run[@]}" "$@"
 errf="$(mktemp "${TMPDIR:-/tmp}/fleet-err.XXXXXX")"; outf=""
 trap 'rm -f "$errf" ${outf:+"$outf"}' EXIT
 rc=0
 case "$cmd" in
-  escalations | claim | takeover | holder)
+  claim)
     outf="$(mktemp "${TMPDIR:-/tmp}/fleet-out.XXXXXX")"
     "${run[@]}" "$@" >"$outf" 2>"$errf" || rc=$?
-    if [ "$rc" = 0 ]; then present "$cmd" "$outf"; [ ! -s "$errf" ] || cat "$errf" >&2; fi ;;
+    if [ "$rc" = 0 ]; then present "$present_as" "$outf"; [ ! -s "$errf" ] || cat "$errf" >&2; fi ;;
   *) "${run[@]}" "$@" 2>"$errf" || rc=$?
      [ "$rc" != 0 ] || [ ! -s "$errf" ] || cat "$errf" >&2 ;;
 esac

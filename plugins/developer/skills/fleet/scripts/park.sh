@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Park a team: close its panes, keep everything else, free its slot.
 #
-#   park.sh <team> [--after-merge]
+#   park.sh <team>          park it
+#   park.sh <team> --undo   bring it back: restarts its agents with the resume brief (unpark.sh); refused when a cap is full
 #
-# The rows become Parked (parked_at, parked_reason = park | after-merge | focus:<team>). Their worktrees,
+# The rows become Parked (parked_at, parked_reason = park). Their worktrees,
 # branches, plans and reports stay, and so does the Linear claim (nothing is written to Linear). Tick skips a
 # Parked team: it is never Stalled or Zombie, is not nudged or respawned, gets no next issue, and still covers
 # its repo for repo_without_team. A Parked team does not count against max_teams.
@@ -11,11 +12,8 @@
 # It refuses at once, changing nothing, when herdr does not answer, when a worktree of the team has changes
 # that are not committed (an untracked file under reports/, where the tester keeps its report, does not count), or
 # when it has commits that are on no remote. It never waits.
-# --after-merge parks nothing now: the team's rows are marked, and tick parks the team when its PR merges
-# instead of the Orchestrator giving it the next issue. Bring a team back with unpark.sh.
-# Internal: --reason <focus:team> (focus.sh) or signed-off (tick, after a sign-off) sets the parked_reason / the mark.
-# It prints "Parked <team>: slot free, worktrees and claim kept." (with --after-merge: "Marked <team>: it parks when
-# its PR merges."), then the team table (references/output.md).
+# Internal: --reason signed-off (tick, after a sign-off) sets the parked_reason.
+# It prints "Parked <team>: slot free, worktrees and claim kept.", then the team table (references/output.md).
 # Command: Free a team's slot and keep its work · e.g. fleet park build-api
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
@@ -23,16 +21,16 @@ require_herdr
 [ -z "${FLEET_ROLE:-}" ] || die "park is the Orchestrator's; an agent (FLEET_ROLE=$FLEET_ROLE) may not run it"
 registry="$FLEET_SCRIPTS/registry.sh"
 
-team="${1:?usage: park.sh <team> [--after-merge]}"; shift
+team="${1:?usage: park.sh <team> [--undo]}"; shift
 after=0; reason=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --after-merge) after=1; shift ;;
+    --undo) exec "$FLEET_SCRIPTS/unpark.sh" "$team" ;;
     --reason) reason="${2:?--reason needs a value}"; shift 2 ;;
-    *) die "unknown option: $1" ;;
+    *) die "unknown option: $1" "Run fleet help park" ;;
   esac
 done
-[ -n "$reason" ] || { [ "$after" = 1 ] && reason=after-merge || reason=park; }
+[ -n "$reason" ] || reason=park
 
 rows="$("$registry" list --team "$team" | jq -c '[.[] | select(.tier != "Orchestrator" and .status != "Retired")]')"
 [ "$(printf '%s' "$rows" | jq length)" != 0 ] || die "no live rows for team '$team'"

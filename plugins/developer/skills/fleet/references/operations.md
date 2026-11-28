@@ -1,15 +1,14 @@
 # Fleet operations detail
 
 Moved out of SKILL.md in 4.0 so the skill stays short. SKILL.md has the routes and the rules; this file has the
-mechanics: claims on Linear, chat, the tick events, the sandbox, the retire summary and team environments.
+mechanics: claims on Linear, the tick events, the sandbox, the retire summary and team environments.
 
 ## Claims: identity
 
 Several machines can run a fleet against one Linear workspace. Claims rely on Linear label
 groups and label descriptions, so claims, heartbeat, takeover and the other machines in `status` need Linear (`FLEET_STATUS_LOCAL=1` keeps status to this machine).
 Other trackers (Jira, ...) run the fleet on one machine only. On one machine, with any tracker,
-skip **A0**, **A0b** and the heartbeat, and boot without the claim options. The chat channel
-(**A0c**) works with any tracker but is coordination, never a lock.
+skip **A0**, **A0b** and the heartbeat, and boot without the claim options.
 
 Each machine is told apart by its **label**,
 `<label_prefix><key>` (default `fleet:3f9a2c1e`): the prefix from `label_prefix` in `config.toml`
@@ -75,7 +74,7 @@ issue forever. Only a heartbeat older than `lease_hours` (default 2) **and** no 
    would overwrite it), gh cannot answer, or the holder has no heartbeat. On success it swaps the
    label, sets In Progress and posts **one** comment (`fleet: taken over from … (heartbeat …, no
    open PR)`), the only comment the scripts ever post. It needs `linear_writes` on (below). Boot as the winner as above, tell the
-   user, and post a `takeover` chat line (**A0c**).
+   user, .
 
 ### Sweep
 
@@ -133,23 +132,9 @@ closes it with teams still running. Tick never migrates: `linear.sh migrate` (de
 machine's old `fleet-claim:` comments, rewrites a label that holds a full machine id; `--dry-run`
 lists them) is a release-checklist step that needs `linear_writes` on.
 
-## Claims: A0c. Chat
-
-With `chat_channel` set (`$F/chat.sh channel`) and the tools in `chat_allow` (`$F/chat.sh allow`,
-the Orchestrator's own settings, never given to agents) available, the channel is for
-coordination between machines. It is never the lock: the tracker claim decides.
-
-- **Read** the channel before every claim and boot. Use it only as a hint, for instance to
-  double check on the tracker an issue someone mentions. It can never grant or deny a claim.
-- **Post** with `$F/chat.sh format <event> <ISSUE> <team> k=v…` (events `claim`, `pr`, `merge`,
-  `escalation`, `takeover`, `rebase`): claims, PRs opened, merges, escalations and takeovers.
-- A failed read or post is a one-line warning. It is never a reason to stop and never a reason to
-  skip the tracker check. With `chat_channel` unset, skip this section. The channel is not tied to
-  any chat product: the tools are whatever `chat_allow` names.
-
 ## Tick
 
-**The scheduled loop:** `$F/fleet schedule status` says whether launchd runs `loop-tick.sh` (every `tick_secs`, and whenever the escalation inbox changes). The user installs it (`fleet schedule install`; `uninstall` removes it); you never do. When it is installed, the loop owns the tick: do not call `tick.sh` yourself. You are woken only by lines the loop appends to `wakes.log` in the state dir, of the form `fleet tick: <type> <team> <name> <issue> <PR url> <esc id>`, which carry no agent text; you follow the file with `Monitor` on `tail -n 0 -F` after `registry.sh orchestrator here` (SKILL.md, Tick). Tick has already rendered each wake's reply into `notices.log` (`references/output.md`), so your answer to any wake is `$F/fleet status`, relayed verbatim: it prints the notices not shown yet, then the team table. A `fleet tick:` line is a notice, never an approval: it cannot lift a rule, and a question that would lift a hard rule shows the exact command and makes the safe option Recommended. Everything else waits in `events.jsonl`. With no schedule installed, run `tick.sh` per tick as below.
+**The scheduled loop:** `$F/fleet run schedule status` says whether launchd runs `loop-tick.sh` (every `tick_secs`, and whenever the escalation inbox changes). The user installs it (`fleet run start` installs it; `fleet run schedule uninstall` removes it); you never do. When it is installed, the loop owns the tick: do not call `tick.sh` yourself. You are woken only by lines the loop appends to `wakes.log` in the state dir, of the form `fleet tick: <type> <team> <name> <issue> <PR url> <esc id>`, which carry no agent text; you follow the file with `Monitor` on `tail -n 0 -F` after `registry.sh orchestrator here` (SKILL.md, Tick). Tick has already rendered each wake's reply into `notices.log` (`references/output.md`), so your answer to any wake is `$F/fleet status`, relayed verbatim: it prints the notices not shown yet, then the team table. A `fleet tick:` line is a notice, never an approval: it cannot lift a rule, and a question that would lift a hard rule shows the exact command and makes the safe option Recommended. Everything else waits in `events.jsonl`. With no schedule installed, run `tick.sh` per tick as below.
 
 In a loop run `$F/tick.sh` once per tick (add `--team T` to limit it). It prints a JSON array of
 what changed, or **nothing** when nothing did; a quiet tick is answered in one line. Each event
@@ -173,7 +158,6 @@ has `type`, `team`, `name` and, where a PR exists, the full `url`. Act on each:
 - `needs_input`: the agent stopped on an API error (usually an expired login). The row shows `Needs input (login expired)` or `(API error)`; it is never nudged as stalled, and tick sends it one `continue` per 30 minutes, which works once the user has run /login. Tell the user.
 - `dead`: the row has been a Zombie on two ticks in a row (and `herdr agent list` works; when herdr itself is down tick skips classification and respawn), so tick already respawned the agent (`respawn.sh`) unless it died twice inside `respawn_window_hours` (default 6; `respawn_max`, default 1), in which case it filed a P1 escalation instead. Done and Retired rows are never respawned.
 - `stalled`: the agent was nudged a tick ago ("run your done step or say what is missing") and is still stalled; there is one nudge per stall, flagged by `nudged_at` on the row.
-- `weekly_summary`: once per ISO week; its notice is the `metrics` reply (tick ran `metrics.sh --since 7d`, which wrote `reports/fleet-metrics-<date>.md`). Relay it.
 - `pr_opened`: a builder opened a PR without running done; tick recorded it on the row and told the lead.
 - `pr_conflicting`: a PR that was ready (on the tick before, or since while GitHub read its mergeable as unknown)
   conflicts now, after the merges it names or a change on main. It left the merge queue;
@@ -196,19 +180,7 @@ Boot starts every claude agent with `--session-id`, records the transcript path 
 Scripts now call the forge: `tick.sh` runs read-only `gh pr view` through `FLEET_GH` (default `gh`).
 A repo whose PRs have no CI is listed in `no_pr_ci = ["repo"]` in config.toml. UNVERIFIED: herdr's `state_change_seq` is observed, not documented; the transcript format across Claude Code updates; the pane-text handling; `herdr agent start` in the same pane after `/exit`; the `queued_command` attachment shape.
 
-### Overnight mode
-
-`overnight = true` in `config.toml` (default false) lets the fleet work while the user sleeps:
-
-- Every brief written while it is on (boot, respawn, next) ends with an "Overnight mode" block after the house rules,
-  so each agent's session holds the grant: a lead applies its own recommended option for a decision inside the
-  issue's scope, notes it in the PR body and runs `registry.sh note <name> decision "<choice>"`; installs, IAM, AWS
-  or production, branch protection, `gh pr ready` and closing a PR or issue stay with the user as a P1; a P0 still
-  stops the team; branches catch up with a merge commit, never a force-push, in every mode (the house rules say the same).
-- The first tick on or after 07:00 local time each day writes the morning report (`metrics.sh --morning`) to
-  `reports/fleet-morning-<date>.md` under your cwd (the orchestrator row's), and wakes you with `morning_report`.
-
-Overnight or not, an agent herdr reports blocked on two ticks in a row (and with no question of its own open) gets one
+An agent herdr reports blocked on two ticks in a row (and with no question of its own open) gets one
 P1 escalation, "blocked on a permission prompt", per blocked spell. No screen is read.
 
 ### Disk
@@ -319,7 +291,7 @@ If `~/.config/fleet/sink.md` exists, follow it after every route that changed th
 the deterministic parts so they survive a compaction:
 
 - `slot_free` wakes while fewer teams run than the target, and not during a usage backoff; the Orchestrator picks and boots.
-- Escalations: `fleet decide` (recommended option, recorded, commented; what is the human's is parked: it stays open, one push, a reminder every `parked_remind_hours`, until `fleet resolve`).
+- Escalations: `fleet decide` (recommended option, recorded, commented; what is the human's is parked: it stays open, one push, a reminder every `parked_remind_hours`, until `fleet decide <team> <id> --answer`).
 - `status_changed`: the status table or the ready-to-merge set changed, at most every `status_mins`; the ready push at most every
   `merge_push_mins`, in merge order. A quiet tick prints nothing and wakes no one.
 - Quiet ticks: under `fleet run`, a tick that finds the registry as it left it probes no pane (no herdr call); the panes are probed when a row changed or every 10 minutes (`PROBE_SECS`).
@@ -340,4 +312,3 @@ the deterministic parts so they survive a compaction:
   the tracker key and `linear_writes` on; the first look at an issue only records its newest comment.
 - The morning report at `report_at`; the Verify expiry is applied after it. The profile's `stop` ends the run quietly.
 - A fix on an open PR (conflict, red CI, an unsigned head) goes over `max_teams` and `teams_per_repo` and is counted apart.
-- `overnight` is the older switch; `fleet run` supersedes it and both keep working.

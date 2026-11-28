@@ -53,7 +53,8 @@ v420_run_init() { # fleet run init writes the [run] profile; a re-run shows the 
   FLEET_RUN_ANSWERS="$T/v420-answers" "$SCRIPTS/run.sh" init >/dev/null 2>&1
   eq "v420 run init: choosing ask removes installs from the top level" "$(grep -c '^installs' "$C")" 0
   out="$(bash -c '. "$1/common.sh"; config_warn_unknown' _ "$SCRIPTS" 2>&1)"
-  eq "v420 run init: every key it writes is listed in config.example.toml (no unknown-key warning)" "$out" ""
+  # the user's own [context_window] table is warned about (gone in 5.0); nothing init wrote is
+  eq "v420 run init: every key it writes is listed in config.example.toml (no unknown-key warning)" "$(printf '%s\n' "$out" | grep -v "'\[context_window\]'" | grep -c .)" "0"
   printf '[run]\nbogus = 1\n' >>"$C"
   gold run "$("$SCRIPTS/run.sh" show)"
   eq "v420 run init: an unknown key in [run] is warned about" "$(bash -c '. "$1/common.sh"; config_warn_unknown' _ "$SCRIPTS" 2>&1 | grep -c "unknown key 'bogus' in \[run\]")" 1
@@ -458,7 +459,7 @@ v420_decide() { # a lead's escalation is decided, recorded and reported without 
   id="$("$REG" escalations --open | jq -r '[.[] | select(.parked != true)][0].id')"; : >"$HERDR_LOG"
   out="$("$SCRIPTS/decide.sh" dc-a/lead "$id" 2>&1)"
   eq "v420 decide: merging is the human's: parked, not approved, with one push" \
-    "$(printf '%s' "$out" | grep -c "^Parked dc-a/lead $id P1: may I merge the PR to main myself?\. Recommended: yes\. Needs you: fleet resolve dc-a/lead $id "):$(grep -c '^notification show' "$HERDR_LOG"):$(grep -c 'who can overrule it on the issue): yes' "$HERDR_LOG")" "1:1:0"
+    "$(printf '%s' "$out" | grep -c "^Parked dc-a/lead $id P1: may I merge the PR to main myself?\. Recommended: yes\. Needs you: fleet decide dc-a/lead $id "):$(grep -c '^notification show' "$HERDR_LOG"):$(grep -c 'who can overrule it on the issue): yes' "$HERDR_LOG")" "1:1:0"
   eq "v420 decide: the escalation stays open, parked, for the owner" "$("$REG" escalations --open | jq -r '[.[] | select(.parked == true)] | length')" 1
   "$REG" resolve dc-a/lead "$id" --note "owner answered" >/dev/null
   # the human-only gate fails safe: wording the old keyword list missed is parked, innocent words are decided
@@ -502,7 +503,7 @@ v420_version() { # the version, the changelog, the commands and the config examp
   eq "v420 version: plugin.json and the marketplace read 4.4.0" \
     "$(jq -r .version "$SCRIPTS/../../../.claude-plugin/plugin.json"):$(jq -r '.plugins[] | select(.name == "developer") | .version' "$SCRIPTS/../../../../../.claude-plugin/marketplace.json")" "4.4.0:4.4.0"
   eq "v420 help: fleet help run names the subcommands" "$("$SCRIPTS/fleet" help run | grep -o 'run.sh \(init\|start\|stop\|status\|show\)' | sort -u | wc -l | tr -d ' ')" 5
-  eq "v420 help: and the new commands are listed" "$("$SCRIPTS/fleet" help | grep -c '^| `\(run\|decide\|defer\|overlap\)` ')" 4
+  eq "v420 help: run and decide are listed; defer and overlap are internal (5.0)" "$("$SCRIPTS/fleet" help | grep -c '^| `\(run\|decide\)` '):$("$SCRIPTS/fleet" help | grep -c '^| `\(defer\|overlap\)` ')" "2:0"
   eq "v420 config: every key of [run] that init writes is in config.example.toml" \
     "$(bash -c '. "$1/common.sh"; table_pairs "$2" "[run]" 1 | cut -f1 | sort | tr "\n" " "' _ "$SCRIPTS" "$SCRIPTS/../config.example.toml")" "branch_delete fill install_policy merge_push_mins order report_at status_mins stop teams usage_margin work "
 }

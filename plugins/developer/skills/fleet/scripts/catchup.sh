@@ -15,7 +15,7 @@
 # (at most 2, then a P1 escalation instead of another round). It prints "Caught up <team>: ..." and logs
 # `catchup` to the event log. Exit 1 with the reason on stderr when the team is not brought back (a cap is full, herdr
 # does not answer), the team as it was.
-# Command: Bring a finished team back to merge main into its conflicting PR · e.g. fleet catchup build-api https://github.com/acme/app-api/pull/12
+# Internal command: Bring a finished team back to merge main into its conflicting PR · e.g. fleet catchup build-api https://github.com/acme/app-api/pull/12
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
 require_herdr

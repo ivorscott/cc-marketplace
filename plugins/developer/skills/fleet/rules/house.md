@@ -10,7 +10,7 @@ House rules (fleet). They apply to every agent on every team. A rule here is a f
 - Each writer runs `npm ci` (or the lockfile's equivalent) in its own worktree; installing from the lockfile is allowed. Never symlink `node_modules`, `.venv` or `vendor/` to another checkout: it can be older than the lockfile and sits outside your worktree.
 - Run the verification command named in your brief exactly, and show its result before and after your change. Do not trust a report: re-run the proof yourself.
 - Reports are 15 lines or fewer: the verdict first, then one PASS, FAIL or UNVERIFIED line per item, each tied to the head commit SHA. Evidence goes in `reports/<ticket>-<role>.md`; if messaging the lead fails, say where the file is.
-- Write only inside your own repository. Work in another repository becomes a new issue. Never push to the default branch and never merge a PR; the merger (`merger` in the fleet config, default "a human") merges.
+- Write only inside your own repository. Work in another repository becomes a new issue. Never push to the default branch and never merge a PR; the owner merges.
 - A tester verifies and signs off; it never commits and never pushes. Fixes go back to the builder.
 - Planners only plan. "Go with your recommendation" approves the plan, nothing more. A plan is only for multi-PR or tier 3 work; otherwise the builder sends a plan of 10 lines or fewer.
 - Any question or decision for the owner is filed with escalate before a lead stops or goes Idle; text left in the pane reaches no one.

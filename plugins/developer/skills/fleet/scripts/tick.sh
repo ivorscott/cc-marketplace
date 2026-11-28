@@ -23,7 +23,7 @@
 #   stale_version   a team has an agent on an older plugin version than the one installed (its row's
 #                   plugin_version); switching it at the next `next.sh` waits for the user's go (a decision).
 #                   Once per (team, installed version)
-#   weekly_summary  the ISO week changed (its notice runs metrics.sh, which writes reports/fleet-metrics-<date>.md);
+#   (weekly_summary is gone in 5.0: the morning report says what happened)
 #                   the first tick ever only records the week
 #   escalation      an open escalation not yet reported (keyed by agent name and escalation id)
 #   pr_opened       a team with no PR on any row has an open PR whose head branch it pushed (one gh pr list --state
@@ -440,7 +440,7 @@ plan_overlap() {
   done < <("$registry" list ${team:+--team "$team"} | jq -r '[.[] | select(.tier != "Orchestrator" and .status != "Retired" and .status != "Parked")] | group_by(.team) | .[]
     | select(any(.[]; (.name | endswith("/planner")) and .status == "Done")) | [.[0].team, ([.[].repo // empty | select(. != "")] | first // "")] | @tsv')
 }
-# The daily branch sweep (DEV-739): each repo in `repos` once a day, with branches.sh (same rules as fleet branches). Not
+# The daily branch sweep (DEV-739): each repo in `repos` once a day, with branches.sh (same rules as retire). Not
 # with --team (a fleet-wide check). A repo whose sweep cannot run (no permission rule, or branches.sh failed) is not recorded
 # as done, so the next tick tries again; the warning is given once a day per repo.
 branches_sweep() {
@@ -1223,14 +1223,6 @@ step_archive() {
 step archive step_archive
 
 # --- weekly summary ---------------------------------------------------------------------------------
-step_weekly_summary() {
-  sweek="$(date +%G-W%V)"; prev_week="$(jq -r '.summary_week // ""' "$STATE_FILE")"
-  if [ -n "$prev_week" ] && [ "$prev_week" != "$sweek" ]; then
-    add_events "$(jq -cn --arg w "$sweek" '[{type: "weekly_summary", team: "", name: "", week: $w, detail: "the weekly metrics and their report are in the notice"}]')"
-  fi
-  st_upd --arg w "$sweek" '$st + {summary_week: $w}'
-}
-step weekly_summary step_weekly_summary
 
 # --- herdr's panel ---------------------------------------------------------------------------------------------
 # A team whose state, PR or issue changed since the last tick shows it on herdr's panel again (common.sh herdr_meta);
@@ -1255,7 +1247,7 @@ step herdr_panel step_herdr_panel
 # at most, an hour at least). After it is written, linear.sh verify-sweep applies the Verify expiry: an item the report just
 # asked about is remembered as asked, one it announced is moved to Done with a comment.
 step_morning_report() {
-  if [ -z "$team" ] && { [ "$(cfg_bool overnight false)" = true ] || [ -n "$(run_val report_at)" ]; }; then
+  if [ -z "$team" ] && [ -n "$(run_val report_at)" ]; then
     mday="$(local_time "$now_epoch" %Y-%m-%d)"; rat="$(run_str report_at "")"
     case "$rat" in [0-2][0-9]:[0-5][0-9]) rmin=$((10#${rat%%:*} * 60 + 10#${rat##*:})) ;; *) rmin=$(($(const_int MORNING_HOUR 7) * 60)) ;; esac
     nmin=$((10#$(local_time "$now_epoch" %H) * 60 + 10#$(local_time "$now_epoch" %M)))

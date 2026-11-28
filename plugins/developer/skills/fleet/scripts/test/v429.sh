@@ -33,12 +33,12 @@ v429_hold() { # hold and unhold: the file, the replies, the refusals
   eq "v429 hold: an agent (FLEET_ROLE set) may not hold" "$rc:$(jq -r 'has("https://github.com/acme/app-api/pull/7")' "$FLEET_STATE_DIR/holds.json")" "1:false"
   FLEET_ROLE=builder "$SCRIPTS/hold.sh" unhold "$V429_API/9" >/dev/null 2>&1; rc=$?
   eq "v429 hold: nor may it unhold" "$rc:$(jq -r 'has("'"$V429_API"'/9")' "$FLEET_STATE_DIR/holds.json")" "1:true"
-  out="$("$SCRIPTS/fleet" unhold '#9' 2>&1)"
+  out="$("$SCRIPTS/fleet" hold '#9' --off 2>&1)"
   gold unhold "$out"
-  eq "v429 hold: fleet unhold is an alias of hold.sh unhold and clears the file entry" "$(jq -r 'length' "$FLEET_STATE_DIR/holds.json")" 0
+  eq "v429 hold: fleet hold --off is hold.sh unhold and clears the file entry" "$(jq -r 'length' "$FLEET_STATE_DIR/holds.json")" 0
   "$SCRIPTS/hold.sh" unhold "$V429_API/9" >/dev/null 2>&1; rc=$?
   eq "v429 hold: unholding a PR that is not held is refused" "$rc" 1
-  eq "v429 hold: fleet help lists hold and unhold" "$("$SCRIPTS/fleet" help | grep -c '^| `\(hold\|unhold\)` ')" 2
+  eq "v429 hold: fleet help lists hold, not unhold (5.0)" "$("$SCRIPTS/fleet" help | grep -c '^| `hold` '):$("$SCRIPTS/fleet" help | grep -c '^| `unhold` ')" "1:0"
   eq "v429 hold: hold and unhold are logged" "$(jq -rs '[.[] | select(.type == "hold" or .type == "unhold")] | length' "$FLEET_STATE_DIR/events.jsonl")" 4
 }
 
