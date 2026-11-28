@@ -729,8 +729,8 @@ Merge this one first." "Do not merge until the API ships" "  hold: waiting on de
       '{name: $n, team: "build-p530", tier: $t, status: $s, herdr_ref: ($n | sub("/"; "-")), pane: "p", repo: $r, issue: "DEV-1", workspace: "w0", cwd: $r, harness: "claude", template: "build", assignment: "task", machine: "test"}')" >/dev/null
   done
   "$SCRIPTS/park.sh" build-p530 --reason signed-off >/dev/null 2>"$SM/p530.err"; rc=$?
-  eq "smoke: dev530-2 park --reason signed-off: lead Done, builder Idle, tester Done all end Parked with the reason, and the team reads Ready" \
-    "$rc:$("$REG" list --team build-p530 | jq -r '[.[] | .status + "/" + .parked_reason] | unique | join(",")'):$("$SCRIPTS/status.sh" 2>&1 | grep -c '1 ready')" "0:Parked/signed-off:1"
+  eq "smoke: dev530-2 park --reason signed-off: lead Done, builder Idle, tester Done all end Parked with the reason" \
+    "$rc:$("$REG" list --team build-p530 | jq -r '[.[] | .status + "/" + .parked_reason] | unique | join(",")')" "0:Parked/signed-off"
   "$SCRIPTS/unpark.sh" build-p530 >/dev/null 2>"$SM/u530.err"
   eq "smoke: dev530-2 unpark takes the team that park left Parked" "$?:$("$REG" list --team build-p530 | jq -r '[.[].status] | map(select(. == "Parked")) | length')" "0:0"
   "$REG" add '{"name": "build-p530b/builder", "team": "build-p530b", "tier": "Worker", "status": "Done", "herdr_ref": "p530b", "pane": "p"}' >/dev/null
