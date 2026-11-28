@@ -56,10 +56,12 @@ mkdir -p "$(dirname "$FLEET_REGISTRY")"
 
 LOCK="$FLEET_REGISTRY.lock"
 ARCHIVE="$FLEET_ARCHIVE"
+# lock: one writer at a time. A queue of writers (the tick and several agents at once) can wait a while on a slow machine,
+# so it waits up to 30 s (300 tries) before it calls the lock stale.
 lock() {
   local i=0
   until mkdir "$LOCK" 2>/dev/null; do
-    i=$((i + 1)); [ "$i" -gt 100 ] && die "registry locked: remove $LOCK if no fleet command is running"
+    i=$((i + 1)); [ "$i" -gt 300 ] && die "registry locked: remove $LOCK if no fleet command is running"
     sleep 0.1
   done
   trap 'rmdir "$LOCK" 2>/dev/null || true' EXIT
