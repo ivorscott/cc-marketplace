@@ -76,6 +76,16 @@ tick_ready() { # pr_ready needs the tester's sign-off at the PR head, green chec
   eq "pr_ready: a new head is not ready until the tester signs it" "$(tkn "$(tk)" pr_ready)" 0
 }
 
+tick_one_signoff() { # one sign-off rule (Q17): a sign-off names its PR, so it never makes the team's other PR ready
+  tk_fresh onesign; tk_team os 91; "$REG" add-pr os/builder https://github.com/acme/app/pull/92 >/dev/null
+  tk_pr 91 OPEN MERGEABLE "$TK_GREEN" aaa1111def; tk_pr 92 OPEN MERGEABLE "$TK_GREEN" bbb2222def
+  "$REG" signoff os/tester https://github.com/acme/app/pull/92 aaa1111 >/dev/null # names #92, carries #91's head
+  jq -s . "$TK_GHD/91.json" "$TK_GHD/92.json" >"$TK_GHD/list.json"
+  local e; e="$(tk)"
+  eq "one sign-off rule: a sign-off naming #92 does not make #91 ready, in the tick or the queue" \
+    "$(tkn "$e" pr_ready):$(FLEET_GH="$TKD/gh-shim" "$SCRIPTS/queue.sh" 2>/dev/null | jq '[.ready[]?] | length')" "0:0"
+}
+
 tick_merge() { # a merge and a conflict: pr_merged once every PR of the team merged; a signed PR that conflicts is pr_conflicting
   tk_fresh merge; tk_team mg 61; tk_pr 61 MERGED MERGEABLE "$TK_GREEN" abc1234def
   "$REG" add-pr mg/builder https://github.com/acme/app/pull/62 >/dev/null
@@ -320,4 +330,5 @@ tick_suite() {
   tick_queue
   tick_health
   tick_lead_events
+  tick_one_signoff
 }

@@ -629,7 +629,9 @@ forge_pr_json() {
 #                                   draft, not held.
 #   pr_missing($signoff; $nociok; $comment)   the same, plus "comment not answered" when $comment is true: a comment on
 #                                   the issue is open on the team's lead row (comment_open; tick.sh comments_forward).
-PR_DEFS='def pr_noci_ok($noci; $repo; $url): ($repo | split("/") | last) as $base
+PR_DEFS='def pr_signoff($rows; $team; $url): [$rows[] | select(type == "object" and .team == $team and ((.name // "") | endswith("/tester"))
+    and ((.signoff | objects | .sha) != null) and ((.signoff.pr // .pr // "") == $url)) | .signoff.sha] | first;
+  def pr_noci_ok($noci; $repo; $url): ($repo | split("/") | last) as $base
     | ($url | sub("^https?://[^/]+/"; "") | sub("/(pull|merge_requests)/.*$"; "")) as $slug
     | (($noci | index($base)) != null or ($noci | index($slug)) != null or ($noci | index($repo)) != null);
   def pr_ci($nociok): ((.statusCheckRollup // []) | map(if .__typename == "StatusContext" or (.conclusion == null and .state != null)

@@ -890,16 +890,17 @@ step_pull_requests() {
   badrows="$(printf '%s' "$all_rows" | jq -r '[.[] | select(type == "object") | select(((.pr // "") | type) != "string" or ((.repo // "") | type) != "string"
     or (.signoff != null and ((.signoff | type) != "object" or ((.signoff.sha // "") | type) != "string")) ) | (.name // "?" | tostring)] | join(", ")')"
   [ -z "$badrows" ] || warn "skipping malformed row(s) for PR checks: $badrows"
-  prs="$(printf '%s' "$all_rows" | jq -c '
-    [.[] | select(type == "object" and .status == "Parked") | .team] as $parked
+  # The one sign-off rule (5.0, Q17, common.sh pr_signoff): a tester of the team signed this PR, by name; the queue uses it too.
+  prs="$(printf '%s' "$all_rows" | jq -c "$PR_DEFS"'
+    . as $all
+    | [.[] | select(type == "object" and .status == "Parked") | .team] as $parked
     | [.[] | select(type == "object" and .status != "Retired" and ((.comment_open // "") | tostring) != "") | .team] as $commented
     | [.[] | select(type == "object") | select(((.pr // "") | type) == "string" and ((.repo // "") | type) == "string"
         and (.signoff == null or ((.signoff | type) == "object" and ((.signoff.sha // "") | type) == "string")))
       | select(.status != "Retired")
       | . as $r | ([$r.pr // empty] + (if ($r.prs | type) == "array" then [$r.prs[] | strings] else [] end) | map(select(. != "")) | unique)[] as $u | $r + {pr: $u}]
     | group_by(.pr) | map(. as $g | {pr: .[0].pr, team: .[0].team, name: .[0].name, repo: (.[0].repo // ""),
-        signoff: ([$g[] | select((.signoff | objects | .sha) != null and ((.name // "") | endswith("/tester")) and .team == $g[0].team) | .signoff.sha] | first // null),
-        park_after_merge: ([$g[] | .park_after_merge // empty] | first // null), parked: (($parked | index($g[0].team)) != null),
+        signoff: (pr_signoff($all; $g[0].team; $g[0].pr) // null), parked: (($parked | index($g[0].team)) != null),
         comment: (($commented | index($g[0].team)) != null)})')"
   read_now=(); ready_now=(); unknown_now=(); merged_now=(); conflicting=() # this tick's view of each PR, for the conflict rule below
   if [ "$(printf '%s' "$prs" | jq length)" != 0 ]; then
@@ -925,7 +926,7 @@ step_pull_requests() {
         ev="$(jq -cn --argjson p "$p" --slurpfile g <(printf '%s' "$j") --slurpfile stf "$STATE_FILE" --argjson noci "$no_ci" --argjson holds "$(holds_json)" "$PR_DEFS"'
           $g[0] | pr_noci_ok($noci; $p.repo; $p.pr) as $nociok | ((.headRefOid // "") | ascii_downcase) as $head
           | if .state == "MERGED" then
-              (if (($stf[0].pr_merged_emitted // []) | index($p.pr)) == null then {type: "pr_merged", team: $p.team, name: $p.name, url: $p.pr} + (if $p.park_after_merge != null then {parks: $p.park_after_merge} else {} end) + (if $p.parked then {parked: true} else {} end) else null end)
+              (if (($stf[0].pr_merged_emitted // []) | index($p.pr)) == null then {type: "pr_merged", team: $p.team, name: $p.name, url: $p.pr} + (if $p.parked then {parked: true} else {} end) else null end)
             elif (pr_missing($p.signoff; $nociok; $p.comment) | length) == 0 and ($holds | has($p.pr) | not) and (($stf[0].pr_ready_emitted // []) | index($p.pr + "@" + $head)) == null
             then {type: "pr_ready", team: $p.team, name: $p.name, url: $p.pr, sha: $head, ci: pr_ci($nociok)}
             else null end')"
