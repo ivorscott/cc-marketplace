@@ -29,7 +29,7 @@ Keep it under about 60 lines. An expertise file that nobody can read in a minute
 
 ## The debrief loop
 
-1. When a team is retired, `/fleet debrief` reads its rows (summaries, escalations,
+1. When a team is retired, the Orchestrator (with `debrief.sh`) reads its rows (summaries, escalations,
    discovered work, outcome) and the lead's last output.
 2. It writes one or two lessons per agent into the registry (`lessons`).
 3. It proposes a diff per role to the expertise file: new Do, Don't or Know lines, and

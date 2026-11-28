@@ -6,18 +6,22 @@ on:
 permissions:
   contents: read
 
-# CI is a smoke test: the critical cases (run.sh --smoke) and a parse check of every script. The full suite
-# (run.sh with no flag) is for local runs.
+# A new push to a pull request cancels the runs of its older heads.
+concurrency:
+  group: fleet-tests-${{ github.ref }}
+  cancel-in-progress: true
+
+# CI runs the whole suite (test/run.sh: one case per behaviour, by area) and a parse check of every script.
 jobs:
   tests:
     runs-on: ubuntu-latest
-    timeout-minutes: 25
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - name: bash -n on every script
         run: for f in plugins/developer/skills/fleet/scripts/*.sh plugins/developer/skills/fleet/scripts/test/*.sh plugins/developer/hooks/*.sh; do bash -n "$f" || exit 1; done
-      - name: Fleet smoke tests
-        run: bash plugins/developer/skills/fleet/scripts/test/run.sh --smoke
+      - name: Fleet tests
+        run: bash plugins/developer/skills/fleet/scripts/test/run.sh
 
   bash32:
     runs-on: macos-latest

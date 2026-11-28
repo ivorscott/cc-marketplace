@@ -25,7 +25,7 @@
 # Rework | Median cycle |, then "Report: <path>": reports/fleet-metrics-<date>.md (common.sh report_dir), which holds
 # that table and one row per PR. --json prints the per-PR rows instead and writes nothing.
 # UNVERIFIED: the transcript line shape (`.timestamp`, `.type == "assistant"`, `.message.usage`).
-# Command: Show per-PR metrics from the event log · e.g. fleet metrics --since 7d
+# Internal command: Show per-PR metrics from the event log · e.g. metrics.sh --since 7d
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
 
@@ -89,13 +89,13 @@ if $morning; then
       | (.message | capture("^\\[esc (?<id>[^\\]]+)\\] (?<m>.*)$")? // {id: "", m: .}) as $p
       | select($p.id == "" or ([$row | escs[] | select(.id == $p.id and .resolved_at != null and ((.resolution // "") | startswith("parked for the human:") | not))] | length) == 0)
       | "- parked for you (\($n)): \($p.m)"' <<<"$rows"
-    "$FLEET_SCRIPTS/registry.sh" escalations --open --parked 2>/dev/null | jq -r "$RENDER_DEFS"'.[] | "- parked for you (\(.name | md) \(.id)): \(.message | md) Recommended: \((.options // [])[0] // "none" | md). Answer: fleet resolve \(.name | md) \(.id) --note \"...\""' || true
+    "$FLEET_SCRIPTS/registry.sh" escalations --open --parked 2>/dev/null | jq -r "$RENDER_DEFS"'.[] | "- parked for you (\(.name | md) \(.id)): \(.message | md) Recommended: \((.options // [])[0] // "none" | md). Answer: fleet decide \(.name | md) \(.id) --answer \"...\""' || true
     jq -r '.[] | "- Verify \(.issue) (\(.age_days) days old): check \(.check)\(if .expiry == "ask" then ". Still worth checking? With no answer by the next report it moves to Done" elif .expiry == "close" then ". No answer since the last report: moved to Done with a comment" else "" end)"' <<<"$verify"
   } )"
   opt_section "Failures" "$(jq -r '.[] | select(.type == "failed" or .type == "dead") | "- \(.name // .team): \(.type)\(if (.detail // "") != "" then " (" + .detail + ")" else "" end)"' <<<"$events" | sort -u)"
   opt_section "Proposed lessons" "$(jq -r --arg c "$cutoff" '[.[] | select(.tier != "Orchestrator" and .status == "Retired" and (.outcome // "") != "" and (.updated_at // "") >= $c)]
     | group_by(.team)[] | "- \(.[0].team) (\([.[].outcome] | unique | join("/"))): " + (sort_by(if .tier == "Lead" then 0 else 1 end) | map((.name | split("/")[1:] | join("/")) + ": "
-      + (if (.lessons // "") == "" then "lesson due (fleet debrief)" else (.lessons | gsub("[\r\n\t]+"; " ")) end)) | join("; "))' <<<"$rows")"
+      + (if (.lessons // "") == "" then "lesson due" else (.lessons | gsub("[\r\n\t]+"; " ")) end)) | join("; "))' <<<"$rows")"
   # Takeovers: one line per (issue, holder) for a takeover or a release, per (issue, team) for a lost claim, with the time it
   # was first seen; the same event repeated (an older event log can hold a hundred of them) reads as one line.
   tk=""
@@ -111,7 +111,7 @@ if $morning; then
              else "\(.issue // "?"): released from \($h) (heartbeat lapsed, no open PR)" end)}]
     | unique_by(.k) | sort_by(.at) | .[] | [(.at | tostring), .t] | @tsv' <<<"$events")
   section "Takeovers" "${tk%$'\n'}"
-  # Branches deleted: the stale remote branches the daily sweep, fleet branches and retire deleted (branches_deleted events).
+  # Branches deleted: the stale remote branches the daily sweep and retire deleted (branches_deleted events).
   opt_section "Branches deleted" "$(jq -r '.[] | select(.type == "branches_deleted") | "- \(.name // "?"): \(.detail // "?")"' <<<"$events")"
   section "Boots" "$(jq -r --slurpfile rows <(printf '%s' "$rows") '$rows[0] as $rows | .[] | select(.type == "boot") | .team as $t
     | ([$rows[] | select(.name == ($t + "/lead")) | (.notes // [])[] | select(.kind == "picked") | .message] | last) as $why

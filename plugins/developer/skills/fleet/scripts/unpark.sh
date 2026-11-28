@@ -7,7 +7,7 @@
 # is not Parked, when max_teams live teams already run, or when another live team works the same repo
 # (FLEET_FORCE=1 overrides the last two; revive.sh sets FLEET_FIX=1 for a team brought back to fix its open PR). A row that does not start stays Parked; run unpark.sh again for it.
 # It prints "Unparked <team>: <roles> back.", then the team table (references/output.md).
-# Command: Bring a parked team back · e.g. fleet unpark build-api
+# Internal command: Bring a parked team back · e.g. fleet park build-api --undo
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
 require_herdr
@@ -48,7 +48,7 @@ for tier in Lead Worker; do
   done < <(printf '%s' "$rows" | jq -r --arg t "$tier" '.[] | select(.tier == $t) | .name')
 done
 rm -f "$FLEET_STATE_DIR/unpark.err"
-[ "${#failed[@]}" = 0 ] || die "${failed[*]} did not start and stay Parked" "Run fleet unpark $team again"
+[ "${#failed[@]}" = 0 ] || die "${failed[*]} did not start and stay Parked" "Run fleet park $team --undo again"
 ev_log unparked team="$team"
 herdr_meta "$team" # the panel shows it again
 reply "$(render_line unparked team="$team" agents="$(printf '%s' "$rows" | jq -r 'sort_by(if .tier == "Lead" then 0 else 1 end) | map(.name | split("/")[1:] | join("/")) | join(", ")')")" "$(render_table)"

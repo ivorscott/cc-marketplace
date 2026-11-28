@@ -77,8 +77,7 @@ all="$(jq -cn --slurpfile rows <(printf '%s' "$rows") --slurpfile open <(printf 
       repo_dir: ([$g[] | .repo // empty | select(. != "")] | first // ""),
       issue: ([$g[] | .issue // empty | select(. != "")] | first // ""), issue_url: ([$g[] | .issue_url // empty | select(. != "")] | first // ""),
       issue_title: ([$g[] | .issue_title // empty | select(. != "")] | first // ""),
-      signoff: ([$g[] | select((.name | endswith("/tester")) and ((.signoff | objects | .sha) != null) and ((.signoff.pr // .pr // "") == $url))
-        | .signoff.sha] | first // ""),
+      signoff: (pr_signoff($rows; $t; $url) // ""),
       comment: any($g[]; ((.comment_open // "") | tostring) != "")};
   def gh_fields: {number, title: (.title // ""), head: (.headRefName // ""), base: (.baseRefName // ""), body: (.body // ""),
       created: (.createdAt // ""), files: [(.files // [])[] | .path // empty]};

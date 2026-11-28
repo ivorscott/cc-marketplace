@@ -18,7 +18,7 @@
 # Exit codes: 0 clean, 1 at least one match (stderr says how many lines, never which), 2 when the check cannot run
 # (no terms file, no terms in it, or a range git cannot read). "Not configured" never passes as clean. Every agent
 # may run it (agent-lib.sh puts it in the base allow list).
-# Command: Count the private terms in what a branch adds (counts only) · e.g. fleet redact-check --range origin/main..HEAD
+# Internal command: Count the private terms in what a branch adds (counts only) · e.g. fleet redact-check --range origin/main..HEAD
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
 

@@ -168,10 +168,10 @@ cmd_start() {
   fi
   "$reg" set orchestrator target_teams="$teams" run_active=true run_started="${FLEET_NOW:-$(now)}" >/dev/null
   # The launchd loop runs tick with no model; install it when it is not there (never in a sandbox or a test).
-  sched="$("$FLEET_SCRIPTS/schedule.sh" status 2>/dev/null | head -n 1)"
+  sched="$("$FLEET_SCRIPTS/schedule.sh" status 2>/dev/null | sed -n 1p || true)"
   case "$sched" in
     *"not installed"*) if [ -n "${FLEET_SANDBOX:-}" ] || [ "${FLEET_TEST:-}" = 1 ]; then sched="not installed (not touched here)"
-      else "$FLEET_SCRIPTS/schedule.sh" install >/dev/null 2>&1 && sched="installed" || sched="not installed: run fleet schedule install"; fi ;;
+      else "$FLEET_SCRIPTS/schedule.sh" install >/dev/null 2>&1 && sched="installed" || sched="not installed: run fleet run schedule install"; fi ;;
   esac
   if ! run_hook_ok; then run_hook_install >/dev/null && printf 'Reinstalled the run /clear hook.\n' || printf 'The run /clear hook is missing and could not be reinstalled: run fleet run init.\n'; fi
   render_line run_started teams="$teams" work="$work" order="$order" loop="${sched:-unknown}"
@@ -184,10 +184,10 @@ cmd_start() {
   cat <<EOF
 Follow this until fleet run stop. After a context compaction, or in a fresh session, run fleet run show and follow it again.
 - Keep $teams teams running. On a slot_free wake, pick the next issue (work: $work; order: $order; fill: $fill) and boot it. Never ask which one.
-- Retire a team at once when its PR merges (pr_merged). Bump a client after an API merge where the repo's rules say so, without asking.
+- The loop retires a team when its PR merges (pr_merged). Bump a client after an API merge where the repo's rules say so, without asking.
 - Installs: $pol. The human keeps $HUMAN_ONLY: never approve them; park that part, push once, list it in the morning report.
 - A lead's escalation is decided by you: take the recommended option, tell the lead, resolve it with a note, comment the decision on the issue, record it. What the owner keeps is parked, stays open, and you relay decide's Parked line (its full question and what the owner answers) in chat.
-- Open no question box. The only wait is a PR waiting to merge. Keep one wake monitor armed and re-arm it silently: on an expiry run $FLEET_SCRIPTS/fleet watch, start Monitor with its first line, end the turn with no text.
+- Open no question box. The only wait is a PR waiting to merge. Keep one wake monitor armed and re-arm it silently: on an expiry run $FLEET_SCRIPTS/fleet run watch, start Monitor with its first line, end the turn with no text.
 - Say only what the owner can act on (a parked item always counts, with its question): a status table when it changes (every $spush minutes at most), the ready-to-merge push (every $mpush minutes at most), a failure, a usage limit, the morning report at $rep. Never your own housekeeping.
 - Usage guard: leave $margin% of the plan's limit unused where it can be read; on a usage_limit wake boot nothing until the backoff ends.
 - $bdline The fleet never edits permission settings itself; only fleet run init does, after the owner's yes.
@@ -213,6 +213,8 @@ case "${1:-}" in
   stop) cmd_stop ;;
   status) cmd_status ;;
   show) cmd_show ;;
+  watch) exec "$FLEET_SCRIPTS/watch.sh" ;;
+  schedule) shift; exec "$FLEET_SCRIPTS/schedule.sh" "$@" ;;
   "" | -h | --help | help) usage; [ -n "${1:-}" ] ;;
   *) die "unknown run command: $1" "Run fleet help run" ;;
 esac

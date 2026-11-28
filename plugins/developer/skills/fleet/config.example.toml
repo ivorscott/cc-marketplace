@@ -43,10 +43,6 @@ permission_mode = "auto"   # the Claude Code permission mode every agent starts 
 # public_repos = ["owner/name"]    # always checked
 # private_repos = ["owner/name"]   # never checked: it prints "skipped (private repo)"
 
-# Overnight mode: leads decide inside the issue's scope (installs, cloud, prod, branch protection, `gh pr ready` and
-# closing stay P1; branches catch up with merge commits in every mode), and the first tick after 07:00 writes the morning report
-overnight = false
-
 # Registry
 parked_remind_hours = 6  # tick reminds you of an escalation parked for you every this many hours until you resolve it
 archive_after_days = 0   # a Retired row with its lessons written moves to fleet-archive.json after this many days
@@ -58,15 +54,8 @@ archive_after_days = 0   # a Retired row with its lessons written moves to fleet
 # The loop (schedule.sh) and alerts
 tick_secs = 300
 # schedule_label = "fleet.tick"
+# events_label = "fleet.events"   # the launchd job of the herdr event subscriber (events.sh)
 # alert_cmd = "/path/to/script"           # run with the alert text as its one argument
-
-# Chat (coordination only, never the lock)
-# chat_channel = "#fleet"
-# chat_allow = ["mcp__claude_ai_Slack__slack_send_message"]
-
-# Context window per model, in tokens (default 200000).
-[context_window]
-# "claude-opus-5-5" = 200000
 
 # The self-driving loop's profile, written by `fleet run init` (it changes only this table, max_teams and installs).
 # Both machines read the same file. Keys here are read by `fleet run` and tick, never by the top-level readers.

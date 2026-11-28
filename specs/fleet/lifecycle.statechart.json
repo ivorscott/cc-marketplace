@@ -1,0 +1,86 @@
+{
+  "id": "fleet-team",
+  "description": "One state per team; every state says who moves next. Derived each tick by LIFECYCLE_JQ (scripts/common.sh).",
+  "initial": "Working",
+  "states": {
+    "Working": {
+      "meta": {
+        "means": "An agent of the team is mid-turn",
+        "next": "the team"
+      },
+      "on": {
+        "AT_REST_WAIT_NAMED": "Waiting",
+        "AT_REST_NO_WAIT": "Idle",
+        "FAULT": "Stalled",
+        "SIGNED_GREEN_MERGEABLE": "Ready"
+      }
+    },
+    "Waiting": {
+      "meta": {
+        "means": "Nobody is running and the lead named what it waits on",
+        "next": "the loop, when that thing changes"
+      },
+      "on": {
+        "AWAITED_CHANGED": "Working",
+        "FAULT": "Stalled",
+        "SIGNED_GREEN_MERGEABLE": "Ready"
+      }
+    },
+    "Idle": {
+      "meta": {
+        "means": "Nobody is running and no wait is named",
+        "next": "the loop nudges the lead"
+      },
+      "on": {
+        "NUDGE_ANSWERED": "Working",
+        "STILL_IDLE_NEXT_TICK": "Stalled",
+        "FAULT": "Stalled",
+        "SIGNED_GREEN_MERGEABLE": "Ready"
+      }
+    },
+    "Stalled": {
+      "meta": {
+        "means": "Idle after a nudge, an agent gone, a brief that did not arrive, or a blocked prompt",
+        "next": "Orchestrator"
+      },
+      "on": {
+        "RECOVERED": "Working"
+      }
+    },
+    "Ready": {
+      "meta": {
+        "means": "Head signed off, CI green, mergeable; the slot is free",
+        "next": "you: merge"
+      },
+      "on": {
+        "CONFLICT_RED_COMMENT_NEW_HEAD": "Working",
+        "MERGED": "Retired"
+      }
+    },
+    "Parked": {
+      "meta": {
+        "means": "Set aside by the owner or the Orchestrator; work kept",
+        "next": "you or the Orchestrator"
+      },
+      "on": {
+        "UNPARK": "Working"
+      }
+    },
+    "Retired": {
+      "type": "final",
+      "meta": {
+        "means": "Closed; worktrees removed",
+        "next": "-"
+      }
+    }
+  },
+  "on": {
+    "PARK": "Parked",
+    "RETIRE": "Retired"
+  },
+  "notes": [
+    "PARK is refused from Retired.",
+    "The loop never parks or unparks: only a person or the Orchestrator does.",
+    "FAULT is an agent gone, a brief that did not arrive, or a prompt that blocks an agent."
+  ]
+}

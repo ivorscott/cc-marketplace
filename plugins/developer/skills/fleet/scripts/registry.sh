@@ -31,7 +31,6 @@
 #                                                          clears the old outcome, PR and sign-off, rewrites the assignment;
 #                                                          workers go Idle, the lead Working
 #   registry.sh park <team> <reason>                       one write: every unfinished row of the team becomes Parked (park.sh, which also closes the panes)
-#   registry.sh park-mark <team> <reason|->                 mark the team to park when its PR merges (reason park-after-merge or focus:<team>); - clears it
 #   registry.sh unsynced                                   rows changed since the sink last mirrored them
 #   registry.sh synced <name> [name ...]                   mark rows as mirrored
 #   registry.sh env-claim <team> <max> <cluster> [busy-slots]  atomically take the lowest free port slot
@@ -56,10 +55,12 @@ mkdir -p "$(dirname "$FLEET_REGISTRY")"
 
 LOCK="$FLEET_REGISTRY.lock"
 ARCHIVE="$FLEET_ARCHIVE"
+# lock: one writer at a time. A queue of writers (the tick and several agents at once) can wait a while on a slow machine,
+# so it waits up to 30 s (300 tries) before it calls the lock stale.
 lock() {
   local i=0
   until mkdir "$LOCK" 2>/dev/null; do
-    i=$((i + 1)); [ "$i" -gt 100 ] && die "registry locked: remove $LOCK if no fleet command is running"
+    i=$((i + 1)); [ "$i" -gt 300 ] && die "registry locked: remove $LOCK if no fleet command is running"
     sleep 0.1
   done
   trap 'rmdir "$LOCK" 2>/dev/null || true' EXIT
@@ -117,7 +118,7 @@ cmd="${1:-}"; shift || true
 # Agents (FLEET_ROLE set in their pane) can report on themselves (set, done, escalate, note, signoff for the
 # tester) but cannot create, retire, archive, move or resolve: those are the Orchestrator's.
 case "$cmd" in
-  add | retire | archive | reassign | resolve | park-esc | close-stale | orchestrator | park | park-mark | pref)
+  add | retire | archive | reassign | resolve | park-esc | close-stale | orchestrator | park | pref)
     [ -z "${FLEET_ROLE:-}" ] || die "$cmd is the Orchestrator's; an agent (FLEET_ROLE=$FLEET_ROLE) may not run it" ;;
 esac
 case "$cmd" in
@@ -139,7 +140,8 @@ case "$cmd" in
       # An agent (FLEET_ROLE set in its pane) may set only these keys of its row; the Orchestrator and the
       # scripts (FLEET_ROLE unset) may set any other, and the schema check still applies to the result.
       if [ -n "${FLEET_ROLE:-}" ]; then
-        case "$k" in status | status_detail | summary | nudged_at | branch | worktree) ;; *) die "cannot set $k from an agent: agents may set only status, status_detail, summary, nudged_at, branch and worktree" ;; esac
+        [ "$name" = "${FLEET_NAME:-}" ] || die "cannot set $name from an agent: an agent may set only its own row ($FLEET_NAME)"
+        case "$k" in status | status_detail | summary | nudged_at | branch | worktree | waiting) ;; *) die "cannot set $k from an agent: agents may set only status, status_detail, summary, nudged_at, branch, worktree and waiting" ;; esac
       fi
       args+=(--arg "k$i" "$k" --arg "v$i" "$v"); prog="$prog | .[\$k$i] = \$v$i"; i=$((i + 1))
     done
@@ -471,14 +473,6 @@ case "$cmd" in
       | .agents |= with_entries(
         if .value.team == $t and .value.tier != "Orchestrator" and .value.status != "Retired" then
           .value |= (.status = "Parked" | .parked_at = $now | .parked_reason = $r | del(.park_after_merge) | del(.fixing) | .updated_at = $now)
-        else . end)'
-    ;;
-  park-mark)
-    team="${1:?usage: park-mark <team> <reason|->}"; reason="${2:?usage: park-mark <team> <reason|->}"
-    update --arg t "$team" --arg r "$reason" --arg now "$(now)" '
-      .agents |= with_entries(
-        if .value.team == $t and .value.tier != "Orchestrator" and .value.status != "Retired" then
-          .value |= ((if $r == "-" then del(.park_after_merge) else .park_after_merge = $r end) | .updated_at = $now)
         else . end)'
     ;;
   unsynced)

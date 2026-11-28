@@ -14,7 +14,7 @@
 # and the note is `<item> → <ISSUE> <url>`. With no Linear key, or writes off, the item is still noted
 # (`<item> → not filed: <why>`) so the report lists it, and filed by a later run once writes are on. Prints one line per item:
 # `Deferred <ISSUE>: <item>`. A retired team works too (its lead row, archived or not). tick runs the first form once when a PR becomes ready. Orchestrator only.
-# Command: File what a PR defers to the owner as linked issues · e.g. fleet defer build-api
+# Internal command: File what a PR defers to the owner as linked issues · e.g. fleet defer build-api
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
 [ -z "${FLEET_ROLE:-}" ] || die "defer is the Orchestrator's; an agent (FLEET_ROLE=$FLEET_ROLE) may not run it"

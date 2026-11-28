@@ -15,7 +15,7 @@
 # branch, worktrees and sign-off history stay. Nothing is charged to the respawn budget. Logs `revived` (or --event) and
 # prints "Revived <team>: <roles> back." Exit 1 with the reason on stderr when the team does not come back (a cap is full,
 # herdr does not answer, an agent did not start) or the lead did not take the text; --pr names the PR in the log line.
-# Command: Bring a finished or parked team back with something to do · e.g. fleet revive build-api --text "the PR needs a review reply"
+# Internal command: Bring a finished or parked team back with something to do · e.g. fleet revive build-api --text "the PR needs a review reply"
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
 require_herdr

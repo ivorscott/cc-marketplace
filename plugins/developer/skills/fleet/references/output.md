@@ -243,25 +243,17 @@ retire moved the team's issue on Linear. Then the table.
 Parked <team>: slot free, worktrees and claim kept.
 ```
 
-`park --after-merge`: `Marked <team>: it parks when its PR merges.` Then the table.
+Then the table.
 
 ### unpark
+
+`fleet park <team> --undo` (unpark.sh):
 
 ```
 Unparked <team>: <role>, <role> back.
 ```
 
 Then the table.
-
-### focus
-
-```
-Focused on <team>: parked <teams|none>.
-```
-
-Without `--now`: `Focused on <team>: <teams|none> park when their PRs merge.` `focus --clear`: `Focus cleared:
-unparked <teams|none>.` A team that could not be moved adds ` Refused: <teams>.` Then the table. With no argument:
-`Focus: <team|none>.`
 
 ### respawn
 
@@ -297,6 +289,8 @@ The decision form.
 
 ### escalations
 
+`fleet decide` with no arguments:
+
 ```
 | Id | Severity | Agent | Question | Age |
 |---|---|---|---|---|
@@ -307,6 +301,14 @@ Oldest first; a resolved one ends `(resolved)`. With none: `No escalations.`
 
 ### resolve
 
+`fleet decide <team/role> <id> --answer "<text>"` tells the lead the answer, then closes it (`registry.sh resolve`):
+
+```
+Answered <team/role> <id>: <answer>
+```
+
+The registry's own line:
+
 ```
 Resolved <id> for <team/role>: <decision>.
 ```
@@ -315,23 +317,9 @@ Resolved <id> for <team/role>: <decision>.
 agent that has it open (the lead first); an id open on more than one agent is an error that names them. An id is
 `<timestamp>-<n>`, n counted over every escalation of that second in the registry, so it is unique.
 
-### prime
-
-```
-Fleet on <machine>: <n> teams, <n> open escalations, <n> problems.
-```
-
-then the caps line (`Caps: max_teams <n>, teams_per_repo <n>, min_free_gb <n>.`, the effective values, defaults filled
-in), then the status output.
-
-### config
-
-`fleet config` prints `Config: <config.toml path>` (or `Config: (no file: all defaults) <path>`), a `| Key | Value | Source |`
-table of every top-level key, then a `[run]` heading and the same table for the profile keys, then
-`Tables: context_window (<n> set), machine_names (<n> set)`. Source is `set` (the key is in the file) or `default`
-(it is not; the value is what the scripts use). A key with no default and no value shows `-`.
-
 ### debrief
+
+`debrief.sh` (internal):
 
 ```
 <team> (<outcome>): <role>: <lesson>; <role>: lesson due
@@ -342,6 +330,8 @@ Discovered work: <text> (<team/role>); …
 One line per team with retired rows still in the live registry; `Nothing to debrief.` when there is none.
 
 ### metrics
+
+`metrics.sh` (internal; the weekly summary wake is gone in 5.0):
 
 ```
 | Week | Issues shipped | PRs | Rework | Median cycle |
@@ -355,6 +345,8 @@ The report file (`reports/fleet-metrics-<date>.md`) holds the same table and one
 <window>.` when there is none.
 
 ### schedule
+
+`fleet run schedule status`:
 
 ```
 Fleet loop: <loaded|not loaded|not installed>. Last good tick <time> (<n> min ago). <healthy|problem: why>.
@@ -381,11 +373,31 @@ Claimed DEV-1 for <machine>.
 
 ### takeover
 
+`fleet claim <ISSUE> --take`:
+
 ```
 Took over DEV-1 from <machine>.
 ```
 
+### hold
+
+`fleet hold <PR> --note "<why>"`:
+
+```
+Held <PR url>: <note>. It is not ready to merge, and new work branches from main.
+```
+
+### unhold
+
+`fleet hold <PR> --off`:
+
+```
+Unheld <PR url>: back in the merge queue.
+```
+
 ### holder
+
+`fleet claim <ISSUE> --who`:
 
 ```
 DEV-1: held by <machine|this machine (<machine>)>[, heartbeat lapsed|, no heartbeat].
@@ -410,13 +422,15 @@ line is `Nothing bootable.`; the `skipped:` line stays. The Orchestrator trusts 
 
 ### watch
 
+`fleet run watch`:
+
 ```
 tail -n 0 -F <state dir>/wakes.log
-# Monitor stops after at most 30 minutes (timeout_ms 1800000): run fleet watch again when it expires.
+# Monitor stops after at most 30 minutes (timeout_ms 1800000): run fleet run watch again when it expires.
 ```
 
 The command that follows the wakes: start Monitor with the first line and end the turn with no text (a re-arm is not news).
-`fleet watch --here` registers the pane as the Orchestrator first.
+`fleet run watch` prints it (watch.sh; `watch.sh --here` registers the pane as the Orchestrator first).
 
 ### defer
 
@@ -430,6 +444,8 @@ owner:` in the PR body), each filed once as an issue linked to the PR and noted 
 no Linear key, or writes off, the item is only noted (`not filed`) so the morning report lists it. tick runs it when a PR becomes ready.
 
 ### branches
+
+`branches.sh` (internal: the daily sweep and retire run it; the command is gone in 5.0):
 
 ```
 Branches of <owner/repo>: <n> to delete, <m> kept. Dry run: nothing deleted.
@@ -474,16 +490,16 @@ Follow this until fleet run stop. After a context compaction, or in a fresh sess
 
 ```
 Decided <team/lead>: <question> → <option>.
-Parked <team/lead> <id> <P0|P1|P2>: <full question>. Recommended: <first option>. Needs you: fleet resolve <team/lead> <id> --note "<your answer>".
-Already parked <team/lead> <id>. Needs you: fleet resolve <team/lead> <id> --note "<your answer>".
-Still parked for you: <team/lead> <id> <sev>: <full question>. Recommended: <option>. Needs you: fleet resolve <team/lead> <id> --note "<your answer>".
+Parked <team/lead> <id> <P0|P1|P2>: <full question>. Recommended: <first option>. Needs you: fleet decide <team/lead> <id> --answer "<your answer>".
+Already parked <team/lead> <id>. Needs you: fleet decide <team/lead> <id> --answer "<your answer>".
+Still parked for you: <team/lead> <id> <sev>: <full question>. Recommended: <option>. Needs you: fleet decide <team/lead> <id> --answer "<your answer>".
 ```
 
 `fleet decide <team> <id>` is how the Orchestrator answers an escalation under `fleet run`: the first (recommended) option is taken,
 the lead is told, the escalation resolved with it, the decision noted (the morning report lists it under Decisions taken) and
 commented on the issue as `[fleet] Decision taken on the owner's behalf: ... Reply on this issue to overrule it.` A P0, and a
 question about merging, production, infrastructure applies, secrets or branch protection, is parked instead: the lead is told to
-set it aside and carry on, and the escalation stays open and marked parked (`registry.sh park-esc`): retire and a team's next issue leave it, only `fleet resolve` closes it. One push goes out, the Orchestrator relays the `Parked ...` line, tick repeats it as `Still parked for you ...` every `parked_remind_hours` (default 6), and the morning report lists it under Needs your eyes until it is resolved. Nothing human-only is approved.
+set it aside and carry on, and the escalation stays open and marked parked (`registry.sh park-esc`): retire and a team's next issue leave it, only `fleet decide --answer` closes it. One push goes out, the Orchestrator relays the `Parked ...` line, tick repeats it as `Still parked for you ...` every `parked_remind_hours` (default 6), and the morning report lists it under Needs your eyes until it is resolved. Nothing human-only is approved.
 
 ### overlap
 
@@ -531,17 +547,6 @@ alone, naming the path, and exit 2, never a clean result.
 
 `help <command>`: that command's usage header, unchanged.
 
-### slim
-
-```
-Slim: <on|off>. Backup at <path>. Replaced <[ui], [ui.sidebar.agents], sidebar_width, …>.
-```
-
-` Backup at …` only when it changed herdr's config; ` Replaced …` only when `on` took over a hand-written style (the
-tables and keys slim sets, outside the fleet's markers; the backup holds them). `slim status`: `Slim:
-<on|off|conflict>. herdr Claude integration: <current|missing>. Offer: <due|done>.`, where conflict is off with such a
-style in the config.
-
 ### sandbox
 
 ```
@@ -565,10 +570,10 @@ once, above the table and the merge queue, so the answer to any wake is one `fle
 ### wake pr_merged
 
 ```
-Merged <PR url>. Next: <move <team> to its next issue, or retire it|<team> parked>.
+Merged <PR url>. Next: the loop retired <team>; do the follow-up its repo's rules name, if any.
 ```
 
-`Next: unpark <team> and move it to its next issue, or retire it.` for a parked team.
+`Next: the loop could not retire <team>: ask its lead to push, then run fleet retire <team>.` when the retire failed.
 
 ### wake pr_conflicting
 
@@ -630,6 +635,14 @@ Second form, after the Escape: `... Escape sent, message re-sent.` or `... Escap
 
 ```
 ```
+
+### wake tick_failing
+
+```
+Loop failing <step>: this step failed on two ticks in a row since <time>: <error line>. The other steps still run. Fix the cause it names (often a tool that is installed but not running), then run fleet status
+```
+
+`<step>` is `tick` when the whole loop failed twice in a row (loop-tick.sh); then the error line is loop-tick's reason.
 
 ### wake needs_input
 
@@ -781,11 +794,14 @@ Under `fleet run`: a team's tester finished with outcome Failed. Once per tester
 Morning report <YYYY-MM-DD>: <path>. Relay it as it is.
 ```
 
-Overnight mode: the first tick on or after 07:00 local time each day writes the report (`### morning report`).
 
-### wake weekly_summary
+### wake parked_reminder
 
-The metrics shape, with its `Report: <path>` line.
+```
+Still parked for you: <team/lead> <id> <sev>: <full question>. Recommended: <option>. Needs you: fleet decide <team/lead> <id> --answer "<your answer>".
+```
+
+Every `parked_remind_hours` while a question parked for the owner stays open.
 
 ### wake escalation
 
@@ -795,8 +811,7 @@ The decision form of the escalation, with its options.
 
 ### morning report
 
-`metrics.sh --morning [--since 12h]`, written by tick once a day at the `report_at` time of the `[run]` profile (overnight mode's 07:00
-without one) to `reports/fleet-morning-<date>.md`, covering the time since the last report:
+`metrics.sh --morning [--since 12h]`, written by tick once a day at the `report_at` time of the `[run]` profile to `reports/fleet-morning-<date>.md`, covering the time since the last report:
 
 ```
 # Morning report <YYYY-MM-DD>
@@ -820,7 +835,7 @@ without one) to `reports/fleet-morning-<date>.md`, covering the time since the l
 ## Needs your eyes
 
 - deferred (<team/lead>): <item> → <ISSUE> <url>
-- parked for you (<team/lead> <id>): <full question> Recommended: <option>. Answer: fleet resolve <team/lead> <id> --note "..."
+- parked for you (<team/lead> <id>): <full question> Recommended: <option>. Answer: fleet decide <team/lead> <id> --answer "..."
 - Verify <ISSUE> (<n> days old): check <what>. Still worth checking? With no answer by the next report it moves to Done
 
 ## Failures
@@ -829,7 +844,7 @@ without one) to `reports/fleet-morning-<date>.md`, covering the time since the l
 
 ## Proposed lessons
 
-- <team> (<outcome>): <role>: <lesson, or "lesson due (fleet debrief)">
+- <team> (<outcome>): <role>: <lesson, or "lesson due">
 
 ## Takeovers
 

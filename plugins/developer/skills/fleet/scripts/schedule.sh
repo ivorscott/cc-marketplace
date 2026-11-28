@@ -29,7 +29,7 @@
 # removes it, and status adds one line about it once it is installed. UNVERIFIED: launchd KeepAlive for it.
 # Linux: no code here; see the README (systemd user timer).
 # UNVERIFIED until the user runs install: real launchd behaviour (DEV-368).
-# Command: Install, remove or check the launchd loop · e.g. fleet schedule status
+# Internal command: Install, remove or check the launchd loop · e.g. fleet run schedule status
 set -euo pipefail
 . "$(dirname "$0")/common.sh"
 

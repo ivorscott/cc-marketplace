@@ -6,7 +6,8 @@
 # body line that starts with "Hold:" does the same for the overlap check on every machine.
 #
 #   hold.sh <PR> --note "<why>"    hold a PR; the note is required and is shown wherever the PR is listed
-#   hold.sh unhold <PR>            let it go: it is ready again if nothing else keeps it back, and pr_ready fires again
+#   hold.sh <PR> --off             let it go: it is ready again if nothing else keeps it back, and pr_ready fires again
+#   hold.sh unhold <PR>            the same (the loop's older form)
 #
 # <PR> is a PR URL, or #N or N for a PR a registry row names (an error names the candidates when N is unknown or
 # matches more than one repo). Holding a PR that is held already replaces its note. Prints "Held <url>: <note>. ..."
@@ -22,11 +23,12 @@ ref=""; note=""; have_note=false
 while [ $# -gt 0 ]; do
   case "$1" in
     --note) [ $# -ge 2 ] || die "--note needs a value" "Run fleet help hold"; note="$2"; have_note=true; shift 2 ;;
+    --off) unhold=true; shift ;;
     -*) die "unknown option: $1" "Run fleet help hold" ;;
     *) [ -z "$ref" ] || die "one PR at a time, got '$ref' and '$1'" "Run fleet help hold"; ref="$1"; shift ;;
   esac
 done
-[ -n "$ref" ] || die "usage: hold.sh <PR> --note \"<why>\" | hold.sh unhold <PR>" "Run fleet help hold"
+[ -n "$ref" ] || die "usage: hold.sh <PR> --note \"<why>\" | hold.sh <PR> --off" "Run fleet help hold"
 if $unhold; then ! $have_note || die "unhold takes no --note" "Run fleet help hold"
 else
   note="$(printf '%s' "$note" | tr '\n' ' ' | sed -e 's/^ *//' -e 's/ *$//')"

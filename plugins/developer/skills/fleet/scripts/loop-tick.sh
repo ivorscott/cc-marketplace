@@ -79,11 +79,18 @@ if [ -n "$why" ]; then
   ls_set --argjson f "$fails" '.fails = $f'
   printf 'loop-tick: %s\n' "$why" >&2
   [ "$fails" -lt 3 ] || alert loop_failed "the fleet loop failed $fails runs in a row" "Read loop.log in the fleet state dir"
+  # Two failed runs in a row also wake the Orchestrator, once per run of failures: a loop that stops must not stop quietly.
+  # The line carries no error text (wake lines are enumerated fields only); the notice that `fleet status` shows does.
+  if [ "$fails" -ge 2 ] && [ "$(jq -r '.failing_woken // false' "$LS")" != true ]; then
+    wake_append "fleet tick: tick_failing - tick - - -"
+    notice_add "$(render_notice "$(jq -cn --arg d "$why" --arg s "$(jq -r '(.last_good // .since // 0) | todate' "$LS")" '{type: "tick_failing", name: "tick", detail: $d, since: $s}')")" '{"type":"tick_failing"}' 2>/dev/null || true
+    ls_set '.failing_woken = true'
+  fi
   secs="$(cfg_int tick_secs 300)"; lg="$(jq -r '.last_good // .since // 0' "$LS")"
-  [ $((now_epoch - lg)) -le $((2 * secs)) ] || alert loop_unhealthy "no good fleet tick in $(((now_epoch - lg) / 60)) min" "Run fleet schedule status"
+  [ $((now_epoch - lg)) -le $((2 * secs)) ] || alert loop_unhealthy "no good fleet tick in $(((now_epoch - lg) / 60)) min" "Run fleet run schedule status"
   exit 1
 fi
-ls_set --argjson n "$now_epoch" '.fails = 0 | .last_good = $n'
+ls_set --argjson n "$now_epoch" '.fails = 0 | .last_good = $n | del(.failing_woken)'
 if grep -q 'herdr agent list failed' "$errf"; then
   alert herdr_down "herdr is not answering, so no agent was classified" "Start the herdr server"
 fi
@@ -111,7 +118,7 @@ fi
 # Only once it has run (events.alive exists), so a machine that never installed it hears nothing.
 if [ -f "$FLEET_STATE_DIR/events.alive" ] && ! events_alive "$now_epoch" &&
   [ "$("$FLEET_SCRIPTS/registry.sh" list 2>/dev/null | jq '[.[] | select(.tier != "Orchestrator" and .status != "Retired")] | length' 2>/dev/null || echo 0)" != 0 ]; then
-  alert events_down "the herdr event subscriber stopped, so dead and blocked agents wait for the next tick" "Run fleet schedule install"
+  alert events_down "the herdr event subscriber stopped, so dead and blocked agents wait for the next tick" "Run fleet run start"
 fi
 
 # --- alerts: P0/P1, low disk, a repo with no team -------------------------------------------------------------
@@ -120,8 +127,8 @@ while IFS=$'\t' read -r cause what; do
   [ -n "$cause" ] || continue
   cause="$(printf '%s' "$cause" | safe)" # what is cut to safe characters per field in jq below
   case "$cause" in
-    parked:*) alert "$cause" "parked escalation $what still waits for you" "Run fleet status, then fleet resolve <name> <id> --note ..." ;;
-    esc:*) alert "$cause" "escalation $what needs you" "Run fleet escalations --open" ;;
+    parked:*) alert "$cause" "parked escalation $what still waits for you" "Run fleet status, then fleet decide <name> <id> --answer ..." ;;
+    esc:*) alert "$cause" "escalation $what needs you" "Run fleet decide" ;;
     disk) alert disk "free disk is low ($what GB)" "Free space, or retire a finished team" ;;
     repo_without_team:*) alert "$cause" "repo $what has no team" "Boot one, or drop it from repos in config.toml" ;;
     main_red:*) alert "$cause" "CI on the default branch of $what is red" "Run fleet status; the teams keep working" ;;

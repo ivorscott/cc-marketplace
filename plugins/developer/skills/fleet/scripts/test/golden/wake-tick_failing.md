@@ -1,0 +1,1 @@
+Loop failing disk: this step failed on two ticks in a row since 2026-10-24T08:50:00Z: df: cannot read. The other steps still run. Fix the cause it names (often a tool that is installed but not running), then run fleet status.

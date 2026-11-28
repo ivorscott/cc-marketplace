@@ -1,8 +1,8 @@
-3 teams · 1 working · 1 parked · 1 done
+3 teams · 1 working · 1 ready · 1 parked
 
 | Team | Machine | Issue | PR | State | Needs you |
 |---|---|---|---|---|---|
-| build-web | test | DEV-13 | https://github.com/acme/app-web/pull/121 | Done | merge the PR |
+| build-web | test | DEV-13 | https://github.com/acme/app-web/pull/121 | Ready | merge the PR |
 | build-api | test | [DEV-12](https://linear.app/acme/issue/DEV-12) export | https://github.com/acme/app-api/pull/214 | Working | **P1**: which database? |
 | build-old | test | DEV-9 | - | Parked | - |
 
