@@ -149,7 +149,7 @@ signs off. Check in whenever you like:
 
 A ready PR is listed under `Merge in this order:`. One that isn't ready is listed under `Not ready:` with what is
 missing (`✗ no sign-off`, `✗ CI pending`). Review it and merge it yourself on your code host: the fleet never merges.
-Then clean up:
+With the loop running (`fleet run start`), the team retires itself; otherwise clean up:
 
 ```
 /fleet retire build-app-studio --outcome Shipped
@@ -160,12 +160,12 @@ down".
 
 #### Going further
 
-| Level | You get | Guide |
-|---|---|---|
-| 1. Your first team | Booting, watching, answering a question, merging, retiring | [Lv1](plugins/developer/skills/fleet/README.md#level-1-your-first-team) |
-| 2. Daily driving | Several teams, the merge queue, park and hold, conflict repair | [Lv2](plugins/developer/skills/fleet/README.md#level-2-daily-driving) |
-| 3. Hands-off | `fleet run`: it keeps teams running, picks the next issue, decides routine questions and writes a morning report | [Lv3](plugins/developer/skills/fleet/README.md#level-3-hands-off-with-fleet-run) |
-| 4. Issues, repos, machines | Linear issues and claims, several repos, a second machine | [Lv4](plugins/developer/skills/fleet/README.md#level-4-issues-repos-and-machines) |
+| You want to | Guide |
+|---|---|
+| Read the table: the seven team states and who moves next | [Reading status](plugins/developer/skills/fleet/README.md#reading-status) |
+| Your day: merge what is ready, answer what is parked | [Your day](plugins/developer/skills/fleet/README.md#your-day) |
+| Every command | [Commands](plugins/developer/skills/fleet/README.md#commands) |
+| Coming from 4.x | [Upgrading from 4.x](plugins/developer/skills/fleet/README.md#upgrading-from-4x) |
 
 Hands-off in three steps, once Linear is set up:
 
@@ -177,12 +177,10 @@ Hands-off in three steps, once Linear is set up:
 
 Merging, production, infrastructure applies, secrets and branch protection always stay yours.
 
-**Coming in 5.0:** eleven commands in place of 37, team states that say who moves next, and a loop that cannot stop
-quietly. See [what changes](plugins/developer/skills/fleet/README.md#coming-in-50) and the
-[cleanup spec](specs/fleet/cleanup.md).
+**5.0:** eleven commands, team states that say who moves next, and a loop that cannot stop quietly. See
+[upgrading from 4.x](plugins/developer/skills/fleet/README.md#upgrading-from-4x) and the [cleanup spec](specs/fleet/cleanup.md).
 
-**Everything else** (how it works, troubleshooting, other trackers and agent CLIs, every command and config key, release
-notes) is in the [fleet guide](plugins/developer/skills/fleet/README.md).
+**Everything else** (how it works, troubleshooting, every command and config key) is in the [fleet guide](plugins/developer/skills/fleet/README.md).
 
 > **NOTE:** Run Claude Code inside a herdr pane. The plugin also ships `developer:lead` and `developer:orchestrator`
 > agents and two hooks, which do nothing outside fleet panes.

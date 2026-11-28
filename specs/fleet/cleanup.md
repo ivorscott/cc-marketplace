@@ -428,7 +428,7 @@ ticks without a named wait. `team.cfg` must pass; `team-nonudge.cfg` (the loop n
 One release, 5.0, in four parts built in this order on one branch: the branch of the pull request that holds this
 spec. That pull request stays a draft until all four parts are on it, then merges once. Running teams stay on the
 installed version until 5.0 ships, and get it the usual way, at their next issue once the owner says yes to it. The
-version on the branch reads 4.4.0 while the parts are built and becomes 5.0.0 with the last one.
+version is 5.0.0.
 
 1. **Tick core:** step isolation, state per step, `tick_failing`.
 2. **Lifecycle:** team state, Waiting, the idle rule, Ready in place of loop parking, events to the lead, one sign-off rule.
