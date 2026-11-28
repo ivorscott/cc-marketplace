@@ -35,9 +35,9 @@
 #                   it fires again), the PR is not a draft, and every PR its body says it merges after
 #                   ("Merge after #N", "Depends on <url>", "Stacked on #N") is no longer open. Once per (PR, head SHA).
 #                   While a team's PR is ready and every agent of the team is Done or Idle, on that tick or a later one,
-#                   it is parked (park.sh --reason signed-off) to free its slot.
+#                   the team reads Ready and holds no slot; nothing parks it.
 #   pr_merged       the row's PR was merged; the Orchestrator answers with next.sh. Once per PR. A team marked
-#                   park --after-merge (or by focus) is parked by tick instead; the event says `parks`.
+#                   the loop retires the team at once (retire.sh --outcome Shipped).
 #   pr_conflicting  a PR that was ready (the tick before, or since while mergeable read unknown), or has a sign-off, is
 #                   CONFLICTING: it leaves the merge queue and its lead is told to bring it up to date by merging
 #                   main into it (a merge commit) and have the tester sign off again, naming the PRs merged since the
@@ -933,20 +933,6 @@ step_pull_requests() {
             warn "could not tell $pteam/lead that $url has a head the tester has not signed"
           st_upd --arg k "$url@$phead" '$st + {head_nudged: ((($st.head_nudged // []) + [$k]) | unique)}'
         fi
-        # Signed off (ready) and every agent Done or Idle: the team parks, so its slot frees while the PR waits for its
-        # merge (a Parked team does not count). Tried on every tick while that holds, not only on pr_ready's tick (the
-        # lead is often still Working then). park.sh refuses work that is not pushed: one warning per (PR, head), and the
-        # team keeps its slot until a later tick parks it. An agent still working means no park.
-        if [ "$pready" = true ] && [ "$pst" = OPEN ] && [ "$(printf '%s' "$p" | jq -r .parked)" != true ] &&
-          [ "$(printf '%s' "$all_rows" | jq --arg t "$pteam" '[.[] | select(type == "object" and .team == $t and .status != "Retired"
-            and .tier != "Orchestrator") | .status] | length > 0 and all(. == "Done" or . == "Idle")')" = true ]; then
-          if ! "$FLEET_SCRIPTS/park.sh" "$pteam" --reason signed-off >/dev/null 2>"$FLEET_STATE_DIR/park.err" &&
-            [ "$(jq --arg k "$url@$phead" '(.park_refused // []) | index($k) == null' "$STATE_FILE")" = true ]; then
-            warn "$pteam is signed off but could not park, so it keeps its slot: $(grep -v '^fleet: warning:' "$FLEET_STATE_DIR/park.err" | head -n 1 | sed 's/^fleet: //')"
-            st_upd --arg k "$url@$phead" '$st + {park_refused: ((($st.park_refused // []) + [$k]) | unique)}'
-          fi
-          rm -f "$FLEET_STATE_DIR/park.err"
-        fi
         [ "$ev" != "null" ] || continue
         add_events "[$ev]"
         case "$(printf '%s' "$ev" | jq -r .type)" in
@@ -954,13 +940,15 @@ step_pull_requests() {
             for fn in $("$registry" list --team "$(printf '%s' "$ev" | jq -r .team)" | jq -r '.[] | select(.fixing == "true") | .name'); do "$registry" set "$fn" fixing= >/dev/null 2>&1 || true; done
             st_upd --arg u "$url" --argjson all "$(printf '%s' "$prs" | jq -c --arg t "$(printf '%s' "$ev" | jq -r .team)" '[.[] | select(.team == $t) | .pr]')" \
               '$st + {pr_merged_emitted: ((($st.pr_merged_emitted // []) + [$u] + $all) | unique)}'
-            # A team marked to park after its merge parks now, instead of taking the next issue.
-            pn="$(printf '%s' "$ev" | jq -r '.parks // ""')"
-            if [ -n "$pn" ]; then
-              "$FLEET_SCRIPTS/park.sh" "$(printf '%s' "$ev" | jq -r .team)" --reason "$pn" >/dev/null 2>"$FLEET_STATE_DIR/park.err" ||
-                warn "could not park $(printf '%s' "$ev" | jq -r .team) after its merge: $(head -n 1 "$FLEET_STATE_DIR/park.err" 2>/dev/null)"
-              rm -f "$FLEET_STATE_DIR/park.err"
-            fi ;;
+            # The loop retires the team at once (5.0, Q20): a merge needs no judgement, and a retire that waits for a model
+            # keeps a slot taken. A worktree with unpushed work is kept by retire, and the team then reads Stalled.
+            rteam="$(printf '%s' "$ev" | jq -r .team)"
+            if "$FLEET_SCRIPTS/retire.sh" "$rteam" --outcome Shipped >/dev/null 2>"$FLEET_STATE_DIR/retire.err"; then
+              ev_log retired team="$rteam" detail="retired by the loop after its PR merged"
+            else
+              warn "could not retire $rteam after its merge: $(grep -v '^fleet: warning:' "$FLEET_STATE_DIR/retire.err" | head -n 1 | sed 's/^fleet: //')"
+            fi
+            rm -f "$FLEET_STATE_DIR/retire.err" ;;
           pr_ready)
             # What the PR leaves for the owner becomes linked issues (defer.sh files each once; quiet when there is none).
             "$FLEET_SCRIPTS/defer.sh" "$(printf '%s' "$ev" | jq -r .team)" --pr "$(printf '%s' "$ev" | jq -r .url)" >/dev/null 2>&1 || true

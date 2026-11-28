@@ -69,6 +69,9 @@ tick_ready() { # pr_ready needs the tester's sign-off at the PR head, green chec
   local e; e="$(tk)"
   eq "pr_ready: signed at the head, green, mergeable and not held: one pr_ready naming the PR" \
     "$(tkn "$e" pr_ready):$(printf '%s' "$e" | jq -r '[.[] | select(.type == "pr_ready")][0].url')" "1:https://github.com/acme/app/pull/51"
+  jq -s . "$TK_GHD/51.json" >"$TK_GHD/list.json"; tk >/dev/null # the merge queue lists the PR as ready
+  eq "ready: the team is not parked, and holds no slot" \
+    "$("$REG" list --team rd | jq -r '[.[] | select(.status == "Parked")] | length'):$(bash -c '. "$1/common.sh"; live_team_count' _ "$SCRIPTS")" "0:0"
   tk_pr 51 OPEN MERGEABLE "$TK_GREEN" abc9999new
   eq "pr_ready: a new head is not ready until the tester signs it" "$(tkn "$(tk)" pr_ready)" 0
 }
@@ -80,6 +83,7 @@ tick_merge() { # a merge and a conflict: pr_merged once every PR of the team mer
   eq "pr_merged: none while another PR of the team is open" "$(tkn "$(tk)" pr_merged)" 0
   tk_pr 62 MERGED MERGEABLE "$TK_GREEN" bbb2222def; local e; e="$(tk)"
   eq "pr_merged: one when every PR of the team merged" "$(tkn "$e" pr_merged)" 1
+  eq "pr_merged: the loop retires the team itself" "$("$REG" list --team mg | jq -r '[.[].status] | unique | join(",")')" Retired
   eq "pr_merged: never again" "$(tkn "$(tk)" pr_merged)" 0
   tk_fresh conflict; tk_team cf 71; tk_pr 71 OPEN CONFLICTING "$TK_GREEN" ccc3333def
   "$REG" signoff cf/tester https://github.com/acme/app/pull/71 ccc3333 >/dev/null

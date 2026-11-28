@@ -184,7 +184,7 @@ cmd_start() {
   cat <<EOF
 Follow this until fleet run stop. After a context compaction, or in a fresh session, run fleet run show and follow it again.
 - Keep $teams teams running. On a slot_free wake, pick the next issue (work: $work; order: $order; fill: $fill) and boot it. Never ask which one.
-- Retire a team at once when its PR merges (pr_merged). Bump a client after an API merge where the repo's rules say so, without asking.
+- The loop retires a team when its PR merges (pr_merged). Bump a client after an API merge where the repo's rules say so, without asking.
 - Installs: $pol. The human keeps $HUMAN_ONLY: never approve them; park that part, push once, list it in the morning report.
 - A lead's escalation is decided by you: take the recommended option, tell the lead, resolve it with a note, comment the decision on the issue, record it. What the owner keeps is parked, stays open, and you relay decide's Parked line (its full question and what the owner answers) in chat.
 - Open no question box. The only wait is a PR waiting to merge. Keep one wake monitor armed and re-arm it silently: on an expiry run $FLEET_SCRIPTS/fleet run watch, start Monitor with its first line, end the turn with no text.

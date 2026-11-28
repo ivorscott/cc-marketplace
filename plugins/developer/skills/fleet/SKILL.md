@@ -66,7 +66,7 @@ machines and a fresh session read the same ones.
   The hook fires on clear only. After a compaction the loop carries on from the summary, and `$F/fleet run show` re-reads the rules.
 - Then follow the wakes (Tick) with these rules, and nothing else:
   - **Keep the target running.** On `slot_free` pick the next issue per the profile (`work`, `order`, `fill`; A, step 0) and
-    boot it. Retire a team at once on `pr_merged`. After an API merge, do the client bump the repo's rules name, without asking.
+    boot it. The loop retires a team on `pr_merged`. After an API merge, do the client bump the repo's rules name, without asking.
   - **Escalations are yours to decide.** On an escalation wake run `$F/fleet decide <team> <id>` for each open P1 or P2: it takes
     the lead's recommended option, tells the lead, resolves with the decision, notes it for the morning report and comments it on
     the issue. A P0, and anything about merging, production, infrastructure applies, secrets or branch protection, is the
@@ -166,8 +166,8 @@ reply, so answer a wake with `$F/fleet status`, relayed verbatim (the notices no
 no schedule, run `$F/tick.sh` per tick (`--team T`), then `$F/fleet status`. While the loop runs, never open a
 question box (AskUserQuestion): the wakes queue behind it. Ask in plain text and end the turn. Then act on each:
 
-- `pr_ready`: no push of its own (the batched `status_changed` push says what is ready, in merge order). A team whose agents
-  are all Done or Idle is parked (signed off), then or on a later tick, so its slot is free while the PR waits for its merge.
+- `pr_ready`: no push of its own (the batched `status_changed` push says what is ready, in merge order). The team reads
+  Ready and holds no slot while the PR waits for its merge; nothing parks it.
 - `status_changed`: something changed for the owner (the merge queue, an open escalation, a failed agent, a usage limit; not a
   team starting or flipping Working and Idle). Answer with `$F/fleet status`, relayed verbatim.
   When the wake's notice says `Ready to merge: 2 ready: merge #A, then #B.`, send ONE `PushNotification` with that text.
@@ -179,8 +179,10 @@ question box (AskUserQuestion): the wakes queue behind it. Ask in plain text and
   asks to keep N teams running). Pick and boot (A, step 0) over Todo and unclaimed or lapsed In Progress
   across the repos in `repos`. When the only blocker is an open PR that is nearly ready (signed off, or CI green),
   boot plan-first: the lead's `--brief` says the planner runs and the builder waits for that merge.
-- `pr_merged` (every PR the team opened has merged): retire the team at once (F, step 0), without asking, then pick the
-  next issue (A, step 0) and boot it as a fresh team. `$F/next.sh` stays for a team the user asked to reuse.
+- `pr_merged` (every PR the team opened has merged): the loop has already retired the team (Shipped; its issue went to
+  Done). Do only the follow-up the repo's rules name, such as the client bump after an API merge; the refill comes from
+  `slot_free`. A team the loop could not retire (a worktree with unpushed work) reads Stalled: ask its lead to push, then
+  retire it (F). `$F/next.sh` stays for a team the user asked to reuse.
 - `needs_input`, `brief_failed`: look at the pane; tick already re-sent them.
 - `stale_version`: a decision for the user (a newer plugin is installed). Relay it and wait. On yes, record it once
   for that version, `$F/registry.sh pref version_ok <installed version>`: every team then switches at its next

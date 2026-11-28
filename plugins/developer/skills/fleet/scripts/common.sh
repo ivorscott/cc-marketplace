@@ -333,12 +333,20 @@ cfg_write() {
     END { if (intab) put(); else if (t != "" && !seen && v != "-") { print ""; print t; print k " = " v } }' "$f" >"$tmp" && mv "$tmp" "$f" || { rm -f "$tmp"; return 1; }
 }
 
-# live_team_count [exclude-team]: teams with a live row (Parked, Done and Retired rows are not live), which is what
+# live_team_count [exclude-team]: teams with a live row (Parked, Done and Retired rows are not live, nor a Ready team), which is what
 # max_teams caps. When `repos` is set in config.toml only the teams on a listed repo count: a tooling repo
 # takes a slot only when it is listed.
+# ready_teams: the teams whose PR is in the last merge queue's ready list (signed off, green, mergeable). A Ready team waits
+# only for the owner's merge, so it holds no slot (5.0 lifecycle).
+ready_teams() {
+  local f; f="$(queue_file)"
+  [ -s "$f" ] || { echo '[]'; return 0; }
+  jq -c --slurpfile r <("$FLEET_SCRIPTS/registry.sh" list) '(.queue.ready // []) | map(.url) as $u
+    | [$r[0][] | select((.pr // "") as $p | $p != "" and ($u | index($p)) != null) | .team] | unique' "$f" 2>/dev/null || echo '[]'
+}
 live_team_count() {
-  "$FLEET_SCRIPTS/registry.sh" list --live | jq -r --arg x "${1:-}" --argjson repos "$(config_list repos)" '
-    [.[] | select(.tier != "Orchestrator" and .team != $x and (.fixing // "") != "true")
+  "$FLEET_SCRIPTS/registry.sh" list --live | jq -r --arg x "${1:-}" --argjson repos "$(config_list repos)" --argjson ready "$(ready_teams)" '
+    [.[] | select(.tier != "Orchestrator" and .team != $x and (.fixing // "") != "true" and (.team as $t | $ready | index($t) | not))
       | select(($repos | length) == 0 or ((.repo // "") as $r | any($repos[]; . == $r or (split("/") | last) == ($r | split("/") | last))))
       | .team] | unique | length'
 }
@@ -367,8 +375,8 @@ teams_per_repo() { cfg_int teams_per_repo 1; }
 caps_line() { render_line caps max_teams="$(max_teams)" teams_per_repo="$(teams_per_repo)" min_free_gb="$(min_free_gb)"; }
 # teams_on_repo <repo> [exclude-team]: the live teams other than exclude-team that work <repo>, one per line.
 teams_on_repo() {
-  "$FLEET_SCRIPTS/registry.sh" list --live | jq -r --arg r "$1" --arg x "${2:-}" \
-    '[.[] | select(.tier != "Orchestrator" and .team != $x and (.fixing // "") != "true" and (.repo // "") == $r) | .team] | unique[]'
+  "$FLEET_SCRIPTS/registry.sh" list --live | jq -r --arg r "$1" --arg x "${2:-}" --argjson ready "$(ready_teams)" \
+    '[.[] | select(.tier != "Orchestrator" and .team != $x and (.fixing // "") != "true" and (.repo // "") == $r and (.team as $t | $ready | index($t) | not)) | .team] | unique[]'
 }
 
 # Agent names must match herdr's rule: [a-z][a-z0-9_-]{0,31}.
