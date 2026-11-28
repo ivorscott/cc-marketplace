@@ -139,24 +139,25 @@ cfg_ck="$({ cksum <"$FLEET_CONFIG_DIR/config.toml"; } 2>/dev/null | awk '{ print
 if [ "$cfg_ck" != "$(cat "$FLEET_STATE_DIR/config.warned" 2>/dev/null || true)" ]; then
   config_warn_unknown; printf '%s\n' "$cfg_ck" >"$FLEET_STATE_DIR/config.warned" 2>/dev/null || true
 fi
-ghtmp=""
 FLEET_TICK_ID="$(now)-$$"; export FLEET_TICK_ID # one tick, one Linear viewer read (linear.sh caches by it)
 
 # State and events live in files, never in argv (ARG_MAX). st_upd <jq args> '<program using $st>'
 # replaces the state with the program's result.
 # They sit in the state dir (private to this machine's fleet) and the trap is set before they exist.
-STATE_FILE=""; EVENTS_FILE=""; QUEUE_FILE=""; STEP_ERR=""
+STATE_FILE=""; EVENTS_FILE=""; QUEUE_FILE=""; STEP_ERR=""; LEAD_FILE=""; ghtmp=""
 cleanup() {
   rm -rf "$lockdir"
   [ -z "$STATE_FILE" ] || rm -f "$STATE_FILE" "$STATE_FILE.new"
   [ -z "$EVENTS_FILE" ] || rm -f "$EVENTS_FILE" "$EVENTS_FILE.new"
   [ -z "$QUEUE_FILE" ] || rm -f "$QUEUE_FILE"
   [ -z "$STEP_ERR" ] || rm -f "$STEP_ERR"
-  if [ -n "$ghtmp" ]; then rm -f "$ghtmp"; fi
+  [ -z "$LEAD_FILE" ] || rm -f "$LEAD_FILE"
+  [ -z "$ghtmp" ] || rm -f "$ghtmp"
 }
 trap cleanup EXIT; trap 'exit 130' INT; trap 'exit 143' TERM HUP
 STATE_FILE="$(mktemp "$FLEET_STATE_DIR/.tick-state.XXXXXX")"; EVENTS_FILE="$(mktemp "$FLEET_STATE_DIR/.tick-events.XXXXXX")"
 QUEUE_FILE="$(mktemp "$FLEET_STATE_DIR/.tick-queue.XXXXXX")"; STEP_ERR="$(mktemp "$FLEET_STATE_DIR/.tick-step.XXXXXX")"
+LEAD_FILE="$(mktemp "$FLEET_STATE_DIR/.tick-lead.XXXXXX")"; ghtmp="$(mktemp "$FLEET_STATE_DIR/.tick-gh.XXXXXX")"
 tick_state >"$STATE_FILE"; echo '[]' >"$EVENTS_FILE"
 st_upd() {
   local n=$# prog; prog="${!n}"; set -- "${@:1:$((n - 1))}"
@@ -190,21 +191,35 @@ step() { # step <name> <function>
   fi
   return 0
 }
-# lead_event <team> <key> <text>: tell the team's lead something that just happened (5.0, events to the lead), once per key.
-# The send is --no-confirm (herdr took it), so a tick never waits on a delivery check; a send that fails is not recorded
-# and goes again next tick. Never for a Parked team, or one whose lead is gone.
+# lead_event <team> <key> <text>: note something that just happened for the team's lead, once per key. Nothing is sent
+# here: lead_events_send sends what a tick noted for a lead as one message. Never for a Parked team, or one whose lead is gone.
 lead_event() {
   local t="$1" k="$2" txt="$3" ls
   [ -n "$t" ] && [ "$t" != null ] || return 0
   [ "$(jq --arg k "$k" '(.lead_told // []) | index($k) != null' "$STATE_FILE")" != true ] || return 0
   ls="$("$registry" get "$t/lead" 2>/dev/null | jq -r '.status // ""')" || ls=""
   case "$ls" in "" | Parked | Retired | Zombie) return 0 ;; esac
-  if "$FLEET_SCRIPTS/tell.sh" "$t/lead" "$txt" --no-confirm >/dev/null 2>&1; then
-    st_upd --arg k "$k" '$st + {lead_told: ((($st.lead_told // []) + [$k]) | unique)}'
-    ev_log lead_told team="$t" detail="${k%%|*}"
-  fi
+  jq -cn --arg t "$t" --arg k "$k" --arg x "$txt" '{t: $t, k: $k, x: $x}' >>"$LEAD_FILE"
 }
-# step_lead_events: a worker's done report and a tester's sign-off go to the lead on the tick they appear. The first tick
+# lead_events_send: one message per lead with everything the tick noted for it, in the order it happened (a done report, a
+# sign-off, CI, ready). The send is --no-confirm (herdr took it), so a tick never waits on a delivery check; a send that
+# fails is not recorded and goes again next tick.
+lead_events_send() {
+  local t txt keys
+  [ -s "$LEAD_FILE" ] || return 0
+  while IFS=$'\x1f' read -r t txt keys; do
+    [ -n "$t" ] || continue
+    if "$FLEET_SCRIPTS/tell.sh" "$t/lead" "$txt" --no-confirm >/dev/null 2>&1; then
+      st_upd --argjson k "$keys" '$st + {lead_told: ((($st.lead_told // []) + $k) | unique)}'
+      ev_log lead_told team="$t" detail="$(jq -r 'map(split("|")[0]) | unique | join(",")' <<<"$keys")"
+    fi
+  done < <(jq -rs 'unique_by(.k) | group_by(.t)[]
+      | sort_by({"done": 0, "signoff": 1, "ci": 2, "ready": 3}[.k | split("|")[0]] // 4)
+      | [.[0].t, (map(.x | gsub("[\u001f\n]"; " ")) | join(" / ")), (map(.k) | tojson)] | join("\u001f")' "$LEAD_FILE")
+  : >"$LEAD_FILE"
+}
+# step_lead_events: a worker's done report and a tester's sign-off go to the lead on the tick they appear, in one message
+# with what the PR step noted for it (CI, ready). The first tick
 # with no record only notes what is there (nothing old is re-sent after an upgrade).
 step_lead_events() {
   local rows first k t txt
@@ -221,6 +236,7 @@ step_lead_events() {
           | ["signoff|\(.name)|\(.signoff.sha)", .team, "\(.name | split("/")[1:] | join("/")) signed \(.signoff.pr // "the PR") off at \(.signoff.sha | .[0:7])."]))
       | map(tostring | gsub("[\u001f\n]"; " ")) | join("\u001f")' <<<"$rows")
   $first && [ "$(jq 'has("lead_told")' "$STATE_FILE")" != true ] && st_upd '$st + {lead_told: []}' || true
+  lead_events_send
 }
 
 # tick_failing: a step that failed on this tick and the one before raises one event per run of failures, carrying the
@@ -906,7 +922,7 @@ step_pull_requests() {
       warn "$FLEET_GH not found; no PR events this tick"
     else
       no_ci="$(config_list no_pr_ci)"
-      ghtmp="$(mktemp)"; gh_offline=0; gh_skipped=0
+      gh_offline=0; gh_skipped=0
       while IFS= read -r p; do
         [ "$gh_offline" = 0 ] || { gh_skipped=$((gh_skipped + 1)); continue; }
         url="$(printf '%s' "$p" | jq -r .pr)"
@@ -999,7 +1015,6 @@ step_pull_requests() {
             st_upd --argjson e "$ev" '$st + {pr_ready_emitted: ((($st.pr_ready_emitted // []) + [$e.url + "@" + $e.sha]) | unique)}' ;;
         esac
       done < <(printf '%s' "$prs" | jq -c '.[]')
-      rm -f "$ghtmp"; ghtmp=""
       [ "$gh_offline" = 0 ] || warn "gh offline: skipped $gh_skipped PR lookup(s) this tick"
     fi
   fi

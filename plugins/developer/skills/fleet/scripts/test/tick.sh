@@ -307,6 +307,7 @@ tick_lead_events() { # 5.0: what happened goes to the lead on the tick it happen
   tk >/dev/null
   eq "lead events: a sign-off and CI ending green reach the lead" "$(le_told 'signed .* off at'):$(le_told 'is green')" "1:1"
   eq "lead events: the PR turning ready reaches the lead" "$(le_told 'is ready')" 1
+  eq "lead events: what one tick has for a lead is one message" "$(grep -c '^agent prompt le-lead .*signed .* off at.*is green.*is ready' "$HERDR_LOG" || true)" 1
   tk >/dev/null
   eq "lead events: nothing is sent twice" "$(le_told 'builder reported done'):$(le_told 'signed .* off at'):$(le_told 'is green'):$(le_told 'is ready')" "1:1:1:1"
 }
